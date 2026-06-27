@@ -7,7 +7,6 @@ This repository contains a modernised revision of the IGEBC portal codebase. The
 - **Page-by-Page Revision**: Re-implemented systematically to ensure clean separation between the frontend (UI, layouts, callbacks) and backend (scientific computations, Astropy, data processing).
 - **AI-Assisted Development**: Developed and refactored with the assistance of AI agents, ensuring adherence to modern coding standards, robust error handling, and modular architecture.
 - **Optimised Caching**: Utilises a thread-safe shared server-side caching engine (`flask_caching`) to store retrieved public astronomical data centrally, reducing external API load.
-- **Virtual Observatory Integration**: Prioritises dedicated virtual observatory modules (such as `pyvo`) for querying astronomical services.
 
 ## Architecture
 
@@ -28,7 +27,7 @@ The project strictly separates concerns:
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the application:
+3. Run the application in debug mode:
    ```bash
    python main.py
    ```
