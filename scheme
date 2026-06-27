@@ -1,0 +1,10 @@
+.
+├── .venv
+├── skvo_veb
+│   ├── assets
+│   ├── components
+│   ├── __init__.py
+│   ├── pages
+│   └── utils
+├── .env
+└── skvo_veb.wsgi

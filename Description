@@ -1,0 +1,52 @@
+Lightcurve
+Each light curve is stored in pandas.df or dictionary or json or astropy.Table form.
+All of them can be uniquely transformed into each other:
+df.to_dict(orient='split', index=False)
+
+"selected":   "1" -- marked for deletion; "0" -- does not marked
+"perm_index":   (initially df.index) We keep it forever and protect against reindexing. It need when we clean data
+
+{"time_scale": "tcg",
+  "flux_unit": "",
+  "flux_err_unit": "",
+  "data":
+    {"columns": ["jd", "flux", "flux_err", "selected", "perm_index"],
+      "data": [[2458033.7802607, 7.9128838495368985, 0.09668770163260076, 0, 301],
+              [2458034.7833306, 9.760265666056538, 0.06991571196995587, 0, 302],
+              [2460572.792278, 12.275756963689606, 0.06386521960862487, 0, 1371]]
+    }
+}
+
+
+New version of lightcurve storage
+{"time_scale": "tcg",
+  "flux_unit": "",
+  "flux_err_unit": "",
+  "folded_view": 0, (or 1)
+  "data":
+    {"columns": ["jd", "phase", ""flux", "flux_err", "selected", "perm_index"],
+      "data": [[2458033.7802607, 0.11, 7.9128838495368985, 0.09668770163260076, 0, 301],
+              [2458034.7833306, 0.12, 9.760265666056538, 0.06991571196995587, 0, 302],
+              [2460572.792278, 0.13, 12.275756963689606, 0.06386521960862487, 0, 1371]]
+    }
+}
+
+Metadata storage
+metadata = {'epoch': epoch, 'period': period, 'period_unit': period_unit, 'band': band}
+
+
+How does Dash Figure store the lightcurve:
+
+ClickData:
+{'points': [
+    {'curveNumber': 0,
+    'pointNumber': 321,
+    'pointIndex': 321,
+    'x': -0.1646629358981805,
+    'y': 7.15870601326456,
+    'error_y.array': 0.09326849715419501,
+    'bbox': {'x0': 508.53, 'x1': 514.53,
+             'y0': 521.52, 'y1': 527.52},
+    'customdata': [1119]}]}
+
+    "customdata" is an entrance into the lightcurve. This is a permanent index (perm_index) of the point

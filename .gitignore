@@ -1,0 +1,36 @@
+# Byte-compiled / optimized / DLL archive
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.cache/
+cache/
+.pytest_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Secrets and local configuration
+.env
+.flaskenv
+
+# IDEs and Editors
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project-specific ignores
+third_party/
+skypatrol/
