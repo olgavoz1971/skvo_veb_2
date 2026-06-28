@@ -1,10 +1,12 @@
 # DISK_CACHE = True  # this makes sense only for a local version
 import os
+import re
 import time
 
 DISK_CACHE = False
 
 import logging
+logger = logging.getLogger(__name__)
 from os import getenv
 logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
 
@@ -18,7 +20,9 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import register_page, dcc, html, callback, ctx, dash, set_props, clientside_callback
 import dash_bootstrap_components as dbc
-from dash.dash_table import DataTable
+import dash_ag_grid as dag
+from skvo_veb.utils import tess_processor
+from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
 from dash.dependencies import Input, Output, State, ClientsideFunction
 import plotly.express as px
 
@@ -37,6 +41,8 @@ import uuid
 
 from skvo_veb.components import message
 from skvo_veb.utils import tess_cache as cache
+from skvo_veb.utils import tess_lc_search
+from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils.curve_dash import CurveDash, jd0
 from skvo_veb.utils.my_tools import (safe_none, safe_float, PipeException, sanitize_filename,
                                          positive_float_pattern, float_pattern, positive_integer_pattern)
@@ -71,15 +77,32 @@ def layout():
                 dbc.Row([
                     dbc.Col([
                         dbc.Stack([
-                            dbc.Label('Object name:', html_for='obj_name_tess_lc_srv_input',
-                                      style={'width': '7em'}),
+                            dbc.Label('Object', html_for='obj_name_tess_lc_srv_input', style={'width': '7em'}),
                             dcc.Input(id='obj_name_tess_lc_srv_input', persistence=True, type='search',
-                                      style={'width': '100%'}),  # , 'border-radius': '5px'}),
-                        ], direction='vertical', gap=0, style={'marginBottom': '20px'}),
+                                      style={'flexGrow': '1', 'width': 'auto'}),
+                            dbc.Button('Resolve', id='resolve_tess_lc_srv_button', size='sm', style={'whiteSpace': 'nowrap'}),
+                        ], direction='horizontal', gap=2, style={'marginBottom': '5px'}),
+                        dbc.Stack([
+                            dbc.Label('RA', html_for='ra_tess_lc_srv_input', style={'width': '7em'}),
+                            dcc.Input(id='ra_tess_lc_srv_input', persistence=True, type='search', style={'width': '100%'}),
+                        ], direction='horizontal', gap=2, style={'marginBottom': '5px'}),
+                        dbc.Stack([
+                            dbc.Label('DEC', html_for='dec_tess_lc_srv_input', style={'width': '7em'}),
+                            dcc.Input(id='dec_tess_lc_srv_input', persistence=True, type='search', style={'width': '100%'}),
+                        ], direction='horizontal', gap=2, style={'marginBottom': '5px'}),
+                        dbc.Stack([
+                            dbc.Label('Radius', id='radius_tess_lc_srv_lbl', html_for='radius_tess_lc_srv_input',
+                                      style={'width': '7em'}),
+                            dcc.Input(id='radius_tess_lc_srv_input', persistence=True, type='search',
+                                      pattern=positive_float_pattern, value='', placeholder='(arcsec)',
+                                      style={'width': '100%'}),
+                            dbc.Tooltip('Search radius in arcseconds. If empty, center target is found.', target='radius_tess_lc_srv_lbl', placement='bottom'),
+                        ], direction='horizontal', gap=2, style={'marginBottom': '10px'}),
                         dbc.Stack([
                             dbc.Button('Search', id='basic_search_tess_lc_srv_button', size="sm"),
                             dbc.Button('Cancel', id='cancel_basic_search_tess_lc_srv_button',
                                        size="sm", disabled=True),
+                            dbc.Button('Clean Cache', id='clean_cache_tess_lc_srv_button', size="sm", color='danger'),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),
                         dbc.Stack([
                             dcc.Upload(
@@ -92,7 +115,7 @@ def layout():
                             dbc.Switch(id='switch_append_tess_lc_srv', label='Append', value=False,
                                        label_style=switch_label_style, persistence=False),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),  # upload
-                    ], lg=2, md=3, sm=4, xs=12,
+                    ], lg=3, md=4, sm=5, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),
                     # Search tools
                     dbc.Col([
@@ -103,6 +126,8 @@ def layout():
                                     dbc.Stack([
                                         dbc.Button('Download curves', id='download_tess_lc_srv_button', size="sm",
                                                    className="me-2"),
+                                        dbc.Button('Purge FITS & redownload', id='purge_redownload_tess_lc_srv_button',
+                                                   size="sm", color='warning', className="me-2"),
                                         dbc.Button('Cancel', id='cancel_download_tess_lc_srv_button', size="sm",
                                                    disabled=True),
                                     ], direction='horizontal', gap=2)
@@ -112,30 +137,34 @@ def layout():
                                     'alignItems': 'center',
                                     'width': '100%'
                                 }),
-                                DataTable(
+                                dag.AgGrid(
                                     id="data_tess_lc_srv_table",
-                                    columns=[{"name": col, "id": col} for col in
-                                             ["#", "mission", "year", "author", "exptime", "target"]],
-                                    data=[],
-                                    row_selectable="multi",
-                                    fixed_rows={'headers': True},  # Freeze the header
-                                    style_table={
-                                        'maxHeight': '50vh',
-                                        'overflowY': 'auto',  # vertical scrolling
-                                        'overflowX': 'auto',  # horizontal scrolling
+                                    columnDefs=[
+                                        {
+                                            "field": col,
+                                            "headerName": col.capitalize() if col != "#" else "#",
+                                            "checkboxSelection": True if col == "#" else False,
+                                            "headerCheckboxSelection": True if col == "#" else False,
+                                        }
+                                        for col in ["#", "mission", "year", "author", "exptime", "target"]
+                                    ],
+                                    rowData=[],
+                                    columnSize="responsiveSizeToFit",
+                                    defaultColDef={"filter": True, "sortable": True, "resizable": True},
+                                    dashGridOptions={
+                                        "theme": "themeBalham",
+                                        "rowSelection": "multiple",
+                                        "suppressRowClickSelection": True,
+                                        "animateRows": True,
+                                        "pagination": True,
+                                        "paginationPageSize": 10,
                                     },
-                                    page_action="native", sort_action="native",
-                                    style_cell={"font-size": 14, 'textAlign': 'left'},
-                                    cell_selectable=False,
-                                    style_header={"font-size": 14, 'font-family': 'courier',
-                                                  'color': '#000',
-                                                  'backgroundColor': 'var(--bs-light)',
-                                                  'textAlign': 'left'},
+                                    style={"height": "350px", "width": "100%"}
                                 ),
                             ], id="table_tess_lc_srv_row", style={"display": "none"}),  # Search results
                             html.Div(id='div_tess_lc_srv_search_alert', style={"display": "none"}),  # Alert
                         ]),
-                    ], lg=10, md=9, sm=8, xs=12),  # SearchResults Table is here
+                    ], lg=9, md=8, sm=7, xs=12),  # SearchResults Table is here
                 ], style={'marginBottom': '10px'}),  # Search and SearchResults
                 dbc.Spinner(children=[
                     dbc.Label(id="download_tess_lc_srv_result", children='',
@@ -367,11 +396,12 @@ def layout():
                 ], style={'marginBottom': '10px'}),
             ], tab_id='tess_lc_srv_graph_tab', id='tess_lc_srv_graph_tab', disabled=False),
         ], active_tab='tess_lc_srv_search_tab', id='tess_lc_srv_tabs', style={'marginBottom': '5px'}),
-        dcc.Store(id='store_user_tab_id_tess_lc_srv', storage_type='session'),  # User session tab id
-        # downloaded lightcurve(s). Now this is a dummy Store for a figur plot triggering
-        dcc.Store(id='store_tess_lightcurve_lc_srv'),
-        dcc.Store(id='store_tess_lightcurve_lc_srv_metadata'),  # user's lookup_name
-        dcc.Store(id='store_tess_periodogram_result_lc_srv'),  # [period, 2*period, 4*period]
+        dcc.Store(id='store_user_tab_id_tess_lc_srv', **SESSION_STORE),
+        dcc.Store(id='store_tess_lightcurve_lc_srv', **SESSION_STORE),
+        dcc.Store(id='store_tess_lightcurve_lc_srv_metadata', **SESSION_STORE),
+        dcc.Store(id='store_tess_lc_search_result', **SESSION_STORE),
+        dcc.Store(id='store_tess_periodogram_result_lc_srv', **SESSION_STORE),
+        dcc.Store(id='store_resolved_coords_tess_lc_srv', **SESSION_STORE),
         dcc.Download(id='download_tess_lc_srv_lightcurve'),
     ],
         className="g-10", fluid=True, style={'display': 'flex', 'flexDirection': 'column'})
@@ -396,38 +426,173 @@ def toggle_pg_option_collapse(method):
 
 
 @callback(
-    # region
+    output=dict(
+        ra=Output('ra_tess_lc_srv_input', 'value', allow_duplicate=True),
+        dec=Output('dec_tess_lc_srv_input', 'value', allow_duplicate=True),
+        resolved_coords=Output('store_resolved_coords_tess_lc_srv', 'data'),
+        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+    ),
+    inputs=dict(n_clicks=Input('resolve_tess_lc_srv_button', 'n_clicks')),
+    state=dict(
+        obj_name=State('obj_name_tess_lc_srv_input', 'value')
+    ),
+    prevent_initial_call=True
+)
+def resolve_coordinates_lc_srv(n_clicks, obj_name):
+    if n_clicks is None:
+        raise PreventUpdate
+
+    output = {
+        'ra': dash.no_update,
+        'dec': dash.no_update,
+        'resolved_coords': dash.no_update,
+        'alert_message': '',
+        'alert_style': {'display': 'none'}
+    }
+
+    if not obj_name or not obj_name.strip():
+        output['alert_message'] = message.warning_alert("Please enter an object name first.")
+        output['alert_style'] = {'display': 'block'}
+        return output
+
+    try:
+        ra, dec = tess_processor.resolve_object_coordinates(obj_name)
+        output['ra'] = ra
+        output['dec'] = dec
+        output['resolved_coords'] = {'obj_name': obj_name.strip(), 'ra': ra, 'dec': dec}
+    except Exception as e:
+        logging.warning(f"lightcurve_tess_srv.resolve_coordinates error: {e}")
+        output['alert_message'] = message.warning_alert(e)
+        output['alert_style'] = {'display': 'block'}
+
+    return output
+
+
+@callback(
+    output=dict(
+        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+    ),
+    inputs=dict(n_clicks=Input('clean_cache_tess_lc_srv_button', 'n_clicks')),
+    state=dict(
+        obj_name=State('obj_name_tess_lc_srv_input', 'value'),
+        ra=State('ra_tess_lc_srv_input', 'value'),
+        dec=State('dec_tess_lc_srv_input', 'value'),
+        radius=State('radius_tess_lc_srv_input', 'value'),
+        resolved_coords=State('store_resolved_coords_tess_lc_srv', 'data'),
+    ),
+    prevent_initial_call=True
+)
+def handle_clean_cache_lc_srv(n_clicks, obj_name, ra, dec, radius, resolved_coords):
+    if n_clicks is None:
+        raise PreventUpdate
+
+    try:
+        target, search_mode = tess_processor.resolve_search_target(obj_name, ra, dec, resolved_coords)
+    except PipeException as e:
+        return {
+            'alert_message': message.warning_alert(e),
+            'alert_style': {'display': 'block'}
+        }
+
+    try:
+        rad_val = float(radius) if radius else None
+    except ValueError:
+        rad_val = None
+
+    try:
+        deleted_count = cache.delete_target_cache(target, radius=rad_val)
+        msg_text = f"Cache cleaned successfully for '{target}'. {deleted_count} cached file(s) deleted."
+        logger.info(f"handle_clean_cache_lc_srv: {msg_text}")
+        return {
+            'alert_message': message.info_alert(msg_text),
+            'alert_style': {'display': 'block'}
+        }
+    except Exception as e:
+        err_msg = f"Failed to clean cache for '{target}': {e}"
+        logger.error(f"handle_clean_cache_lc_srv: {err_msg}", exc_info=True)
+        return {
+            'alert_message': message.warning_alert(err_msg),
+            'alert_style': {'display': 'block'}
+        }
+
+
+@callback(
     output=dict(
         table_header=Output('table_tess_lc_srv_header', "children"),
         metadata=Output('store_tess_lightcurve_lc_srv_metadata', 'data'),
-        table_data=Output("data_tess_lc_srv_table", "data"),
-        selected_rows=Output("data_tess_lc_srv_table", "selected_rows"),
+        search_store=Output('store_tess_lc_search_result', 'data'),
+        table_data=Output("data_tess_lc_srv_table", "rowData"),
+        selected_rows=Output("data_tess_lc_srv_table", "selectedRows"),
         content_style=Output("table_tess_lc_srv_row", "style"),  # to show the table and Title
-        alert_message=Output('div_tess_lc_srv_search_alert', 'children'),
-        alert_style=Output('div_tess_lc_srv_search_alert', 'style'),
+        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+        ra_out=Output('ra_tess_lc_srv_input', 'value', allow_duplicate=True),
+        dec_out=Output('dec_tess_lc_srv_input', 'value', allow_duplicate=True),
+        resolved_out=Output('store_resolved_coords_tess_lc_srv', 'data', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('basic_search_tess_lc_srv_button', 'n_clicks')),
-    state=dict(obj_name=State('obj_name_tess_lc_srv_input', 'value')),
-    # endregion
+    state=dict(
+        obj_name=State('obj_name_tess_lc_srv_input', 'value'),
+        ra=State('ra_tess_lc_srv_input', 'value'),
+        dec=State('dec_tess_lc_srv_input', 'value'),
+        radius=State('radius_tess_lc_srv_input', 'value'),
+        resolved_coords=State('store_resolved_coords_tess_lc_srv', 'data'),
+    ),
     running=[(Output('basic_search_tess_lc_srv_button', 'disabled'), True, False),
              (Output('cancel_basic_search_tess_lc_srv_button', 'disabled'), False, True)],
     cancel=[Input('cancel_basic_search_tess_lc_srv_button', 'n_clicks')],
     background=background_callback,
     prevent_initial_call=True
 )
-def basic_search(n_clicks, obj_name):
+def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     if n_clicks is None:
         raise PreventUpdate
 
     output_keys = list(ctx.outputs_grouping.keys())
     output = {key: dash.no_update for key in output_keys}
+    output['ra_out'] = dash.no_update
+    output['dec_out'] = dash.no_update
+    output['resolved_out'] = dash.no_update
 
     try:
-        search_lcf = cache.load("basic_search", obj_name=obj_name)
-        if search_lcf is None:
-            search_lcf = lk.search_lightcurve(obj_name)
-            cache.save(search_lcf, "basic_search", obj_name=obj_name)
-        repr(search_lcf)  # Do not touch this line :-)
+        target, search_mode = tess_processor.resolve_search_target(obj_name, ra, dec, resolved_coords)
+    except PipeException as e:
+        output['alert_message'] = message.warning_alert(e)
+        output['alert_style'] = {'display': 'block'}
+        output['selected_rows'] = []
+        output['content_style'] = {'display': 'none'}
+        return output
+
+    clear_stray_coords = (
+        search_mode == 'object_name'
+        and obj_name and str(obj_name).strip()
+        and (tess_processor.has_coord(ra) or tess_processor.has_coord(dec))
+    )
+    if clear_stray_coords:
+        output['ra_out'] = ''
+        output['dec_out'] = ''
+        output['resolved_out'] = None
+
+    try:
+        rad_val = float(radius) if radius else None
+    except ValueError:
+        output['alert_message'] = message.warning_alert("Radius must be a valid positive number.")
+        output['alert_style'] = {'display': 'block'}
+        output['selected_rows'] = []
+        output['content_style'] = {'display': 'none'}
+        return output
+
+    try:
+        logger.info(f"lightcurve_tess_srv.basic_search: Starting metadata search. mode={search_mode}, target={target!r}, radius={rad_val!r}")
+        search_lcf, native_id = tess_lc_search.search_lightcurves_cached(
+            target=target,
+            radius=rad_val,
+            search_mode=search_mode,
+            resolved_coords=resolved_coords,
+        )
+        repr(search_lcf)  # Fill the internal '#' column if needed
 
         data = []
         for row in search_lcf.table:
@@ -440,13 +605,30 @@ def basic_search(n_clicks, obj_name):
                 "exptime": row["exptime"]
             })
         if data:
-            # output['table_header'] = f'Basic search  for {obj_name}'
-            output['table_header'] = f'{obj_name}'
-            output['metadata'] = {'lookup_name': obj_name}
+            display_name = str(obj_name).strip() if obj_name and str(obj_name).strip() else target
+            target_id = native_id if native_id else (data[0].get('target', '') if data else '')
+            if target_id:
+                target_id_str = str(target_id).strip()
+                if target_id_str.isdigit():
+                    target_id_str = f"TIC {target_id_str}"
+                else:
+                    # Replace colons with spaces so the user can easily copy and paste (e.g. "TIC:159717514" -> "TIC 159717514")
+                    target_id_str = target_id_str.replace(":", " ")
+                
+                if display_name.lower() != target_id_str.lower():
+                    display_title = f"{display_name} ({target_id_str})"
+                else:
+                    display_title = display_name
+            else:
+                display_title = display_name
+            output['table_header'] = display_title
+            output['metadata'] = {'lookup_name': display_name, 'native_id': native_id}
+            output['search_store'] = {
+                'native_id': native_id,
+                'search_result': search_lcf.table.to_pandas().to_dict(),
+            }
             output['table_data'] = data
-            output['selected_rows'] = [0] if data else []  # select the first row by default
-            # set_props('table_tess_lc_srv_row', {'style': {'display': 'block'}}),
-            # set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+            output['selected_rows'] = []  # start without any selection
             output['content_style'] = {'display': 'block'}  # show the table with search results
             output['alert_message'] = ''
             output['alert_style'] = {'display': 'none'}  # hide alert
@@ -455,75 +637,109 @@ def basic_search(n_clicks, obj_name):
     except Exception as e:
         logging.warning(f'tess_lightcurve.search: {e}')
         output['selected_rows'] = []
-        # set_props('div_tess_lc_srv_alert', {'children': message.warning_alert(e), 'style': {'display': 'block'}})
         output['alert_message'] = message.warning_alert(e)
         output['alert_style'] = {'display': 'block'}  # show the alert
-        # set_props('table_tess_lc_srv_row', {'style': {'display': 'none'}})
         output['content_style'] = {'display': 'none'}  # hide empty or wrong table
 
     return output
 
 
-def create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
-                                 phase_view=False, period=None, epoch=None) -> str:
-    # return a serialized CurveDash object
-    import re
-    if not selected_rows or not table_data:
-        raise PipeException('Search for the lightcurves first and try again')
-    selected_data = [table_data[i] for i in selected_rows]
+@callback(
+    output=dict(
+        table_header=Output('table_tess_lc_srv_header', "children", allow_duplicate=True),
+        table_data=Output("data_tess_lc_srv_table", "rowData", allow_duplicate=True),
+        content_style=Output("table_tess_lc_srv_row", "style", allow_duplicate=True),
+    ),
+    inputs=dict(
+        search_store=Input('store_tess_lc_search_result', 'data'),
+        metadata=Input('store_tess_lightcurve_lc_srv_metadata', 'data'),
+    ),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_lc_srv_search_table(search_store, metadata):
+    rows = table_rows_from_lk_search_dict(search_store)
+    if not rows:
+        raise PreventUpdate
+    lookup_name = (metadata or {}).get('lookup_name', '')
+    native_id = (metadata or {}).get('native_id', '')
+    if native_id:
+        target_id_str = str(native_id).strip().replace(':', ' ')
+        if target_id_str.isdigit():
+            target_id_str = f'TIC {target_id_str}'
+        if lookup_name and lookup_name.lower() != target_id_str.lower():
+            table_header = f'{lookup_name} ({target_id_str})'
+        else:
+            table_header = lookup_name or target_id_str
+    else:
+        table_header = lookup_name
+    return {
+        'table_header': table_header,
+        'table_data': rows,
+        'content_style': {'display': 'block'},
+    }
 
-    search_cache_key = "search_lcf_refined"
+
+@callback(
+    Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
+    Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
+    Input('store_user_tab_id_tess_lc_srv', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_lc_srv_tabs(user_tab_id):
+    if not user_tab_id:
+        raise PreventUpdate
+    user_key = _compose_user_key(user_tab_id)
+    if user_cache.get(user_key, default=None) is None:
+        raise PreventUpdate
+    return False, 'tess_lc_srv_graph_tab'
+
+
+def create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
+                                 phase_view=False, period=None, epoch=None,
+                                 search_store=None) -> str:
+    # return a serialized CurveDash object
+    if not selected_rows:
+        raise PipeException('Search for the lightcurves first and try again')
+    if isinstance(selected_rows[0], dict):
+        selected_data = selected_rows
+    else:
+        if not table_data:
+            raise PipeException('Search for the lightcurves first and try again')
+        selected_data = [table_data[i] for i in selected_rows]
+
+    full_search = tess_lc_search.restore_search_result(search_store) if search_store else None
+
     lc_list = []
     authors = []
     sectors = []
     pdc_methods = []
     flux_origins = []
-    # if len(selected_rows) > 1:
-    #     raise PipeException('My test exception')  # todo remove it
+
     for row in selected_data:
-        target = f'TIC {row.get("target", None)}'
-        author = row["author"]
-        exptime = row["exptime"]
-        match = re.search(r'Sector (\d+)', row.get('mission', ''))
-        if match:
-            sector = int(match.group(1))
+        row_idx = row['#']
+        if full_search is not None:
+            lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row_idx)
         else:
-            sector = -1
-        args = {
-            'target': target,
-            'author': author,
-            'mission': 'TESS',
-            'sector': sector,
-            'exptime': exptime
-        }
-        search_lcf_refined = cache.load(search_cache_key, **args)
-        if search_lcf_refined is None:
-            search_lcf_refined = lk.search_lightcurve(**args)
-            if len(search_lcf_refined) > 0:
-                cache.save(search_lcf_refined, search_cache_key, **args)
-        repr(search_lcf_refined)  # Leave it to fill '#' column
-        try:
-            lc = search_lcf_refined.download()  # LightKurve uses its own cache
-        except LightkurveError as e:
-            logging.warning(f'download_selected_pixel exception: {e}')
-            # Probably, we have the corrupted cache. Let's try clean it
-            # Build the filename of cached lightcurve. See lightkurve/search.py
-            # I don't want to change the default cache_dir:
-            import os
-            # noinspection PyProtectedMember
-            download_dir = search_lcf_refined._default_download_dir()
-            table = search_lcf_refined.table
-            path = os.path.join(
-                download_dir.rstrip("/"),
-                "mastDownload",
-                table["obs_collection"][0],
-                table["obs_id"][0],
-                table["productFilename"][0],
-            )
-            # Remove and retry
-            logging.warning(f'Removing corrupted cache: {path}')
-            os.remove(path) if os.path.isfile(path) else None
-            lc = search_lcf_refined.download()
+            target = f'TIC {row.get("target", None)}'
+            author = row["author"]
+            exptime = row["exptime"]
+            match = re.search(r'Sector (\d+)', row.get('mission', ''))
+            sector = int(match.group(1)) if match else -1
+            args = {
+                'target': target,
+                'author': author,
+                'mission': 'TESS',
+                'sector': sector,
+                'exptime': exptime
+            }
+            search_lcf_refined = cache.load("search_lcf_refined", **args)
+            if search_lcf_refined is None:
+                search_lcf_refined = lk.search_lightcurve(**args)
+                if len(search_lcf_refined) > 0:
+                    cache.save(search_lcf_refined, "search_lcf_refined", **args)
+            repr(search_lcf_refined)
+            lc = lightkurve_cache.download_lightcurve_row_with_recovery(search_lcf_refined, 0)
+
         if flux_method == 'pdcsap' and 'pdcsap_flux' in lc.columns:
             lc.flux = lc.pdcsap_flux
             flux_origin = flux_method
@@ -697,19 +913,20 @@ def plot_lc(js_lightcurve: str, phase_view: bool):
     inputs=dict(n_clicks=Input('recreate_selected_tess_lc_srv_button', 'n_clicks'), ),
     state=dict(
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
-        selected_rows=State('data_tess_lc_srv_table', 'selected_rows'),
+        selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
         stitch=State('stitch_switch_tess_lc_srv', 'value'),
         flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
+        search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
         period=State('period_tess_lc_srv_input', 'value'),
         epoch=State('epoch_tess_lc_srv_input', 'value')
     ),
     prevent_initial_call=True
 )
-def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, stitch, flux_method, metadata, phase_view,
-                           period, epoch):
+def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, stitch, flux_method, metadata,
+                           search_store, phase_view, period, epoch):
     if n_clicks is None:
         raise PreventUpdate
     try:
@@ -717,7 +934,7 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         period = safe_float(period)
         epoch = epoch + jd0 if epoch else epoch
         lc = create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
-                                          phase_view, period, epoch)
+                                          phase_view, period, epoch, search_store=search_store)
         # write it to server user cache
         write_user_data_to_cache(lc, user_tab_id)
 
@@ -879,17 +1096,18 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
 
 
 @callback(Output('graph_tess_lc_srv', 'figure', allow_duplicate=True),
-          Input('store_tess_lightcurve_lc_srv', 'data'),  # dummy
-          State('store_user_tab_id_tess_lc_srv', 'data'),
+          Input('store_tess_lightcurve_lc_srv', 'data'),
+          Input('store_user_tab_id_tess_lc_srv', 'data'),
           State('fold_tess_lc_srv_switch', 'value'),
-          prevent_initial_call=True
+          prevent_initial_call='initial_duplicate',
           )
 def plot_tess_curve(_, user_tab_id, phase_view):
-    # todo: do it client side, move div_tess_alert stuff to the method, returning store_tess_lightcurve_lc_srv
-    # todo: check
+    if not user_tab_id:
+        raise PreventUpdate
+    user_key = _compose_user_key(user_tab_id)
+    if user_cache.get(user_key, default=None) is None:
+        raise PreventUpdate
     try:
-        # if user_tab_id is None:     # No data stored yet
-        #     raise PipeException('Please, download light curve first')
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         fig = plot_lc(js_lightcurve, phase_view)
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
@@ -1110,6 +1328,59 @@ def generate_user_tab_id():
 
 @callback(
     output=dict(
+        message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
+        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+    ),
+    inputs=dict(n_clicks=Input('purge_redownload_tess_lc_srv_button', 'n_clicks')),
+    state=dict(
+        selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
+        search_store=State('store_tess_lc_search_result', 'data'),
+    ),
+    running=[(Output('purge_redownload_tess_lc_srv_button', 'disabled'), True, False)],
+    background=background_callback,
+    prevent_initial_call=True,
+)
+def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
+    if n_clicks is None:
+        raise PreventUpdate
+
+    if not selected_rows:
+        return {
+            'message_results': '',
+            'alert_message': message.warning_alert('Select at least one table row to purge and redownload.'),
+            'alert_style': {'display': 'block'},
+        }
+
+    try:
+        search_result = tess_lc_search.restore_search_result(search_store)
+        summaries = []
+        for row in selected_rows:
+            row_idx = row['#']
+            was_purged, lc = lightkurve_cache.purge_and_redownload_row(search_result, row_idx)
+            label = getattr(lc, 'LABEL', None) or f'sector {getattr(lc, "SECTOR", "?")}'
+            action = 'purged and redownloaded' if was_purged else 'redownloaded (no local cache file found)'
+            summaries.append(f'Row {row_idx}: {action} — {label}')
+            logger.info(f"purge_redownload_selected_rows: Completed row {row_idx}: {action}")
+
+        msg = 'Fresh MAST download completed:\n' + '\n'.join(summaries)
+        logging.info(f'purge_redownload_selected_rows: {msg}')
+        return {
+            'message_results': msg,
+            'alert_message': message.info_alert(msg),
+            'alert_style': {'display': 'block'},
+        }
+    except Exception as exc:
+        logging.error(f'purge_redownload_selected_rows failed: {exc}', exc_info=True)
+        return {
+            'message_results': '',
+            'alert_message': message.warning_alert(exc),
+            'alert_style': {'display': 'block'},
+        }
+
+
+@callback(
+    output=dict(
         user_tab_id=Output('store_user_tab_id_tess_lc_srv', 'data'),
         lightcurve=Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),  # dummy Storage
         message_results=Output('download_tess_lc_srv_result', 'children'),
@@ -1121,11 +1392,12 @@ def generate_user_tab_id():
     inputs=dict(n_clicks=Input('download_tess_lc_srv_button', 'n_clicks')),
     state=dict(
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
-        selected_rows=State('data_tess_lc_srv_table', 'selected_rows'),
+        selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
         stitch=State('stitch_switch_tess_lc_srv', 'value'),
         flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
+        search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
     ),
     background=background_callback,
@@ -1134,7 +1406,7 @@ def generate_user_tab_id():
     cancel=[Input('cancel_download_tess_lc_srv_button', 'n_clicks')],
     prevent_initial_call=True)
 def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, stitch, flux_method, metadata,
-                               phase_view):
+                               search_store, phase_view):
     """
     This method checks for the presence of light curves in the local cache.
     If any are missing, it downloads the absent light curves from the remote database.
@@ -1159,8 +1431,12 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     try:
         # Store the loaded light curve into dcc.Store
         # Store a loaded light curve on the server side in the DiskCache instead
-        write_user_data_to_cache(create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata),
-                                 user_tab_id)
+        write_user_data_to_cache(
+            create_lc_from_selected_rows(
+                selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store
+            ),
+            user_tab_id,
+        )
         # Return a new UUID to ensure the dcc.Store value always changes.
         # This triggers dependent callbacks even if no other data is updated.
         output['lightcurve'] = str(uuid.uuid4())  # returns a string → JSON-serializable

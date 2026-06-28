@@ -2,6 +2,7 @@
 DISK_CACHE_LOCAL = False
 
 import logging
+logger = logging.getLogger(__name__)
 from os import getenv
 logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
 
@@ -26,6 +27,7 @@ import dash_ag_grid as dag
 from skvo_veb.components import message
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_processor
+from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
 from skvo_veb.utils.curve_dash import CurveDash, jd0
 from skvo_veb.utils.my_tools import PipeException, safe_none, log_gamma, sanitize_filename, positive_float_pattern
 
@@ -42,6 +44,10 @@ switch_label_style = {'display': 'inline-block', 'padding': '5px'}  # In the row
 label_font_size = '0.8em'
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 
+
+_coord_text = tess_processor._coord_text
+_has_coord = tess_processor.has_coord
+_resolve_search_target = tess_processor.resolve_search_target
 
 # page_layout = dbc.Container([
 def layout():
@@ -399,18 +405,17 @@ def layout():
             active_tab='tess_search_tab',
             # value='tess_search_tab',
             id='tess_tabs', style={'marginBottom': '5px'}),
-        dcc.Store(id='store_search_result'),  # things showed in the data table (the list of TESS sectors etc.)
-        dcc.Store(id='store_resolved_coords'),  # store for resolved Simbad coordinates
-        dcc.Store(id='store_pixel_metadata'),  # stuff for recreation the current pixel
-        dcc.Store(id='mask_store'),  # mask for lightcurve calculation from cutouts
-        dcc.Store(id='mask_slow_store'),  # for more complex mask operation, performed on the server side
-        dcc.Store(id='mask_fast_store'),  # mask changed on client side
-        dcc.Store(id='wcs_store'),  # store wcs to sync with Aladin applet
-        dcc.Store(id='store_tess_cutout_lightcurve'),  # user's lightcurve is here
-        dcc.Store(id='store_tess_cutout_lightcurve_metadata'),
-        # extra information on lightcurve_1 (current zoom ranges)
-        dcc.Store(id='lc2_store'),  # the second lightcurve is here
-        dcc.Store(id='lc3_store'),  # the third lightcurve is here
+        dcc.Store(id='store_search_result', **SESSION_STORE),
+        dcc.Store(id='store_resolved_coords', **SESSION_STORE),
+        dcc.Store(id='store_pixel_metadata', **SESSION_STORE),
+        dcc.Store(id='mask_store', **SESSION_STORE),
+        dcc.Store(id='mask_slow_store', **SESSION_STORE),
+        dcc.Store(id='mask_fast_store', **SESSION_STORE),
+        dcc.Store(id='wcs_store', **SESSION_STORE),
+        dcc.Store(id='store_tess_cutout_lightcurve', **SESSION_STORE),
+        dcc.Store(id='store_tess_cutout_lightcurve_metadata', **SESSION_STORE),
+        dcc.Store(id='lc2_store', **SESSION_STORE),
+        dcc.Store(id='lc3_store', **SESSION_STORE),
         dcc.Download(id='download_tess_lightcurve'),
     ], className="g-10", fluid=True, style={'display': 'flex', 'flexDirection': 'column'})
     return res
@@ -544,14 +549,12 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
     if n_clicks is None:
         raise PreventUpdate
 
-    print(f"\n[DOWNLOAD SECTOR] Starting download/load operation...")
-    print(f"  - Requested Cutout Size: {size}")
+    logger.info(f"tess_cutout.download_sector: Starting download/load operation. Requested Cutout Size: {size}")
     if selected_rows:
         row = selected_rows[0]
-        print(f"  - Selected Record Detail: Mission={row.get('mission')}, Author={row.get('author')}, Target={row.get('target')}, Exptime={row.get('exptime')}")
+        logger.info(f"tess_cutout.download_sector: Selected Record Detail: Mission={row.get('mission')}, Author={row.get('author')}, Target={row.get('target')}, Exptime={row.get('exptime')}")
     else:
-        print(f"  - Selected Record Detail: None")
-    logging.info(f"tess_cutout.download_sector: Starting download/load for size={size}, selected_rows={selected_rows}")
+        logger.info("tess_cutout.download_sector: Selected Record Detail: None")
 
     output_keys = list(ctx.outputs_grouping.keys())
     output = {key: no_update for key in output_keys}
@@ -579,14 +582,10 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         output['active_tab'] = 'tess_graph_tab'
         set_props('div_tess_download_alert', {'children': '', 'style': {'display': 'none'}})
 
-        print(f"[DOWNLOAD SECTOR] Success!")
-        print(f"  - Saved/Loaded local path: {pixel_data.path}")
-        print(f"  - Target Coordinate RA DEC: {pixel_data.ra} {pixel_data.dec}")
-        print(f"  - Metadata Shape: {pixel_data.shape}")
-        logging.info(f"tess_cutout.download_sector: Success, path={pixel_data.path}, shape={pixel_data.shape}")
+        logger.info(f"tess_cutout.download_sector: Success! Saved/Loaded local path: {pixel_data.path}, Target Coordinate RA DEC: {pixel_data.ra} {pixel_data.dec}, Metadata Shape: {pixel_data.shape}")
 
     except Exception as e:
-        print(f"[DOWNLOAD SECTOR] Error during download: {e}")
+        logger.error(f"tess_cutout.download_sector: Error during download: {e}", exc_info=True)
         logging.error(f"tess_cutout.download_sector: Failed to download sector data: {e}", exc_info=True)
         alert_message = message.warning_alert(e)
         output['sector_results'] = ''
@@ -629,19 +628,19 @@ def toggle_flatten_collapse(flatten_switch):
     [Output('px_tess_graph', 'figure', allow_duplicate=True),
      Output('mask_store', 'data', allow_duplicate=True)],
     [Input('replot_pixel_button', 'n_clicks'),
-     Input('store_pixel_metadata', 'data'),
-     State('input_tess_gamma', 'value'),
+     Input('store_pixel_metadata', 'data')],
+    [State('input_tess_gamma', 'value'),
      State('thresh_input', 'value'),
      State('sum_switch', 'value'),
      State('mask_type_switch', 'value'),
      State('auto_mask_switch', 'value')],
-    prevent_initial_call=True
+    prevent_initial_call='initial_duplicate',
 )
 def plot_pixel(n_clicks, pixel_metadata, gamma, threshold, sum_it, mask_type, auto_mask):
-    # if ctx.triggered and ctx.triggered[0]["prop_id"] == "replot_pixel_button.n_clicks":
-    if ctx.triggered_id == "replot_pixel_button":
-        if n_clicks is None:
-            raise PreventUpdate
+    if not pixel_metadata or not pixel_metadata.get('path'):
+        raise PreventUpdate
+    if ctx.triggered_id == "replot_pixel_button" and n_clicks is None:
+        raise PreventUpdate
     pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(pixel_metadata['path'])
     px_shape = pixel_data.shape[1:]
     mask = np.full(px_shape, False)
@@ -659,7 +658,6 @@ def plot_pixel(n_clicks, pixel_metadata, gamma, threshold, sum_it, mask_type, au
 
     # fig = px.imshow(data_to_show.value, color_continuous_scale='Viridis', origin='lower') fig = imshow_logscale(
     # data_to_show.value, scale_method=log_gamma, color_continuous_scale='Viridis', origin='lower')
-    # print(f'{gamma=} {type(gamma)=}')
     show_colorbar = False
     fig = imshow_logscale(data_to_show.value, scale_method=log_gamma, color_continuous_scale='Viridis', origin='lower',
                           show_colorbar=show_colorbar, gamma=gamma)
@@ -841,7 +839,7 @@ clientside_callback(
     Output("px_tess_graph", "figure", allow_duplicate=True),
     Input("mask_store", "data"),
     State("px_tess_graph", "figure"),
-    prevent_initial_call=True
+    prevent_initial_call='initial_duplicate',
 )
 
 
@@ -1014,30 +1012,32 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         lc3=Input('lc3_store', 'data'),
     ),
     state=dict(lc_metadata=State('store_tess_cutout_lightcurve_metadata', 'data')),
-    prevent_initial_call=True
+    prevent_initial_call=False,
 )
 def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
-    # It can happen that we enter here on all triggers at the same time:
-    triggered_ids = {t['prop_id'].split('.')[0] for t in ctx.triggered}
+    if not any([lc1, lc2, lc3]):
+        raise PreventUpdate
+
+    triggered_ids = {t['prop_id'].split('.')[0] for t in ctx.triggered} if ctx.triggered else set()
     if not triggered_ids:
         raise PreventUpdate
 
-    print(f'{triggered_ids=} { ctx.triggered_id=}')
+    logger.debug(f"plot_lightcurve triggered: triggered_ids={triggered_ids} ctx.triggered_id={ctx.triggered_id}")
 
     output_keys = list(ctx.outputs_grouping.keys())
     output = {key: no_update for key in output_keys}
     active_item = ['accordion_item_1']
 
     try:
-        if 'store_tess_cutout_lightcurve' in triggered_ids:
+        if lc1:
             output['fig1'] = create_lightcurve_figure(lc1, lc_metadata)
-            active_item = ['accordion_item_1'] if lc1 else []  # close an empty accordion section if lc1 id None
-        if 'lc2_store' in triggered_ids:
+            active_item = ['accordion_item_1']
+        if lc2:
             output['fig2'] = create_lightcurve_figure(lc2)
-            active_item = ['accordion_item_2'] if lc2 else []
-        if 'lc3_store' in triggered_ids:
+            active_item = ['accordion_item_2']
+        if lc3:
             output['fig3'] = create_lightcurve_figure(lc3)
-            active_item = ['accordion_item_3'] if lc3 else []
+            active_item = ['accordion_item_3']
 
         set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
         set_props('accordion_tess_lc', {'active_item': active_item})
@@ -1225,6 +1225,7 @@ def resolve_coordinates(n_clicks, obj_name):
         alert_style=Output('div_tess_search_alert', 'style', allow_duplicate=True),
         ra_out=Output('ra_tess_input', 'value', allow_duplicate=True),
         dec_out=Output('dec_tess_input', 'value', allow_duplicate=True),
+        resolved_out=Output('store_resolved_coords', 'data', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('search_tess_button', 'n_clicks')),
     state=dict(
@@ -1252,43 +1253,32 @@ def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
     output = {key: no_update for key in output_keys}
     output['ra_out'] = no_update
     output['dec_out'] = no_update
+    output['resolved_out'] = no_update
 
-    clean_coords = False
-    if obj_name and obj_name.strip():
-        target = obj_name.strip()
-        if (ra and ra.strip()) or (dec and dec.strip()):
-            if resolved_coords:
-                stored_obj = resolved_coords.get('obj_name', '')
-                stored_ra = resolved_coords.get('ra', '')
-                stored_dec = resolved_coords.get('dec', '')
-                if (stored_obj == target and 
-                    (not ra or ra.strip() == stored_ra) and 
-                    (not dec or dec.strip() == stored_dec)):
-                    pass
-                else:
-                    clean_coords = True
-            else:
-                clean_coords = True
-    else:
-        if (not ra or not ra.strip()) and (not dec or not dec.strip()):
-            output['alert_message'] = message.warning_alert("Please enter an object name or RA/DEC coordinates.")
-            output['alert_style'] = {'display': 'block'}
-            output['selected_rows'] = []
-            output['content_style'] = {'display': 'none'}
-            return output
-        target = f'{ra} {dec}'
+    try:
+        target, search_mode = _resolve_search_target(obj_name, ra, dec, resolved_coords)
+    except PipeException as e:
+        output['alert_message'] = message.warning_alert(e)
+        output['alert_style'] = {'display': 'block'}
+        output['selected_rows'] = []
+        output['content_style'] = {'display': 'none'}
+        return output
 
-    if clean_coords:
-        output['ra_out'] = ""
-        output['dec_out'] = ""
+    # Case 3: object name search without Resolve — ignore stray coordinates and clear them
+    clear_stray_coords = (
+        search_mode == 'object_name'
+        and obj_name and str(obj_name).strip()
+        and (_has_coord(ra) or _has_coord(dec))
+    )
+    if clear_stray_coords:
+        output['ra_out'] = ''
+        output['dec_out'] = ''
+        output['resolved_out'] = None
 
-    print(f"\n[SEARCH SECTOR] Starting search operation...")
-    print(f"  - Pixel Type: {pixel_type!r}")
-    print(f"  - Object Name: {obj_name!r}")
-    print(f"  - Coordinates: RA={ra!r}, DEC={dec!r}")
-    print(f"  - Resolved Target Name: {target!r}")
-    print(f"  - Radius: {radius!r}")
-    logging.info(f"tess_cutout.search: Starting search operation for target={target!r}, type={pixel_type}, radius={radius}")
+    logger.info(
+        f"tess_cutout.search: Starting search operation. mode={search_mode}, target={target!r}, type={pixel_type}, radius={radius}"
+        f"{' (Stray coordinates ignored and cleared: RA=' + str(ra) + ', DEC=' + str(dec) + ')' if clear_stray_coords else ' (Coordinates: RA=' + str(ra) + ', DEC=' + str(dec) + ')'}"
+    )
 
     try:
         if pixel_type == 'ffi':
@@ -1313,22 +1303,21 @@ def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
             output['table_data'] = data
         else:
             raise PipeException('Empty data')
-        output['table_header'] = f'{pixel_type.upper()} {target}'
-        pixel_di = {'lookup_name': f'{target}', 'search_result': pixel.table.to_pandas().to_dict()}
+        display_name = str(obj_name).strip() if obj_name and str(obj_name).strip() else target
+        output['table_header'] = f'{pixel_type.upper()} {display_name}'
+        pixel_di = {'lookup_name': display_name, 'search_result': pixel.table.to_pandas().to_dict()}
         output['store_pixel'] = pixel_di  # Serialize Lightkurve.SearchResult to store it
-        output['selected_rows'] = [data[0]] if data else []  # select the first row by default
+        output['selected_rows'] = []  # start without any selection
         output['content_style'] = {'display': 'block'}  # show the table
         output['alert_style'] = {'display': 'none'}  # hide the alert
         output['alert_message'] = ''
 
-        print(f"[SEARCH SECTOR] Success! Found {len(data)} matching records for {target!r}")
+        logger.info(f"tess_cutout.search: Success! Found {len(data)} matching records for {target!r}")
         for idx, row in enumerate(data):
-            print(f"  Record {idx+1:02d}: Mission={row['mission']}, Author={row['author']}, Target={row['target']}, Exptime={row['exptime']}")
-        logging.info(f"tess_cutout.search: Success, found {len(data)} records for {target!r}")
+            logger.info(f"  Record {idx+1:02d}: Mission={row['mission']}, Author={row['author']}, Target={row['target']}, Exptime={row['exptime']}")
 
     except Exception as e:
-        print(f"[SEARCH SECTOR] Error during search for {target!r}: {e}")
-        logging.error(f"tess_cutout.search: Failed search for target={target!r}: {e}", exc_info=True)
+        logger.error(f"tess_cutout.search: Failed search for target={target!r}: {e}", exc_info=True)
         output['selected_rows'] = []
         output['alert_message'] = message.warning_alert(e)
         output['alert_style'] = {'display': 'block'}  # show the alert
@@ -1336,6 +1325,46 @@ def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
         output['store_pixel'] = {}
     return output
     # return f'{pixel_type.upper()} {target}', data, selected_row, content_style, pixel_di, alert_message, alert_style
+
+
+@callback(
+    output=dict(
+        table_header=Output("table_tess_header", "children", allow_duplicate=True),
+        table_data=Output("data_tess_table", "rowData", allow_duplicate=True),
+        content_style=Output("search_results_row", "style", allow_duplicate=True),
+    ),
+    inputs=dict(store_data=Input('store_search_result', 'data')),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_search_table(store_data):
+    rows = table_rows_from_lk_search_dict(store_data, include_distance=True)
+    if not rows:
+        raise PreventUpdate
+    lookup_name = store_data.get('lookup_name', '')
+    return {
+        'table_header': lookup_name,
+        'table_data': rows,
+        'content_style': {'display': 'block'},
+    }
+
+
+@callback(
+    output=dict(
+        graph_tab_disabled=Output('tess_graph_tab', 'disabled', allow_duplicate=True),
+        active_tab=Output('tess_tabs', 'active_tab', allow_duplicate=True),
+    ),
+    inputs=dict(
+        pixel_metadata=Input('store_pixel_metadata', 'data'),
+        lc1=Input('store_tess_cutout_lightcurve', 'data'),
+    ),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_tess_cutout_tabs(pixel_metadata, lc1):
+    if pixel_metadata and pixel_metadata.get('path'):
+        return {'graph_tab_disabled': False, 'active_tab': 'tess_graph_tab'}
+    if lc1:
+        return {'graph_tab_disabled': False, 'active_tab': 'tess_graph_tab'}
+    raise PreventUpdate
 
 
 @callback(
@@ -1356,10 +1385,10 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
     if n_clicks is None:
         raise PreventUpdate
 
-    if obj_name and obj_name.strip():
-        target = obj_name.strip()
-    elif ra and dec:
-        target = f"{ra.strip()} {dec.strip()}"
+    if obj_name and str(obj_name).strip():
+        target = str(obj_name).strip()
+    elif _has_coord(ra) and _has_coord(dec):
+        target = f"{_coord_text(ra)} {_coord_text(dec)}"
     else:
         return {
             'alert_message': message.warning_alert("Please enter an object name or RA/DEC coordinates first to clean their cache."),
@@ -1374,16 +1403,14 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
     try:
         deleted_count = cache.delete_target_cache(target, radius=rad_val)
         msg_text = f"Cache cleaned successfully for '{target}'. {deleted_count} cached file(s) deleted."
-        print(f"[CLEAN CACHE] {msg_text}")
-        logging.info(f"handle_clean_cache: {msg_text}")
+        logger.info(f"handle_clean_cache: {msg_text}")
         return {
             'alert_message': message.info_alert(msg_text),
             'alert_style': {'display': 'block'}
         }
     except Exception as e:
         err_msg = f"Failed to clean cache for '{target}': {e}"
-        print(f"[CLEAN CACHE] Error: {err_msg}")
-        logging.error(f"handle_clean_cache: {err_msg}", exc_info=True)
+        logger.error(f"handle_clean_cache: {err_msg}", exc_info=True)
         return {
             'alert_message': message.warning_alert(err_msg),
             'alert_style': {'display': 'block'}

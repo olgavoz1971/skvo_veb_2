@@ -152,3 +152,16 @@ Keep this structural pipeline in mind for every interactive feature you build:
          │
          ▼
   [ Screen Output] --> Renders the updated component to the user
+
+## Logging Standards & Terminal Output
+
+* **NO `print()` STATEMENTS:** Under no circumstances should the agent use the raw `print()` function for terminal logging, debugging, or status updates in application files.
+* **Mandatory Logger Usage:** Every file contains an explicitly defined module-level logger (`logger = logging.getLogger(__name__)`). You MUST route all diagnostic output, errors, and informational messages through this identifier using the appropriate severity levels:
+  * `logger.debug()` for fine-grained execution tracing.
+  * `logger.info()` for general state changes and successful milestones.
+  * `logger.warning()` / `logger.error()` for handled or unhandled exceptions.
+
+# Documentation Directives
+- Every new or modified Python function/method must include a clean Google-style docstring.
+- The docstring must briefly state the purpose, expected inputs (with types), and return values.
+- Write docstrings immediately during the code generation phase; do not skip them for later.

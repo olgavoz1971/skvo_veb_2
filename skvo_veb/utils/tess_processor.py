@@ -19,11 +19,9 @@ def get_tpf(target, radius=10):
     """
     tpf = cache.load('tpf', target=target, radius=radius)
     if tpf is not None:
-        print(f"[CACHE HIT] 'Search Sector' (TPF) found in local cache for target={target!r}, radius={radius}")
-        logger.info(f"get_tpf: Cache HIT for target={target!r}, radius={radius}")
+        logger.info(f"get_tpf: Cache HIT for target={target!r}, radius={radius}. 'Search Sector' (TPF) found in local cache.")
     else:
-        print(f"[CACHE MISS] 'Search Sector' (TPF) NOT found in local cache. Querying remote MAST for target={target!r}, radius={radius}...")
-        logger.info(f"get_tpf: Cache MISS for target={target!r}. Querying remote MAST.")
+        logger.info(f"get_tpf: Cache MISS for target={target!r}. Querying remote MAST for 'Search Sector' (TPF)...")
         tpf = search_targetpixelfile(target=target, mission='TESS', radius=radius)
         cache.save(tpf, 'tpf', target=target, radius=radius)
     repr(tpf)  # Preserve original side-effect/logic if any
@@ -37,11 +35,9 @@ def get_ffi(target):
     """
     ffi = cache.load('ffi', target=target)
     if ffi is not None:
-        print(f"[CACHE HIT] 'Search Sector' (FFI) found in local cache for target={target!r}")
-        logger.info(f"get_ffi: Cache HIT for target={target!r}")
+        logger.info(f"get_ffi: Cache HIT for target={target!r}. 'Search Sector' (FFI) found in local cache.")
     else:
-        print(f"[CACHE MISS] 'Search Sector' (FFI) NOT found in local cache. Querying remote MAST for target={target!r}...")
-        logger.info(f"get_ffi: Cache MISS for target={target!r}. Querying remote MAST.")
+        logger.info(f"get_ffi: Cache MISS for target={target!r}. Querying remote MAST for 'Search Sector' (FFI)...")
         ffi = search_tesscut(target)
         cache.save(ffi, prefix='ffi', target=target)
     repr(ffi)  # Preserve original side-effect/logic if any
@@ -70,11 +66,9 @@ def download_selected_pixel(pixel_args, search_result_di, size):
         }
         pixel_data = cache.load_ffi_fits(**kwargs)
         if pixel_data is not None:
-            print(f"[CACHE HIT] 'Download Sector' (FFI FITS) found in local cache for target_name={kwargs['target_name']!r}, size={size}")
-            logger.info(f"download_selected_pixel: Cache HIT for FFI cutout.")
+            logger.info(f"download_selected_pixel: Cache HIT for FFI cutout. 'Download Sector' (FFI FITS) found in local cache for target_name={kwargs['target_name']!r}, size={size}")
         else:
-            print(f"[CACHE MISS] 'Download Sector' (FFI FITS) NOT found in local cache. Querying remote MAST cutout service for target_name={kwargs['target_name']!r}, size={size}...")
-            logger.info(f"download_selected_pixel: Cache MISS for FFI cutout. Querying remote MAST.")
+            logger.info(f"download_selected_pixel: Cache MISS for FFI cutout. Querying remote MAST cutout service for target_name={kwargs['target_name']!r}, size={size}...")
             pixel_data = pixel[row_idx].download(cutout_size=size)
             cache.save_ffi_fits(pixel_data, **kwargs)
         pixel_args_out = dict(pixel_args)
@@ -91,11 +85,9 @@ def download_selected_pixel(pixel_args, search_result_di, size):
             table["productFilename"][0],
         )
         if os.path.exists(path):
-            print(f"[CACHE HIT] 'Download Sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
-            logger.info(f"download_selected_pixel: SPOC TPF cache HIT at {path}")
+            logger.info(f"download_selected_pixel: SPOC TPF cache HIT. 'Download Sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
         else:
-            print(f"[CACHE MISS] 'Download Sector' (SPOC TPF) NOT found in local cache. Querying remote MAST for SPOC TPF...")
-            logger.info(f"download_selected_pixel: SPOC TPF cache MISS. Downloading from MAST.")
+            logger.info(f"download_selected_pixel: SPOC TPF cache MISS. Downloading from MAST... 'Download Sector' (SPOC TPF) NOT found in local cache.")
 
         try:
             pixel_data = pixel[row_idx].download()
@@ -212,3 +204,51 @@ def resolve_object_coordinates(name: str) -> tuple[str, str]:
     except Exception as e:
         logger.warning(f"Failed to parse Simbad coordinates: {e}")
         raise PipeException(f"Error parsing coordinates for '{name}'.")
+
+
+def _coord_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        return str(value)
+    return str(value).strip()
+
+
+def has_coord(value) -> bool:
+    return bool(_coord_text(value))
+
+
+def has_valid_resolved(resolved_coords, obj_name) -> bool:
+    """True when Resolve was run for the current object name and stored coordinates exist."""
+    if not resolved_coords or not obj_name:
+        return False
+    if resolved_coords.get('obj_name') != str(obj_name).strip():
+        return False
+    return has_coord(resolved_coords.get('ra')) and has_coord(resolved_coords.get('dec'))
+
+
+def resolve_search_target(obj_name, ra, dec, resolved_coords):
+    """
+    Decide how to query MAST/cache for Search.
+
+    Returns (target, search_mode) where search_mode is one of:
+    - 'object_name': search by catalogue name
+    - 'resolved_coordinates': search by coordinates from Resolve for this object
+    - 'coordinates_only': search by manually entered RA/DEC (no object name)
+    """
+    if obj_name and str(obj_name).strip():
+        obj = str(obj_name).strip()
+        if has_valid_resolved(resolved_coords, obj):
+            ra_res = resolved_coords['ra']
+            dec_res = resolved_coords['dec']
+            target = f"{_coord_text(ra_res)} {_coord_text(dec_res)}"
+            return target, 'resolved_coordinates'
+        return obj, 'object_name'
+
+    if not has_coord(ra) or not has_coord(dec):
+        raise PipeException("Please enter an object name or RA/DEC coordinates.")
+    target = f"{_coord_text(ra)} {_coord_text(dec)}"
+    return target, 'coordinates_only'
+
