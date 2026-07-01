@@ -1,3 +1,12 @@
+"""Virtual Observatory (VO) Lightcurve Parsing and Formatting Module.
+
+This module provides tools, classes, and helper functions to ingest, parse, and format
+astronomical lightcurve data files complying with VO standards (e.g., VOTable) or
+heuristic text/ASCII formats. It implements data models for coordinate systems (CooSys),
+time systems (TimeSys), and photometric calibrations (PhotDM, PhotCal, PhotometryFilter)
+and facilitates unit-safe conversions between astronomical magnitudes and fluxes.
+"""
+
 import re
 import numpy as np
 import astropy.units as u
@@ -14,7 +23,23 @@ logger = logging.getLogger(__name__)
 
 
 class PhotometryFilter:
+    """Represents a photometric filter with its identifier and physical spectral location.
+
+    This class corresponds to IVOA photDM:PhotometryFilter data model component, which
+    is used to describe a bandpass/filter in astronomical observations.
+    """
+
     def __init__(self, filter_id=None, spectral_location=None, spectral_location_unit: str = None):
+        """Initialises a PhotometryFilter instance.
+
+        Args:
+            filter_id (str, optional): The unique identifier for the filter. Defaults to None.
+            spectral_location (float or astropy.units.Quantity, optional): The physical
+                spectral location (e.g., central wavelength) of the filter. Defaults to None.
+            spectral_location_unit (str, optional): The physical unit of the spectral
+                location (e.g., 'nm', 'AA', 'um') if spectral_location is not already
+                an astropy.units.Quantity. Defaults to None.
+        """
         self._filter_id = filter_id  # photDM:PhotometryFilter.identifier
 
         # Build the physical quantity
@@ -37,6 +62,11 @@ class PhotometryFilter:
 
     @property
     def filter_id(self):
+        """Gets or sets the filter identifier.
+
+        Returns:
+            str: The filter identifier.
+        """
         return self._filter_id
 
     @filter_id.setter
@@ -51,7 +81,27 @@ class PhotometryFilter:
 
 
 class PhotCal:
+    """Represents the photometric calibration metadata.
+
+    This class handles zero-point values for magnitude and flux, and defines the magnitude
+    system (e.g., Vega). It facilitates unit-safe conversions between magnitudes and fluxes.
+    """
+
     def __init__(self, zp_flux=1.0, zp_flux_unit=None, zp_mag=0.0, zp_mag_unit=None, mag_sys="Vega"):
+        """Initialises a PhotCal instance with zero points.
+
+        Args:
+            zp_flux (float or astropy.units.Quantity, optional): Zero-point flux value.
+                Defaults to 1.0.
+            zp_flux_unit (str or astropy.units.Unit, optional): Unit for the zero-point flux.
+                Defaults to None (which results in dimensionless).
+            zp_mag (float or astropy.units.Quantity, optional): Zero-point magnitude value.
+                Defaults to 0.0.
+            zp_mag_unit (str or astropy.units.Unit, optional): Unit for the zero-point magnitude.
+                Defaults to None (which defaults to magnitude 'mag').
+            mag_sys (str, optional): The magnitude system used (e.g., 'Vega', 'AB').
+                Defaults to "Vega".
+        """
         # zp_flux, unit-aware. # photDM:PhotCal.zeroPoint.flux.value
         if isinstance(zp_flux, u.Quantity):
             self._zp_flux = zp_flux
@@ -83,6 +133,11 @@ class PhotCal:
 
     @property
     def zp_flux(self):
+        """Gets or sets the zero-point flux.
+
+        Returns:
+            astropy.units.Quantity: The zero-point flux with its unit.
+        """
         return self._zp_flux
 
     @zp_flux.setter
@@ -93,6 +148,11 @@ class PhotCal:
 
     @property
     def zp_mag(self):
+        """Gets or sets the zero-point magnitude.
+
+        Returns:
+            astropy.units.Quantity: The zero-point magnitude with its unit.
+        """
         return self._zp_mag
 
     @zp_mag.setter
@@ -103,6 +163,11 @@ class PhotCal:
 
     @property
     def mag_sys(self):
+        """Gets or sets the magnitude system name.
+
+        Returns:
+            str: The magnitude system type.
+        """
         return self._mag_sys
 
     @mag_sys.setter
@@ -113,13 +178,39 @@ class PhotCal:
         self._mag_sys = value.strip()
 
     def mag_to_flux(self, mag):
-        """I hope, flux and zp_flux are astropy quantities"""
+        """Converts an astronomical magnitude to physical flux density.
+
+        The computation is performed using unit-safe astropy quantities.
+
+        Args:
+            mag (astropy.units.Quantity): The magnitude to be converted.
+
+        Returns:
+            astropy.units.Quantity: The computed flux density.
+
+        Raises:
+            astropy.units.UnitsError: If the input magnitude's unit does not match
+                the calibrated zero-point magnitude's unit.
+        """
         if mag.unit is None or not mag.unit.is_equivalent(self._zp_mag.unit):
             raise u.UnitsError(f'flux column unit[{mag.unit}] and zero_point unit[{self._zp_mag.unit}] must match')
         return self.zp_flux * 10 ** (-0.4 * (mag - self.zp_mag).value)  # oh!
 
     def flux_to_mag(self, flux):
-        """I hope, flux and zp_flux are astropy quantities"""
+        """Converts physical flux density to an astronomical magnitude.
+
+        The computation is performed using unit-safe astropy quantities.
+
+        Args:
+            flux (astropy.units.Quantity): The flux density to be converted.
+
+        Returns:
+            astropy.units.Quantity: The computed astronomical magnitude.
+
+        Raises:
+            astropy.units.UnitsError: If the input flux's unit does not match
+                the calibrated zero-point flux's unit.
+        """
         if flux.unit is None or not flux.unit.is_equivalent(self._zp_flux.unit):
             raise u.UnitsError(f'flux column unit[{flux.unit}] and zero_point unit[{self._zp_flux.unit}] must match')
         ratio = (flux / self._zp_flux).value
@@ -132,14 +223,31 @@ class PhotCal:
 
 
 class PhotDM:
+    """Photometry Data Model (photDM) hub combining filter and calibration information.
+
+    Acts as a container linking a specific `PhotometryFilter` and its `PhotCal` calibration.
+    """
+
     def __init__(self, photcal: PhotCal = None, photometry_filter: PhotometryFilter = None):
+        """Initialises a PhotDM instance.
+
+        Args:
+            photcal (PhotCal, optional): The photometric calibration zero points.
+                Defaults to None.
+            photometry_filter (PhotometryFilter, optional): The photometric filter
+                associated with this data model. Defaults to None.
+        """
         self.photcal = photcal
         self.filter = photometry_filter
         # todo: blah-blah-blah
 
     @property
     def filter_id(self):
-        """Shortcut to get the filter name without digging into the sub-object."""
+        """Gets or sets the filter identifier shortcut.
+
+        Returns:
+            str: The identifier of the filter, or "Unknown" if no filter is set.
+        """
         return self.filter.filter_id if self.filter else "Unknown"
 
     @filter_id.setter
@@ -148,7 +256,12 @@ class PhotDM:
 
     @property
     def mag0(self):
-        """Shortcut to get the filter name without digging into the sub-object."""
+        """Gets or sets the zero-point magnitude shortcut.
+
+        Returns:
+            astropy.units.Quantity or float: The zero-point magnitude of the calibration,
+                or 0.0 if no calibration is set.
+        """
         return self.photcal.zp_mag if self.photcal else 0.0
 
     @mag0.setter
@@ -163,7 +276,19 @@ class PhotDM:
 
 
 class CooSys:
+    """Represents a coordinate system reference frame for spatial coordinates.
+
+    Used to model coordinate system metadata.
+    """
+
     def __init__(self, epoch=2016, system='ICRS'):
+        """Initialises a CooSys instance.
+
+        Args:
+            epoch (float or int, optional): The reference epoch of the coordinates.
+                Defaults to 2016.
+            system (str, optional): The reference coordinate system/frame. Defaults to 'ICRS'.
+        """
         self.epoch = epoch
         self.system = system
 
@@ -172,13 +297,33 @@ class CooSys:
 
 
 class TimeSys:
+    """Represents a time system standard for astronomical timing metadata.
+
+    Captures reference position, origin (such as JD0/MJD0 offset), and timescale.
+    """
+
     def __init__(self, refposition='HELIOCENTER', timeorigin=0.0, timescale='UTC'):
+        """Initialises a TimeSys instance.
+
+        Args:
+            refposition (str, optional): Time reference position (e.g., 'HELIOCENTER',
+                'BARYCENTER'). Defaults to 'HELIOCENTER'.
+            timeorigin (float, optional): The origin offset of the time scale, i.e.,
+                the JD0 or MJD0 value. Defaults to 0.0.
+            timescale (str, optional): The timing scale used (e.g., 'UTC', 'TDB', 'TCB').
+                Defaults to 'UTC'.
+        """
         self.refposition = refposition  # HELIOCENTER OR BARYCENTER ...
         self.timeorigin = timeorigin  # JD0, f.e. 2400000.5
         self.timescale = timescale  # UTC, TCB, TBD etc
 
     @property
     def jd0(self):
+        """Gets the reference time origin (JD0 offset).
+
+        Returns:
+            float: The reference time origin value.
+        """
         return self.timeorigin
 
     def __repr__(self):
@@ -186,8 +331,17 @@ class TimeSys:
 
 
 def extract_photdm(tree):
-    """GAVO tree walker for PhotCal groups
-    Note: This is DACHS phot-0 (with my adding) -specific
+    """GAVO tree walker for PhotCal groups.
+
+    Traverses the VOTable tree parsed by GAVO to find and extract photometric
+    calibration groups and filters associated with specific columns.
+    Note: This is DACHS phot-0 specific (with custom extensions).
+
+    Args:
+        tree: The GAVO VOTable tree node/element to parse.
+
+    Returns:
+        dict: A mapping of target column references (strings) to PhotDM instances.
     """
     id_map = {}
 
@@ -269,7 +423,17 @@ def extract_photdm(tree):
 
 
 def extract_timesys(tree):
-    """GAVO tree walker for TIMESYS."""
+    """GAVO tree walker for TIMESYS metadata.
+
+    Traverses the GAVO VOTable tree to locate the TIMESYS element and extract
+    time coordinate standard metadata, such as time origin, timescale, and reference position.
+
+    Args:
+        tree: The GAVO VOTable tree node/element to parse.
+
+    Returns:
+        TimeSys: The populated TimeSys metadata container instance.
+    """
     data = {'timeorigin': 0.0, 'timescale': 'UTC', 'refposition': 'HELIOCENTER'}
 
     def find_ts(node, text, attrs, childIter):
@@ -285,7 +449,15 @@ def extract_timesys(tree):
 
 
 def find_columns_by_ucd(table, ucd_fragment):
-    """Returns a list of all column names containing the UCD fragment."""
+    """Retrieves all column names from an Astropy table that contain the specified UCD fragment.
+
+    Args:
+        table (astropy.table.Table): The table to search.
+        ucd_fragment (str): The Unified Content Descriptor (UCD) substring/fragment to look for.
+
+    Returns:
+        list of str: A list of column names containing the given UCD fragment in their metadata.
+    """
     matches = []
     for colname in table.colnames:
         col_ucd = table[colname].info.meta.get('ucd', '') if table[colname].info.meta else ''
@@ -295,32 +467,85 @@ def find_columns_by_ucd(table, ucd_fragment):
 
 
 def get_time_colnames(table):
+    """Retrieves names of columns containing time epoch data from the table.
+
+    Args:
+        table (astropy.table.Table): The table to search.
+
+    Returns:
+        list of str: Column names matching time epoch UCDs (e.g., 'time.epoch').
+    """
     return find_columns_by_ucd(table, 'time.epoch')
 
 
 def get_mag_colnames(table):
+    """Retrieves names of columns containing primary magnitudes from the table, excluding error columns.
+
+    Args:
+        table (astropy.table.Table): The table to search.
+
+    Returns:
+        list of str: Column names matching magnitude UCDs (e.g., 'phot.mag') that do not represent errors.
+    """
     # Returns primary magnitudes, excludes errors
     all_mags = find_columns_by_ucd(table, 'phot.mag')
     return [c for c in all_mags if 'stat.error' not in table[c].info.meta.get('ucd', '')]
 
 
 def get_flux_colnames(table):
+    """Retrieves names of columns containing primary fluxes from the table, excluding error columns.
+
+    Args:
+        table (astropy.table.Table): The table to search.
+
+    Returns:
+        list of str: Column names matching flux UCDs (e.g., 'phot.flux') that do not represent errors.
+    """
     all_flux = find_columns_by_ucd(table, 'phot.flux')
     return [c for c in all_flux if 'stat.error' not in table[c].info.meta.get('ucd', '')]
 
 
 def is_mag_column(table: Table, colname: str | None):
+    """Checks whether the specified column in the table is a magnitude column.
+
+    Args:
+        table (astropy.table.Table): The table containing the column.
+        colname (str, optional): The column name to check.
+
+    Returns:
+        bool: True if the column is a magnitude column, False otherwise or if colname is None.
+    """
     if colname is None: return False
     return 'phot.mag' in table[colname].info.meta.get('ucd', '')
 
 
 def is_flux_column(table: Table, colname: str | None):
+    """Checks whether the specified column in the table is a flux column.
+
+    Args:
+        table (astropy.table.Table): The table containing the column.
+        colname (str, optional): The column name to check.
+
+    Returns:
+        bool: True if the column is a flux column, False otherwise or if colname is None.
+    """
     if colname is None: return False
     return 'phot.flux' in table[colname].info.meta.get('ucd', '')
 
 
 def get_error_colnames(table, base_ucd=None):
-    """Finds error columns. If base_ucd provided (e.g. phot.mag), finds specific errors."""
+    """Retrieves names of columns containing statistical errors from the table.
+
+    If a base UCD is specified, narrows down to error columns associated with that base UCD.
+
+    Args:
+        table (astropy.table.Table): The table to search.
+        base_ucd (str, optional): The base UCD (e.g., 'phot.mag', 'phot.flux') to filter errors by.
+            Defaults to None.
+
+    Returns:
+        list of str: Column names matching the statistical error UCD and optional base UCD.
+    """
     errors = find_columns_by_ucd(table, 'stat.error')
     if base_ucd:
         return [c for c in errors if base_ucd in table[c].info.meta.get('ucd', '')]
@@ -328,7 +553,17 @@ def get_error_colnames(table, base_ucd=None):
 
 
 def _promote_to_vo_standards(table):
-    """Heuristically assign UCD/Units based on names (NO RENAMING)."""
+    """Heuristically assigns Unified Content Descriptors (UCDs) and physical units to table columns.
+
+    This function scans column names for common patterns (e.g., 'mag', 'flux', 'time')
+    and assigns appropriate Astropy units and UCD metadata values without renaming columns.
+
+    Args:
+        table (astropy.table.Table): The table to process.
+
+    Returns:
+        astropy.table.Table: The table with updated column units and UCD metadata.
+    """
     for colname in table.colnames:
         col = table[colname]
         name_low = colname.lower()
@@ -358,6 +593,16 @@ def _promote_to_vo_standards(table):
 
 
 def _pickup_jd0_from_table(table):
+    """Parses metadata comments to locate the time origin value (JD0).
+
+    Searches the table comments for patterns like "JD0 = value".
+
+    Args:
+        table (astropy.table.Table): The table to scan.
+
+    Returns:
+        float: The parsed JD0 value if found, or 0.0 otherwise.
+    """
     jd0_pattern = re.compile(r"JD0\s*=\s*([+-]?\d*\.?\d+)")
     for line in table.meta.get('comments', []):
         match = jd0_pattern.search(line.upper())
@@ -366,6 +611,16 @@ def _pickup_jd0_from_table(table):
 
 
 def _pickup_mag0_from_table(table):
+    """Parses metadata comments to locate the reference magnitude zero point (MAG0).
+
+    Searches the table comments for patterns like "MAG0 = value".
+
+    Args:
+        table (astropy.table.Table): The table to scan.
+
+    Returns:
+        float: The parsed MAG0 value if found, or 0.0 otherwise.
+    """
     jd0_pattern = re.compile(r"MAG0\s*=\s*([+-]?\d*\.?\d+)")
     for line in table.meta.get('comments', []):
         match = jd0_pattern.search(line.upper())
@@ -374,9 +629,15 @@ def _pickup_mag0_from_table(table):
 
 
 def _pickup_filter_from_table(table):
-    """
-    Scans the table comments for filter/band identification.
-    Matches patterns like: FILTER=Gaia_G.v2 or BAND = r
+    """Scans the table comments for filter/band identification.
+
+    Matches comments containing patterns like: FILTER=Gaia_G.v2 or BAND = r.
+
+    Args:
+        table (astropy.table.Table): The table to scan.
+
+    Returns:
+        str: The extracted filter name or identifier if found, otherwise "Unknown".
     """
     # Matches alphanumeric, dots, underscores, and dashes after the '='
     filter_pattern = re.compile(r"(?:FILTER|BAND)\s*=\s*([\w\.\-]+)")
@@ -393,10 +654,17 @@ def _pickup_filter_from_table(table):
 
 
 def _recover_lc_colnames(table):
-    """
-    Strictly renames columns for 'colN' tables based on comments or position.
-    Requirement: A comment line must have exactly the same number of words
-    as the table has columns to be considered a valid header.
+    """Strictly renames columns for unlabelled 'colN' tables based on comments or positional fallback.
+
+    Requires a comment line to have exactly the same number of whitespace-separated 
+    words as the table has columns to be considered a valid header. Otherwise, applies 
+    a rigid positional fallback: column 1 becomes 'obs_time', column 2 'mag', column 3 'mag_err'.
+
+    Args:
+        table (astropy.table.Table): The table whose columns are to be renamed.
+
+    Returns:
+        astropy.table.Table: The renamed table.
     """
     comments = table.meta.get('comments', [])
     num_cols = len(table.colnames)
@@ -433,7 +701,20 @@ def _recover_lc_colnames(table):
 
 
 class VOLightCurve:
+    """Represents a Virtual Observatory (VO) lightcurve container.
+
+    Encapulates an Astropy Table containing timing and photometric observations,
+    along with associated coordinate system, time system, and photometric calibration
+    metadata mapped to specific columns. It supports files in both VOTable and ASCII
+    heuristic formats.
+    """
+
     def __init__(self, file_path):
+        """Initialises a VOLightCurve instance and ingests the specified data file.
+
+        Args:
+            file_path (str or file-like object): Path to the input file or an active file-like stream.
+        """
         self.file_path = file_path
         self.table = None
         self.timesys = TimeSys()
@@ -443,7 +724,16 @@ class VOLightCurve:
         self._ingest(file_path)
 
     def _ingest(self, file_path):
-        """Main ingestion flow."""
+        """Main ingestion flow that loads and processes the input file.
+
+        Attempts to load the file as a standard VOTable first. If that succeeds, parses TimeSys
+        and PhotDM metadata using GAVO tree walkers. If the file is not a valid VOTable, it
+        attempts to read it as a standard tabular file, falling back to ASCII parsing and
+        heuristic column recovery based on comments/position.
+
+        Args:
+            file_path (str or file-like object): Path to the input file or an active file-like stream.
+        """
         try:
             if is_votable(file_path):
                 # The best track:
@@ -513,13 +803,30 @@ class VOLightCurve:
         return f"<VOLightCurve: {len(self.table)} rows, {len(self.photdms)} PhotCals, jd0={self.jd0}>"
 
     def __getitem__(self, key):
+        """Allows row/column indexing directly on the underlying Astropy Table.
+
+        Args:
+            key (str or int or slice): Key to access columns or rows in the table.
+
+        Returns:
+            astropy.table.Column or astropy.table.Row or astropy.table.Table: The requested data.
+        """
         return self.table[key]
 
     def __getattr__(self, name):
-        """
-        Allows lc.colnames, lc.meta, lc.row_groups, etc.
-        If the attribute isn't found in VOLightCurve,
-        Python will look for it in self.table.
+        """Allows direct attribute access delegate to the underlying Astropy Table.
+
+        This enables accessing table properties such as 'colnames', 'meta', 'row_groups', etc.
+        directly on the VOLightCurve instance.
+
+        Args:
+            name (str): The name of the attribute.
+
+        Returns:
+            Any: The attribute value from the underlying table.
+
+        Raises:
+            AttributeError: If 'table' is not yet initialized or the attribute is not found.
         """
         # Avoid infinite recursion if table isn't initialized yet
         if name == "table":
@@ -531,19 +838,37 @@ class VOLightCurve:
             raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
     def __len__(self):
-        """Allows len(lc) to return the number of rows"""
+        """Returns the number of rows in the underlying table.
+
+        Returns:
+            int: The row count of the table.
+        """
         return len(self.table)
 
     @property
     def jd0(self):
+        """Gets the reference time origin (JD0) from the time system metadata.
+
+        Returns:
+            float: The reference time origin value.
+        """
         # Yes, I realise that I ought to have a set of timesys connected to time columns,
         # but I'm too lazy to implement this (yet)
         return self.timesys.jd0
 
     def add_flux_column_from_mag(self, mag_col_name, new_col_name=None):
-        """
-        Takes a magnitude column, finds its PhotCal,
-        and adds a new flux column. A unit of the new flux is specified by photCal zp_flux unit
+        """Generates and adds a new flux column converted from the specified magnitude column.
+
+        Retrieves the associated PhotCal calibration and performs a unit-safe conversion to 
+        physical flux density. If no calibration is available, fills the new column with NaN values.
+
+        Args:
+            mag_col_name (str): The name of the source magnitude column in the table.
+            new_col_name (str, optional): The name for the newly created flux column. 
+                Defaults to None (which yields 'flux_from_<mag_col_name>').
+
+        Returns:
+            str: The name of the newly added flux column.
         """
 
         colname_out = new_col_name or f"flux_from_{mag_col_name}"
@@ -580,6 +905,19 @@ class VOLightCurve:
         return colname_out
 
     def add_mag_column_from_flux(self, flux_col_name, new_col_name='mag_from_flux'):
+        """Generates and adds a new magnitude column converted from the specified flux column.
+
+        Retrieves the associated PhotCal calibration and performs a unit-safe conversion to 
+        astronomical magnitudes. If no calibration is available, fills the new column with NaN values.
+
+        Args:
+            flux_col_name (str): The name of the source flux column in the table.
+            new_col_name (str, optional): The name for the newly created magnitude column. 
+                Defaults to 'mag_from_flux' (or 'mag_from_<flux_col_name>' if none provided).
+
+        Returns:
+            str: The name of the newly added magnitude column.
+        """
         colname_out = new_col_name or f"mag_from_{flux_col_name}"
         photdm = self.photdms.get(flux_col_name, None)
 
@@ -608,28 +946,364 @@ class VOLightCurve:
         return colname_out
 
     def get_time_colnames(self):
+        """Retrieves list of table column names containing time data.
+
+        Returns:
+            list of str: Column names associated with time coordinate standards.
+        """
         return get_time_colnames(self.table)
 
     def get_mag_colnames(self):
+        """Retrieves list of table column names containing primary magnitudes.
+
+        Returns:
+            list of str: Column names containing magnitude data.
+        """
         return get_mag_colnames(self.table)
 
     def get_flux_colnames(self):
+        """Retrieves list of table column names containing primary fluxes.
+
+        Returns:
+            list of str: Column names containing flux data.
+        """
         return get_flux_colnames(self.table)
 
     def get_mag_error_colnames(self):
+        """Retrieves list of table column names containing magnitude statistical errors.
+
+        Returns:
+            list of str: Column names representing statistical errors on magnitudes.
+        """
         return get_error_colnames(self.table, base_ucd='phot.mag')
 
     def get_flux_error_colnames(self):
+        """Retrieves list of table column names containing flux statistical errors.
+
+        Returns:
+            list of str: Column names representing statistical errors on fluxes.
+        """
         return get_error_colnames(self.table, base_ucd='phot.flux')
+
+    def write_votable(
+        self,
+        output_stream_or_path,
+        table_name: str,
+        filter_identifier: str,
+        refposition: str = "BARYCENTER",
+        timescale: str = "TCB",
+        timeorigin: float = 2455197.5,
+        votable_description: str | None = None,
+        creator: str | None = None,
+        zero_point_flux: float | None = None,
+        zero_point_flux_unit: str = "Jy",
+        zero_point_ref_mag: float | None = None,
+        zero_point_ref_mag_unit: str = "mag",
+        magnitude_system: str = "Vega",
+        effective_wavelength: float | None = None,
+        effective_wavelength_unit: str = "m",
+        table_description: str | None = None,
+        ra: float | None = None,
+        dec: float | None = None,
+        filter_name: str | None = None,
+        period: float | None = None,
+        epoch: float | None = None,
+        binary: bool = True,
+    ):
+        """Writes this lightcurve to a compliant IVOA VOTable XML file.
+
+        Refer to `write_vo_lightcurve` for detailed argument descriptions.
+        """
+        return write_vo_lightcurve(
+            output_stream_or_path=output_stream_or_path,
+            table_data=self.table,
+            table_name=table_name,
+            filter_identifier=filter_identifier,
+            refposition=refposition,
+            timescale=timescale,
+            timeorigin=timeorigin,
+            votable_description=votable_description,
+            creator=creator,
+            zero_point_flux=zero_point_flux,
+            zero_point_flux_unit=zero_point_flux_unit,
+            zero_point_ref_mag=zero_point_ref_mag,
+            zero_point_ref_mag_unit=zero_point_ref_mag_unit,
+            magnitude_system=magnitude_system,
+            effective_wavelength=effective_wavelength,
+            effective_wavelength_unit=effective_wavelength_unit,
+            table_description=table_description,
+            ra=ra,
+            dec=dec,
+            filter_name=filter_name,
+            period=period,
+            epoch=epoch,
+            binary=binary,
+        )
+
 
 
 def print_col_ucd(lc: VOLightCurve):
+    """Prints the column names, units, and UCD metadata for a given lightcurve.
+
+    Args:
+        lc (VOLightCurve): The lightcurve object whose columns should be printed.
+    """
     for colname in lc.colnames:
         print(f"Col: {colname:10} Unit: {lc[colname].unit} "
               f"UCD: {lc[colname].info.meta.get('ucd', 'None')}")
 
 
+def write_vo_lightcurve(
+    output_stream_or_path,
+    table_data,
+    table_name: str,
+    filter_identifier: str,
+    refposition: str = "BARYCENTER",
+    timescale: str = "TCB",
+    timeorigin: float = 2455197.5,
+    votable_description: str | None = None,
+    creator: str | None = None,
+    zero_point_flux: float | None = None,
+    zero_point_flux_unit: str = "Jy",
+    zero_point_ref_mag: float | None = None,
+    zero_point_ref_mag_unit: str = "mag",
+    magnitude_system: str = "Vega",
+    effective_wavelength: float | None = None,
+    effective_wavelength_unit: str = "m",
+    table_description: str | None = None,
+    ra: float | None = None,
+    dec: float | None = None,
+    filter_name: str | None = None,
+    period: float | None = None,
+    epoch: float | None = None,
+    binary: bool = True,
+):
+    """Writes a lightcurve to a compliant IVOA VOTable (v1.4) XML file/stream.
+
+    This function structures the input table, assigns Standard Unified Content
+    Descriptors (UCDs), links time columns to a `<TIMESYS>` element, groups
+    photometry under a `<GROUP name="photcal">` tag with metadata Parameters,
+    and encodes the output using BINARY base64 or TABLEDATA format.
+
+    Args:
+        output_stream_or_path (str or file-like object): Path or stream to write the output to.
+        table_data (astropy.table.Table or pandas.DataFrame or VOLightCurve or CurveDash):
+            The source lightcurve containing timing and photometry.
+        table_name (str): Value for the `<TABLE name="...">` attribute (Obligatory).
+        filter_identifier (str): Value for the `filterIdentifier` PARAM (Obligatory).
+        refposition (str, optional): Time reference position (e.g. 'BARYCENTER', 'HELIOCENTER').
+            Defaults to "BARYCENTER" (Obligatory).
+        timescale (str, optional): Time scale. Defaults to "TCB" (Optional).
+        timeorigin (float, optional): Time origin/offset. Defaults to 2455197.5 (Optional).
+        votable_description (str, optional): High-level global description. Defaults to None.
+        creator (str, optional): Pipeline or entity creator name. Defaults to None.
+        zero_point_flux (float, optional): Zero point flux value. Defaults to None.
+        zero_point_flux_unit (str, optional): Unit of zeroPointFlux. Defaults to "Jy".
+        zero_point_ref_mag (float, optional): Reference magnitude zero point. Defaults to None.
+        zero_point_ref_mag_unit (str, optional): Unit of zeroPointReferenceMagnitude. Defaults to "mag".
+        magnitude_system (str, optional): Type of magnitude system. Defaults to "Vega".
+        effective_wavelength (float, optional): Effective wavelength value. Defaults to None.
+        effective_wavelength_unit (str, optional): Unit of effectiveWavelength. Defaults to "m".
+        table_description (str, optional): Table block description. Defaults to None.
+        ra (float, optional): RA of target in degrees. Defaults to None.
+        dec (float, optional): Dec of target in degrees. Defaults to None.
+        filter_name (str, optional): Generic filter/band name to write as a Table Param. Defaults to None.
+        period (float, optional): Variability period in days. Defaults to None.
+        epoch (float, optional): Reference time epoch in days. Defaults to None.
+        binary (bool, optional): If True, encodes table data in BINARY format.
+            If False, encodes in TABLEDATA XML format. Defaults to True.
+    """
+    import astropy.io.votable as vot
+    from astropy.io.votable.tree import Group, Param, Info, FieldRef, TimeSys
+    import pandas as pd
+
+    # Extract astropy Table
+    if isinstance(table_data, Table):
+        t = table_data.copy()
+    elif hasattr(table_data, 'table') and isinstance(table_data.table, Table):
+        t = table_data.table.copy()
+    elif hasattr(table_data, 'lightcurve') and isinstance(table_data.lightcurve, pd.DataFrame):
+        t = Table.from_pandas(table_data.lightcurve)
+    elif isinstance(table_data, pd.DataFrame):
+        t = Table.from_pandas(table_data)
+    else:
+        t = Table(table_data)
+
+    # Heuristic/Positional detection and mapping of columns to standardized names
+    time_col = None
+    for name in ['obs_time', 'time', 'jd', 'mjd']:
+        if name in t.colnames:
+            time_col = name
+            break
+    flux_col = None
+    for name in ['phot', 'flux', 'mag']:
+        if name in t.colnames:
+            flux_col = name
+            break
+    err_col = None
+    for name in ['flux_error', 'flux_err', 'mag_err', 'error', 'err']:
+        if name in t.colnames:
+            err_col = name
+            break
+
+    if time_col and time_col != 'obs_time':
+        t.rename_column(time_col, 'obs_time')
+    if flux_col and flux_col != 'phot':
+        t.rename_column(flux_col, 'phot')
+    if err_col and err_col != 'flux_error':
+        t.rename_column(err_col, 'flux_error')
+
+    # Positional fallback if names don't map
+    if 'obs_time' not in t.colnames:
+        if len(t.colnames) > 0:
+            t.rename_column(t.colnames[0], 'obs_time')
+        else:
+            raise ValueError("Table data must contain a time column.")
+    if 'phot' not in t.colnames:
+        if len(t.colnames) > 1:
+            t.rename_column(t.colnames[1], 'phot')
+        else:
+            raise ValueError("Table data must contain a photometry (flux/magnitude) column.")
+    if 'flux_error' not in t.colnames and len(t.colnames) > 2:
+        t.rename_column(t.colnames[2], 'flux_error')
+
+    # Construct the strictly defined output table containing only standard columns
+    t_out = Table()
+    t_out['obs_time'] = t['obs_time']
+    t_out['phot'] = t['phot']
+    if 'flux_error' in t.colnames:
+        t_out['flux_error'] = t['flux_error']
+
+    # Convert to VOTableFile structure
+    vot_file = vot.from_table(t_out)
+    vot_file.version = '1.4'
+    if votable_description:
+        vot_file.description = votable_description
+
+    res = vot_file.resources[0]
+    tab = res.tables[0]
+    tab.name = table_name
+    if table_description:
+        tab.description = table_description
+
+    # Add creator info if provided
+    if creator:
+        info = Info(name='creator', value=creator)
+        info.ucd = 'meta.bib.author'
+        info.content = 'Pipeline or contributing resource creator'
+        res.infos.append(info)
+
+    # Add TimeSys metadata element
+    ts = TimeSys(
+        ID='ts',
+        refposition=refposition,
+        timescale=timescale,
+        timeorigin=str(timeorigin),
+        config={'version_1_4_or_later': True}
+    )
+    res.time_systems.append(ts)
+
+    # Standardize Table Fields and cross-link with systems
+    for f in tab.fields:
+        if f.name == 'obs_time':
+            f.ID = 'obs_time'
+            f.ucd = 'time.epoch'
+            f.unit = 'd'
+            f.ref = 'ts'
+            f.description = 'Time'
+        elif f.name == 'phot':
+            f.ID = 'phot'
+            f.ucd = 'phot.flux;em.opt'
+            f.unit = str(t_out['phot'].unit or 's**-1')
+            f.ref = 'phot_def'
+            f.description = 'Photometry (flux or magnitude)'
+        elif f.name == 'flux_error':
+            f.ID = 'flux_error'
+            f.ucd = 'stat.error;phot.flux;em.opt'
+            f.unit = str(t_out['flux_error'].unit or 's**-1')
+            f.description = 'Statistical uncertainty of photometry'
+
+    # Add GROUP ID="phot_def" name="photcal"
+    g = Group(vot_file, ID='phot_def', name='photcal')
+
+    # filterIdentifier (Obligatory PARAM)
+    p_fid = Param(vot_file, name='filterIdentifier', value=filter_identifier, datatype='char', arraysize='*')
+    p_fid.utype = 'photDM:PhotometryFilter.identifier'
+    p_fid.ucd = 'meta.id;instr.filter'
+    g.entries.append(p_fid)
+
+    # zeroPointFlux (Optional PARAM)
+    if zero_point_flux is not None:
+        p_zpf = Param(vot_file, name='zeroPointFlux', value=float(zero_point_flux), datatype='double', unit=zero_point_flux_unit)
+        p_zpf.utype = 'photDM:PhotCal.zeroPoint.flux.value'
+        p_zpf.ucd = 'phot.flux;arith.zp'
+        g.entries.append(p_zpf)
+
+    # zeroPointReferenceMagnitude (Optional PARAM)
+    if zero_point_ref_mag is not None:
+        p_zpm = Param(vot_file, name='zeroPointReferenceMagnitude', value=float(zero_point_ref_mag), datatype='double', unit=zero_point_ref_mag_unit)
+        p_zpm.utype = 'photDM:PhotCal.zeroPoint.referenceMagnitude.value'
+        p_zpm.ucd = 'phot.mag;arith.zp'
+        g.entries.append(p_zpm)
+
+    # magnitudeSystem (PARAM with default "Vega")
+    p_mgs = Param(vot_file, name='magnitudeSystem', value=magnitude_system, datatype='char', arraysize='*')
+    p_mgs.utype = 'photDM:PhotCal.magnitudeSystem.type'
+    p_mgs.ucd = 'meta.code'
+    g.entries.append(p_mgs)
+
+    # effectiveWavelength (Optional PARAM)
+    if effective_wavelength is not None:
+        p_wl = Param(vot_file, name='effectiveWavelength', value=float(effective_wavelength), datatype='double', unit=effective_wavelength_unit)
+        p_wl.utype = 'photDM:PhotometryFilter.spectralLocation.value'
+        p_wl.ucd = 'em.wl.effective'
+        g.entries.append(p_wl)
+
+    # FieldRef linking GROUP back to the phot column
+    fref = FieldRef(vot_file, ref='phot', utype='adhoc:location', config={'version_1_2_or_later': True})
+    g.entries.append(fref)
+
+    res.groups.append(g)
+
+    # Table-level optional metadata PARAMs
+    if ra is not None:
+        p_ra = Param(vot_file, name='ra', value=float(ra), datatype='double')
+        p_ra.ucd = 'pos.eq.ra'
+        p_ra.description = 'RA of source object'
+        tab.params.append(p_ra)
+
+    if dec is not None:
+        p_dec = Param(vot_file, name='dec', value=float(dec), datatype='double')
+        p_dec.ucd = 'pos.eq.dec'
+        p_dec.description = 'Dec of source object'
+        tab.params.append(p_dec)
+
+    if filter_name is not None:
+        p_filt = Param(vot_file, name='filter', value=str(filter_name), datatype='char', arraysize='*')
+        p_filt.ucd = 'meta.id;instr.filter'
+        p_filt.description = 'Photometric filter name'
+        tab.params.append(p_filt)
+
+    if period is not None:
+        p_per = Param(vot_file, name='period', value=float(period), datatype='double', unit='d')
+        p_per.ucd = 'src.var;time.period'
+        p_per.description = 'Period of the variable star'
+        tab.params.append(p_per)
+
+    if epoch is not None:
+        p_ep = Param(vot_file, name='epoch', value=float(epoch), datatype='double', unit='d')
+        p_ep.ucd = 'time.epoch'
+        p_ep.description = 'Reference time'
+        tab.params.append(p_ep)
+
+    # Write to target path or stream
+    tabledata_format = 'binary' if binary else 'tabledata'
+    vot_file.to_xml(output_stream_or_path, tabledata_format=tabledata_format)
+
+
+
 def main():
+    """Main execution block to test and demonstrate ingestion and conversion functionality."""
     for filename in [
         # 'data/lc_tess_HD182144_TIC_406949643_sector__40_author__SPOC_methods__pdcsap.vot',
         'data/lc_tess_HD182144_TIC_406949643_sector__40_author__SPOC_methods__pdcsap.ecsv'

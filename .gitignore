@@ -34,3 +34,7 @@ Thumbs.db
 # Project-specific ignores
 third_party/
 skypatrol/
+
+# Results
+docs/test_binary_output.vot
+docs/test_plain_output.vot

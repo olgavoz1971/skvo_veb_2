@@ -1,3 +1,10 @@
+"""Lightcurve Data Storage, Serialisation, and Processing Utility.
+
+This module provides the `CurveDash` class, which handles astronomical lightcurve data.
+It facilitates ingestion, storage, serialisation, and restoration of lightcurves along with
+their associated physical units, zero-point calibrations, and metadata.
+"""
+
 import logging
 from os import getenv
 logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
@@ -23,6 +30,16 @@ fill_nans = 'median'
 
 
 def astropy_init(unit_str: str):
+    """Initialises an Astropy Unit from a string representation.
+
+    If the provided unit string is empty or invalid, returns a dimensionless unit.
+
+    Args:
+        unit_str (str): The string representing the physical unit.
+
+    Returns:
+        astropy.units.Unit: The initialised Astropy Unit object.
+    """
     if not unit_str:
         return u.Unit()
     try:
@@ -32,9 +49,10 @@ def astropy_init(unit_str: str):
 
 
 class CurveDash:
-    """
-    Class deals with lightcurve data. It stores, saves, serializes and restores lightcurves with units
-    and related metadata. Lightcurve is stored as pandas.DataFrame
+    """Deals with astronomical lightcurve data and related metadata.
+
+    This class stores, saves, serialises, and restores lightcurves with physical units
+    and related metadata. The lightcurve itself is represented internally as a pandas DataFrame.
     """
 
     _format_dict_bytes = {
@@ -92,16 +110,44 @@ class CurveDash:
                  period: float | None = None, period_unit: str = 'd',
                  epoch: float | None = jd0,
                  cross_ident=None, folded_view=0, mag_view=0):
-        """
-        Initializes an instance of the class, allowing the creation of a lightcurve
-        directly from lists of time (jd) and flux values. The initialized
-        object will have a lightcurve attribute defined as a Pandas DataFrame
+        """Initialises an instance of the CurveDash class.
 
-        :param jd: A column of Julian dates representing time points of the lightcurve.
-            Only used if `js_lightcurve` is not provided.
-        :param flux: A column of flux values corresponding to the Julian dates in `jd`.
-            Only used if `js_lightcurve` is not provided.
-        :param label: an array of uint8 values to mark groups of points (foe example TESS sectors)
+        Allows the creation of a lightcurve directly from lists of time (jd) and
+        flux values. The initialised object contains a lightcurve attribute
+        defined as a pandas DataFrame and a metadata dictionary.
+
+        Args:
+            jd (array-like, optional): A column of Julian dates representing time points
+                of the lightcurve. Defaults to None.
+            flux (array-like, optional): A column of flux values corresponding to the
+                Julian dates in `jd`. Defaults to None.
+            flux_err (array-like, optional): An array of statistical uncertainties for the
+                flux values. Defaults to None.
+            label (array-like, optional): An array of uint8 values to mark groups of points
+                (for example, TESS sectors). Defaults to None.
+            flux_correction (str, optional): Type of flux correction applied. Defaults to None.
+            zero_point (float, optional): Zero point for magnitude calculation. Defaults to 0.0.
+            name (str, optional): Target object name. Defaults to ''.
+            lookup_name (str, optional): Alternative name used to lookup the target. Defaults to None.
+            gaia_id (int or str, optional): Gaia DR3 identifier. Defaults to None.
+            title (str, optional): Custom title for plotting or display. Defaults to ''.
+            band (str, optional): Photometric band. Defaults to ''.
+            time_unit (str, optional): Unit of time data. Defaults to ''.
+            flux_unit (str, optional): Unit of flux data. Defaults to ''.
+            timescale (str, optional): Time scale, e.g., an Astropy time scale or 'hjd' for
+                Heliocentric Julian date. Defaults to None.
+            period (float, optional): Rotation or pulsation period. Defaults to None.
+            period_unit (str, optional): Unit of the period (e.g., 'd'). Defaults to 'd'.
+            epoch (float, optional): Epoch reference time. Defaults to jd0.
+            cross_ident (any, optional): Cross identifiers. Defaults to None.
+            folded_view (int, optional): View flag indicating if the folded view is active.
+                Defaults to 0.
+            mag_view (int, optional): View flag indicating if the magnitude view is active.
+                Defaults to 0.
+
+        Raises:
+            PipeException: If the lengths of the flux and flux_err arrays differ,
+                or if the lengths of the label and flux arrays differ.
         """
 
         if epoch is None:
@@ -167,11 +213,18 @@ class CurveDash:
 
     @classmethod
     def from_serialized(cls, serialized: str):
-        """
-        Initializes an instance of the class, allowing the recreation of a lightcurve from a
-        JSON string. This is useful for restoring an object from dcc.Store data
-        :param serialized: A JSON string representation of the lightcurve data.
-        :type serialized: str
+        """Initialises an instance of the class from a serialised JSON string.
+
+        This is useful for restoring a CurveDash object from dcc.Store data.
+
+        Args:
+            serialized (str): A JSON string representation of the lightcurve data.
+
+        Returns:
+            CurveDash: The deserialised CurveDash instance (can be empty if input is empty).
+
+        Raises:
+            PipeException: If the serialised data is inconsistent or parsing fails.
         """
         try:
             self = cls()
@@ -190,6 +243,21 @@ class CurveDash:
 
     @staticmethod
     def _read_table(file_obj: io.BytesIO, extension: str) -> Table:
+        """Reads an astronomical table from a binary file-like object using heuristics.
+
+        Attempts to determine the format based on the extension and tries multiple
+        formats as fallbacks if the primary one fails.
+
+        Args:
+            file_obj (io.BytesIO): The file stream to read from.
+            extension (str): The file extension used to resolve the expected format.
+
+        Returns:
+            astropy.table.Table: The parsed table.
+
+        Raises:
+            DataStructureException: If unable to determine or parse the table data format.
+        """
         format_by_extension = CurveDash.get_table_format(extension)
         if format_by_extension in CurveDash._json_format_list:
             formats_to_try = [format_by_extension, None, 'ascii.commented_header', 'ascii']  # Order does matter
@@ -213,6 +281,23 @@ class CurveDash:
 
     @classmethod
     def from_file(cls, file_obj: io.BytesIO, extension: str):
+        """Initialises a CurveDash instance by reading from an open file-like stream.
+
+        Supported formats include VOTable, FITS, and various ASCII text formats.
+        The function handles column name resolution for time ('jd' or 'time') and 
+        photometry ('flux' or 'mag' with an assumed zero point fallback).
+
+        Args:
+            file_obj (io.BytesIO): The file stream containing the lightcurve data.
+            extension (str): The file extension indicating the format.
+
+        Returns:
+            CurveDash: The initialised CurveDash instance populated with file data.
+
+        Raises:
+            DataStructureException: If the file is missing required time or photometry
+                columns, or has incorrect data structures.
+        """
         # t = Table.read(file_obj, format=CurveDash.get_table_format(extension))
         t = CurveDash._read_table(file_obj, extension)
         if 'flux' not in t.colnames:
@@ -246,9 +331,13 @@ class CurveDash:
         return self
 
     def serialize(self):
-        """
+        """Serialises the lightcurve data and metadata to a JSON string.
+
         Warning! This serialization approach is used by lightcurve_gaia.py and lightcurve_asassn etc.
-        in JavaScript clientside callbacks, so I don't recommend changing it unless absolutely necessary
+        in JavaScript clientside callbacks, so I don't recommend changing it unless absolutely necessary.
+
+        Returns:
+            str: A JSON string representation of the lightcurve and its metadata.
         """
         if self.lightcurve is None or self.metadata is None:
             return '{}'
@@ -258,6 +347,11 @@ class CurveDash:
 
     @property
     def title(self):
+        """Gets or sets the custom title of the lightcurve.
+
+        Returns:
+            str or None: The title value if metadata is initialised, otherwise None.
+        """
         return self.metadata.get('title') if self.metadata else None
 
     @title.setter
@@ -267,14 +361,29 @@ class CurveDash:
 
     @property
     def name(self):
+        """Gets the target object name.
+
+        Returns:
+            str or None: The target object name, or None if metadata is not set.
+        """
         return self.metadata.get('name') if self.metadata else None
 
     @property
     def lookup_name(self):
+        """Gets the alternative name used to lookup the target.
+
+        Returns:
+            str or None: The alternative lookup name, or None if metadata is not set.
+        """
         return self.metadata.get('lookup_name') if self.metadata else None
 
     @property
     def folded_view(self):
+        """Gets or sets the folded view flag.
+
+        Returns:
+            int or None: The folded view flag, or None if metadata is not set.
+        """
         return self.metadata.get('folded_view') if self.metadata else None
 
     @folded_view.setter
@@ -284,12 +393,22 @@ class CurveDash:
 
     @property
     def flux_correction(self):
+        """Gets the type of flux correction applied.
+
+        Returns:
+            str: The flux correction string, defaulting to an empty string if not set.
+        """
         if self.metadata is not None:
             if self.metadata.get('flux_correction') is not None:
                 return self.metadata.get('flux_correction')
         return ''
 
     def recalc_phase(self):
+        """Recalculates the phase of all data points.
+
+        Uses the current period and epoch stored in the metadata. Recalculated phases
+        are stored in-place in the lightcurve DataFrame.
+        """
         if self.epoch is None:
             self.epoch = jd0
         if self.period is not None and self.epoch is not None:
@@ -299,11 +418,16 @@ class CurveDash:
             self.lightcurve = df
 
     def shift_epoch(self, phi_to_zero: float) -> float:
-        """
-        Calculate the new epoch which brings the phi_to_zero to zero
-        self.period is used to fold the curve
+        """Calculates a new epoch that shifts the specified phase to zero.
 
-        :param phi_to_zero: the phase (usually the phase of the primary minimum) that needs to be shifted to 0
+        The period of this CurveDash instance is used to fold the curve. Usually, the 
+        phase of the primary minimum is shifted to 0.
+
+        Args:
+            phi_to_zero (float): The phase that needs to be shifted to 0 (typically the primary minimum phase).
+
+        Returns:
+            float: The newly computed epoch (Julian Date).
         """
         if self.epoch is None:
             self.epoch = jd0
@@ -312,6 +436,17 @@ class CurveDash:
 
     @staticmethod
     def calc_phase(time_arr, epoch_jd: float | None, period: float | None, period_unit: str):
+        """Calculates phase values for a given array of observation times.
+
+        Args:
+            time_arr (array-like): An array or Series of observation times.
+            epoch_jd (float, optional): The reference epoch Julian Date.
+            period (float, optional): The period value.
+            period_unit (str): The unit of the period (e.g., 'd').
+
+        Returns:
+            array-like: The computed phase values, bounded between 0 and 1.
+        """
         # noinspection PyUnresolvedReferences
         period_day = (period * astropy_init(period_unit)).to(u.day)
         epoch_jd = epoch_jd or 0
@@ -329,42 +464,76 @@ class CurveDash:
 
     @staticmethod
     def get_format_list() -> list[str]:
-        """
-        :return: a list of all supported table formats.
+        """Retrieves a list of all supported table formats.
+
+        Returns:
+            list of str: Supported table format names.
         """
         return list(CurveDash.format_dict.keys())
 
     @staticmethod
     def get_file_extension(table_format: str) -> str:
-        """
-        :return:  File extension corresponding to the table_format, or 'dat' if not found
+        """Determines the file extension corresponding to the given table format.
+
+        Args:
+            table_format (str): The table format name.
+
+        Returns:
+            str: Corresponding file extension, defaulting to 'dat' if not found.
         """
         return CurveDash.format_dict.get(table_format, 'dat')
 
     @staticmethod
     def get_table_format(file_extension: str) -> str:
-        """
-        :return:  Table format corresponding to the file_extension, or None if not found
+        """Determines the table format corresponding to the given file extension.
+
+        Args:
+            file_extension (str): The file extension name.
+
+        Returns:
+            str or None: Corresponding table format, or None if not found.
         """
         return CurveDash.extension_dict.get(file_extension, None)
 
     @staticmethod
     def get_extension_list():
+        """Retrieves a list of all unique file extensions for the supported table formats.
+
+        Returns:
+            list of str: File extension strings.
+        """
         return [CurveDash.get_file_extension(f) for f in CurveDash.get_format_list()]
 
     @property
     def flux(self):
+        """Gets the flux values series from the lightcurve.
+
+        It's important to leave 'is not None' here, because flux is pandas.Series, we can't ask 'if pandas.Series'.
+
+        Returns:
+            pandas.Series or None: The flux values Series, or None if lightcurve is not set.
+        """
         # It's important to leave 'is not None' here, because flux is pandas.Series, we can't ask 'if pandas.Series'
         return self.lightcurve.get('flux') if self.lightcurve is not None else None
 
     @property
     def flux_err(self):
+        """Gets the flux statistical errors series from the lightcurve.
+
+        Returns:
+            pandas.Series or None: The flux errors Series, or None if lightcurve is not set.
+        """
         return self.lightcurve.get('flux_err') if self.lightcurve is not None else None
 
     @property
     def mag(self):
-        """Convert fluxes to magnitudes using the standard formula.
+        """Converts flux values to astronomical magnitudes.
+
+        Uses the standard formula: mag = -2.5 * log10(flux) + zero_point.
         Returns NaN for invalid (non-positive) flux values.
+
+        Returns:
+            pandas.Series or None: The calculated magnitudes Series, or None if lightcurve is not set.
         """
         if self.lightcurve is None:
             return None
@@ -378,9 +547,13 @@ class CurveDash:
 
     @property
     def mag_err(self):
-        """Convert flux errors to magnitude errors using the formula:
-        mag_err = 1.0857 * flux_err / flux
+        """Converts flux errors to magnitude errors.
+
+        Uses the first-order approximation: mag_err = 1.0857 * flux_err / flux.
         Returns NaN where flux is non-positive or either value is missing.
+
+        Returns:
+            pandas.Series or None: The calculated magnitude errors Series, or None if lightcurve is not set.
         """
         if self.lightcurve is None:
             return None
@@ -400,51 +573,99 @@ class CurveDash:
 
     @property
     def jd(self):
+        """Gets the Julian Dates series from the lightcurve.
+
+        Returns:
+            pandas.Series or None: The Julian Dates Series, or None if lightcurve is not set.
+        """
         return self.lightcurve.get('jd') if self.lightcurve is not None else None
 
     @property
     def phase(self):
+        """Gets the phase values series from the lightcurve.
+
+        Returns:
+            pandas.Series or None: The phase Series, or None if lightcurve is not set.
+        """
         return self.lightcurve.get('phase') if self.lightcurve is not None else None
 
     @property
     def label(self):
+        """Gets the label column as a string Series.
+
+        Returns:
+            pandas.Series or None: The labels as string Series, or None if lightcurve is not set.
+        """
         if self.lightcurve is not None and 'label' in self.lightcurve:
             return self.lightcurve['label'].astype(str)
         return None
 
     @property
     def perm_index(self):
-        """
-        Unique identifier of each, protected from cleaning and all kinds of point reordering.
-        It is stored in customdata of the plotly figure
-        :return:
+        """Gets the permanent unique index series of each observation point.
+
+        The permanent index is protected from cleaning and all kinds of point reordering.
+        It is stored in the customdata of the Plotly figure.
+
+        Returns:
+            pandas.Series or None: The permanent index series, or None if lightcurve is not set.
         """
         return self.lightcurve.get('perm_index') if self.lightcurve is not None else None
 
     @property
     def flux_unit(self):
+        """Gets the flux unit string.
+
+        Returns:
+            str: The flux unit string.
+        """
         return self.metadata.get('flux_unit') if self.metadata else ''
 
     @property
     def flux_unit_ap(self):
+        """Gets the convertible Astropy Unit object of the flux.
+
+        Returns:
+            astropy.units.Unit or None: The Astropy Unit if convertible, otherwise None.
+        """
         # return astropy.unit if it is convertable
         return astropy_init(self.metadata.get('flux_unit')) if self.metadata else None
 
     @property
     def time_unit(self):
+        """Gets the time unit string.
+
+        Returns:
+            str or None: The time unit string.
+        """
         return self.metadata.get('time_unit') if self.metadata else None
 
     @property
     def time_unit_ap(self):
+        """Gets the convertible Astropy Unit object of the time.
+
+        Returns:
+            astropy.units.Unit or None: The Astropy Unit if convertible, otherwise None.
+        """
         # return astropy.unit if it is convertable
         return astropy_init(self.metadata.get('time_unit')) if self.metadata else None
 
     @property
     def timescale(self):
+        """Gets the time scale string.
+
+        Returns:
+            str or None: The time scale (e.g., 'UTC', 'TDB', 'hjd'), or None if not set.
+        """
         return self.metadata.get('timescale') if self.metadata else None
 
     @property
     def period(self):
+        """Gets or sets the period value.
+
+        Returns:
+            float or None: The period value, or None if not set.
+        """
         return self.metadata.get('period') if self.metadata is not None else None
 
     @period.setter
@@ -455,6 +676,11 @@ class CurveDash:
 
     @property
     def zero_point(self):
+        """Gets or sets the zero point for magnitude calculations.
+
+        Returns:
+            float or None: The zero point value, or None if not set.
+        """
         return self.metadata.get('zero_point') if self.metadata is not None else None
 
     @zero_point.setter
@@ -464,6 +690,11 @@ class CurveDash:
 
     @property
     def period_unit(self):
+        """Gets or sets the unit of the period.
+
+        Returns:
+            str or None: The unit of the period (e.g., 'd'), or None if not set.
+        """
         return self.metadata.get('period_unit') if self.metadata else None
 
     @period_unit.setter
@@ -474,10 +705,20 @@ class CurveDash:
 
     @property
     def period_unit_ap(self):
+        """Gets the convertible Astropy Unit object of the period.
+
+        Returns:
+            astropy.units.Unit or None: The Astropy Unit if convertible, otherwise None.
+        """
         return astropy_init(self.metadata.get('period_unit')) if self.metadata else None
 
     @property
     def epoch(self):
+        """Gets or sets the epoch reference time.
+
+        Returns:
+            float or None: The epoch reference time, or None if not set.
+        """
         return self.metadata.get('epoch') if self.metadata else None
 
     @epoch.setter
@@ -489,26 +730,43 @@ class CurveDash:
 
     @property
     def gaia_id(self):
+        """Gets the Gaia identifier.
+
+        Returns:
+            str or None: The Gaia identifier as a string, or None if not set.
+        """
         return self.metadata.get('gaia_id') if self.metadata else None
 
     @property
     def band(self):
+        """Gets the photometric band name.
+
+        Returns:
+            str or None: The band name (e.g., 'G', 'BP', 'RP'), or None if not set.
+        """
         return self.metadata.get('band') if self.metadata else None
 
     def find_phase_of_min_simple(self):
-        """
-        First, robust version
-        :return:phase of the folded light curve minimum
+        """Finds the phase of the folded lightcurve minimum using a robust, direct minimum search.
+
+        First, robust version.
+
+        Returns:
+            float: Phase of the folded lightcurve minimum.
         """
         self.recalc_phase()
         phase_of_min = self.lightcurve['phase'][np.argmin(self.lightcurve['flux'])]
         return phase_of_min
 
     def find_phase_of_min_gauss(self):
-        """
-        Fine version. Fir Gaussian in the surroundings of minimum (initial guess);
-        Thanks to Maxim Gabdeev
-        :return:phase of the folded light curve minimum
+        """Finds the phase of the folded lightcurve minimum by fitting a Gaussian to the primary minimum.
+
+        Fits a Gaussian model to the surroundings of the initial minimum guess.
+        Handles phase wrapping/shifting to keep the minimum within [0.2, 0.8] for a continuous fit.
+        Thanks to Maxim Gabdeev.
+
+        Returns:
+            float or None: Phase of the folded lightcurve minimum, or None if fitting fails.
         """
         from scipy.optimize import curve_fit
 
@@ -554,30 +812,40 @@ class CurveDash:
 
     # todo: Rewrite the following methods in JavaScript
     def cut(self, left_border, right_border):
-        """
-        Remove a piece of lightcurve between  left_border and right_border along the time axis
-        :param left_border: start_time
-        :param right_border: end_time
+        """Removes a piece of the lightcurve between the specified left and right borders along the time axis.
+
+        Args:
+            left_border (float): The start time (Julian Date) of the segment to remove.
+            right_border (float): The end time (Julian Date) of the segment to remove.
         """
         df = self.lightcurve
         self.lightcurve = df[(df['jd'] < left_border) | (df['jd'] > right_border)]
 
     def keep(self, left_border, right_border):
-        """
-        Keep only a piece of lightcurve (remove the rest) between left_border and right_border along the time axis
-        :param left_border: start_time
-        :param right_border: end_time
+        """Keeps only the segment of the lightcurve between the specified left and right borders, removing the rest.
+
+        Args:
+            left_border (float): The start time (Julian Date) of the segment to keep.
+            right_border (float): The end time (Julian Date) of the segment to keep.
         """
         df = self.lightcurve
         self.lightcurve = df[(df['jd'] >= left_border) & (df['jd'] <= right_border)]
 
     def download(self, table_format='ascii.ecsv') -> bytes:
-        """
-        Write astropy Table into some string. The io.StringIO or io.BytesIO mimics the output file for Table.write()
-        The specific IO type depends on the desirable output format, i.e., on the writer type:
-        astropy.io.ascii.write, astropy.io.fits.write, astropy.io.votable.write
-        We use BytesIO for binary format (including xml-type votable, Yes!) and StringIO for the text formats.
-        If you know the better way, please tell me
+        """Serialises and exports the lightcurve to a byte string of the specified format.
+
+        Supported formats include 'ascii.ecsv', 'votable', 'fits', and other ASCII table formats.
+        Uses io.StringIO or io.BytesIO to write the Astropy table to memory.
+        If you know a better way, please tell me.
+
+        Args:
+            table_format (str, optional): The target file format for export. Defaults to 'ascii.ecsv'.
+
+        Returns:
+            bytes: The serialised table as a UTF-8 encoded byte string.
+
+        Raises:
+            PipeException: If the lightcurve is empty or the requested table_format is unsupported.
         """
         import io
         if self.lightcurve is None:
@@ -618,6 +886,14 @@ class CurveDash:
         return my_weird_string
 
     def append(self, other: "CurveDash") -> None:
+        """Appends another CurveDash instance's lightcurve observations to this instance.
+
+        Args:
+            other (CurveDash): The other lightcurve container to append.
+
+        Raises:
+            TypeError: If the input object is not an instance of CurveDash.
+        """
         # todo: append title
         if not isinstance(other, CurveDash):
             raise TypeError("The input object must be an instance of CurveDash.")

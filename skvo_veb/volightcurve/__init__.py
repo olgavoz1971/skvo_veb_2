@@ -1,7 +1,15 @@
+"""Virtual Observatory (VO) Lightcurve Processing Package.
+
+This package provides a comprehensive data model and parser for lightcurves, supporting
+standard VOTable files as well as heuristic ASCII text formats. It maps columns to
+astronomical concepts like coordinate systems, time systems, and photometric calibrations.
+"""
+
 from .lightcurve import *
 
 __all__ = [
     "VOLightCurve",
+    "write_vo_lightcurve",
     "find_columns_by_ucd",
     "get_time_colnames",
     "get_mag_colnames",

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.5" xsi:schemaLocation="http://www.ivoa.net/xml/VOTable/v1.3 http://vo.ari.uni-heidelberg.de/docs/schemata/VOTable.xsd">
+  <DESCRIPTION>
+  Placeholder for concise description how the lightcurve was built. Obligatory information: Sector, pipeline ("author"), method -- SAP or PCSAP
+  TESS lightcurve of bla-bla-bla  Placeholder for concise descripton how the lightcurve was built. Obligatory information: Sector, pipeline ("author"), method -- SAP or PDCSAP
+</DESCRIPTION>
+  <RESOURCE>
+    <INFO name="creator" ucd="meta.bib.author" value="PLACEHOLDER for pipeline name">Name of a person or entity that produced a contributing resource</INFO>
+    <TIMESYS ID="ts" refposition="BARYCENTER" timeorigin="2455197.5" timescale="TCB"/>
+    <GROUP ID="phot_def" name="photcal">
+      <PARAM arraysize="*" datatype="char" name="filterIdentifier" ucd="meta.id;instr.filter" utype="photDM:PhotometryFilter.identifier" value="TESS/TESS.Red"/>
+      <PARAM datatype="double" name="zeroPointFlux" ucd="phot.flux;arith.zp" unit="Jy" utype="photDM:PhotCal.zeroPoint.flux.value" value="2632"/>
+      <PARAM datatype="double" name="zeroPointReferenceMagnitude" ucd="phot.mag;arith.zp" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="20.44"/>
+      <PARAM arraysize="*" datatype="char" name="magnitudeSystem" ucd="meta.code" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+      <PARAM datatype="double" name="effectiveWavelength" ucd="em.wl.effective" unit="m" utype="photDM:PhotometryFilter.spectralLocation.value" value="7.45e-7"/>
+      <FIELDref ref="phot" utype="adhoc:location"/>
+    </GROUP>
+    <TABLE name="TESS Lighcurve of my object, probably, TIC number">
+      <DESCRIPTION>TESS Lightcurve in TESS/TESS.Red filter for TIC 12345</DESCRIPTION>
+      <FIELD ID="obs_time" datatype="double" name="obs_time" ref="ts" ucd="time.epoch" unit="d">
+        <DESCRIPTION>Time</DESCRIPTION>
+      </FIELD>
+      <FIELD ID="phot" datatype="double" name="phot" ref="phot_def" ucd="phot.flux;em.opt" unit="s**-1">
+        <DESCRIPTION>TESS instrumental flux in TESS/TESS.Red filter</DESCRIPTION>
+      </FIELD>
+      <FIELD ID="flux_error" datatype="double" name="flux_error" ucd="stat.error;phot.flux;em.opt" unit="s**-1">
+        <DESCRIPTION>Flux error. If the flux has been rejected or is unavailable, this error will be set to null.</DESCRIPTION>
+      </FIELD>
+      <PARAM datatype="double" name="ra" ucd="pos.eq.ra" value="256.69829259274377">
+        <DESCRIPTION>RA of source object</DESCRIPTION>
+      </PARAM>
+      <PARAM datatype="double" name="dec" ucd="pos.eq.dec" value="-54.050170125112125">
+        <DESCRIPTION>Dec of source object</DESCRIPTION>
+      </PARAM>
+      <PARAM arraysize="*" datatype="char" name="filter" ucd="meta.id;instr.filter" value="Gaia G">
+        <DESCRIPTION>Photometric filter name</DESCRIPTION>
+      </PARAM>
+      <PARAM datatype="double" name="period" ucd="src.var;time.period" unit="d" value="4.393273591098073">
+        <DESCRIPTION>Period of the variable star; If provided</DESCRIPTION>
+      </PARAM>
+      <PARAM datatype="double" name="epoch" ucd="time.epoch" unit="d" value="2184.4031973267956">
+        <DESCRIPTION>Reference time if provided</DESCRIPTION>
+      </PARAM>
+      <DATA>
+        <BINARY>
+          <STREAM encoding="base64">encoded stream is here</STREAM>
+        </BINARY>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>
