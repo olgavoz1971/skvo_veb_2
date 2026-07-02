@@ -43,9 +43,21 @@ from skvo_veb.components import message
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
-from skvo_veb.utils.curve_dash import CurveDash, jd0
-from skvo_veb.utils.my_tools import (safe_none, safe_float, PipeException, sanitize_filename,
-                                         positive_float_pattern, float_pattern, positive_integer_pattern)
+from skvo_veb.utils.curve_dash import CurveDash
+from skvo_veb.utils.lc_bridge import volc_to_curvedash, export_curvedash, build_curvedash_title
+from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
+from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
+from skvo_veb.volightcurve import VOLightCurve
+from skvo_veb.utils.my_tools import (
+    safe_none,
+    safe_float,
+    PipeException,
+    sanitize_filename,
+    positive_float_pattern,
+    float_pattern,
+    positive_integer_pattern,
+)
 
 register_page(__name__, name='TESS curve',
               order=4,
@@ -61,7 +73,6 @@ stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 periodogram_option_input_style = {'width': '100%'}
 periodogram_option_label_style = {'width': '14em', 'font-size': label_font_size}
 
-jd0_tess = 2457000  # btjd format. We can use the construction Time(2000, format="btjd", scale="tbd") directly,
 top_periods_number = 50
 
 
@@ -236,10 +247,17 @@ def layout():
                                        style={'width': '100%'})
                         ], open=True, style={'marginBottom': '5px'}),  # Folding
                         dbc.Stack([
-                            dbc.Select(options=CurveDash.get_format_list(),
-                                       value=CurveDash.get_format_list()[0],
-                                       id='select_tess_lc_srv_format',
-                                       style={'width': '40%', 'font-size': label_font_size}),
+                            dbc.Select(
+                                options=[
+                                    {'label': 'VOTable (.vot)', 'value': 'votable'},
+                                    {'label': 'ECSV (.ecsv)', 'value': 'ascii.ecsv'},
+                                    {'label': 'ASCII Commented Header (.dat)', 'value': 'ascii.commented_header'},
+                                    {'label': 'CSV (.csv)', 'value': 'csv'},
+                                ],
+                                value='votable',
+                                id='select_tess_lc_srv_format',
+                                style={'width': '40%', 'font-size': label_font_size}
+                            ),
                             dbc.Button('Download', id='btn_download_tess_lc_srv', size="sm",
                                        style={'width': '60%'}),
                         ], direction='horizontal', gap=2,
@@ -694,131 +712,6 @@ def restore_lc_srv_tabs(user_tab_id):
     return False, 'tess_lc_srv_graph_tab'
 
 
-def create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
-                                 phase_view=False, period=None, epoch=None,
-                                 search_store=None) -> str:
-    # return a serialized CurveDash object
-    if not selected_rows:
-        raise PipeException('Search for the lightcurves first and try again')
-    if isinstance(selected_rows[0], dict):
-        selected_data = selected_rows
-    else:
-        if not table_data:
-            raise PipeException('Search for the lightcurves first and try again')
-        selected_data = [table_data[i] for i in selected_rows]
-
-    full_search = tess_lc_search.restore_search_result(search_store) if search_store else None
-
-    lc_list = []
-    authors = []
-    sectors = []
-    pdc_methods = []
-    flux_origins = []
-
-    for row in selected_data:
-        row_idx = row['#']
-        if full_search is not None:
-            lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row_idx)
-        else:
-            target = f'TIC {row.get("target", None)}'
-            author = row["author"]
-            exptime = row["exptime"]
-            match = re.search(r'Sector (\d+)', row.get('mission', ''))
-            sector = int(match.group(1)) if match else -1
-            args = {
-                'target': target,
-                'author': author,
-                'mission': 'TESS',
-                'sector': sector,
-                'exptime': exptime
-            }
-            search_lcf_refined = cache.load("search_lcf_refined", **args)
-            if search_lcf_refined is None:
-                search_lcf_refined = lk.search_lightcurve(**args)
-                if len(search_lcf_refined) > 0:
-                    cache.save(search_lcf_refined, "search_lcf_refined", **args)
-            repr(search_lcf_refined)
-            lc = lightkurve_cache.download_lightcurve_row_with_recovery(search_lcf_refined, 0)
-
-        if flux_method == 'pdcsap' and 'pdcsap_flux' in lc.columns:
-            lc.flux = lc.pdcsap_flux
-            flux_origin = flux_method
-        elif flux_method == 'sap' and 'sap_flux' in lc.columns:
-            lc.flux = lc.sap_flux
-            flux_origin = flux_method
-        else:
-            flux_origin = lc.FLUX_ORIGIN
-            pass
-
-        sectors.append(str(lc.SECTOR))
-        authors.append(lc.AUTHOR)
-        flux_origins.append(flux_origin)
-        pdc_method = 'NO'
-        try:
-            logging.debug(f'{lc.meta["PDCMETHD"]=}')
-            if 'pdc' in flux_origin:
-                pdc_method = lc.meta["PDCMETHD"]
-        except Exception as e:
-            logging.warning(e)
-        pdc_methods.append(pdc_method)
-
-        lc_list.append(lc)
-
-    if stitch:
-        lkk = lk.LightCurveCollection(lc_list)
-        lc_res = lkk.stitch()
-        jd = lc_res.time.value
-        flux = lc_res.flux.value
-        flux_err = lc_res.flux_err.value
-        sector_array = np.concatenate([
-            np.full(len(lc), lc.SECTOR, dtype=np.uint8)
-            for lc in lc_list
-        ])
-    else:
-        jd = np.array([], dtype=float)
-        flux = np.array([], dtype=float)
-        flux_err = np.array([], dtype=float)
-        sector_array = np.array([], dtype=np.uint8)
-        for lc in lc_list:
-            # flux = np.append(lc.flux.value, flux)
-            flux = np.concatenate([flux, lc.flux.value])
-            # flux_err = np.append(lc.flux_err.value, flux_err)
-            flux_err = np.concatenate([flux_err, lc.flux_err.value])
-            jd = np.concatenate([jd, lc.time.value])
-            sector_array = np.concatenate([sector_array,
-                                           np.full_like(lc.time.value, fill_value=lc.SECTOR, dtype=np.uint8)])
-            # Pandas converts masked values into NaNs in the following code
-
-    # In the following code, we lose the mask, but Pandas converts masked values into NaNs.
-    # And this is ok in most cases, where this is not, I mask NaNs back
-    # I reject the idea of filling them with 0, because later code (e.g., Periodogram) may fail
-    # when zero errors are present.
-
-    time_unit = 'jd'
-    # Add information into lc title
-    if stitch:
-        flux_unit = 'relative flux'
-    else:
-        flux_unit = str(lc_list[0].flux.unit)
-
-    lcd = CurveDash(name=lc_list[0].LABEL, lookup_name=metadata.get('lookup_name', None),
-                    jd=jd + jd0_tess, flux=flux, flux_err=flux_err,
-                    label=sector_array,
-                    time_unit=time_unit, timescale='tdb',
-                    flux_unit=flux_unit,
-                    folded_view=phase_view,
-                    period=period,
-                    epoch=epoch,
-                    period_unit='d')
-    title = (f'{lcd.lookup_name} {lc_list[0].LABEL} sector: {",".join(sectors)} author: {",".join(authors)} '
-             f'methods: {",".join(flux_origins)}')
-    if stitch:
-        title = 'Stitched curve ' + title
-
-    lcd.title = title
-    return lcd.serialize()
-
-
 def _compose_user_key(user_tab_id):
     return f'{user_tab_id}_data'
 
@@ -838,8 +731,10 @@ def extract_data_from_user_cache(user_tab_id):
 
 def plot_lc(js_lightcurve: str, phase_view: bool):
     lcd = CurveDash.from_serialized(js_lightcurve)
-    title = lcd.title
-    flux_unit = lcd.flux_unit
+    title = build_curvedash_title(lcd)
+    phot_unit = lcd.phot_unit
+    y_column = 'mag' if lcd.active_domain == 'mag' else 'flux'
+    y_label = 'magnitude' if lcd.active_domain == 'mag' else 'flux'
 
     if phase_view:
         x = lcd.phase
@@ -850,11 +745,13 @@ def plot_lc(js_lightcurve: str, phase_view: bool):
         x_column = 'jd'
         xaxis_title = f'jd-{jd0}, {safe_none(lcd.time_unit)} {lcd.timescale}'
 
-    df = pd.concat([x, lcd.flux, lcd.label, lcd.perm_index], axis=1)
+    label_series = lcd.lightcurve['label'] if lcd.lightcurve is not None else lcd.label
+    df = pd.concat([x, lcd.phot, label_series, lcd.perm_index], axis=1)
+    df.columns = [x_column, y_column, 'label', 'perm_index']
     fig = px.scatter(df,
                      x=x_column,
-                     y='flux',
-                     color='label',  # <-- assign color by 'label' column
+                     y=y_column,
+                     color='label',
                      custom_data='perm_index')
     fig.update_traces(
         selected={'marker': {'color': 'orange', 'size': 5}},
@@ -871,7 +768,7 @@ def plot_lc(js_lightcurve: str, phase_view: bool):
         legend_title_text='Sector',
         margin=dict(l=0, b=20, t=30, r=20),
         xaxis_title=xaxis_title,
-        yaxis_title=f'flux, {safe_none(flux_unit)}'
+        yaxis_title=f'{y_label}, {safe_none(phot_unit)}'
     )
     # fig = go.Figure()
 
@@ -1161,6 +1058,10 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
         lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
         if lcd.lightcurve is None:
             raise PipeException('periodogram: Please, download curves first')
+        if lcd.active_domain != 'flux' or lcd.flux is None:
+            raise PipeException(
+                'Periodogram requires flux-domain data. Convert the lightcurve to flux first.'
+            )
         kurve = lightkurve.LightCurve(time=lcd.jd, flux=lcd.flux, flux_err=lcd.flux_err)
 
         if method == 'ls':
@@ -1463,29 +1364,25 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
           State('select_tess_lc_srv_format', 'value'),
           prevent_initial_call=True)
 def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format):
-    """
-    Downloads a light curve into a user's computer
-    """
+    """Downloads a light curve to the user's computer via the lc_bridge export layer."""
     if not n_clicks:
         raise PreventUpdate
 
-    # if js_lightcurve is None:
-    #     raise PreventUpdate
     try:
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
-        # bstring is "bytes"
-        file_bstring = lcd.download(table_format)
+        profile = 'tess' if table_format == 'votable' else None
+        file_bstring = export_curvedash(lcd, table_format, profile=profile)
 
         outfile_base = f'lc_tess_' + sanitize_filename(lcd.title)
-        ext = lcd.get_file_extension(table_format)
+        ext = CurveDash.get_file_extension(table_format)
         outfile = f'{outfile_base}.{ext}'
 
         ret = dcc.send_bytes(file_bstring, outfile)
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
 
     except Exception as e:
-        logging.warning(f'tess_lc.download_tess_lc_srv_lightcurve: {e}')
+        logging.warning(f'tess_lc.download_to_user_tess_lc_srv_lightcurve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         ret = dash.no_update
@@ -1613,6 +1510,8 @@ def use_period(period_number, period_list):
         message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
         graph_tab_disabled=Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
         active_tab=Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
+        period_val=Output('period_tess_lc_srv_input', 'value', allow_duplicate=True),
+        epoch_val=Output('epoch_tess_lc_srv_input', 'value', allow_duplicate=True),
     ),
     inputs=dict(contents=Input('upload_tess_lc_srv', 'contents')),
     state=dict(
@@ -1634,19 +1533,19 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         decoded = base64.b64decode(content_string)
 
         file_obj = io.BytesIO(decoded)
-        # t = Table.read(file_obj, format=CurveDash.get_table_format(extension))
-        # flux_unit = str(getattr(t['flux'], 'unit', ''))
-        # lcd = CurveDash(jd=t['time'].jd, flux=t['flux'], flux_err=t['flux_err'], flux_unit=flux_unit, time_unit='d')
-        lcd = CurveDash.from_file(file_obj, extension)
-        # metadata = getattr(t, 'meta', None)
-        # if metadata:
-        #     lcd.metadata = lcd.metadata | metadata  # update metadata
-        # if append and js_lightcurve:
+
+        # 1. Ingest standard Virtual Observatory lightcurve using the scientific core
+        volc = VOLightCurve(file_obj)
+
+        # 2. Delegate all parsing, column mapping, and physical conversions to the backend lc_bridge utility
+        lcd = volc_to_curvedash(volc, filename)
+
+        # 3. Handle append state and serialization
         try:
             if append and user_tab_id:
                 lcd_stored = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
 
-                if lcd.lightcurve is None:
+                if lcd_stored.lightcurve is None:
                     logging.warning('lightcurve_tess: handle upload: no stored lightcurves found')
                     lc = lcd.serialize()
                 else:
@@ -1657,14 +1556,20 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         except Exception as e:
             raise PipeException(f'lightcurve_tess: handle_upload: problem extracting stored lightcurve {e}')
 
-        if user_tab_id is None:  # If there's no tab_id, generate a new one
+        # 4. Save to server-side cache and update UI targets
+        if user_tab_id is None:
             user_tab_id = generate_user_tab_id()
             output['user_tab_id'] = user_tab_id
         write_user_data_to_cache(lc, user_tab_id)
-        output['lightcurve'] = str(uuid.uuid4())  # returns a string → JSON-serializable
+        output['lightcurve'] = str(uuid.uuid4())
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'
         output['message_results'] = 'Success, switch to the next Tab'
+        
+        period = lcd.metadata.get('period')
+        epoch = lcd.metadata.get('epoch')
+        output['period_val'] = period if period is not None else dash.no_update
+        output['epoch_val'] = epoch if epoch is not None else dash.no_update
         set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
     except Exception as e:
         logging.warning(f'lightcurve_tess.handle_upload {e}')

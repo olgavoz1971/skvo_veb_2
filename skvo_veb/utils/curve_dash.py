@@ -22,10 +22,18 @@ from astropy.table import Table
 from astropy.time import Time
 
 from skvo_veb.utils.my_tools import PipeException, DataStructureException
+from skvo_veb.utils.lc_config import (
+    DEFAULT_EPOCH_JD,
+    DOMAIN_FLUX,
+    DOMAIN_MAG,
+    FALLBACK_MAG_ZERO_POINT,
+    FLUX_TO_MAG_ERR_FACTOR,
+    MAG_TO_FLUX_ERR_FACTOR,
+)
 
 from astropy import units as u
 
-jd0 = 2400000.5
+jd0 = DEFAULT_EPOCH_JD
 fill_nans = 'median'
 
 
@@ -100,12 +108,13 @@ class CurveDash:
         'fit': 'fits'
     }
 
-    def __init__(self, jd=None, flux=None, flux_err=None, label=None,
+    def __init__(self, jd=None, flux=None, flux_err=None, mag=None, mag_err=None,
+                 label=None, active_domain: str | None = None, photcal: dict | None = None,
                  flux_correction: str | None = None, zero_point=0.0,
                  name: str = '', lookup_name: str | None = None, gaia_id=None,
                  title: str = '',
                  band='',
-                 time_unit: str = '', flux_unit: str = '',
+                 time_unit: str = '', flux_unit: str = '', mag_unit: str = 'mag',
                  timescale: str | None = None,  # one pf astropy.time Scale or 'hjd' for Heliocentric julian
                  period: float | None = None, period_unit: str = 'd',
                  epoch: float | None = jd0,
@@ -113,41 +122,40 @@ class CurveDash:
         """Initialises an instance of the CurveDash class.
 
         Allows the creation of a lightcurve directly from lists of time (jd) and
-        flux values. The initialised object contains a lightcurve attribute
-        defined as a pandas DataFrame and a metadata dictionary.
+        photometry values. Data are stored in the native domain supplied at
+        ingestion (magnitude or flux) without automatic conversion.
 
         Args:
-            jd (array-like, optional): A column of Julian dates representing time points
-                of the lightcurve. Defaults to None.
-            flux (array-like, optional): A column of flux values corresponding to the
-                Julian dates in `jd`. Defaults to None.
-            flux_err (array-like, optional): An array of statistical uncertainties for the
-                flux values. Defaults to None.
-            label (array-like, optional): An array of uint8 values to mark groups of points
-                (for example, TESS sectors). Defaults to None.
-            flux_correction (str, optional): Type of flux correction applied. Defaults to None.
-            zero_point (float, optional): Zero point for magnitude calculation. Defaults to 0.0.
-            name (str, optional): Target object name. Defaults to ''.
-            lookup_name (str, optional): Alternative name used to lookup the target. Defaults to None.
-            gaia_id (int or str, optional): Gaia DR3 identifier. Defaults to None.
-            title (str, optional): Custom title for plotting or display. Defaults to ''.
-            band (str, optional): Photometric band. Defaults to ''.
-            time_unit (str, optional): Unit of time data. Defaults to ''.
-            flux_unit (str, optional): Unit of flux data. Defaults to ''.
-            timescale (str, optional): Time scale, e.g., an Astropy time scale or 'hjd' for
-                Heliocentric Julian date. Defaults to None.
-            period (float, optional): Rotation or pulsation period. Defaults to None.
-            period_unit (str, optional): Unit of the period (e.g., 'd'). Defaults to 'd'.
-            epoch (float, optional): Epoch reference time. Defaults to jd0.
-            cross_ident (any, optional): Cross identifiers. Defaults to None.
-            folded_view (int, optional): View flag indicating if the folded view is active.
-                Defaults to 0.
-            mag_view (int, optional): View flag indicating if the magnitude view is active.
-                Defaults to 0.
+            jd (array-like, optional): Julian dates for each observation.
+            flux (array-like, optional): Flux values when ``active_domain`` is ``'flux'``.
+            flux_err (array-like, optional): Flux uncertainties.
+            mag (array-like, optional): Magnitude values when ``active_domain`` is ``'mag'``.
+            mag_err (array-like, optional): Magnitude uncertainties.
+            label (array-like, optional): Group labels (e.g. TESS sectors).
+            active_domain (str, optional): ``'flux'`` or ``'mag'``. Inferred from
+                which photometry columns are provided when omitted.
+            photcal (dict, optional): Photometric calibration metadata
+                (``zp_flux``, ``zp_mag``, ``mag_sys``, etc.) for on-demand conversion.
+            flux_correction (str, optional): Type of flux correction applied.
+            zero_point (float, optional): Legacy zero point for magnitude display.
+            name (str, optional): Target object name.
+            lookup_name (str, optional): Alternative lookup name.
+            gaia_id (int or str, optional): Gaia DR3 identifier.
+            title (str, optional): Display title.
+            band (str, optional): Photometric band.
+            time_unit (str, optional): Unit of time data.
+            flux_unit (str, optional): Unit of flux data.
+            mag_unit (str, optional): Unit of magnitude data. Defaults to ``'mag'``.
+            timescale (str, optional): Astropy time scale or ``'hjd'``.
+            period (float, optional): Variability period.
+            period_unit (str, optional): Period unit. Defaults to ``'d'``.
+            epoch (float, optional): Reference epoch. Defaults to ``DEFAULT_EPOCH_JD``.
+            cross_ident (any, optional): Cross identifiers.
+            folded_view (int, optional): Folded-view UI flag.
+            mag_view (int, optional): Magnitude-view UI flag.
 
         Raises:
-            PipeException: If the lengths of the flux and flux_err arrays differ,
-                or if the lengths of the label and flux arrays differ.
+            PipeException: If array lengths are inconsistent or no photometry is supplied.
         """
 
         if epoch is None:
@@ -155,61 +163,77 @@ class CurveDash:
         self.lightcurve: pandas.DataFrame | None = None
         self.metadata: dict | None = None
 
-        # Create structures from the scratch
-        if (jd is not None) and (flux is not None):
-            if flux_err is None:
-                flux_err = np.zeros_like(flux, dtype=float)
-            elif flux.shape != flux_err.shape:
-                raise PipeException('The lengths of the flux and flux_err arrays differ. '
-                                    'Please check the input light curve')
-            # When I create a df from a masked array (like flux_err), pandas automatically converts
-            # the masked values to NaN. And it is actually what I need
-            if label is None:
-                label = np.zeros(flux.shape, dtype=np.uint8)
-            elif label.shape != flux.shape:
-                raise PipeException('The lengths of the label and flux arrays differ. '
-                                    'Please check the input light curve')
+        if jd is None:
+            return
 
-            # df = pd.DataFrame({'jd': jd, 'flux': flux, 'flux_err': flux_err, 'label': label})
-            t = Table({'jd': jd, 'flux': flux, 'flux_err': flux_err, 'label': label})
-            df = t.to_pandas()
-            # df = pd.DataFrame({'jd': jd, 'flux': flux, 'flux_err': flux_err, 'label': label})
+        if mag is not None and flux is not None:
+            raise PipeException('Supply either flux or mag photometry, not both.')
 
-            # Clean bad fluxes for the following log and division operations
-            # NaN is used to mark bad values because it is ignored by most statistical functions
-            # and plotting libraries. For instance, NumPy functions like np.nanmean and np.nanstd
-            # automatically skip NaNs in calculations, ensuring that only valid data is considered.
-            # Matplotlib also ignores NaNs when plotting, so bad values don't distort graphs. This
-            # approach keeps calculations and visualizations clean without the need for manual filtering
+        if mag is not None:
+            domain = DOMAIN_MAG
+            phot_vals = mag
+            phot_err_vals = mag_err
+            phot_unit = mag_unit
+        elif flux is not None:
+            domain = DOMAIN_FLUX
+            phot_vals = flux
+            phot_err_vals = flux_err
+            phot_unit = flux_unit
+        else:
+            raise PipeException('Either flux or mag photometry must be supplied.')
 
-            # I do the cleanup right here, in the __init__, because I don't want to overload client side callbacks
+        if phot_err_vals is None:
+            phot_err_vals = np.zeros_like(phot_vals, dtype=float)
+        elif np.shape(phot_vals) != np.shape(phot_err_vals):
+            raise PipeException('Photometry and uncertainty arrays must have equal length.')
+
+        if label is None:
+            label = np.zeros(np.shape(phot_vals), dtype=np.uint8)
+        elif np.shape(label) != np.shape(phot_vals):
+            raise PipeException('Label array length must match photometry length.')
+
+        if domain == DOMAIN_FLUX:
+            table_dict = {'jd': jd, 'flux': phot_vals, 'flux_err': phot_err_vals, 'label': label}
+        else:
+            table_dict = {'jd': jd, 'mag': phot_vals, 'mag_err': phot_err_vals, 'label': label}
+
+        df = Table(table_dict).to_pandas()
+
+        if domain == DOMAIN_FLUX:
             df.loc[df['flux'] <= 0, 'flux'] = np.nan
             df.loc[df['flux_err'] <= 0, 'flux_err'] = np.nan
 
-            # Using loc to avoid SettingWithCopyWarning and ensure in -place DataFrame update
-            df.loc[:, 'selected'] = 0
-            # create permanent index. Keep it forever, protect against reindexing; important when cleaning data:
-            df.loc[:, 'perm_index'] = df.index
-            df.loc[:, 'phase'] = 0.0
-            self.lightcurve = df
-            # todo: clean flux<=0 here
-            if lookup_name and lookup_name == name:
-                lookup_name = ''
-            # Note: Convert gaia_id to a string to avoid precision loss during JSON serialization.
-            # JSON can lose precision when large integers are directly converted, especially in JavaScript,
-            # so converting gaia_id to a string ensures its full value is preserved when transferred
-            # and parsed on the client-side.
-            self.metadata: dict = {'name': name, 'lookup_name': lookup_name, 'gaia_id': str(gaia_id), 'band': band,
-                                   'cross_ident': cross_ident,
-                                   'time_unit': time_unit, 'timescale': timescale,
-                                   'title': title,
-                                   'flux_correction': flux_correction,
-                                   'flux_unit': flux_unit, 'period': period, 'period_unit': period_unit,
-                                   'epoch': epoch,
-                                   'folded_view': folded_view,
-                                   'mag_view': mag_view,
-                                   'zero_point': zero_point}
-            self.recalc_phase()  # recalc phase after period and epoch setting
+        df.loc[:, 'selected'] = 0
+        df.loc[:, 'perm_index'] = df.index
+        df.loc[:, 'phase'] = 0.0
+        self.lightcurve = df
+
+        if lookup_name and lookup_name == name:
+            lookup_name = ''
+
+        resolved_domain = active_domain or domain
+        self.metadata = {
+            'name': name,
+            'lookup_name': lookup_name,
+            'gaia_id': str(gaia_id),
+            'band': band,
+            'cross_ident': cross_ident,
+            'time_unit': time_unit,
+            'timescale': timescale,
+            'title': title,
+            'flux_correction': flux_correction,
+            'flux_unit': flux_unit if resolved_domain == DOMAIN_FLUX else '',
+            'mag_unit': mag_unit if resolved_domain == DOMAIN_MAG else '',
+            'active_domain': resolved_domain,
+            'photcal': photcal or {},
+            'period': period,
+            'period_unit': period_unit,
+            'epoch': epoch,
+            'folded_view': folded_view,
+            'mag_view': mag_view,
+            'zero_point': zero_point,
+        }
+        self.recalc_phase()
 
     @classmethod
     def from_serialized(cls, serialized: str):
@@ -236,6 +260,13 @@ class CurveDash:
             lightcurve_dict = di.get('lightcurve')
             self.lightcurve = pd.DataFrame(data=lightcurve_dict['data'], columns=lightcurve_dict['columns'])
             self.metadata = di.get('metadata')
+            if self.metadata is not None and 'active_domain' not in self.metadata:
+                if 'mag' in self.lightcurve.columns:
+                    self.metadata['active_domain'] = DOMAIN_MAG
+                else:
+                    self.metadata['active_domain'] = DOMAIN_FLUX
+            if self.metadata is not None and 'photcal' not in self.metadata:
+                self.metadata['photcal'] = {}
             return self
         except Exception as e:
             logging.warning(f'curve_dash.__init__: {e}')
@@ -300,20 +331,23 @@ class CurveDash:
         """
         # t = Table.read(file_obj, format=CurveDash.get_table_format(extension))
         t = CurveDash._read_table(file_obj, extension)
-        if 'flux' not in t.colnames:
-            if 'mag' in t.colnames:
-                mag0 = 25   # todo try to extract this from the input file
-                t['flux'] = 10**(-0.4*(t['mag']-mag0))
-            else:
-                raise DataStructureException("Table must contain 'flux' column")
-        flux_unit = str(getattr(t['flux'], 'unit', ''))
+        if 'flux' in t.colnames:
+            flux = t['flux']
+            flux_err = t['flux_err'] if 'flux_err' in t.colnames else 0
+            flux_unit = str(getattr(t['flux'], 'unit', ''))
+            phot_kwargs = dict(flux=flux, flux_err=flux_err, flux_unit=flux_unit, active_domain=DOMAIN_FLUX)
+        elif 'mag' in t.colnames:
+            mag = t['mag']
+            mag_err = t['mag_err'] if 'mag_err' in t.colnames else 0
+            mag_unit = str(getattr(t['mag'], 'unit', 'mag'))
+            phot_kwargs = dict(mag=mag, mag_err=mag_err, mag_unit=mag_unit, active_domain=DOMAIN_MAG)
+        else:
+            raise DataStructureException("Table must contain 'flux' or 'mag' column")
         metadata = getattr(t, 'meta', None)
         if 'label' in t.colnames:
             label = t['label']
         else:
             label = None
-        if 'flux_err' not in t.colnames:
-            t['flux_err'] = 0
         if 'jd' in t.colnames:
             jd = t['jd']
         elif 'time' in t.colnames:
@@ -324,8 +358,7 @@ class CurveDash:
                 raise DataStructureException("Inappropriate data type in the 'time' column")
         else:
             raise DataStructureException("Table must contain 'jd' or 'time' column")
-        self = cls(jd=jd, flux=t['flux'], flux_err=t['flux_err'],
-                   label=label, flux_unit=flux_unit, time_unit='d')
+        self = cls(jd=jd, label=label, time_unit='d', **phot_kwargs)
         if metadata:
             self.metadata = self.metadata | metadata
         return self
@@ -505,71 +538,242 @@ class CurveDash:
         return [CurveDash.get_file_extension(f) for f in CurveDash.get_format_list()]
 
     @property
-    def flux(self):
-        """Gets the flux values series from the lightcurve.
-
-        It's important to leave 'is not None' here, because flux is pandas.Series, we can't ask 'if pandas.Series'.
+    def active_domain(self) -> str:
+        """Gets the native photometric domain of the stored data.
 
         Returns:
-            pandas.Series or None: The flux values Series, or None if lightcurve is not set.
+            str: ``'flux'`` or ``'mag'``.
         """
-        # It's important to leave 'is not None' here, because flux is pandas.Series, we can't ask 'if pandas.Series'
-        return self.lightcurve.get('flux') if self.lightcurve is not None else None
+        if self.metadata is None:
+            return DOMAIN_FLUX
+        return self.metadata.get('active_domain', DOMAIN_FLUX)
+
+    @property
+    def phot(self):
+        """Gets photometry values in the currently active domain.
+
+        Returns:
+            pandas.Series or None: Magnitude or flux values depending on ``active_domain``.
+        """
+        if self.lightcurve is None:
+            return None
+        if self.active_domain == DOMAIN_MAG:
+            return self.lightcurve.get('mag')
+        return self.lightcurve.get('flux')
+
+    @property
+    def phot_err(self):
+        """Gets photometry uncertainties in the currently active domain.
+
+        Returns:
+            pandas.Series or None: Magnitude or flux errors depending on ``active_domain``.
+        """
+        if self.lightcurve is None:
+            return None
+        if self.active_domain == DOMAIN_MAG:
+            return self.lightcurve.get('mag_err')
+        return self.lightcurve.get('flux_err')
+
+    @property
+    def phot_unit(self) -> str:
+        """Gets the unit string for the active photometric domain.
+
+        Returns:
+            str: Flux or magnitude unit string.
+        """
+        if self.metadata is None:
+            return ''
+        if self.active_domain == DOMAIN_MAG:
+            return self.metadata.get('mag_unit', 'mag')
+        return self.metadata.get('flux_unit', '')
+
+    @property
+    def photcal(self) -> dict:
+        """Gets stored photometric calibration metadata for domain conversion.
+
+        Returns:
+            dict: Zero-point and magnitude-system metadata.
+        """
+        if self.metadata is None:
+            return {}
+        return self.metadata.get('photcal', {})
+
+    def _resolve_photcal(self):
+        """Builds a ``PhotCal`` instance from stored metadata.
+
+        Returns:
+            skvo_veb.volightcurve.lightcurve.PhotCal: Calibration for mag/flux conversion.
+        """
+        from skvo_veb.volightcurve.lightcurve import PhotCal
+
+        pc = self.photcal
+        zp_flux = pc.get('zp_flux', 1.0)
+        zp_mag = pc.get('zp_mag', FALLBACK_MAG_ZERO_POINT)
+        return PhotCal(
+            zp_flux=zp_flux,
+            zp_flux_unit=pc.get('zp_flux_unit') or 'Jy',
+            zp_mag=zp_mag,
+            zp_mag_unit=pc.get('zp_mag_unit') or 'mag',
+            mag_sys=pc.get('mag_sys', 'Vega'),
+        )
+
+    def convert_to_flux(self) -> None:
+        """Converts stored magnitude data to flux in-place.
+
+        Uses ``PhotCal`` from the volightcurve layer when calibration metadata is
+        available. Updates ``active_domain`` to ``'flux'`` and replaces DataFrame
+        columns accordingly.
+
+        Raises:
+            PipeException: If data are already in flux domain or magnitude columns are missing.
+        """
+        if self.lightcurve is None or self.metadata is None:
+            raise PipeException('Cannot convert an empty lightcurve to flux.')
+        if self.active_domain == DOMAIN_FLUX:
+            return
+
+        mag_col = self.lightcurve.get('mag')
+        mag_err_col = self.lightcurve.get('mag_err')
+        if mag_col is None:
+            raise PipeException('No magnitude column available for conversion to flux.')
+
+        photcal = self._resolve_photcal()
+        mag_values = mag_col.values.astype(float)
+        try:
+            mag_quantity = mag_values * u.mag
+            flux_quantity = photcal.mag_to_flux(mag_quantity)
+            flux_vals = np.array(flux_quantity.value, dtype=float)
+            flux_unit_str = str(flux_quantity.unit)
+        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
+            logging.warning('PhotCal mag_to_flux failed (%s); using fallback formula.', exc)
+            zp_m = photcal.zp_mag.value
+            zp_f = photcal.zp_flux.value
+            flux_vals = zp_f * 10 ** (-0.4 * (mag_values - zp_m))
+            flux_unit_str = str(photcal.zp_flux.unit)
+
+        if mag_err_col is not None:
+            flux_err_vals = flux_vals * MAG_TO_FLUX_ERR_FACTOR * mag_err_col.values
+        else:
+            flux_err_vals = np.zeros_like(flux_vals)
+
+        df = self.lightcurve.drop(columns=['mag', 'mag_err'], errors='ignore')
+        df['flux'] = flux_vals
+        df['flux_err'] = flux_err_vals
+        df.loc[df['flux'] <= 0, 'flux'] = np.nan
+        df.loc[df['flux_err'] <= 0, 'flux_err'] = np.nan
+        self.lightcurve = df
+        self.metadata['active_domain'] = DOMAIN_FLUX
+        self.metadata['flux_unit'] = flux_unit_str
+        self.metadata['mag_unit'] = ''
+
+    def convert_to_mag(self) -> None:
+        """Converts stored flux data to magnitude in-place.
+
+        Uses ``PhotCal`` from the volightcurve layer when calibration metadata is
+        available. Updates ``active_domain`` to ``'mag'`` and replaces DataFrame
+        columns accordingly.
+
+        Raises:
+            PipeException: If data are already in magnitude domain or flux columns are missing.
+        """
+        if self.lightcurve is None or self.metadata is None:
+            raise PipeException('Cannot convert an empty lightcurve to magnitude.')
+        if self.active_domain == DOMAIN_MAG:
+            return
+
+        flux_col = self.lightcurve.get('flux')
+        flux_err_col = self.lightcurve.get('flux_err')
+        if flux_col is None:
+            raise PipeException('No flux column available for conversion to magnitude.')
+
+        photcal = self._resolve_photcal()
+        flux_vals = flux_col.values.astype(float)
+        try:
+            flux_unit = self.flux_unit_ap or u.dimensionless_unscaled
+            flux_quantity = flux_vals * flux_unit
+            mag_quantity = photcal.flux_to_mag(flux_quantity)
+            mag_vals = np.array(mag_quantity.value, dtype=float)
+        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
+            logging.warning('PhotCal flux_to_mag failed (%s); using fallback formula.', exc)
+            zp_m = photcal.zp_mag.value
+            zp_f = photcal.zp_flux.value
+            valid = flux_vals > 0
+            mag_vals = np.full_like(flux_vals, np.nan)
+            mag_vals[valid] = zp_m - 2.5 * np.log10(flux_vals[valid] / zp_f)
+
+        if flux_err_col is not None:
+            flux_vals = flux_col.values.astype(float)
+            err_vals = flux_err_col.values.astype(float)
+            valid = flux_vals > 0
+            mag_err_vals = np.full_like(flux_vals, np.nan)
+            mag_err_vals[valid] = FLUX_TO_MAG_ERR_FACTOR * (err_vals[valid] / flux_vals[valid])
+        else:
+            mag_err_vals = np.zeros_like(mag_vals)
+
+        df = self.lightcurve.drop(columns=['flux', 'flux_err'], errors='ignore')
+        df['mag'] = mag_vals
+        df['mag_err'] = mag_err_vals
+        self.lightcurve = df
+        self.metadata['active_domain'] = DOMAIN_MAG
+        self.metadata['mag_unit'] = 'mag'
+        self.metadata['flux_unit'] = ''
+
+    @property
+    def flux(self):
+        """Gets the flux values series when ``active_domain`` is ``'flux'``.
+
+        Returns:
+            pandas.Series or None: Flux values, or None if stored in magnitude domain.
+        """
+        if self.lightcurve is None or self.active_domain != DOMAIN_FLUX:
+            return None
+        return self.lightcurve.get('flux')
 
     @property
     def flux_err(self):
-        """Gets the flux statistical errors series from the lightcurve.
+        """Gets the flux error series when ``active_domain`` is ``'flux'``.
 
         Returns:
-            pandas.Series or None: The flux errors Series, or None if lightcurve is not set.
+            pandas.Series or None: Flux errors, or None if stored in magnitude domain.
         """
-        return self.lightcurve.get('flux_err') if self.lightcurve is not None else None
+        if self.lightcurve is None or self.active_domain != DOMAIN_FLUX:
+            return None
+        return self.lightcurve.get('flux_err')
 
     @property
     def mag(self):
-        """Converts flux values to astronomical magnitudes.
-
-        Uses the standard formula: mag = -2.5 * log10(flux) + zero_point.
-        Returns NaN for invalid (non-positive) flux values.
+        """Gets the magnitude values series when ``active_domain`` is ``'mag'``.
 
         Returns:
-            pandas.Series or None: The calculated magnitudes Series, or None if lightcurve is not set.
+            pandas.Series or None: Magnitude values, or None if stored in flux domain.
         """
-        if self.lightcurve is None:
+        if self.lightcurve is None or self.active_domain != DOMAIN_MAG:
             return None
-
-        flux = self.lightcurve.get('flux')
-        if flux is None:
-            return None
-
-        flux[flux <= 0] = np.nan
-        return -2.5 * np.log10(flux) + self.zero_point
+        return self.lightcurve.get('mag')
 
     @property
     def mag_err(self):
-        """Converts flux errors to magnitude errors.
-
-        Uses the first-order approximation: mag_err = 1.0857 * flux_err / flux.
-        Returns NaN where flux is non-positive or either value is missing.
+        """Gets the magnitude error series when ``active_domain`` is ``'mag'``.
 
         Returns:
-            pandas.Series or None: The calculated magnitude errors Series, or None if lightcurve is not set.
+            pandas.Series or None: Magnitude errors, or None if stored in flux domain.
         """
-        if self.lightcurve is None:
+        if self.lightcurve is None or self.active_domain != DOMAIN_MAG:
             return None
+        return self.lightcurve.get('mag_err')
 
-        flux = self.lightcurve.get('flux')
-        flux_err = self.lightcurve.get('flux_err')
-        if flux is None or flux_err is None:
-            return None
+    def _phot_for_minimum_search(self):
+        """Returns photometry values oriented so that minima correspond to eclipses.
 
-        flux = np.array(flux, copy=True)
-        flux_err = np.array(flux_err, copy=True)
-
-        flux[flux <= 0] = np.nan  # mark bad flux values
-        mag_err = 1.0857 * flux_err / flux
-
-        return mag_err
+        Returns:
+            pandas.Series: Values where lower means deeper eclipse regardless of domain.
+        """
+        phot = self.phot
+        if phot is None:
+            raise PipeException('No photometry available for minimum search.')
+        if self.active_domain == DOMAIN_MAG:
+            return -phot
+        return phot
 
     @property
     def jd(self):
@@ -755,7 +959,8 @@ class CurveDash:
             float: Phase of the folded lightcurve minimum.
         """
         self.recalc_phase()
-        phase_of_min = self.lightcurve['phase'][np.argmin(self.lightcurve['flux'])]
+        y = self._phot_for_minimum_search()
+        phase_of_min = self.lightcurve['phase'][np.argmin(y)]
         return phase_of_min
 
     def find_phase_of_min_gauss(self):
@@ -774,11 +979,9 @@ class CurveDash:
             return a * np.exp(-(x_ - x0) ** 2 / (2 * sigma ** 2))
 
         self.recalc_phase()
-        # initial_guess = [max(y), x_[np.argmax(y)], 0.2 * period]
-
-        # Turn upside down the lightcurve to fit a Gaussian into the primary minimum:
         x = self.lightcurve['phase']
-        y = self.lightcurve['flux'].max() - self.lightcurve['flux']
+        y = self._phot_for_minimum_search()
+        y = y.max() - y
         initial_guess = [max(y), x[np.argmax(y)], 0.2]
 
         # Shift the phase to keep the minimum within [0.2, 0.8] for a continuous Gaussian fit
@@ -856,22 +1059,30 @@ class CurveDash:
             my_weird_io = io.BytesIO()
         else:
             raise PipeException(f'Unsupported format {table_format}\n Valid formats: {str(self.format_dict.keys())}')
+        if table_format == 'votable':
+            raise PipeException(
+                'Standards-compliant VOTable export must use lc_bridge.export_curvedash().'
+            )
         tab = Table.from_pandas(self.lightcurve)
-        tab['flux'].unit = self.flux_unit_ap
-        # u.Unit(self.metadata.get('flux_unit'))
-        tab['flux_err'].unit = self.flux_unit_ap
+        if self.active_domain == DOMAIN_FLUX and 'flux' in tab.colnames:
+            tab['flux'].unit = self.flux_unit_ap
+            tab['flux_err'].unit = self.flux_unit_ap
+        elif self.active_domain == DOMAIN_MAG and 'mag' in tab.colnames:
+            tab['mag'].unit = u.mag
+            tab['mag_err'].unit = u.mag
         timescale = self.timescale if self.timescale != 'hjd' else None
-        # if table_format not in self._format_dict_dat:
-        #     tab['time'] = Time(tab['jd'], format='jd', scale=timescale)
-        #     tab.remove_column('jd')
 
-        if (table_format == 'votable' or table_format == 'pandas.json' or table_format == 'fits'
+        phot_cols = (
+            ['jd', 'phase', 'mag', 'mag_err', 'label']
+            if self.active_domain == DOMAIN_MAG
+            else ['jd', 'phase', 'flux', 'flux_err', 'label']
+        )
+        if (table_format == 'pandas.json' or table_format == 'fits'
                 or table_format in self._format_dict_dat):
-            # tab['jd'] = tab['time'].jd
-            selected_columns = ['jd', 'phase', 'flux', 'flux_err', 'label']
+            selected_columns = phot_cols
         else:
             tab['time'] = Time(tab['jd'], format='jd', scale=timescale)
-            selected_columns = ['time', 'phase', 'flux', 'flux_err', 'label']
+            selected_columns = ['time', 'phase'] + phot_cols[2:]
 
         tab = tab[[col for col in selected_columns if col in tab.colnames]]
         tab.meta = self.metadata
@@ -897,6 +1108,11 @@ class CurveDash:
         # todo: append title
         if not isinstance(other, CurveDash):
             raise TypeError("The input object must be an instance of CurveDash.")
+        if self.active_domain != other.active_domain:
+            raise PipeException(
+                f'Cannot append lightcurves with different domains '
+                f'({self.active_domain} vs {other.active_domain}).'
+            )
         if (self.lightcurve is None) or self.lightcurve.empty:
             self.lightcurve = other.lightcurve.copy()
         elif not other.lightcurve.empty:

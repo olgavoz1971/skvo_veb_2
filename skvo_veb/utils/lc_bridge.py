@@ -1,12 +1,24 @@
-# import volightcurve as vo
 import io
 import json
 import logging
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from astropy import units as u
-from skvo_veb.volightcurve import (VOLightCurve, get_time_colnames, get_flux_colnames, get_mag_colnames,
-                          get_error_colnames, is_mag_column, is_flux_column)
+from astropy.table import Table
+
+from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG
+from skvo_veb.utils.my_tools import PipeException, sanitize_filename
+from skvo_veb.volightcurve import (
+    VOLightCurve,
+    get_time_colnames,
+    get_flux_colnames,
+    get_mag_colnames,
+    get_error_colnames,
+    is_mag_column,
+    write_vo_lightcurve,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +59,16 @@ window.photUtils = {
 
 
 def read_to_volc(file_source):
-    """
-    1) Reads a lightcurve from a file path OR a file-like object (io.BytesIO).
-    Returns a VOLightCurve instance.
+    """Reads a lightcurve from a file path or an in-memory binary stream.
+
+    Loads the given data source and returns an initialised VOLightCurve instance.
+
+    Args:
+        file_source (str or file-like object): Path to the input file or an active,
+            open binary stream (e.g., io.BytesIO).
+
+    Returns:
+        VOLightCurve: The ingested and processed Virtual Observatory lightcurve instance.
     """
     try:
         # VOLightCurve internally uses Table.read, which handles file-like objects
@@ -62,9 +81,10 @@ def read_to_volc(file_source):
 
 # We need this to tame our float types zoo
 class LCEncoder(json.JSONEncoder):
-    """
-    Custom JSON encoder that handles NumPy types (float32, int64, etc.)
-    and Astropy Quantities.
+    """Custom JSON encoder handling NumPy primitives, arrays, and Astropy objects.
+
+    Extends json.JSONEncoder to map types like float32, int64, and numpy.ndarray to standard,
+    serialisable Python primitives, preventing float precision loss and serialisation errors.
     """
 
     def default(self, obj):
@@ -79,8 +99,24 @@ class LCEncoder(json.JSONEncoder):
 
 
 def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
-    """
-    Packs a VOLightCurve into an economic JSON schema for Web/JS transport.
+    """Packs a VOLightCurve instance into a compact, standardized JSON schema for Web/JS transport.
+
+    Extracts core time, photometry, error, and flag series alongside associated ZeroPoint
+    photometric calibrations and timescale offsets, converting them to native serialisable types.
+
+    Args:
+        lc (VOLightCurve): The input lightcurve container.
+        primary_col (str, optional): The name of the primary photometry column to pack.
+            Defaults to the first magnitude column (or flux column if none found).
+        error_col (str, optional): The name of the statistical uncertainty column to pack.
+            Defaults to None (which falls back to the corresponding mag or flux error column).
+
+    Returns:
+        str: A JSON-encoded string describing the schema, metadata, and observations.
+
+    Raises:
+        ValueError: If no timing columns are found or if no primary magnitude/flux columns
+            can be resolved.
     """
 
     mag_cols = get_mag_colnames(lc)
@@ -155,9 +191,24 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
 
 
 def unpack_json_for_plotly(json_str: str, view_mode='mag'):
-    """
-    Lean NumPy version: Decodes JSON and prepares data for Plotly
-    without the Pandas overhead.
+    """Lean NumPy decoder that unpacks a transport JSON package and prepares arrays for Plotly rendering.
+
+    Optimized for high-speed operation inside Dash callbacks, decoding and cleansing 
+    data streams (e.g. handling NaNs in TESS datasets) without the overhead of Pandas.
+
+    Args:
+        json_str (str): The serialised JSON transport string.
+        view_mode (str, optional): The target visual domain ('mag' or 'flux'). Defaults to 'mag'.
+
+    Returns:
+        dict: A dictionary containing NumPy arrays or Series for rendering:
+            - 'x': Cleverly cleansed, absolute Julian Dates.
+            - 'y': Calibrated photometry values.
+            - 'err': Cleansed uncertainties (or None).
+            - 'flag': Custom metadata flags or group sectors.
+            - 'x_label': X-axis plotting label.
+            - 'y_label': Y-axis plotting label.
+            - 'is_mag': Flag denoting if Y-data is currently represented in magnitude space.
     """
     packet = json.loads(json_str)
     meta = packet['meta']
@@ -233,9 +284,17 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
 
 
 def get_flux_fragment(json_str: str, jd_min: float, jd_max: float) -> pd.DataFrame:
-    """
-    Extracts a JD-sliced fragment and ensures it is in FLUX domain
-    for the GP module. Returns a pandas DataFrame.
+    """Extracts a JD-sliced fragment of the lightcurve in the physical FLUX domain.
+
+    Useful for supplying raw flux data directly to mathematical modules (such as Gaussian Processes).
+
+    Args:
+        json_str (str): The serialised JSON transport string.
+        jd_min (float): The minimum absolute Julian Date bound.
+        jd_max (float): The maximum absolute Julian Date bound.
+
+    Returns:
+        pandas.DataFrame: A DataFrame containing 'jd', 'flux', and 'flux_err' columns.
     """
     # We force view_mode='flux' so the bridge handles the math
     lc = unpack_json_for_plotly(json_str, view_mode='flux')
@@ -258,7 +317,14 @@ def get_flux_fragment(json_str: str, jd_min: float, jd_max: float) -> pd.DataFra
 
 
 def get_jd_limits(json_str):
-    """Safe extraction of absolute JD boundaries from the JSON transport."""
+    """Extracts the absolute minimum and maximum Julian Date bounds from the lightcurve transport.
+
+    Args:
+        json_str (str): The serialised JSON transport string.
+
+    Returns:
+        tuple of float: (min_jd, max_jd) defining the full observation window.
+    """
     packet = json.loads(json_str)
     # Our 'data' array always has JD at index 0
     times = [row[0] for row in packet['data']]
@@ -267,9 +333,22 @@ def get_jd_limits(json_str):
 
 
 def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: float, epoch=None):
-    """
-    High-level 'Beast' method:
-    Converts a phase selection into JD intervals by looking at the data span.
+    """Converts selected phase boundaries into concrete absolute JD intervals.
+
+    Identifies which cycles fall within the dataset's time window, maps phase coordinates back
+    to absolute dates, and clips them to the bounds of the actual observations.
+
+    Args:
+        json_str (str): The serialised JSON transport string.
+        phi_min (float): Minimum phase selection bound (between 0.0 and 1.0).
+        phi_max (float): Maximum phase selection bound (between 0.0 and 1.0).
+        period (float): Fold period of the star in days.
+        epoch (float, optional): Reference zero-phase epoch Julian Date.
+            Defaults to the start of the dataset.
+
+    Returns:
+        list of list: A list of absolute time segments [[start_jd, end_jd], ...]
+            clipped to the observation window.
     """
     jd_start, jd_end = get_jd_limits(json_str)
     t0 = epoch if epoch is not None else jd_start
@@ -294,9 +373,15 @@ def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: f
 
 
 def pretty_print_lc_json(json_str: str, max_rows: int = 5):
-    """
-    Parses the LC JSON string and prints a human-readable summary.
-    Summarizes the 'data' array and handles missing columns/None values cleanly.
+    """Parses a lightcurve JSON transport package and prints a clean, human-readable summary.
+
+    Useful for terminal-based validation and debugging, displaying active domains, calibrations,
+    schemas, and a head/tail slice of observations.
+
+    Args:
+        json_str (str): The serialised JSON transport string.
+        max_rows (int, optional): The number of rows from the head and tail to display.
+            Defaults to 5.
     """
     try:
         packet = json.loads(json_str)
@@ -371,6 +456,410 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
             print(f"  {format_row(row)}")
 
     print("=" * 80)
+
+
+def _parse_list_meta(value):
+    """Normalises a VOTable PARAM value into a list of strings.
+
+    Args:
+        value: Scalar, comma-separated string, or list from table metadata.
+
+    Returns:
+        list of str or None: Parsed list values.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    if isinstance(value, str):
+        parts = [v.strip() for v in value.split(',') if v.strip()]
+        return parts or None
+    return [str(value)]
+
+
+def build_curvedash_title(lcd) -> str:
+    """Builds a human-readable plot title from CurveDash metadata.
+
+    Mirrors the title format produced by ``tess_lc_builder`` for archive downloads.
+
+    Args:
+        lcd (CurveDash): Application lightcurve with populated metadata.
+
+    Returns:
+        str: Title string for Plotly figures and export metadata.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash):
+        return 'Uploaded lightcurve'
+
+    meta = lcd.metadata or {}
+    stored = meta.get('title') or lcd.title
+    if stored:
+        return stored
+
+    lookup = meta.get('lookup_name') or ''
+    name = meta.get('name') or ''
+    parts = []
+    if lookup:
+        parts.append(str(lookup))
+    if name and str(name) != str(lookup):
+        parts.append(str(name))
+
+    sectors = _parse_list_meta(meta.get('sectors'))
+    if sectors:
+        parts.append(f"sector: {','.join(sectors)}")
+
+    authors = _parse_list_meta(meta.get('authors'))
+    if authors:
+        parts.append(f"author: {','.join(authors)}")
+
+    flux_origins = _parse_list_meta(meta.get('flux_origins'))
+    if flux_origins:
+        parts.append(f"methods: {','.join(flux_origins)}")
+
+    if parts:
+        return ' '.join(parts)
+    return name or lookup or 'Uploaded lightcurve'
+
+
+def _extract_photcal_meta(volc: VOLightCurve, phot_col: str) -> dict:
+    """Extracts photometric calibration metadata from a VOLightCurve column.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        phot_col (str): Primary photometry column name.
+
+    Returns:
+        dict: Serialisable zero-point metadata for CurveDash storage.
+    """
+    photdm = volc.photdms.get(phot_col)
+    photcal = photdm.photcal if photdm else None
+    return {
+        "zp_flux": photcal.zp_flux.value if photcal else 1.0,
+        "zp_flux_unit": photcal.zp_flux.unit.to_string("vounit") if photcal else "Jy",
+        "zp_mag": photcal.zp_mag.value if photcal else 0.0,
+        "zp_mag_unit": photcal.zp_mag.unit.to_string("vounit") if photcal else "mag",
+        "mag_sys": photcal.mag_sys if photcal else "Unknown",
+    }
+
+
+def volc_to_curvedash(volc: VOLightCurve, filename: str):
+    """Converts a VOLightCurve instance into a CurveDash instance.
+
+    Resolves columns, applies JD0 to obtain absolute Julian dates, and stores
+    photometry in its native domain (magnitude or flux) without conversion.
+
+    Args:
+        volc (VOLightCurve): The parsed Virtual Observatory lightcurve.
+        filename (str): The name of the uploaded file.
+
+    Returns:
+        CurveDash: The populated CurveDash instance.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    time_cols = get_time_colnames(volc)
+    if not time_cols:
+        for name in ['obs_time', 'time', 'jd', 'mjd']:
+            if name in volc.table.colnames:
+                time_cols = [name]
+                break
+    if not time_cols:
+        raise ValueError("No time column found in the uploaded file.")
+
+    time_col = time_cols[0]
+    jd_vals = volc[time_col]
+    if hasattr(jd_vals, 'value'):
+        jd_vals = jd_vals.value
+    if hasattr(jd_vals, 'jd'):
+        jd_vals = jd_vals.jd
+
+    jd0_offset = volc.timesys.jd0 or 0.0
+    if jd0_offset > 0 and np.nanmax(jd_vals) < 1e6:
+        jd_absolute = jd_vals + jd0_offset
+    else:
+        jd_absolute = jd_vals
+
+    phot_col = None
+    if 'phot' in volc.table.colnames:
+        phot_col = 'phot'
+    else:
+        flux_cols = get_flux_colnames(volc)
+        mag_cols = get_mag_colnames(volc)
+        if flux_cols:
+            phot_col = flux_cols[0]
+        elif mag_cols:
+            phot_col = mag_cols[0]
+
+    if not phot_col:
+        raise ValueError("No photometry (flux or magnitude) column found in the uploaded file.")
+
+    phot_vals = volc[phot_col]
+    if hasattr(phot_vals, 'value'):
+        phot_vals = phot_vals.value
+
+    meta = volc.table.meta or {}
+    is_mag = is_mag_column(volc.table, phot_col)
+    photcal_meta = _extract_photcal_meta(volc, phot_col)
+
+    err_col = None
+    if 'flux_error' in volc.table.colnames:
+        err_col = 'flux_error'
+    elif is_mag_column(volc.table, phot_col):
+        error_cols = volc.get_mag_error_colnames()
+        err_col = error_cols[0] if error_cols else None
+    else:
+        error_cols = volc.get_flux_error_colnames()
+        err_col = error_cols[0] if error_cols else None
+
+    if err_col:
+        err_vals = volc[err_col]
+        if hasattr(err_vals, 'value'):
+            err_vals = err_vals.value
+    else:
+        err_vals = np.zeros_like(phot_vals)
+
+    label_col = None
+    for name in ['label', 'sector', 'flag']:
+        if name in volc.table.colnames:
+            label_col = name
+            break
+    if label_col:
+        label_vals = volc[label_col]
+        if hasattr(label_vals, 'value'):
+            label_vals = label_vals.value
+    else:
+        label_vals = None
+        sectors_meta = _parse_list_meta(meta.get('sectors'))
+        if sectors_meta and len(sectors_meta) == 1:
+            try:
+                sector_id = int(sectors_meta[0])
+                label_vals = np.full(len(phot_vals), sector_id, dtype=np.uint8)
+            except ValueError:
+                label_vals = None
+    target_name = meta.get('name') or Path(filename).stem
+    if target_name.startswith("TESS_"):
+        target_name = target_name[5:]
+
+    common_kwargs = dict(
+        name=target_name,
+        lookup_name=target_name,
+        jd=jd_absolute,
+        label=label_vals,
+        time_unit="d",
+        timescale=volc.timesys.timescale.lower(),
+        photcal=photcal_meta,
+        period=meta.get('period'),
+        epoch=meta.get('epoch'),
+        period_unit="d",
+    )
+
+    if is_mag:
+        lcd = CurveDash(
+            **common_kwargs,
+            mag=phot_vals,
+            mag_err=err_vals,
+            mag_unit=str(volc.table[phot_col].unit or "mag"),
+            active_domain=DOMAIN_MAG,
+        )
+    else:
+        lcd = CurveDash(
+            **common_kwargs,
+            flux=phot_vals,
+            flux_err=err_vals,
+            flux_unit=str(volc.table[phot_col].unit or ""),
+            active_domain=DOMAIN_FLUX,
+        )
+
+    lcd.metadata['ra'] = meta.get('ra')
+    lcd.metadata['dec'] = meta.get('dec')
+    for key in ('authors', 'sectors', 'flux_origins'):
+        if key in meta:
+            lcd.metadata[key] = _parse_list_meta(meta[key])
+    if meta.get('stitched') in (True, 'true', 'True', '1', 1):
+        lcd.metadata['stitched'] = True
+        lcd.metadata['photcal'] = {}
+
+    title = build_curvedash_title(lcd)
+    lcd.title = title
+    lcd.metadata['title'] = title
+
+    return lcd
+
+
+def curvedash_to_table(lcd) -> Table:
+    """Extracts a standards-oriented Astropy Table from a CurveDash instance.
+
+    Strips application-only columns (``selected``, ``perm_index``, ``phase``) and
+    maps the active photometric domain to ``obs_time``, ``phot``, and ``flux_error``.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+
+    Returns:
+        astropy.table.Table: Clean table suitable for ``write_vo_lightcurve``.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash) or lcd.lightcurve is None:
+        raise PipeException('Cannot export an empty CurveDash instance.')
+
+    t_out = Table()
+    t_out['obs_time'] = lcd.jd.values
+    t_out['phot'] = lcd.phot.values
+    if lcd.phot_err is not None:
+        t_out['flux_error'] = lcd.phot_err.values
+
+    if lcd.label is not None and 'label' in lcd.lightcurve.columns:
+        t_out['label'] = lcd.lightcurve['label'].values
+
+    phot_unit = lcd.phot_unit
+    if phot_unit:
+        try:
+            t_out['phot'].unit = u.Unit(phot_unit)
+            if 'flux_error' in t_out.colnames:
+                t_out['flux_error'].unit = u.Unit(phot_unit)
+        except ValueError:
+            logger.warning('Could not assign photometric unit %s during export.', phot_unit)
+
+    meta_export = {}
+    if lcd.metadata:
+        for key in ('ra', 'dec', 'period', 'epoch', 'sectors', 'flux_origins', 'authors', 'name'):
+            if lcd.metadata.get(key) is not None:
+                meta_export[key] = lcd.metadata[key]
+        if lcd.metadata.get('stitched'):
+            meta_export['stitched'] = 'true'
+    if lcd.title:
+        meta_export['title'] = lcd.title
+    elif lcd.name:
+        meta_export['name'] = lcd.name
+    if meta_export:
+        t_out.meta = meta_export
+
+    return t_out
+
+
+def _is_stitched_lightcurve(lcd) -> bool:
+    """Detects whether a lightcurve was produced by sector stitching.
+
+    Stitching applies arithmetic normalisation across sectors, so pipeline
+    photometric zero points are no longer valid for the combined flux scale.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+
+    Returns:
+        bool: True if the curve is stitched.
+    """
+    meta = lcd.metadata or {}
+    if meta.get('stitched') in (True, 'true', 'True', '1', 1):
+        return True
+    title = meta.get('title') or getattr(lcd, 'title', None) or ''
+    return str(title).startswith('Stitched curve')
+
+
+def _build_tess_votable_kwargs(lcd) -> dict:
+    """Builds keyword arguments for TESS-profile VOTable export.
+
+    Args:
+        lcd (CurveDash): Application lightcurve with TESS metadata.
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+    """
+    from skvo_veb.utils import tess_config
+
+    authors = lcd.metadata.get('authors', [])
+    if not authors and lcd.metadata.get('author'):
+        authors = [lcd.metadata.get('author')]
+    pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
+    is_spoc = tess_config.is_spoc_pipeline(authors)
+    is_stitched = _is_stitched_lightcurve(lcd)
+    include_zero_points = is_spoc and not is_stitched
+    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
+
+    sectors = _parse_list_meta(lcd.metadata.get('sectors')) or []
+    flux_origins = _parse_list_meta(lcd.metadata.get('flux_origins')) or []
+    methods_str = ", ".join(dict.fromkeys(flux_origins)) if flux_origins else "unknown"
+    sectors_str = ", ".join(sectors) if sectors else "unknown"
+
+    calibration_note = (
+        " Photometric zero points are omitted because sector stitching invalidates "
+        "pipeline flux calibration."
+        if is_stitched
+        else ""
+    )
+
+    return {
+        "table_name": f"TESS_{sanitize_filename(tic_id)}",
+        "filter_identifier": tess_config.TESS_FILTER_IDENTIFIER,
+        "refposition": tess_config.TESS_REFPOSITION,
+        "timescale": tess_config.TESS_TIMESCALE,
+        "timeorigin": tess_config.TESS_TIMEORIGIN,
+        "votable_description": (
+            f"TESS space telescope lightcurve for target {tic_id}, "
+            f"processed via the {pipeline_str} pipeline. "
+            f"Photometry method(s): {methods_str}."
+            f"{calibration_note}"
+        ),
+        "table_description": (
+            f"Photometric time-series observations of {tic_id} from the TESS mission. "
+            f"Data produced by the {pipeline_str} pipeline. "
+            f"Sectors: {sectors_str}. Photometry method(s): {methods_str}."
+            f"{calibration_note}"
+        ),
+        "creator": f"TESS {pipeline_str} Pipeline",
+        "zero_point_flux": tess_config.TESS_SPOC_ZERO_POINT_FLUX if include_zero_points else None,
+        "zero_point_ref_mag": tess_config.TESS_SPOC_ZERO_POINT_REF_MAG if include_zero_points else None,
+        "effective_wavelength": tess_config.TESS_EFFECTIVE_WAVELENGTH.to(u.m).value,
+        "effective_wavelength_unit": "m",
+        "ra": lcd.metadata.get('ra'),
+        "dec": lcd.metadata.get('dec'),
+        "filter_name": "TESS",
+        "period": lcd.metadata.get('period'),
+        "epoch": lcd.metadata.get('epoch'),
+        "binary": True,
+    }
+
+
+def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
+    """Exports a CurveDash instance to the requested file format.
+
+    Routes standards-compliant VOTable output through ``write_vo_lightcurve`` and
+    all other formats through ``CurveDash.download()``.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+        table_format (str): Target format identifier (e.g. ``'votable'``, ``'ascii.ecsv'``).
+        profile (str, optional): Export profile name (e.g. ``'tess'`` for TESS VOTable).
+
+    Returns:
+        bytes: Serialised file content.
+
+    Raises:
+        PipeException: If the format or profile is unsupported.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash):
+        raise PipeException('export_curvedash expects a CurveDash instance.')
+
+    if table_format == 'votable':
+        if profile != 'tess':
+            raise PipeException(
+                f"Unsupported VOTable export profile '{profile}'. Use profile='tess'."
+            )
+        buf = io.BytesIO()
+        kwargs = _build_tess_votable_kwargs(lcd)
+        write_vo_lightcurve(
+            output_stream_or_path=buf,
+            table_data=curvedash_to_table(lcd),
+            **kwargs,
+        )
+        return buf.getvalue()
+
+    return lcd.download(table_format)
 
 
 def main():

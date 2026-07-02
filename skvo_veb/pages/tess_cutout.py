@@ -37,7 +37,7 @@ register_page(__name__, name='TESS cutout',
               title='TESS cutout Tool',
               in_navbar=True)
 
-jd0_tess = 2457000  # btjd format. We can use the construction Time(2000, format="btjd", scale="tbd") directly,
+from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
 
 switch_label_style = {'display': 'inline-block', 'padding': '5px'}  # In the row, otherwise 'block'
 # switch_label_style = {'display': 'block', 'padding': '2px'}  # In the row, otherwise 'block'

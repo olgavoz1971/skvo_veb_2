@@ -330,6 +330,89 @@ class TimeSys:
         return f"<TimeSys: timescale={self.timescale} refposition={self.refposition} timeorigin={self.timeorigin}>"
 
 
+def extract_timesys_from_astropy(vot_file):
+    """Extracts TimeSys metadata from astropy VOTableFile tree.
+
+    Args:
+        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
+
+    Returns:
+        TimeSys: The populated TimeSys metadata container instance.
+    """
+    for res in vot_file.resources:
+        if res.time_systems:
+            ts = res.time_systems[0]
+            try:
+                timeorigin = float(ts.timeorigin) if ts.timeorigin is not None else 0.0
+            except (ValueError, TypeError):
+                timeorigin = 0.0
+            return TimeSys(
+                refposition=ts.refposition or 'HELIOCENTER',
+                timeorigin=timeorigin,
+                timescale=ts.timescale or 'UTC'
+            )
+    return TimeSys()
+
+
+def extract_photdm_from_astropy(vot_file):
+    """Extracts PhotDM metadata from astropy VOTableFile tree.
+
+    Args:
+        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
+
+    Returns:
+        dict: A mapping of target column references (strings) to PhotDM instances.
+    """
+    from astropy.io.votable.tree import Param, FieldRef
+    
+    UT_FLUX = "photDM:PhotCal.zeroPoint.flux.value"
+    UT_MAG = "photDM:PhotCal.zeroPoint.referenceMagnitude.value"
+    UT_MAG_SYS = "photDM:PhotCal.magnitudeSystem.type"
+    UT_FILTER = "photDM:PhotometryFilter.identifier"
+    UT_FILTER_SPEC = "photDM:PhotometryFilter.spectralLocation.value"
+
+    dm_map = {}
+    
+    for res in vot_file.resources:
+        for g in res.groups:
+            if g.name == 'photcal':
+                cal_params = {'zp_flux': 1.0, 'zp_mag': 0.0, 'zp_mag_unit': 'mag', 'zp_flux_unit': None}
+                filter_params = {'filter_id': '', 'spectral_location': 0.0, 'spectral_location_unit': None}
+                target_col = None
+                
+                for entry in g.entries:
+                    role_utype = getattr(entry, "utype", "") or ""
+                    role_utype = role_utype.lower()
+                    
+                    if isinstance(entry, Param):
+                        ut = role_utype or getattr(entry, "utype", "") or ""
+                        ut = ut.lower()
+                        
+                        if ut == UT_FLUX.lower():
+                            cal_params['zp_flux'] = float(entry.value) if entry.value is not None else 1.0
+                            cal_params['zp_flux_unit'] = getattr(entry, "unit", None)
+                        elif ut == UT_MAG.lower():
+                            cal_params['zp_mag'] = float(entry.value) if entry.value is not None else 0.0
+                            cal_params['zp_mag_unit'] = entry.unit
+                        elif ut == UT_MAG_SYS.lower():
+                            cal_params['mag_sys'] = entry.value
+                        elif ut == UT_FILTER.lower():
+                            filter_params['filter_id'] = entry.value
+                        elif ut == UT_FILTER_SPEC.lower():
+                            filter_params['spectral_location'] = float(entry.value) if entry.value is not None else 0.0
+                            filter_params['spectral_location_unit'] = getattr(entry, "unit", None)
+                            
+                    elif isinstance(entry, FieldRef):
+                        target_col = getattr(entry, "ref", None)
+                        
+                if target_col:
+                    phot_filter = PhotometryFilter(**filter_params)
+                    photcal = PhotCal(**cal_params)
+                    dm_map[target_col] = PhotDM(photcal=photcal, photometry_filter=phot_filter)
+                    
+    return dm_map
+
+
 def extract_photdm(tree):
     """GAVO tree walker for PhotCal groups.
 
@@ -735,34 +818,71 @@ class VOLightCurve:
             file_path (str or file-like object): Path to the input file or an active file-like stream.
         """
         try:
-            if is_votable(file_path):
+            if hasattr(file_path, 'seek'):
+                file_path.seek(0)
+            
+            votable_detected = is_votable(file_path)
+            
+            if hasattr(file_path, 'seek'):
+                file_path.seek(0)
+
+            if votable_detected:
                 # The best track:
                 self.table = Table.read(file_path, format='votable')
-                if hasattr(file_path, 'read'):
-                    # It's already an open stream! (from the Dash Plotly Upload for instance
-                    # Just ensure we are at the start of the "file"
+                
+                # Try to parse with astropy.io.votable as the primary metadata extractor
+                astropy_success = False
+                try:
+                    if hasattr(file_path, 'seek'):
+                        file_path.seek(0)
+                    import astropy.io.votable as vot
+                    tree = vot.parse(file_path)
+                    first_table = tree.get_first_table()
+                    for param in first_table.params:
+                        if param.name:
+                            self.table.meta[param.name] = param.value
+                    
+                    self.timesys = extract_timesys_from_astropy(tree)
+                    self.photdms = extract_photdm_from_astropy(tree)
+                    self.table = _promote_to_vo_standards(self.table)
+                    astropy_success = True
+                except Exception as e:
+                    logger.warning(f"Failed to parse VOTable params and metadata using astropy: {e}")
+
+                if astropy_success:
+                    return
+
+                # Fallback to GAVO walker if astropy metadata extraction failed
+                if hasattr(file_path, 'seek'):
                     file_path.seek(0)
-                    votable_tree = votparse.readRaw(file_path)
-                else:
-                    # It's a string path, we need to open it
-                    with open(file_path, "rb") as f:
-                        votable_tree = votparse.readRaw(f)
+                try:
+                    if hasattr(file_path, 'seek'):
+                        file_path.seek(0)
+                        votable_tree = votparse.readRaw(file_path)
+                    else:
+                        with open(file_path, "rb") as f:
+                            votable_tree = votparse.readRaw(f)
 
-                # and yet I don't trust you:
-                self.table = _promote_to_vo_standards(self.table)
-
-                # Rigid Extraction
-                self.timesys = extract_timesys(votable_tree)
-                self.photdms = extract_photdm(votable_tree)
-                return
+                    self.table = _promote_to_vo_standards(self.table)
+                    self.timesys = extract_timesys(votable_tree)
+                    self.photdms = extract_photdm(votable_tree)
+                    return
+                except Exception as e_gavo:
+                    logger.warning(f"GAVO fallback parsing also failed: {e_gavo}")
+                    # If both failed, let's raise the original astropy exception or proceed to general fallbacks
+                    raise
 
             # Try to fix things ...
+            if hasattr(file_path, 'seek'):
+                file_path.seek(0)
             self.table = Table.read(file_path)
             logger.info(f"We have read {file_path} using Table.read, though it is not the right VOTable")
 
         except Exception as e:
             logger.warning(f"Standard read failed, trying heuristic ASCII...")
             # print(f"Standard read failed ({e}), trying heuristic ASCII...")
+            if hasattr(file_path, 'seek'):
+                file_path.seek(0)
             self.table = ascii.read(file_path)
             self.table = _recover_lc_colnames(self.table)
 
@@ -1060,7 +1180,7 @@ def write_vo_lightcurve(
     filter_identifier: str,
     refposition: str = "BARYCENTER",
     timescale: str = "TCB",
-    timeorigin: float = 2455197.5,
+    timeorigin: float = 0,
     votable_description: str | None = None,
     creator: str | None = None,
     zero_point_flux: float | None = None,
@@ -1087,7 +1207,7 @@ def write_vo_lightcurve(
 
     Args:
         output_stream_or_path (str or file-like object): Path or stream to write the output to.
-        table_data (astropy.table.Table or pandas.DataFrame or VOLightCurve or CurveDash):
+        table_data (astropy.table.Table or pandas.DataFrame or VOLightCurve):
             The source lightcurve containing timing and photometry.
         table_name (str): Value for the `<TABLE name="...">` attribute (Obligatory).
         filter_identifier (str): Value for the `filterIdentifier` PARAM (Obligatory).
@@ -1122,12 +1242,12 @@ def write_vo_lightcurve(
         t = table_data.copy()
     elif hasattr(table_data, 'table') and isinstance(table_data.table, Table):
         t = table_data.table.copy()
-    elif hasattr(table_data, 'lightcurve') and isinstance(table_data.lightcurve, pd.DataFrame):
-        t = Table.from_pandas(table_data.lightcurve)
     elif isinstance(table_data, pd.DataFrame):
         t = Table.from_pandas(table_data)
     else:
-        t = Table(table_data)
+        raise TypeError(
+            "table_data must be an astropy Table, VOLightCurve, or pandas DataFrame."
+        )
 
     # Heuristic/Positional detection and mapping of columns to standardized names
     time_col = None
@@ -1153,6 +1273,11 @@ def write_vo_lightcurve(
     if err_col and err_col != 'flux_error':
         t.rename_column(err_col, 'flux_error')
 
+    for name in ('label', 'sector'):
+        if name in t.colnames and name != 'label':
+            t.rename_column(name, 'label')
+            break
+
     # Positional fallback if names don't map
     if 'obs_time' not in t.colnames:
         if len(t.colnames) > 0:
@@ -1165,14 +1290,18 @@ def write_vo_lightcurve(
         else:
             raise ValueError("Table data must contain a photometry (flux/magnitude) column.")
     if 'flux_error' not in t.colnames and len(t.colnames) > 2:
-        t.rename_column(t.colnames[2], 'flux_error')
+        third_col = t.colnames[2]
+        if third_col != 'label':
+            t.rename_column(third_col, 'flux_error')
 
-    # Construct the strictly defined output table containing only standard columns
+    # Construct the strictly defined output table containing standard columns
     t_out = Table()
     t_out['obs_time'] = t['obs_time']
     t_out['phot'] = t['phot']
     if 'flux_error' in t.colnames:
         t_out['flux_error'] = t['flux_error']
+    if 'label' in t.colnames:
+        t_out['label'] = t['label']
 
     # Convert to VOTableFile structure
     vot_file = vot.from_table(t_out)
@@ -1222,6 +1351,10 @@ def write_vo_lightcurve(
             f.ucd = 'stat.error;phot.flux;em.opt'
             f.unit = str(t_out['flux_error'].unit or 's**-1')
             f.description = 'Statistical uncertainty of photometry'
+        elif f.name == 'label':
+            f.ID = 'label'
+            f.ucd = 'meta.id;meta.dataset'
+            f.description = 'Dataset or sector label for each observation'
 
     # Add GROUP ID="phot_def" name="photcal"
     g = Group(vot_file, ID='phot_def', name='photcal')
@@ -1295,6 +1428,29 @@ def write_vo_lightcurve(
         p_ep.ucd = 'time.epoch'
         p_ep.description = 'Reference time'
         tab.params.append(p_ep)
+
+    meta_src = getattr(t, 'meta', None) or {}
+    optional_char_params = (
+        ('sectors', 'meta.id;meta.dataset', 'TESS sector identifiers present in this lightcurve'),
+        ('flux_origins', 'meta.code', 'Photometry extraction method (e.g. pdcsap, sap)'),
+        ('authors', 'meta.bib.author', 'Pipeline author(s)'),
+        ('title', 'meta.note', 'Display title for the lightcurve figure'),
+        ('name', 'meta.id', 'Target identifier'),
+        ('stitched', 'meta.code', 'True when sectors were stitched and flux calibration is relative'),
+    )
+    for param_name, param_ucd, param_desc in optional_char_params:
+        param_val = meta_src.get(param_name)
+        if param_val is None:
+            continue
+        if isinstance(param_val, (list, tuple)):
+            param_val = ','.join(str(v) for v in param_val)
+        param_val = str(param_val).strip()
+        if not param_val:
+            continue
+        p_extra = Param(vot_file, name=param_name, value=param_val, datatype='char', arraysize='*')
+        p_extra.ucd = param_ucd
+        p_extra.description = param_desc
+        tab.params.append(p_extra)
 
     # Write to target path or stream
     tabledata_format = 'binary' if binary else 'tabledata'
