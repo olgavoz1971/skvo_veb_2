@@ -8,7 +8,12 @@ import pandas as pd
 from astropy import units as u
 from astropy.table import Table
 
-from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, JD_TO_MJD
+from skvo_veb.utils.lc_config import (
+    DOMAIN_FLUX,
+    DOMAIN_MAG,
+    EXPORT_FORMATS,
+    JD_TO_MJD,
+)
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import (
     VOLightCurve,
@@ -77,6 +82,125 @@ def read_to_volc(file_source):
     except Exception as e:
         logger.error(f"VOLightCurve read failed: {e}")
         raise
+
+
+def ingest_lightcurve_file(file_source, filename: str):
+    """Ingests an uploaded lightcurve file into a ``CurveDash`` instance.
+
+    VOTable files retain PhotCal metadata; tabular formats (ECSV, CSV, DAT) restore
+    only the basic metadata stored in the file header (ECSV) or column data alone.
+
+    Args:
+        file_source (str or file-like): Path or open binary stream.
+        filename (str): Original upload filename used for format detection.
+
+    Returns:
+        CurveDash: Parsed application lightcurve state.
+    """
+    ext = Path(filename).suffix.lower().lstrip(".")
+    if ext in ("vot", "xml"):
+        volc = read_to_volc(file_source)
+        return volc_to_curvedash(volc, filename, preserve_photcal=True)
+
+    tabular_formats = {
+        "ecsv": "ascii.ecsv",
+        "csv": "csv",
+        "dat": "ascii.commented_header",
+    }
+    if ext in tabular_formats:
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        table = Table.read(file_source, format=tabular_formats[ext])
+        return tabular_table_to_curvedash(table, filename)
+
+    volc = read_to_volc(file_source)
+    return volc_to_curvedash(volc, filename, preserve_photcal=False)
+
+
+def tabular_table_to_curvedash(table: Table, filename: str):
+    """Builds a ``CurveDash`` from a plain Astropy table (CSV/ECSV/DAT upload).
+
+    Preserves exported column names and restores ECSV header metadata without PhotCal.
+
+    Args:
+        table (Table): Tabular data read by Astropy.
+        filename (str): Original filename (used for object naming).
+
+    Returns:
+        CurveDash: Parsed application lightcurve state.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    meta = table.meta or {}
+    time_col = None
+    for name in ("jd", "obs_time", "time", "mjd"):
+        if name in table.colnames:
+            time_col = name
+            break
+    if time_col is None:
+        raise ValueError("No time column found in the uploaded tabular file.")
+
+    jd_vals = np.asarray(table[time_col], dtype=float)
+    if time_col in ("obs_time", "mjd") and np.nanmax(jd_vals) < 1e6:
+        jd_vals = jd_vals + JD_TO_MJD
+
+    if "flux" in table.colnames:
+        phot_col, is_mag = "flux", False
+    elif "mag" in table.colnames:
+        phot_col, is_mag = "mag", True
+    elif "phot" in table.colnames:
+        phot_col, is_mag = "phot", False
+    else:
+        raise ValueError("No photometry column found in the uploaded tabular file.")
+
+    err_col = "flux_err" if phot_col == "flux" else "mag_err"
+    if err_col not in table.colnames and phot_col == "flux" and "flux_error" in table.colnames:
+        err_col = "flux_error"
+    if err_col in table.colnames:
+        err_vals = np.asarray(table[err_col], dtype=float)
+    else:
+        err_vals = np.zeros(len(jd_vals), dtype=float)
+
+    phot_vals = np.asarray(table[phot_col], dtype=float)
+    label_vals = np.asarray(table["label"]) if "label" in table.colnames else None
+    target_name = meta.get("name") or Path(filename).stem
+    if str(target_name).startswith("TESS_"):
+        target_name = str(target_name)[5:]
+
+    common_kwargs = dict(
+        name=target_name,
+        lookup_name=target_name,
+        jd=jd_vals,
+        label=label_vals,
+        time_unit="d",
+        timescale="tdb",
+        photcal={},
+        period=meta.get("period"),
+        epoch=meta.get("epoch"),
+        period_unit="d",
+    )
+    if is_mag:
+        lcd = CurveDash(
+            **common_kwargs,
+            mag=phot_vals,
+            mag_err=err_vals,
+            mag_unit=str(table[phot_col].unit or "mag"),
+            active_domain=DOMAIN_MAG,
+        )
+    else:
+        lcd = CurveDash(
+            **common_kwargs,
+            flux=phot_vals,
+            flux_err=err_vals,
+            flux_unit=str(table[phot_col].unit or ""),
+            active_domain=DOMAIN_FLUX,
+        )
+
+    lcd.metadata["photcal"] = {}
+    _apply_tabular_meta_to_curvedash(lcd, meta)
+    lcd.title = build_curvedash_title(lcd)
+    lcd.metadata["title"] = lcd.title
+    return lcd
 
 
 # We need this to tame our float types zoo
@@ -544,7 +668,112 @@ def _extract_photcal_meta(volc: VOLightCurve, phot_col: str) -> dict:
     }
 
 
-def volc_to_curvedash(volc: VOLightCurve, filename: str):
+def _time_column_to_jd_array(volc: VOLightCurve, time_col: str) -> np.ndarray:
+    """Converts a VOLightCurve time column to absolute Julian Date values.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        time_col (str): Column name holding epoch data.
+
+    Returns:
+        numpy.ndarray: Absolute JD values (may still need MJD offset correction).
+    """
+    col = volc.table[time_col]
+    if hasattr(col, "jd"):
+        jd_vals = np.asarray(col.jd, dtype=float)
+    else:
+        jd_vals = volc[time_col]
+        if hasattr(jd_vals, "value"):
+            jd_vals = jd_vals.value
+        jd_vals = np.asarray(jd_vals, dtype=float)
+    return jd_vals
+
+
+def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarray:
+    """Resolves display or relative time columns to absolute Julian Date.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        time_col (str): Column name holding epoch data.
+
+    Returns:
+        numpy.ndarray: Absolute JD values.
+    """
+    jd_vals = _time_column_to_jd_array(volc, time_col)
+    jd0_offset = volc.timesys.jd0 or 0.0
+    if time_col == "obs_time" or (jd0_offset > 0 and np.nanmax(jd_vals) < 1e6):
+        return jd_vals + jd0_offset
+    if jd0_offset == 0.0 and np.nanmax(jd_vals) < 1e6:
+        return jd_vals + JD_TO_MJD
+    return jd_vals
+
+
+def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
+    """Finds the primary photometry column in an ingested table.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+
+    Returns:
+        str or None: Column name for flux or magnitude values.
+    """
+    if "phot" in volc.table.colnames:
+        return "phot"
+    flux_cols = get_flux_colnames(volc)
+    mag_cols = get_mag_colnames(volc)
+    if flux_cols:
+        return flux_cols[0]
+    if mag_cols:
+        return mag_cols[0]
+    if "flux" in volc.table.colnames:
+        return "flux"
+    if "mag" in volc.table.colnames:
+        return "mag"
+    return None
+
+
+def _resolve_photometry_error_column(volc: VOLightCurve, phot_col: str) -> str | None:
+    """Finds the uncertainty column paired with a photometry column.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        phot_col (str): Primary photometry column name.
+
+    Returns:
+        str or None: Error column name, if present.
+    """
+    if "flux_error" in volc.table.colnames:
+        return "flux_error"
+    if phot_col == "flux" and "flux_err" in volc.table.colnames:
+        return "flux_err"
+    if phot_col == "mag" and "mag_err" in volc.table.colnames:
+        return "mag_err"
+    if is_mag_column(volc.table, phot_col):
+        error_cols = volc.get_mag_error_colnames()
+        return error_cols[0] if error_cols else None
+    error_cols = volc.get_flux_error_colnames()
+    return error_cols[0] if error_cols else None
+
+
+def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
+    """Maps ECSV header metadata onto ``CurveDash`` without PhotCal fields.
+
+    Args:
+        lcd (CurveDash): Target instance to mutate in place.
+        meta (dict): Table metadata read from an ECSV header.
+    """
+    if meta.get("pipeline"):
+        lcd.metadata["authors"] = _parse_list_meta(meta["pipeline"])
+    if meta.get("method"):
+        lcd.metadata["flux_origins"] = _parse_list_meta(meta["method"])
+    if meta.get("filter"):
+        lcd.metadata["filter"] = meta["filter"]
+    for key in ("ra", "dec", "period", "epoch", "name"):
+        if meta.get(key) is not None:
+            lcd.metadata[key] = meta[key]
+
+
+def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool = True):
     """Converts a VOLightCurve instance into a CurveDash instance.
 
     Resolves columns, reconstructs absolute Julian dates from ``obs_time`` and
@@ -554,6 +783,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
     Args:
         volc (VOLightCurve): The parsed Virtual Observatory lightcurve.
         filename (str): The name of the uploaded file.
+        preserve_photcal (bool): When false, skip PhotCal restoration (tabular uploads).
 
     Returns:
         CurveDash: The populated CurveDash instance.
@@ -570,32 +800,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
         raise ValueError("No time column found in the uploaded file.")
 
     time_col = time_cols[0]
-    jd_vals = volc[time_col]
-    if hasattr(jd_vals, 'value'):
-        jd_vals = jd_vals.value
-    if hasattr(jd_vals, 'jd'):
-        jd_vals = jd_vals.jd
+    jd_absolute = _absolute_jd_from_time_column(volc, time_col)
 
-    jd0_offset = volc.timesys.jd0 or 0.0
-    if jd0_offset > 0 and np.nanmax(jd_vals) < 1e6:
-        jd_absolute = jd_vals + jd0_offset
-    elif jd0_offset == 0.0 and np.nanmax(jd_vals) < 1e6:
-        # Legacy files with MJD in obs_time but no TIMESYS timeorigin.
-        jd_absolute = jd_vals + JD_TO_MJD
-    else:
-        jd_absolute = jd_vals
-
-    phot_col = None
-    if 'phot' in volc.table.colnames:
-        phot_col = 'phot'
-    else:
-        flux_cols = get_flux_colnames(volc)
-        mag_cols = get_mag_colnames(volc)
-        if flux_cols:
-            phot_col = flux_cols[0]
-        elif mag_cols:
-            phot_col = mag_cols[0]
-
+    phot_col = _resolve_photometry_column(volc)
     if not phot_col:
         raise ValueError("No photometry (flux or magnitude) column found in the uploaded file.")
 
@@ -604,18 +811,10 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
         phot_vals = phot_vals.value
 
     meta = volc.table.meta or {}
-    is_mag = is_mag_column(volc.table, phot_col)
-    photcal_meta = _extract_photcal_meta(volc, phot_col)
+    is_mag = phot_col == 'mag' or is_mag_column(volc.table, phot_col)
+    photcal_meta = _extract_photcal_meta(volc, phot_col) if preserve_photcal else {}
 
-    err_col = None
-    if 'flux_error' in volc.table.colnames:
-        err_col = 'flux_error'
-    elif is_mag_column(volc.table, phot_col):
-        error_cols = volc.get_mag_error_colnames()
-        err_col = error_cols[0] if error_cols else None
-    else:
-        error_cols = volc.get_flux_error_colnames()
-        err_col = error_cols[0] if error_cols else None
+    err_col = _resolve_photometry_error_column(volc, phot_col)
 
     if err_col:
         err_vals = volc[err_col]
@@ -681,6 +880,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
     for key in ('authors', 'sectors', 'flux_origins'):
         if key in meta:
             lcd.metadata[key] = _parse_list_meta(meta[key])
+    if not preserve_photcal:
+        lcd.metadata['photcal'] = {}
+        _apply_tabular_meta_to_curvedash(lcd, meta)
     if meta.get('stitched') in (True, 'true', 'True', '1', 1):
         lcd.metadata['stitched'] = True
         lcd.metadata['photcal'] = {}
@@ -753,6 +955,144 @@ def curvedash_to_table(lcd) -> Table:
         t_out.meta = meta_export
 
     return t_out
+
+
+def curvedash_to_tabular_table(lcd) -> Table:
+    """Builds a plain tabular export table with JD and active photometry columns.
+
+    Omits application-only columns (``phase``, ``selected``, ``perm_index``).
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+
+    Returns:
+        astropy.table.Table: Data columns suitable for CSV, DAT, or ECSV export.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash) or lcd.lightcurve is None:
+        raise PipeException('Cannot export an empty CurveDash instance.')
+
+    tab = Table()
+    tab['jd'] = lcd.jd.values
+    if lcd.active_domain == DOMAIN_MAG:
+        tab['mag'] = lcd.phot.values
+        if lcd.phot_err is not None:
+            tab['mag_err'] = lcd.phot_err.values
+        if lcd.phot_unit:
+            try:
+                tab['mag'].unit = u.mag
+                tab['mag_err'].unit = u.mag
+            except ValueError:
+                logger.warning('Could not assign magnitude units during tabular export.')
+    else:
+        tab['flux'] = lcd.phot.values
+        if lcd.phot_err is not None:
+            tab['flux_err'] = lcd.phot_err.values
+        phot_unit = lcd.phot_unit
+        if phot_unit:
+            try:
+                tab['flux'].unit = u.Unit(phot_unit)
+                tab['flux_err'].unit = u.Unit(phot_unit)
+            except ValueError:
+                logger.warning('Could not assign flux units during tabular export.')
+
+    if lcd.label is not None and 'label' in lcd.lightcurve.columns:
+        tab['label'] = lcd.lightcurve['label'].values
+
+    return tab
+
+
+def _build_ecsv_metadata(lcd) -> dict:
+    """Selects basic descriptive metadata for ECSV header export.
+
+    PhotCal zero points are intentionally excluded; only the filter name is kept.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+
+    Returns:
+        dict: ECSV YAML header metadata.
+    """
+    meta = lcd.metadata or {}
+    header = {}
+    name = meta.get('name') or lcd.name or lcd.title
+    if name:
+        header['name'] = name
+    for key in ('ra', 'dec', 'period', 'epoch'):
+        if meta.get(key) is not None:
+            header[key] = meta[key]
+    filter_name = meta.get('filter') or meta.get('filter_name')
+    if filter_name:
+        header['filter'] = filter_name
+    authors = _parse_list_meta(meta.get('authors'))
+    if authors:
+        header['pipeline'] = ', '.join(str(a) for a in authors)
+    methods = _parse_list_meta(meta.get('flux_origins'))
+    if methods:
+        header['method'] = ', '.join(str(m) for m in methods)
+    return header
+
+
+def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
+    """Exports a CurveDash instance to the requested file format.
+
+    VOTable uses ``write_vo_lightcurve`` with mission profiles. ECSV stores basic
+    metadata in the header; CSV and commented-header DAT export data columns only.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+        table_format (str): Target format identifier (e.g. ``'votable'``, ``'ascii.ecsv'``).
+        profile (str, optional): Export profile name (``'tess'`` or ``'cutout'`` for VOTable).
+
+    Returns:
+        bytes: Serialised file content.
+
+    Raises:
+        PipeException: If the format or profile is unsupported.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash):
+        raise PipeException('export_curvedash expects a CurveDash instance.')
+
+    if table_format not in EXPORT_FORMATS:
+        raise PipeException(
+            f"Unsupported export format '{table_format}'. "
+            f"Supported formats: {', '.join(EXPORT_FORMATS)}"
+        )
+
+    if table_format == 'votable':
+        if profile == 'tess':
+            kwargs = _build_tess_votable_kwargs(lcd)
+        elif profile == 'cutout':
+            kwargs = _build_cutout_votable_kwargs(lcd)
+        else:
+            raise PipeException(
+                f"Unsupported VOTable export profile '{profile}'. "
+                "Use profile='tess' or profile='cutout'."
+            )
+        buf = io.BytesIO()
+        write_vo_lightcurve(
+            output_stream_or_path=buf,
+            table_data=curvedash_to_table(lcd),
+            **kwargs,
+        )
+        return buf.getvalue()
+
+    tab = curvedash_to_tabular_table(lcd)
+    if table_format == 'ascii.ecsv':
+        tab.meta = _build_ecsv_metadata(lcd)
+    else:
+        tab.meta = {}
+
+    text_formats = {'ascii.ecsv', 'csv', 'ascii.commented_header'}
+    buf = io.StringIO() if table_format in text_formats else io.BytesIO()
+    tab.write(buf, format=table_format, overwrite=True)
+    payload = buf.getvalue()
+    if isinstance(payload, str):
+        payload = payload.encode('utf-8')
+    return payload
 
 
 def _is_stitched_lightcurve(lcd) -> bool:
@@ -991,49 +1331,6 @@ def _build_tess_votable_kwargs(lcd) -> dict:
         "epoch": lcd.metadata.get('epoch'),
         "binary": True,
     }
-
-
-def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
-    """Exports a CurveDash instance to the requested file format.
-
-    Routes standards-compliant VOTable output through ``write_vo_lightcurve`` and
-    all other formats through ``CurveDash.download()``.
-
-    Args:
-        lcd (CurveDash): Application lightcurve state container.
-        table_format (str): Target format identifier (e.g. ``'votable'``, ``'ascii.ecsv'``).
-        profile (str, optional): Export profile name (``'tess'`` or ``'cutout'`` for VOTable).
-
-    Returns:
-        bytes: Serialised file content.
-
-    Raises:
-        PipeException: If the format or profile is unsupported.
-    """
-    from skvo_veb.utils.curve_dash import CurveDash
-
-    if not isinstance(lcd, CurveDash):
-        raise PipeException('export_curvedash expects a CurveDash instance.')
-
-    if table_format == 'votable':
-        if profile == 'tess':
-            kwargs = _build_tess_votable_kwargs(lcd)
-        elif profile == 'cutout':
-            kwargs = _build_cutout_votable_kwargs(lcd)
-        else:
-            raise PipeException(
-                f"Unsupported VOTable export profile '{profile}'. "
-                "Use profile='tess' or profile='cutout'."
-            )
-        buf = io.BytesIO()
-        write_vo_lightcurve(
-            output_stream_or_path=buf,
-            table_data=curvedash_to_table(lcd),
-            **kwargs,
-        )
-        return buf.getvalue()
-
-    return lcd.download(table_format)
 
 
 def main():

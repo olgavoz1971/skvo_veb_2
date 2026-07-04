@@ -21,3 +21,13 @@ FLUX_TO_MAG_ERR_FACTOR = 1.085736
 # Photometric domain identifiers stored in CurveDash metadata.
 DOMAIN_FLUX = "flux"
 DOMAIN_MAG = "mag"
+
+# Supported user-facing lightcurve download formats (VOTable is always the default).
+DEFAULT_EXPORT_FORMAT = "votable"
+EXPORT_FORMAT_OPTIONS = [
+    {"label": "VOTable (.vot)", "value": "votable"},
+    {"label": "ECSV (.ecsv)", "value": "ascii.ecsv"},
+    {"label": "ASCII Commented Header (.dat)", "value": "ascii.commented_header"},
+    {"label": "CSV (.csv)", "value": "csv"},
+]
+EXPORT_FORMATS = tuple(opt["value"] for opt in EXPORT_FORMAT_OPTIONS)

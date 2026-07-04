@@ -44,13 +44,13 @@ from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import volc_to_curvedash, export_curvedash, build_curvedash_title
+from skvo_veb.utils.lc_bridge import export_curvedash, build_curvedash_title, ingest_lightcurve_file
+from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import prepare_lcd_for_export, trim_curvedash_display_range
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
 from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
-from skvo_veb.volightcurve import VOLightCurve
 from skvo_veb.utils.my_tools import (
     safe_none,
     safe_float,
@@ -213,7 +213,7 @@ def layout():
                             ),  # todo: add callback fired by stitch switch toggle, check it with user curve added
                             # endregion
                         ], style={'marginBottom': '5px'}),  # Flux options
-                        dbc.Button('Plot Curve', id='recreate_selected_tess_lc_srv_button', size="sm",
+                        dbc.Button('rePlot Curve', id='recreate_selected_tess_lc_srv_button', size="sm",
                                    style={'width': '100%', 'marginBottom': '5px'}),
                         html.Details([
                             html.Summary('Folding', style={'font-size': label_font_size}),
@@ -252,13 +252,8 @@ def layout():
                                    style={'width': '100%', 'marginBottom': '5px'}),
                         dbc.Stack([
                             dbc.Select(
-                                options=[
-                                    {'label': 'VOTable (.vot)', 'value': 'votable'},
-                                    {'label': 'ECSV (.ecsv)', 'value': 'ascii.ecsv'},
-                                    {'label': 'ASCII Commented Header (.dat)', 'value': 'ascii.commented_header'},
-                                    {'label': 'CSV (.csv)', 'value': 'csv'},
-                                ],
-                                value='votable',
+                                options=EXPORT_FORMAT_OPTIONS,
+                                value=DEFAULT_EXPORT_FORMAT,
                                 id='select_tess_lc_srv_format',
                                 style={'width': '40%', 'font-size': label_font_size}
                             ),
@@ -1516,11 +1511,8 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
 
         file_obj = io.BytesIO(decoded)
 
-        # 1. Ingest standard Virtual Observatory lightcurve using the scientific core
-        volc = VOLightCurve(file_obj)
-
-        # 2. Delegate all parsing, column mapping, and physical conversions to the backend lc_bridge utility
-        lcd = volc_to_curvedash(volc, filename)
+        # 1. Ingest via bridge (VOTable or tabular formats)
+        lcd = ingest_lightcurve_file(file_obj, filename)
 
         # 3. Handle append state and serialization
         try:

@@ -38,6 +38,7 @@ from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX
 from skvo_veb.utils.lc_bridge import export_curvedash, build_cutout_title, enrich_cutout_curvedash, resolve_cutout_mask_mode
+from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS
 from skvo_veb.utils.lc_interaction import prepare_lcd_for_export
 from skvo_veb.utils.my_tools import PipeException, safe_none, log_gamma, sanitize_filename, positive_float_pattern
 
@@ -319,7 +320,7 @@ def layout():
                             id='flatten_collapse',
                             is_open=True,
                         ),
-                        dbc.Button('Plot curve', id='plot_curve_tess_button',
+                        dbc.Button('rePlot curve', id='plot_curve_tess_button',
                                    size="sm",
                                    style={
                                        # 'marginBottom': '5px',
@@ -355,8 +356,8 @@ def layout():
                         dbc.Button('Trim selected', id='cut_tess_button', size="sm",
                                    style={'marginBottom': '5px', 'width': '100%'}),
                         dbc.Stack([
-                            dbc.Select(options=CurveDash.get_format_list(),
-                                       value=CurveDash.get_format_list()[0],
+                            dbc.Select(options=EXPORT_FORMAT_OPTIONS,
+                                       value=DEFAULT_EXPORT_FORMAT,
                                        id='select_tess_format',
                                        style={'width': '40%', 'font-size': label_font_size}),
                             dbc.Button('Download', style={'width': '60%'}, id='btn_download_tess', size="sm"),

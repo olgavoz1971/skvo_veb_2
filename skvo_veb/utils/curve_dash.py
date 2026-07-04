@@ -102,10 +102,13 @@ class CurveDash:
     extension_dict = {
         'csv': 'csv',
         'dat': 'ascii.commented_header',  # just because I like this particular type of the "dat" format
+        'ecsv': 'ascii.ecsv',
         'html': 'html',
         'json': 'pandas.json',
         'fits': 'fits',
-        'fit': 'fits'
+        'fit': 'fits',
+        'vot': 'votable',
+        'xml': 'votable',
     }
 
     def __init__(self, jd=None, flux=None, flux_err=None, mag=None, mag_err=None,
