@@ -4,6 +4,8 @@ This document describes the caching architecture and strategies implemented in t
 1. **Public Data Caching (Shared Archive Cache):** Reducing external network requests and processing for identical queries by caching public, immutable physical observations (such as TESS search results, Target Pixel Files, and Lightcurves) so multiple users can reuse them.
 2. **Private Data Caching (User Session Cache):** Enabling low-latency user sessions by caching large, user-specific data (uploads, deleted outliers, locally processed lightcurves) on the server side using a unique session UUID, rather than transferring massive payloads back and forth to the client via `dcc.Store`.
 
+For the **experimental hybrid client–server design** used on the TESS archive lightcurve page — why the server holds the array while Plotly and lightweight stores stay in the browser — see [§2](#2-hybrid-clientserver-architecture-for-interactive-lightcurves-experimental).
+
 ---
 
 ## 1. Caching Subsystems and Organisation
@@ -37,9 +39,12 @@ The caching mechanisms are split into three dedicated subsystems depending on th
 * **Underlying Technology:** SQLite-backed `diskcache` (multi-process and thread-safe).
 * **Location Configuration:** Specified by the `USER_CACHE_DIR` environment variable.
 * **Role:** Stores user-specific, customised, or uploaded lightcurve data. TESS lightcurves are represented as high-level scientific curves (`CurveDash` instances) and can be quite large. Passing these data payloads to the browser via `dcc.Store` would cause severe network and browser rendering lags. Instead, the application generates a unique `user_tab_id` and caches the data on the server.
+* **Scope (experimental):** At present, this **server-side user session cache** is used on **one page only** — `skvo_veb/pages/lightcurve_tess_srv.py` (TESS archive lightcurve tool). Other pages (for example `tess_cutout.py`) still hold working lightcurves in browser `dcc.Store` session storage where the design predates this experiment or payload sizes are manageable. See [§2 Hybrid Client–Server Architecture](#2-hybrid-clientserver-architecture-for-interactive-lightcurves-experimental) for the full rationale and data-flow diagrams.
 * **Key Implementation Details:**
   * **Tab UUID Generation:** When a user initialises the page, a unique UUID (`user_tab_id`) is generated on the server and stored in a lightweight `dcc.Store` on the client.
+  * **Replot trigger UUID:** `store_tess_lightcurve_lc_srv` holds **only a random UUID**, not the lightcurve JSON. Dependent callbacks fire when this value changes after cache writes.
   * **Sliding Expiration:** To prevent server-disk exhaustion from inactive sessions, the cache uses a **sliding expiration window** of 24 hours (`expire=86400` seconds). Every read operation refreshes this timer.
+  * **Cache key:** `{user_tab_id}_data` → serialised `CurveDash` JSON string.
 
 ### B. The TESS Public Data Cache (`tess_cache`)
 * **Underlying Technology:** Custom file-based key-value wrapper (`skvo_veb/utils/tess_cache.py`).
@@ -57,7 +62,182 @@ The caching mechanisms are split into three dedicated subsystems depending on th
 
 ---
 
-## 2. Local Debug Mode vs. Production (Apache) Mode
+## 2. Hybrid Client–Server Architecture for Interactive Lightcurves (Experimental)
+
+This section explains **why** the TESS archive lightcurve page (`lightcurve_tess_srv.py`) keeps the scientific dataset on the server while still using browser-side Plotly graphs and lightweight `dcc.Store` components — and **how** data moves between the two tiers without shipping tens of thousands of points on every click.
+
+### 2.1 The Problem We Are Solving
+
+Interactive lightcurve analysis combines two opposing requirements:
+
+| Requirement | Why it pushes toward the **server** | Why it pushes toward the **client** |
+| :--- | :--- | :--- |
+| **Large datasets** | TESS sectors routinely contain **tens of thousands** of cadence points; stitched multi-sector curves can be larger still. Serialising a `CurveDash` DataFrame to JSON often means **megabytes per round-trip**. | — |
+| **Heavy computation** | Phase folding, periodograms (Lomb–Scargle), stitching, flux normalisation, and trim/export pipelines run in Python with Astropy/Lightkurve — impractical in the browser. | — |
+| **Responsive graph UI** | — | Box select, zoom, pan, and hover must feel **instant**. Plotly renders traces in the browser; selection rectangles are drawn locally before any network call. |
+| **Multi-user production** | Apache serves concurrent workers; a shared SQLite-backed `diskcache` is process-safe. | Each browser tab keeps its own Plotly figure and small session stores. |
+
+Putting the full lightcurve into `dcc.Store` would satisfy session persistence but would **re-download the entire array on every callback** that lists the store as `Input` or `State`. That breaks responsiveness and violates the project rule to keep `dcc.Store` payloads under ~5 MB for UI state only.
+
+The experimental design on `lightcurve_tess_srv.py` therefore **splits responsibilities**:
+
+```text
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         BROWSER (per tab)                               │
+  │                                                                         │
+  │   dcc.Store (session)              Plotly dcc.Graph                     │
+  │   ┌──────────────────────┐        ┌──────────────────────────────┐      │
+  │   │ user_tab_id (UUID)   │        │ figure  ← traces for display │      │
+  │   │ replot UUID (trigger)│        │ selectedData  (box select)   │      │
+  │   │ selection_bounds     │        │ relayoutData  (zoom/pan)      │      │
+  │   │   {xmin, xmax}       │        │ clickData     (point pick)   │      │
+  │   │ metadata (axis ranges)│        └──────────────────────────────┘      │
+  │   └──────────┬───────────┘                    │                         │
+  │              │ lightweight IDs / bounds        │ interaction events      │
+  └──────────────┼─────────────────────────────────┼─────────────────────────┘
+                 │                                 │
+                 │  Dash callbacks (HTTP/WebSocket)│
+                 ▼                                 ▼
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         SERVER (shared workers)                         │
+  │                                                                         │
+  │   user_cache (diskcache / SQLite)                                       │
+  │   ┌──────────────────────────────────────────────────────────────┐      │
+  │   │  key: "{user_tab_id}_data"  →  CurveDash JSON (full LC)      │      │
+  │   └──────────────────────────────────────────────────────────────┘      │
+  │        ▲ read/write          ▲ read/write          ▲ read only          │
+  │        │                     │                     │                    │
+  │   plot │ trim │ fold │ periodogram │ export │ upload/stitch download   │
+  │        │                     │                     │                    │
+  │   utils/ (lc_bridge, lc_interaction, tess_lc_builder, curve_dash)      │
+  └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Design Principles
+
+1. **One canonical copy per tab on the server.** All mutations (trim, fold, upload append, re-stitch) read → modify → write `user_cache`. The browser never holds the authoritative dataset.
+2. **Client stores carry keys and UI state only.** Typical payloads: a 36-character UUID, a 16-byte `{xmin, xmax}` dict, or cached axis ranges — not the lightcurve table.
+3. **Plotly owns interactivity until a button asks the server to act.** Box selection updates the graph immediately; only `{xmin, xmax}` is copied into a store (clientside callback). Trim, export, and periodogram are explicit server actions keyed by `user_tab_id`.
+4. **Replot via trigger, not data mirror.** After a server-side change, callbacks return a **new random UUID** to `store_tess_lightcurve_lc_srv`. The plot callback reads the cache and pushes a fresh `figure` dict to the graph — the store value itself is meaningless except as a change detector.
+5. **Minimise cross-tier traffic on the hot path.** Zoom and pan update `relayoutData` locally. Export reads `relayoutData` or `selection_bounds` only when the user clicks Download — not on every pan event.
+
+### 2.3 What Lives Where (TESS archive page)
+
+| Asset | Location | Approx. size | Purpose |
+| :--- | :--- | :--- | :--- |
+| Full `CurveDash` (JD, flux, errors, UI columns) | **Server** `user_cache` | 100 KB – several MB | Canonical science state |
+| `user_tab_id` | **Client** `dcc.Store` (session) | ~36 B | Lookup key for server cache |
+| Replot trigger UUID | **Client** `dcc.Store` (session) | ~36 B | Signal that cache changed → rebuild figure |
+| Selection bounds `{xmin, xmax}` | **Client** `dcc.Store` (session) | ~16 B | Trim/export window in display coordinates |
+| Axis range metadata | **Client** `dcc.Store` (session) | ~100 B | Fallback export clip when graph relayout is stale |
+| Plotly `figure` (x, y arrays) | **Client** `dcc.Graph` | Proportional to visible trace points | Rendering + box/zoom interaction |
+| Plotly `selectedData` / `relayoutData` | **Client** graph props | Event-sized | Interaction; distilled before server use |
+| Exported file bytes | **Server → client** one-shot | File size | `dcc.Download` / `send_bytes` |
+
+**Important:** The Plotly figure **does** contain x/y arrays sent from the server when the plot callback runs. That is unavoidable for rendering. The optimisation is to avoid **re-sending the full serialised DataFrame on every unrelated callback** and to never mirror it into `dcc.Store`.
+
+### 2.4 End-to-End Data Flows
+
+#### A. Load / stitch lightcurve (background callback)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser as Browser stores + graph
+    participant Dash as Dash callback
+    participant Cache as user_cache (diskcache)
+    participant MAST as TESS public cache / MAST
+
+    User->>Dash: Click "Download" (selected table rows)
+    Dash->>MAST: Fetch / stitch sectors (may hit tess_cache)
+    MAST-->>Dash: Lightkurve → CurveDash JSON
+    Dash->>Cache: set("{user_tab_id}_data", json)
+    Dash-->>Browser: user_tab_id (if new), replot UUID
+    Browser->>Dash: plot callback (triggered by UUID)
+    Dash->>Cache: get("{user_tab_id}_data")
+    Cache-->>Dash: CurveDash JSON
+    Dash-->>Browser: figure dict → dcc.Graph
+```
+
+Heavy download and stitching stay on the server. The browser receives a **UUID change** and a **Plotly figure**, not the raw cache blob in a store.
+
+#### B. Box select → trim (clientside distill + server mutate)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Graph as Plotly graph (browser)
+    participant CS as Clientside callback
+    participant Bounds as store_selection_bounds
+    participant Dash as trim_srv_lightcurve
+    participant Cache as user_cache
+
+    User->>Graph: Draw box selection
+    Graph->>Graph: selectedData updated (local)
+    Graph->>CS: selectedData (Input)
+    CS->>Bounds: {xmin, xmax} only
+    User->>Dash: Click "Trim selected"
+    Dash->>Bounds: read bounds (State)
+    Dash->>Cache: get → trim → set
+    Dash->>Bounds: clear (null)
+    Dash-->>Graph: new replot UUID → fresh figure
+```
+
+Trim **removes** the interval inside the box on the server. Bounds are **cleared after trim** so a subsequent export does not clip to the removed window (see `lc_interaction.prepare_lcd_for_export`).
+
+#### C. Export to user's computer
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser as Browser
+    participant Dash as download callback
+    participant Cache as user_cache
+
+    User->>Dash: Click "Download" file
+    Note over Browser,Dash: State: user_tab_id, selection_bounds, relayoutData
+    Dash->>Cache: get("{user_tab_id}_data")
+    Cache-->>Dash: CurveDash JSON
+    Dash->>Dash: prepare_lcd_for_export (clip if bounds/zoom)
+    Dash->>Dash: export_curvedash → bytes
+    Dash-->>Browser: dcc.send_bytes (one file transfer)
+```
+
+Export is intentionally a **server round-trip**: clipping and VOTable generation belong in `utils/`. Only the finished file crosses to the client.
+
+### 2.5 Comparison: Experimental Server Cache vs. Session Store Pages
+
+| Aspect | `lightcurve_tess_srv.py` (**experimental**) | `tess_cutout.py` (session store) |
+| :--- | :--- | :--- |
+| Canonical LC location | Server `user_cache` | Client `store_tess_cutout_lightcurve` (session JSON) |
+| Typical point count | Very large (archive sectors, stitch) | Moderate (single cutout aperture LC) |
+| Store payload | UUID + bounds + metadata | Full serialised `CurveDash` |
+| Trim | Server callback + cache write | Clientside JS mutates store JSON |
+| Plot refresh | Server builds figure from cache | Server builds figure from store State |
+| When to prefer | Heavy arrays, periodogram, multi-sector stitch | Smaller LC tied to pixel-mask workflow on same page |
+
+Both pages share the same **selection bounds** pattern: clientside extraction of `{xmin, xmax}` from Plotly `selectedData` so server callbacks never receive the full selection payload.
+
+### 2.6 Why Not Pure Server or Pure Client?
+
+| Approach | Failure mode for our use case |
+| :--- | :--- |
+| **Full LC in `dcc.Store`** | Every callback serialises/deserialises 10⁴–10⁵ points; browser memory pressure; slow JSON parse; violates AGENTS.md store size guidance. |
+| **Pure server, no Plotly client state** | Cannot box-select or zoom without a round-trip per mouse event; unusable UX. |
+| **Pure clientside science** | No Astropy/Lightkurve/Lomb–Scargle; cannot reuse `utils/`; untenable for correct astronomy. |
+| **Hybrid (current experiment)** | Large state and math on server; interaction on client; cross-tier messages limited to UUIDs, bounds, and figure updates. |
+
+### 2.7 Operational Notes
+
+* **Session vs. cache lifetime:** `dcc.Store(storage_type='session')` survives page refreshes within the same browser tab but is cleared when the tab closes. `user_cache` entries expire after **24 hours of inactivity** (sliding window refreshed on every read). A user can therefore lose server cache while the tab UUID store still holds an ID — the plot callback then raises a friendly “please download again” error.
+* **Concurrency:** Multiple Apache workers share one `USER_CACHE_DIR`; SQLite WAL makes concurrent reads/writes safe for different `user_tab_id` keys.
+* **Future direction:** If the experiment proves stable, the same `{user_tab_id}` + `user_cache` pattern could be extended to other high-volume pages; until then, treat `lightcurve_tess_srv.py` as the reference implementation documented here.
+
+Related detail on trim/export clipping and bridge export paths: [`docs/lightcurve_data_flow.md`](lightcurve_data_flow.md) §6.
+
+---
+
+## 3. Local Debug Mode vs. Production (Apache) Mode
 
 The system handles differences between local development and an Apache production environment using environment-level configurations and adaptive imports:
 
@@ -75,7 +255,7 @@ The system handles differences between local development and an Apache productio
 
 ---
 
-## 3. Caching Flows & Comparison Summary
+## 4. Caching Flows & Comparison Summary
 
 | Feature | TESS/ASAS-SN Public Cache | User Session Private Cache (`user_cache`) |
 | :--- | :--- | :--- |
@@ -88,7 +268,7 @@ The system handles differences between local development and an Apache productio
 
 ---
 
-## 4. Robust Implementation & Concurrency Safety Enhancements
+## 5. Robust Implementation & Concurrency Safety Enhancements
 
 To prevent severe potential issues (such as concurrent write corruption, directory absence, non-deterministic keys, and corrupted cache exceptions), the Public Data Caching layers implement the following production-grade practices:
 
