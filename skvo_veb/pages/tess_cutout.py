@@ -376,7 +376,10 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False, 'scrollZoom': True},
+                                          config={'displaylogo': False, 
+                                          'scrollZoom': True,
+                                          'modeBarButtonsToRemove': ['lasso2d'],
+                                          },
                                           style={'height': '40vh'}),
                             ], title='First Light Curve', item_id='accordion_item_1'),
                             dbc.AccordionItem([
@@ -387,7 +390,10 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False, 'scrollZoom': True},
+                                          config={'displaylogo': False, 
+                                          'scrollZoom': True,
+                                          'modeBarButtonsToRemove': ['lasso2d'],
+                                          },
                                           style={'height': '40vh'}),
                             ], title='Second Light Curve', item_id='accordion_item_2'),
                             dbc.AccordionItem([
@@ -398,7 +404,10 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False, 'scrollZoom': True},
+                                          config={'displaylogo': False, 
+                                          'scrollZoom': True,
+                                          'modeBarButtonsToRemove': ['lasso2d'],
+                                          },
                                           style={'height': '40vh'}),
                             ], title='Third Light Curve', item_id='accordion_item_3'),
                         ], id='accordion_tess_lc', start_collapsed=False,
@@ -992,6 +1001,8 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
     y = lcd.phot
     fig.add_trace(go.Scatter(
         x=x, y=y,
+        selected={'marker': {'color': 'orange', 'size': 6}},
+        unselected={'marker': {'opacity': 0.85}},
         hoverinfo='none',
         hovertemplate=None,
         mode='markers+lines',
@@ -1710,6 +1721,7 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
     return ret
 
 
+# Trim lightcurves stored on the client side within the boundaries defined by box-selection
 clientside_callback(
     f"""
     function(n_clicks, selectionBounds, dataString) {{

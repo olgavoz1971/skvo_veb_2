@@ -69,7 +69,7 @@ def build_curvedash_scatter_figure(
 
     fig = px.scatter(df, **scatter_kwargs)
     fig.update_traces(
-        selected={'marker': {'color': 'orange', 'size': 8}},
+        selected={'marker': {'color': 'orange', 'size': 6}},
         unselected={'marker': {'opacity': 0.85}},
         hoverinfo='none',
         hovertemplate=None,
