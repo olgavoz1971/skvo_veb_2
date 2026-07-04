@@ -13,6 +13,8 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_MAG,
     EXPORT_FORMATS,
     JD_TO_MJD,
+    is_votable_export_format,
+    votable_binary_encoding,
 )
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import (
@@ -1034,6 +1036,22 @@ def _build_ecsv_metadata(lcd) -> dict:
     return header
 
 
+def export_file_extension(table_format: str) -> str:
+    """Returns the download filename extension for an export format identifier.
+
+    Args:
+        table_format (str): Export format value from the UI or ``export_curvedash``.
+
+    Returns:
+        str: File extension without a leading dot.
+    """
+    if is_votable_export_format(table_format):
+        return "vot"
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    return CurveDash.get_file_extension(table_format)
+
+
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
     """Exports a CurveDash instance to the requested file format.
 
@@ -1042,7 +1060,7 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
-        table_format (str): Target format identifier (e.g. ``'votable'``, ``'ascii.ecsv'``).
+        table_format (str): Target format identifier (e.g. ``'votable_binary'``, ``'ascii.ecsv'``).
         profile (str, optional): Export profile name (``'tess'`` or ``'cutout'`` for VOTable).
 
     Returns:
@@ -1056,13 +1074,13 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
     if not isinstance(lcd, CurveDash):
         raise PipeException('export_curvedash expects a CurveDash instance.')
 
-    if table_format not in EXPORT_FORMATS:
+    if table_format not in EXPORT_FORMATS and table_format != "votable":
         raise PipeException(
             f"Unsupported export format '{table_format}'. "
             f"Supported formats: {', '.join(EXPORT_FORMATS)}"
         )
 
-    if table_format == 'votable':
+    if is_votable_export_format(table_format):
         if profile == 'tess':
             kwargs = _build_tess_votable_kwargs(lcd)
         elif profile == 'cutout':
@@ -1072,6 +1090,7 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
                 f"Unsupported VOTable export profile '{profile}'. "
                 "Use profile='tess' or profile='cutout'."
             )
+        kwargs['binary'] = votable_binary_encoding(table_format)
         buf = io.BytesIO()
         write_vo_lightcurve(
             output_stream_or_path=buf,

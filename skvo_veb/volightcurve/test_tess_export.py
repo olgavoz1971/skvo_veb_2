@@ -40,7 +40,7 @@ def test_tess_export():
 
     assert is_spoc_pipeline(lcd.metadata.get('authors', [])) is True
 
-    xml_spoc = export_curvedash(lcd, 'votable', profile='tess').decode('utf-8')
+    xml_spoc = export_curvedash(lcd, 'votable_binary', profile='tess').decode('utf-8')
     assert 'timeorigin="2400000.5"' in xml_spoc
     assert "zeroPointFlux" in xml_spoc
     assert "zeroPointReferenceMagnitude" in xml_spoc
@@ -67,7 +67,7 @@ def test_tess_export():
 
     assert is_spoc_pipeline(lcd_qlp.metadata['authors']) is False
 
-    xml_qlp = export_curvedash(lcd_qlp, 'votable', profile='tess').decode('utf-8')
+    xml_qlp = export_curvedash(lcd_qlp, 'votable_binary', profile='tess').decode('utf-8')
     assert "zeroPointFlux" not in xml_qlp
     assert "zeroPointReferenceMagnitude" not in xml_qlp
 
@@ -90,13 +90,13 @@ def test_tess_export():
     lcd_stitched.metadata['stitched'] = True
     lcd_stitched.metadata['photcal'] = {}
 
-    xml_stitched = export_curvedash(lcd_stitched, 'votable', profile='tess').decode('utf-8')
+    xml_stitched = export_curvedash(lcd_stitched, 'votable_binary', profile='tess').decode('utf-8')
     assert "zeroPointFlux" not in xml_stitched
     assert "zeroPointReferenceMagnitude" not in xml_stitched
     assert "effectiveWavelength" in xml_stitched
     assert "Photometric zero points are omitted" in xml_stitched
 
-    buf_spoc = io.BytesIO(export_curvedash(lcd, 'votable', profile='tess'))
+    buf_spoc = io.BytesIO(export_curvedash(lcd, 'votable_binary', profile='tess'))
     lc = VOLightCurve(buf_spoc)
     assert len(lc) == 3
     assert lc.timesys.jd0 == 2400000.5

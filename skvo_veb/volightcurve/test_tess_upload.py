@@ -41,7 +41,7 @@ def test_tess_upload_integration():
     lcd.metadata['flux_origins'] = ["pdcsap"]
 
     buf = io.BytesIO()
-    buf.write(export_curvedash(lcd, 'votable', profile='tess'))
+    buf.write(export_curvedash(lcd, 'votable_binary', profile='tess'))
     xml = buf.getvalue().decode('utf-8')
     assert 'meta.id;meta.dataset' in xml or 'name="label"' in xml
     assert 'pdcsap' in xml.lower() or 'methods' in xml.lower()

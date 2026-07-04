@@ -44,8 +44,8 @@ from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import export_curvedash, build_curvedash_title, ingest_lightcurve_file
-from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS
+from skvo_veb.utils.lc_bridge import export_curvedash, build_curvedash_title, ingest_lightcurve_file, export_file_extension
+from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS, is_votable_export_format
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import prepare_lcd_for_export, trim_curvedash_display_range
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
@@ -1348,11 +1348,11 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
             relayout_data=relayout_data,
             display_epoch=jd0,
         )
-        profile = 'tess' if table_format == 'votable' else None
+        profile = 'tess' if is_votable_export_format(table_format) else None
         file_bstring = export_curvedash(lcd, table_format, profile=profile)
 
         outfile_base = f'lc_tess_' + sanitize_filename(lcd.title)
-        ext = CurveDash.get_file_extension(table_format)
+        ext = export_file_extension(table_format)
         outfile = f'{outfile_base}.{ext}'
 
         ret = dcc.send_bytes(file_bstring, outfile)

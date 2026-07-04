@@ -6,7 +6,7 @@ import numpy as np
 
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash, ingest_lightcurve_file, volc_to_curvedash
-from skvo_veb.utils.lc_config import DOMAIN_FLUX, EXPORT_FORMATS
+from skvo_veb.utils.lc_config import DOMAIN_FLUX, EXPORT_FORMATS, VOTABLE_FORMAT_BINARY, VOTABLE_FORMAT_TEXT
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 
 
@@ -36,7 +36,8 @@ def _sample_lcd():
 def test_export_formats_list_matches_ui():
     """UI export formats must stay aligned with bridge validation."""
     assert EXPORT_FORMATS == (
-        'votable',
+        VOTABLE_FORMAT_BINARY,
+        VOTABLE_FORMAT_TEXT,
         'ascii.ecsv',
         'ascii.commented_header',
         'csv',
@@ -87,10 +88,20 @@ def test_tabular_round_trip_preserves_data_and_ecsv_meta():
             assert restored.metadata.get('photcal') == {}
 
 
+def test_votable_binary_and_text_encodings_differ():
+    """Binary and text VOTable exports should use distinct TABLEDATA encodings."""
+    lcd = _sample_lcd()
+    xml_binary = export_curvedash(lcd, VOTABLE_FORMAT_BINARY, profile='tess').decode('utf-8')
+    xml_text = export_curvedash(lcd, VOTABLE_FORMAT_TEXT, profile='tess').decode('utf-8')
+    assert 'BINARY' in xml_binary
+    assert '<TR>' in xml_text or '<TD>' in xml_text
+    assert 'BINARY' not in xml_text.split('<TABLE')[1].split('</TABLE>')[0]
+
+
 def test_votable_round_trip_still_works():
     """VOTable export remains the standards-compliant path with PhotCal when applicable."""
     lcd = _sample_lcd()
-    blob = export_curvedash(lcd, 'votable', profile='tess')
+    blob = export_curvedash(lcd, VOTABLE_FORMAT_BINARY, profile='tess')
     volc = VOLightCurve(io.BytesIO(blob))
     restored = volc_to_curvedash(volc, 'lc.vot', preserve_photcal=True)
     assert len(restored.lightcurve) == 3
