@@ -1,4 +1,11 @@
 # DISK_CACHE_LOCAL = True
+"""TESS Cutout Tool — Dash page for FFI/TPF pixel cutouts and user photometry.
+
+Users download TESS pixel cutouts, define aperture masks (handmade, threshold, or
+pipeline), build uncalibrated lightcurves, and export them via the shared
+``lc_bridge.export_curvedash`` layer with the ``cutout`` VOTable profile.
+"""
+
 DISK_CACHE_LOCAL = False
 
 import logging
@@ -28,7 +35,10 @@ from skvo_veb.components import message
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_processor
 from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
-from skvo_veb.utils.curve_dash import CurveDash, jd0
+from skvo_veb.utils.curve_dash import CurveDash
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX
+from skvo_veb.utils.lc_bridge import export_curvedash, build_cutout_title, enrich_cutout_curvedash, resolve_cutout_mask_mode
+from skvo_veb.utils.lc_interaction import prepare_lcd_for_export
 from skvo_veb.utils.my_tools import PipeException, safe_none, log_gamma, sanitize_filename, positive_float_pattern
 
 register_page(__name__, name='TESS cutout',
@@ -366,7 +376,7 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False},
+                                          config={'displaylogo': False, 'scrollZoom': True},
                                           style={'height': '40vh'}),
                             ], title='First Light Curve', item_id='accordion_item_1'),
                             dbc.AccordionItem([
@@ -377,7 +387,7 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False},
+                                          config={'displaylogo': False, 'scrollZoom': True},
                                           style={'height': '40vh'}),
                             ], title='Second Light Curve', item_id='accordion_item_2'),
                             dbc.AccordionItem([
@@ -388,7 +398,7 @@ def layout():
                                               xaxis_title=f'time',
                                               yaxis_title=f'flux',
                                           ),
-                                          config={'displaylogo': False},
+                                          config={'displaylogo': False, 'scrollZoom': True},
                                           style={'height': '40vh'}),
                             ], title='Third Light Curve', item_id='accordion_item_3'),
                         ], id='accordion_tess_lc', start_collapsed=False,
@@ -414,6 +424,7 @@ def layout():
         dcc.Store(id='wcs_store', **SESSION_STORE),
         dcc.Store(id='store_tess_cutout_lightcurve', **SESSION_STORE),
         dcc.Store(id='store_tess_cutout_lightcurve_metadata', **SESSION_STORE),
+        dcc.Store(id='store_tess_cutout_selection_bounds', **SESSION_STORE),
         dcc.Store(id='lc2_store', **SESSION_STORE),
         dcc.Store(id='lc3_store', **SESSION_STORE),
         dcc.Download(id='download_tess_lightcurve'),
@@ -429,10 +440,30 @@ else:
 
 # Auxiliary
 def normalize(arr):
+    """Min–max normalises a numeric array to the interval [0, 1].
+
+    Args:
+        arr (array-like): Input values.
+
+    Returns:
+        numpy.ndarray: Normalised array.
+    """
     return (arr - arr.min()) / (arr.max() - arr.min())
 
 
 def imshow_logscale(img, scale_method=None, show_colorbar=False, gamma=0.99, **kwargs):
+    """Renders a 2D image with optional log scaling and linear colour-bar ticks.
+
+    Args:
+        img (array-like): Pixel values to display.
+        scale_method (callable, optional): Transform applied before plotting (e.g. log gamma).
+        show_colorbar (bool): Whether to attach a colour bar with physical tick labels.
+        gamma (float): Gamma parameter passed to ``scale_method``.
+        **kwargs: Forwarded to ``plotly.express.imshow``.
+
+    Returns:
+        plotly.graph_objects.Figure: Imshow figure with ``customdata`` holding raw flux.
+    """
     # from engineering_notation import EngNumber
     import matplotlib.ticker as ticker
 
@@ -486,7 +517,14 @@ def imshow_logscale(img, scale_method=None, show_colorbar=False, gamma=0.99, **k
 
 
 def create_shapes(target_mask):
-    # Create a list of shapes to mark mask
+    """Builds Plotly layout shapes outlining masked pixels on the cutout image.
+
+    Args:
+        target_mask (array-like): 2D boolean aperture mask.
+
+    Returns:
+        list: Plotly shape dictionaries (cross markers per masked pixel).
+    """
     shapes = []
     for i in range(target_mask.shape[0]):
         for j in range(target_mask.shape[1]):
@@ -546,6 +584,17 @@ def create_shapes(target_mask):
     prevent_initial_call=True
 )
 def download_sector(n_clicks, selected_rows, pixel_di, size):
+    """Downloads the selected FFI or TPF sector cutout and opens the plot tab.
+
+    Args:
+        n_clicks: Button click count.
+        selected_rows: AgGrid selected row dicts.
+        pixel_di: Serialised search result store payload.
+        size: FFI cutout size in pixels.
+
+    Returns:
+        dict: Callback outputs including pixel metadata and cleared lightcurve stores.
+    """
     if n_clicks is None:
         raise PreventUpdate
 
@@ -604,6 +653,7 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
     Input('auto_mask_switch', 'value')
 )
 def toggle_auto_mask_collapse(auto_mask):
+    """Expands automatic-mask options when auto masking is enabled."""
     return auto_mask == 1  # == auto
 
 
@@ -613,6 +663,7 @@ def toggle_auto_mask_collapse(auto_mask):
     Input('auto_mask_switch', 'value')
 )
 def toggle_auto_mask_thresh_collapse(mask_type, auto_mask_switch_value):
+    """Shows threshold controls only for automatic threshold masking."""
     return auto_mask_switch_value == 1 and mask_type == 'threshold'  # == auto
 
 
@@ -621,6 +672,7 @@ def toggle_auto_mask_thresh_collapse(mask_type, auto_mask_switch_value):
     Input('flatten_switch', 'value')
 )
 def toggle_flatten_collapse(flatten_switch):
+    """Expands flattening parameter controls when flattening is enabled."""
     return flatten_switch  # == flatten is on
 
 
@@ -637,6 +689,20 @@ def toggle_flatten_collapse(flatten_switch):
     prevent_initial_call='initial_duplicate',
 )
 def plot_pixel(n_clicks, pixel_metadata, gamma, threshold, sum_it, mask_type, auto_mask):
+    """Plots the downloaded TPF/FFI cutout and initialises the aperture mask store.
+
+    Args:
+        n_clicks: Replot button click count (ignored on metadata-only refresh).
+        pixel_metadata (dict): Downloaded sector metadata including local file path.
+        gamma (float): Log-scale gamma for pixel display.
+        threshold (float): Threshold for automatic mask generation.
+        sum_it: When true, sum all cadences; otherwise show the first frame.
+        mask_type (str): ``pipeline`` or ``threshold`` for automatic masks.
+        auto_mask: Automatic mask generation toggle.
+
+    Returns:
+        tuple: ``(figure, mask_list)`` for the pixel graph and mask store.
+    """
     if not pixel_metadata or not pixel_metadata.get('path'):
         raise PreventUpdate
     if ctx.triggered_id == "replot_pixel_button" and n_clicks is None:
@@ -729,6 +795,18 @@ clientside_callback(
 )
 def create_mask(clickData, pixel_metadata,
                 mask_type, auto_mask, threshold):
+    """Regenerates the automatic aperture mask from a pixel-graph click.
+
+    Args:
+        clickData (dict): Plotly click event with pixel coordinates.
+        pixel_metadata (dict): Sector metadata including path and pipeline mask.
+        mask_type (str): ``pipeline`` or ``threshold``.
+        auto_mask: Automatic mask toggle; manual mode uses clientside callbacks.
+        threshold (float): Flux threshold for ``threshold`` mask mode.
+
+    Returns:
+        list: Serialised 2D boolean mask for ``mask_slow_store``.
+    """
     if not auto_mask:  # todo count here pipeline mask if selected and presented
         raise PreventUpdate
     if clickData is None:
@@ -887,10 +965,20 @@ clientside_callback(
 
 
 def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None):
+    """Builds a Plotly figure for one stored cutout lightcurve.
+
+    Args:
+        js_lightcurve (str): Serialised ``CurveDash`` JSON from ``dcc.Store``.
+        lc_metadata (dict, optional): Optional axis range overrides from relayout events.
+
+    Returns:
+        plotly.graph_objects.Figure: Scatter+line figure in relative JD coordinates.
+    """
     lcd = CurveDash.from_serialized(js_lightcurve)
-    # xaxis_title = f'time, {safe_none(lcd.time_unit)}'
+    title = build_cutout_title(lcd)
     xaxis_title = f'jd-{jd0}, {safe_none(lcd.time_unit)} {lcd.timescale}'
-    yaxis_title = f'flux {safe_none(lcd.flux_correction)}, {safe_none(lcd.flux_unit)}'
+    y_label = 'magnitude' if lcd.active_domain == 'mag' else 'flux'
+    yaxis_title = f'{y_label} {safe_none(lcd.flux_correction)}, {safe_none(lcd.phot_unit)}'
 
     xrange_left = xrange_right = yrange_left = yrange_right = None
     if lc_metadata is not None:
@@ -898,16 +986,18 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
         xrange_right = lc_metadata.get('xrange_right')
         yrange_left = lc_metadata.get('yrange_left')
         yrange_right = lc_metadata.get('yrange_right')
-    title = lcd.title
 
     fig = go.Figure()
     x = lcd.jd - jd0 if lcd.jd is not None else lcd.jd
-    fig.add_trace(go.Scatter(x=x, y=lcd.flux,
-                             hoverinfo='none',  # Important
-                             hovertemplate=None,
-                             mode='markers+lines',
-                             marker=dict(color='blue', size=6, symbol='circle'),
-                             line=dict(color='blue', width=1)))
+    y = lcd.phot
+    fig.add_trace(go.Scatter(
+        x=x, y=y,
+        hoverinfo='none',
+        hovertemplate=None,
+        mode='markers+lines',
+        marker=dict(color='blue', size=6, symbol='circle'),
+        line=dict(color='blue', width=1),
+    ))
     layout_kwargs = dict(
         title=title,
         showlegend=False,
@@ -915,15 +1005,12 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
         xaxis_title=xaxis_title,
         yaxis_title=yaxis_title,
     )
-    # Set x-axis range if provided
     if xrange_left is not None and xrange_right is not None:
         layout_kwargs['xaxis'] = dict(range=[xrange_left, xrange_right])
-
     if yrange_left is not None and yrange_right is not None:
         layout_kwargs['yaxis'] = dict(range=[yrange_left, yrange_right])
 
     fig.update_layout(**layout_kwargs)
-
     return fig
 
 
@@ -945,13 +1032,38 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
         show_trend=State('flux_trend_switch', 'value'),
         flatten_window=State('flatten_window_input', 'value'),
         flatten_break_gap=State('flatten_break_gap_input', 'value'),
-        flatten_order=State('flatten_order_input', 'value')
+        flatten_order=State('flatten_order_input', 'value'),
+        auto_mask=State('auto_mask_switch', 'value'),
+        mask_type=State('mask_type_switch', 'value'),
     ),
     # endregion
     prevent_initial_call=True
 )
 def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
-                      flatten, show_trend, flatten_window, flatten_break_gap, flatten_order):
+                      flatten, show_trend, flatten_window, flatten_break_gap, flatten_order,
+                      auto_mask, mask_type):
+    """Computes an uncalibrated cutout lightcurve and stores it in the selected slot.
+
+    Scientific extraction is delegated to ``tess_processor.process_lightcurve_computation``.
+    Metadata for export (source, mask mode, user pipeline tag) is attached via ``lc_bridge``.
+
+    Args:
+        n_clicks: Plot button click count.
+        pixel_metadata (dict): Downloaded sector metadata including file path.
+        mask_list (list): 2D boolean aperture mask from the pixel graph.
+        star_number (str): Lightcurve slot selector (``'1'``, ``'2'``, or ``'3'``).
+        sub_bkg: Background subtraction toggle.
+        flatten: Flattening toggle.
+        show_trend: When flattening, plot trend instead of corrected flux.
+        flatten_window: Flattening window length.
+        flatten_break_gap: Flattening break tolerance.
+        flatten_order: Flattening polynomial order.
+        auto_mask: Automatic mask generation toggle.
+        mask_type (str): ``'pipeline'`` or ``'threshold'`` when auto mask is enabled.
+
+    Returns:
+        dict: Serialised lightcurve JSON for the chosen store output.
+    """
     if n_clicks is None:
         raise PreventUpdate
 
@@ -967,21 +1079,28 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
             flatten_window, flatten_break_gap, flatten_order
         )
 
-        time_unit = 'mjd'
+        pixel_file = lightkurve.targetpixelfile.TessTargetPixelFile(path_to_pixel_data)
+        ra_val = float(pixel_file.ra.value) if hasattr(pixel_file.ra, 'value') else float(pixel_file.ra)
+        dec_val = float(pixel_file.dec.value) if hasattr(pixel_file.dec, 'value') else float(pixel_file.dec)
+
         name = label_name if label_name else pixel_metadata.get('target', '')
+        sector_array = np.full_like(jd, fill_value=sector, dtype=np.uint8)
+        mask_mode = resolve_cutout_mask_mode(auto_mask, mask_type)
 
-        sector_array = np.full_like(jd, fill_value=sector, dtype=np.uint8)   # mark it somehow
-        lcd = CurveDash(jd=jd + jd0_tess, flux=flux, flux_err=flux_err,
-                        name=name, label=sector_array, lookup_name=pixel_metadata.get('lookup_name', None),
-                        time_unit=time_unit, timescale='tdb',
-                        flux_unit=flux_unit, flux_correction=' '.join(flux_correction))
-
-        title = (f'{pixel_metadata.get("pixel_type", "").upper()} '
-                 f'{lcd.lookup_name} {name} '
-                 f'sector:{sector} '
-                 f'{pixel_metadata.get("author", "")}')
-
-        lcd.title = title
+        lcd = CurveDash(
+            jd=jd + jd0_tess,
+            flux=flux,
+            flux_err=flux_err,
+            name=name,
+            label=sector_array,
+            lookup_name=pixel_metadata.get('lookup_name', None),
+            time_unit='d',
+            timescale='tdb',
+            flux_unit=flux_unit,
+            flux_correction=' '.join(flux_correction),
+            active_domain=DOMAIN_FLUX,
+        )
+        enrich_cutout_curvedash(lcd, pixel_metadata, sector, mask_mode, ra=ra_val, dec=dec_val)
         jsons = lcd.serialize()
 
 
@@ -1015,6 +1134,17 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
     prevent_initial_call=False,
 )
 def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
+    """Refreshes one or more cutout lightcurve graphs when store data changes.
+
+    Args:
+        lc1 (str): Serialised primary lightcurve JSON.
+        lc2 (str): Serialised second-slot lightcurve JSON.
+        lc3 (str): Serialised third-slot lightcurve JSON.
+        lc_metadata (dict): Optional axis range overrides for the primary graph.
+
+    Returns:
+        dict: Updated figures for ``curve_graph_1``–``curve_graph_3``.
+    """
     if not any([lc1, lc2, lc3]):
         raise PreventUpdate
 
@@ -1059,6 +1189,17 @@ def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
     prevent_initial_call=True
 )
 def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
+    """Plots the difference or ratio of two stored cutout lightcurves in slot 3.
+
+    Args:
+        n_clicks: Difference plot button click count.
+        jsons_1 (str): Serialised lightcurve from slot 1.
+        jsons_2 (str): Serialised lightcurve from slot 2.
+        comparison_method (str): ``subtract`` or ``divide``.
+
+    Returns:
+        plotly.graph_objects.Figure or no_update: Third graph figure.
+    """
     if n_clicks is None:
         raise PreventUpdate
     fig = no_update
@@ -1113,6 +1254,19 @@ def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
 
 
 def mark_cross(fig, x, y, cross_size=0.3, line_width=2, color='cyan'):
+    """Adds a cyan cross marker at pixel coordinates on a Plotly figure copy.
+
+    Args:
+        fig (dict): Serialised Plotly figure from a ``dcc.Graph`` store.
+        x (float): Pixel x coordinate.
+        y (float): Pixel y coordinate.
+        cross_size (float): Half-length of each cross arm in pixel units.
+        line_width (int): Stroke width of the cross lines.
+        color (str): Line colour.
+
+    Returns:
+        dict: Deep-copied figure with cross shapes appended.
+    """
     import copy
     new_fig = copy.deepcopy(fig)
     shapes = [
@@ -1153,6 +1307,16 @@ def mark_cross(fig, x, y, cross_size=0.3, line_width=2, color='cyan'):
     prevent_initial_call=True
 )
 def mark_star(coord, fig, wcs_dict):
+    """Marks an Aladin click on the pixel cutout and syncs RA/Dec inputs.
+
+    Args:
+        coord (dict): Aladin ``clickedCoordinates`` with ``ra`` and ``dec``.
+        fig (dict): Current pixel graph figure.
+        wcs_dict (dict): FITS WCS header serialised from the cutout.
+
+    Returns:
+        tuple: ``(ra, dec, updated_figure)``.
+    """
     if coord is None:
         logging.warning(f'mark_star: coord is None')
         raise PreventUpdate
@@ -1184,6 +1348,15 @@ def mark_star(coord, fig, wcs_dict):
     prevent_initial_call=True
 )
 def resolve_coordinates(n_clicks, obj_name):
+    """Resolves an object name to ICRS coordinates via SIMBAD/name resolver.
+
+    Args:
+        n_clicks: Resolve button click count.
+        obj_name (str): Target name entered by the user.
+
+    Returns:
+        dict: RA/Dec fields, resolved-coords store, and optional alert message.
+    """
     if n_clicks is None:
         raise PreventUpdate
 
@@ -1246,6 +1419,20 @@ def resolve_coordinates(n_clicks, obj_name):
     prevent_initial_call=True
 )
 def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
+    """Queries Lightkurve for available TESS FFI or TPF cutouts near the target.
+
+    Args:
+        n_clicks: Search button click count.
+        pixel_type (str): ``ffi`` or ``tpf`` product type.
+        obj_name (str): Optional object name.
+        ra: Right ascension in degrees (optional).
+        dec: Declination in degrees (optional).
+        radius (float): Search cone radius for TPF queries.
+        resolved_coords (dict): Cached resolver output from ``store_resolved_coords``.
+
+    Returns:
+        dict: AgGrid rows, search store payload, and UI visibility flags.
+    """
     if n_clicks is None:
         raise PreventUpdate
 
@@ -1337,6 +1524,14 @@ def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
     prevent_initial_call='initial_duplicate',
 )
 def restore_search_table(store_data):
+    """Rebuilds the search results table after a browser session restore.
+
+    Args:
+        store_data (dict): Persisted ``store_search_result`` payload.
+
+    Returns:
+        dict: Table header, row data, and visibility style.
+    """
     rows = table_rows_from_lk_search_dict(store_data, include_distance=True)
     if not rows:
         raise PreventUpdate
@@ -1360,6 +1555,15 @@ def restore_search_table(store_data):
     prevent_initial_call='initial_duplicate',
 )
 def restore_tess_cutout_tabs(pixel_metadata, lc1):
+    """Re-enables the plot tab when persisted cutout or lightcurve data exists.
+
+    Args:
+        pixel_metadata (dict): Persisted sector download metadata.
+        lc1 (str): Serialised primary lightcurve, if any.
+
+    Returns:
+        dict: Graph tab disabled flag and active tab id.
+    """
     if pixel_metadata and pixel_metadata.get('path'):
         return {'graph_tab_disabled': False, 'active_tab': 'tess_graph_tab'}
     if lc1:
@@ -1382,6 +1586,18 @@ def restore_tess_cutout_tabs(pixel_metadata, lc1):
     prevent_initial_call=True
 )
 def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
+    """Deletes server-side TESS cache files for the current search target.
+
+    Args:
+        n_clicks: Clean-cache button click count.
+        obj_name (str): Object name, if provided.
+        ra: Right ascension in degrees (optional).
+        dec: Declination in degrees (optional).
+        radius (float): Cache key search radius for coordinate targets.
+
+    Returns:
+        dict: Success or error alert for the search panel.
+    """
     if n_clicks is None:
         raise PreventUpdate
 
@@ -1417,18 +1633,49 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
         }
 
 
+# Capture box-select x-axis bounds locally (~16 bytes). Full selectedData stays in the browser.
+clientside_callback(
+    """
+    function(selectedData) {
+        if (!selectedData || !selectedData.range || !selectedData.range.x) {
+            return window.dash_clientside.no_update;
+        }
+        const x = selectedData.range.x;
+        return {xmin: Math.min(x[0], x[1]), xmax: Math.max(x[0], x[1])};
+    }
+    """,
+    Output('store_tess_cutout_selection_bounds', 'data'),
+    Input('curve_graph_1', 'selectedData'),
+    prevent_initial_call=True,
+)
+
+
 @callback(Output('download_tess_lightcurve', 'data'),  # ------ Download -----
           Input('btn_download_tess', 'n_clicks'),
           State('store_tess_cutout_lightcurve', 'data'),
-          # State('store_tess_cutout_curve_metadata', 'data'),
           State('select_tess_format', 'value'),
           State('curve_graph_1', 'relayoutData'),
+          State('store_tess_cutout_selection_bounds', 'data'),
+          State('store_tess_cutout_lightcurve_metadata', 'data'),
           prevent_initial_call=True)
-def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_data):
-    """
-    Downloads the light curve to the user's computer, storing only 'what I see on the screen',
-    so the zoom action cuts out a light curve piece along the time axis.
-    Add metadata to the Table.metadata
+def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_data,
+                             selection_bounds, lc_metadata):
+    """Exports the primary cutout lightcurve, clipped to the active selection or zoom.
+
+    VOTable export uses the ``cutout`` profile (uncalibrated; no PhotCal zero points).
+    The on-screen store retains any prior trims; export further limits output to the
+    stored box-selection bounds, or otherwise the visible time axis.
+
+    Args:
+        n_clicks: Download button click count.
+        js_lightcurve (str): Serialised primary lightcurve store data.
+        table_format (str): Target file format identifier.
+        relayout_data (dict): Plotly relayout data for optional zoom clipping.
+        selection_bounds (dict): ``{xmin, xmax}`` from clientside box-select capture.
+        lc_metadata (dict): Cached axis ranges from relayout events.
+
+    Returns:
+        dict or no_update: ``dcc.send_bytes`` payload for the Download component.
     """
     if not n_clicks:
         raise PreventUpdate
@@ -1436,17 +1683,19 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
         raise PreventUpdate
     try:
         lcd = CurveDash.from_serialized(js_lightcurve)
-        # Cut out the light curve, bound it by the visible area along a time axis:
-        if relayout_data and 'xaxis.range[0]' in relayout_data and 'xaxis.range[1]' in relayout_data:
-            left_border = relayout_data['xaxis.range[0]']
-            right_border = relayout_data['xaxis.range[1]']
-            lcd.keep(left_border, right_border)
-        # bstring is "bytes"
-        file_bstring = lcd.download(table_format)  # todo: here add table metadata with the lookup name
+        lcd = prepare_lcd_for_export(
+            lcd,
+            selection_bounds=selection_bounds,
+            relayout_data=relayout_data,
+            lc_metadata=lc_metadata,
+            display_epoch=jd0,
+        )
 
-        outfile_base = f'lc_tess_' + sanitize_filename(lcd.title)
+        profile = 'cutout' if table_format == 'votable' else None
+        file_bstring = export_curvedash(lcd, table_format, profile=profile)
 
-        ext = lcd.get_file_extension(table_format)
+        outfile_base = 'lc_tess_' + sanitize_filename(build_cutout_title(lcd))
+        ext = CurveDash.get_file_extension(table_format)
         outfile = f'{outfile_base}.{ext}'
 
         ret = dcc.send_bytes(file_bstring, outfile)
@@ -1461,43 +1710,26 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
     return ret
 
 
-@callback(Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
-          [Input('cut_tess_button', 'n_clicks'),
-           # Input('keep_tess_button', 'n_clicks'),
-           State('curve_graph_1', 'selectedData'),
-           State('store_tess_cutout_lightcurve', 'data')],
-          prevent_initial_call=True,
-          )
-# def handle_selection(_1, _2, selected_data, js_lightcurve):
-def handle_selection(_1, selected_data, js_lightcurve):
-    """
-    Remove a selected piece of lightcurve
-    Can be applied only to lightcurve 1
-    """
-    # if _1 is None and _2 is None:
-    if _1 is None:
-        raise PreventUpdate
-    if selected_data is None or js_lightcurve is None:
-        raise PreventUpdate
-    if 'range' not in selected_data:
-        raise PreventUpdate
-    if 'x' not in selected_data['range']:
-        raise PreventUpdate
-    left_border, right_border = selected_data['range']['x']
-    try:
-        lcd = CurveDash.from_serialized(js_lightcurve)
-        lcd.cut(left_border+jd0, right_border+jd0)
-        # if ctx.triggered_id == 'cut_tess_button':
-        #     lcd.cut(left_border, right_border)
-        # else:
-        #     lcd.keep(left_border, right_border)
-        set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
-        return lcd.serialize()
-    except Exception as e:
-        logging.warning(f'tess_cutout.handle_selection: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
-        return no_update  # If I raise PreventUpdate here, set_props will not really set props; I
+clientside_callback(
+    f"""
+    function(n_clicks, selectionBounds, dataString) {{
+        const trimmed = dash_clientside.clientside.trimSelectedDisplayRange(
+            n_clicks, selectionBounds, dataString, {jd0});
+        if (trimmed === window.dash_clientside.no_update) {{
+            return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+        }}
+        return [trimmed, null];
+    }}
+    """,
+    [
+        Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
+        Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
+    ],
+    Input('cut_tess_button', 'n_clicks'),
+    State('store_tess_cutout_selection_bounds', 'data'),
+    State('store_tess_cutout_lightcurve', 'data'),
+    prevent_initial_call=True,
+)
 
 
 if __name__ == '__main__':  # So this is a local version

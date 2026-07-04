@@ -8,7 +8,7 @@ import pandas as pd
 from astropy import units as u
 from astropy.table import Table
 
-from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG
+from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import (
     VOLightCurve,
@@ -547,8 +547,9 @@ def _extract_photcal_meta(volc: VOLightCurve, phot_col: str) -> dict:
 def volc_to_curvedash(volc: VOLightCurve, filename: str):
     """Converts a VOLightCurve instance into a CurveDash instance.
 
-    Resolves columns, applies JD0 to obtain absolute Julian dates, and stores
-    photometry in its native domain (magnitude or flux) without conversion.
+    Resolves columns, reconstructs absolute Julian dates from ``obs_time`` and
+    ``TIMESYS/@timeorigin`` (MJD + offset), and stores photometry in its native
+    domain (magnitude or flux) without conversion.
 
     Args:
         volc (VOLightCurve): The parsed Virtual Observatory lightcurve.
@@ -578,6 +579,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
     jd0_offset = volc.timesys.jd0 or 0.0
     if jd0_offset > 0 and np.nanmax(jd_vals) < 1e6:
         jd_absolute = jd_vals + jd0_offset
+    elif jd0_offset == 0.0 and np.nanmax(jd_vals) < 1e6:
+        # Legacy files with MJD in obs_time but no TIMESYS timeorigin.
+        jd_absolute = jd_vals + JD_TO_MJD
     else:
         jd_absolute = jd_vals
 
@@ -680,8 +684,14 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str):
     if meta.get('stitched') in (True, 'true', 'True', '1', 1):
         lcd.metadata['stitched'] = True
         lcd.metadata['photcal'] = {}
-
-    title = build_curvedash_title(lcd)
+    for key in ('cutout_source', 'mask_mode'):
+        if key in meta:
+            lcd.metadata[key] = meta[key]
+    if meta.get('cutout_source') or meta.get('mask_mode'):
+        lcd.metadata['photcal'] = {}
+        title = build_cutout_title(lcd)
+    else:
+        title = build_curvedash_title(lcd)
     lcd.title = title
     lcd.metadata['title'] = title
 
@@ -693,6 +703,8 @@ def curvedash_to_table(lcd) -> Table:
 
     Strips application-only columns (``selected``, ``perm_index``, ``phase``) and
     maps the active photometric domain to ``obs_time``, ``phot``, and ``flux_error``.
+    ``obs_time`` is written in Modified Julian Date (MJD = JD - ``JD_TO_MJD``);
+    the VOTable ``TIMESYS/@timeorigin`` must carry the same offset.
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
@@ -706,7 +718,7 @@ def curvedash_to_table(lcd) -> Table:
         raise PipeException('Cannot export an empty CurveDash instance.')
 
     t_out = Table()
-    t_out['obs_time'] = lcd.jd.values
+    t_out['obs_time'] = lcd.jd.values - JD_TO_MJD
     t_out['phot'] = lcd.phot.values
     if lcd.phot_err is not None:
         t_out['flux_error'] = lcd.phot_err.values
@@ -725,7 +737,10 @@ def curvedash_to_table(lcd) -> Table:
 
     meta_export = {}
     if lcd.metadata:
-        for key in ('ra', 'dec', 'period', 'epoch', 'sectors', 'flux_origins', 'authors', 'name'):
+        for key in (
+            'ra', 'dec', 'period', 'epoch', 'sectors', 'flux_origins', 'authors', 'name',
+            'cutout_source', 'mask_mode', 'flux_correction',
+        ):
             if lcd.metadata.get(key) is not None:
                 meta_export[key] = lcd.metadata[key]
         if lcd.metadata.get('stitched'):
@@ -757,6 +772,161 @@ def _is_stitched_lightcurve(lcd) -> bool:
         return True
     title = meta.get('title') or getattr(lcd, 'title', None) or ''
     return str(title).startswith('Stitched curve')
+
+
+def resolve_cutout_mask_mode(auto_mask, mask_type: str | None) -> str:
+    """Maps UI mask controls to a descriptive mask mode label.
+
+    Args:
+        auto_mask: Truthy when automatic mask generation is enabled.
+        mask_type (str, optional): ``'pipeline'`` or ``'threshold'`` when auto mask is on.
+
+    Returns:
+        str: One of ``'handmade'``, ``'threshold'``, or ``'pipeline'``.
+    """
+    if not auto_mask:
+        return 'handmade'
+    if mask_type == 'pipeline':
+        return 'pipeline'
+    return 'threshold'
+
+
+def build_cutout_title(lcd) -> str:
+    """Builds a display title for user cutout lightcurves.
+
+    Args:
+        lcd (CurveDash): Cutout lightcurve with cutout metadata populated.
+
+    Returns:
+        str: Title string for Plotly figures and export metadata.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash):
+        return 'TESS cutout lightcurve'
+
+    meta = lcd.metadata or {}
+    stored = meta.get('title') or lcd.title
+    if stored:
+        return stored
+
+    parts = []
+    source = meta.get('cutout_source') or meta.get('pixel_type')
+    if source:
+        parts.append(str(source).upper())
+
+    lookup = meta.get('lookup_name') or ''
+    name = meta.get('name') or ''
+    if lookup:
+        parts.append(str(lookup))
+    if name and str(name) != str(lookup):
+        parts.append(str(name))
+
+    sectors = _parse_list_meta(meta.get('sectors'))
+    if sectors:
+        parts.append(f"sector:{','.join(sectors)}")
+
+    mask_mode = meta.get('mask_mode')
+    if mask_mode:
+        parts.append(f"mask:{mask_mode}")
+
+    parts.append('user cutout')
+    return ' '.join(parts) if parts else 'TESS cutout lightcurve'
+
+
+def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, ra=None, dec=None):
+    """Attaches cutout-specific metadata to a CurveDash instance.
+
+    User cutout photometry is uncalibrated; ``photcal`` is cleared and the pipeline
+    author is tagged as ``user`` for VOTable export.
+
+    Args:
+        lcd (CurveDash): Newly constructed cutout lightcurve.
+        pixel_metadata (dict): Sector download metadata (``pixel_type``, ``lookup_name``, etc.).
+        sector (int or str): TESS sector number.
+        mask_mode (str): ``handmade``, ``threshold``, or ``pipeline``.
+        ra (float, optional): Target right ascension in degrees.
+        dec (float, optional): Target declination in degrees.
+
+    Returns:
+        CurveDash: The same instance with metadata and title populated.
+    """
+    from skvo_veb.utils import tess_config
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash):
+        raise PipeException('enrich_cutout_curvedash expects a CurveDash instance.')
+
+    lcd.metadata['photcal'] = {}
+    lcd.metadata['authors'] = [tess_config.CUTOUT_PIPELINE_AUTHOR]
+    lcd.metadata['sectors'] = [str(sector)]
+    lcd.metadata['cutout_source'] = str(pixel_metadata.get('pixel_type', 'TPF')).upper()
+    lcd.metadata['mask_mode'] = mask_mode
+    if ra is not None:
+        lcd.metadata['ra'] = ra
+    if dec is not None:
+        lcd.metadata['dec'] = dec
+
+    title = build_cutout_title(lcd)
+    lcd.title = title
+    lcd.metadata['title'] = title
+    return lcd
+
+
+def _build_cutout_votable_kwargs(lcd) -> dict:
+    """Builds keyword arguments for uncalibrated TESS cutout VOTable export.
+
+    FFI and TPF cutout photometry is aperture-based and uncalibrated; zero points
+    are never written. Source type and mask mode are recorded in descriptions.
+
+    Args:
+        lcd (CurveDash): Cutout lightcurve with ``cutout_source`` and ``mask_mode`` metadata.
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+    """
+    from skvo_veb.utils import tess_config
+
+    meta = lcd.metadata or {}
+    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
+    source = str(meta.get('cutout_source') or meta.get('pixel_type') or 'unknown').upper()
+    mask_mode = meta.get('mask_mode', 'unknown')
+    sectors = _parse_list_meta(meta.get('sectors')) or []
+    sectors_str = ", ".join(sectors) if sectors else "unknown"
+    flux_correction = meta.get('flux_correction') or ''
+    processing_note = f" Processing applied: {flux_correction}." if flux_correction else ""
+
+    calibration_note = (
+        " Photometry is uncalibrated aperture summation; "
+        "photometric zero points are omitted from the PhotCal group."
+    )
+    desc_core = (
+        f"Uncalibrated TESS cutout lightcurve for target {tic_id}. "
+        f"Data source: {source}. Aperture mask mode: {mask_mode}. "
+        f"Sector: {sectors_str}. Pipeline: {tess_config.CUTOUT_PIPELINE_AUTHOR}."
+        f"{processing_note}"
+    )
+
+    return {
+        "table_name": f"TESS_cutout_{sanitize_filename(tic_id)}",
+        "filter_identifier": tess_config.TESS_FILTER_IDENTIFIER,
+        "refposition": tess_config.TESS_REFPOSITION,
+        "timescale": tess_config.TESS_TIMESCALE,
+        "timeorigin": JD_TO_MJD,
+        "votable_description": desc_core + calibration_note,
+        "table_description": desc_core + calibration_note,
+        "creator": f"TESS {tess_config.CUTOUT_PIPELINE_AUTHOR} cutout",
+        "zero_point_flux": None,
+        "zero_point_ref_mag": None,
+        "effective_wavelength": tess_config.TESS_EFFECTIVE_WAVELENGTH.to(u.m).value,
+        "effective_wavelength_unit": "m",
+        "ra": meta.get('ra'),
+        "dec": meta.get('dec'),
+        "filter_name": "TESS",
+        "period": meta.get('period'),
+        "epoch": meta.get('epoch'),
+        "binary": True,
+    }
 
 
 def _build_tess_votable_kwargs(lcd) -> dict:
@@ -796,7 +966,7 @@ def _build_tess_votable_kwargs(lcd) -> dict:
         "filter_identifier": tess_config.TESS_FILTER_IDENTIFIER,
         "refposition": tess_config.TESS_REFPOSITION,
         "timescale": tess_config.TESS_TIMESCALE,
-        "timeorigin": tess_config.TESS_TIMEORIGIN,
+        "timeorigin": JD_TO_MJD,
         "votable_description": (
             f"TESS space telescope lightcurve for target {tic_id}, "
             f"processed via the {pipeline_str} pipeline. "
@@ -832,7 +1002,7 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
     Args:
         lcd (CurveDash): Application lightcurve state container.
         table_format (str): Target format identifier (e.g. ``'votable'``, ``'ascii.ecsv'``).
-        profile (str, optional): Export profile name (e.g. ``'tess'`` for TESS VOTable).
+        profile (str, optional): Export profile name (``'tess'`` or ``'cutout'`` for VOTable).
 
     Returns:
         bytes: Serialised file content.
@@ -846,12 +1016,16 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
         raise PipeException('export_curvedash expects a CurveDash instance.')
 
     if table_format == 'votable':
-        if profile != 'tess':
+        if profile == 'tess':
+            kwargs = _build_tess_votable_kwargs(lcd)
+        elif profile == 'cutout':
+            kwargs = _build_cutout_votable_kwargs(lcd)
+        else:
             raise PipeException(
-                f"Unsupported VOTable export profile '{profile}'. Use profile='tess'."
+                f"Unsupported VOTable export profile '{profile}'. "
+                "Use profile='tess' or profile='cutout'."
             )
         buf = io.BytesIO()
-        kwargs = _build_tess_votable_kwargs(lcd)
         write_vo_lightcurve(
             output_stream_or_path=buf,
             table_data=curvedash_to_table(lcd),

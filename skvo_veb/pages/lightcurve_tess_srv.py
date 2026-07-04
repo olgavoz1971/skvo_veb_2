@@ -45,6 +45,8 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import volc_to_curvedash, export_curvedash, build_curvedash_title
+from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
+from skvo_veb.utils.lc_interaction import prepare_lcd_for_export, trim_curvedash_display_range
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
 from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
@@ -246,6 +248,8 @@ def layout():
                             dbc.Button('Shift to min', size='sm', id='shift_epoch_btn_tess_lc_srv',
                                        style={'width': '100%'})
                         ], open=True, style={'marginBottom': '5px'}),  # Folding
+                        dbc.Button('Trim selected', id='trim_tess_lc_srv_button', size='sm',
+                                   style={'width': '100%', 'marginBottom': '5px'}),
                         dbc.Stack([
                             dbc.Select(
                                 options=[
@@ -397,7 +401,11 @@ def layout():
                         dbc.Row([
                             dcc.Graph(id='graph_tess_lc_srv',
                                       figure=px.scatter(),
-                                      config={'displaylogo': False},
+                                      config={
+                                          'displaylogo': False,
+                                          'scrollZoom': True,
+                                          'modeBarButtonsToRemove': ['lasso2d'],
+                                      },
                                       # style={'height': '40vh', 'width': '100%'},  # 100% of the viewport height
                                       ),
                         ]),
@@ -416,6 +424,7 @@ def layout():
         ], active_tab='tess_lc_srv_search_tab', id='tess_lc_srv_tabs', style={'marginBottom': '5px'}),
         dcc.Store(id='store_user_tab_id_tess_lc_srv', **SESSION_STORE),
         dcc.Store(id='store_tess_lightcurve_lc_srv', **SESSION_STORE),
+        dcc.Store(id='store_tess_lc_srv_selection_bounds', **SESSION_STORE),
         dcc.Store(id='store_tess_lightcurve_lc_srv_metadata', **SESSION_STORE),
         dcc.Store(id='store_tess_lc_search_result', **SESSION_STORE),
         dcc.Store(id='store_tess_periodogram_result_lc_srv', **SESSION_STORE),
@@ -731,60 +740,13 @@ def extract_data_from_user_cache(user_tab_id):
 
 def plot_lc(js_lightcurve: str, phase_view: bool):
     lcd = CurveDash.from_serialized(js_lightcurve)
-    title = build_curvedash_title(lcd)
-    phot_unit = lcd.phot_unit
-    y_column = 'mag' if lcd.active_domain == 'mag' else 'flux'
-    y_label = 'magnitude' if lcd.active_domain == 'mag' else 'flux'
-
-    if phase_view:
-        x = lcd.phase
-        x_column = 'phase'
-        xaxis_title = 'phase'
-    else:
-        x = lcd.jd - jd0
-        x_column = 'jd'
-        xaxis_title = f'jd-{jd0}, {safe_none(lcd.time_unit)} {lcd.timescale}'
-
-    label_series = lcd.lightcurve['label'] if lcd.lightcurve is not None else lcd.label
-    df = pd.concat([x, lcd.phot, label_series, lcd.perm_index], axis=1)
-    df.columns = [x_column, y_column, 'label', 'perm_index']
-    fig = px.scatter(df,
-                     x=x_column,
-                     y=y_column,
-                     color='label',
-                     custom_data='perm_index')
-    fig.update_traces(
-        selected={'marker': {'color': 'orange', 'size': 5}},
-        hoverinfo='none',  # Important
-        hovertemplate=None,  # Important
-        mode='markers',
-        marker=dict(size=3, symbol='circle')
-        # marker=dict(color='blue', size=5, symbol='circle')
+    return build_curvedash_scatter_figure(
+        lcd,
+        title=build_curvedash_title(lcd),
+        display_epoch=jd0,
+        phase_view=phase_view,
+        color_by_label=True,
     )
-
-    fig.update_layout(
-        title=title,
-        # showlegend=False,
-        legend_title_text='Sector',
-        margin=dict(l=0, b=20, t=30, r=20),
-        xaxis_title=xaxis_title,
-        yaxis_title=f'{y_label}, {safe_none(phot_unit)}'
-    )
-    # fig = go.Figure()
-
-    # fig.add_trace(go.Scatter(
-    #     x=x, y=lcd.flux,
-    #     error_y=dict(type='data', array=lcd.flux_err, visible=True),
-    #     selected={'marker': {'color': 'orange', 'size': 5}},
-    #     hoverinfo='none',  # Important
-    #     hovertemplate=None,
-    #     # mode='markers+lines',
-    #     mode='markers',
-    #     marker=dict(color='blue', size=6, symbol='circle'),
-    #     # line=dict(color='blue', width=1)  # , dash='dash')
-    # ))
-
-    return fig
 
 
 # @callback(
@@ -994,7 +956,7 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
 
 @callback(Output('graph_tess_lc_srv', 'figure', allow_duplicate=True),
           Input('store_tess_lightcurve_lc_srv', 'data'),
-          Input('store_user_tab_id_tess_lc_srv', 'data'),
+          State('store_user_tab_id_tess_lc_srv', 'data'),
           State('fold_tess_lc_srv_switch', 'value'),
           prevent_initial_call='initial_duplicate',
           )
@@ -1025,7 +987,6 @@ def plot_tess_curve(_, user_tab_id, phase_view):
     ),
     inputs=dict(n_clicks=Input('periodogram_tess_lc_srv_button', 'n_clicks')),
     state=dict(
-        # js_lightcurve=State('store_tess_lightcurve_lc_srv', 'data'),
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
         period_freq=State('period_freq_tess_lc_srv_switch', 'value'),
         method=State('method_tess_lc_srv_switch', 'value'),
@@ -1174,44 +1135,56 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
 #     prevent_initial_call=True
 # )
 
-# Mark data as selected
+# Capture box-select x-axis bounds locally (~16 bytes). No lightcurve leaves the server cache.
 clientside_callback(
-    ClientsideFunction(
-        namespace='clientside',
-        function_name='selectData'
-    ),
-    Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
+    """
+    function(selectedData) {
+        if (!selectedData || !selectedData.range || !selectedData.range.x) {
+            return window.dash_clientside.no_update;
+        }
+        const x = selectedData.range.x;
+        return {xmin: Math.min(x[0], x[1]), xmax: Math.max(x[0], x[1])};
+    }
+    """,
+    Output('store_tess_lc_srv_selection_bounds', 'data'),
     Input('graph_tess_lc_srv', 'selectedData'),
-    Input('graph_tess_lc_srv', 'clickData'),
-    State('store_tess_lightcurve_lc_srv', 'data'),
-    prevent_initial_call=True
+    prevent_initial_call=True,
 )
 
 
-# Unmark data
-# clientside_callback(
-#     ClientsideFunction(
-#         namespace='clientside',
-#         function_name='unselectData'
-#     ),
-#     Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
-#     Input('btn_tess_unselect', 'n_clicks'),
-#     State('store_tess_lightcurve_lc_srv', 'data'),
-#     prevent_initial_call=True
-# )
+@callback(
+    Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
+    Output('store_tess_lc_srv_selection_bounds', 'data', allow_duplicate=True),
+    Input('trim_tess_lc_srv_button', 'n_clicks'),
+    State('store_tess_lc_srv_selection_bounds', 'data'),
+    State('store_user_tab_id_tess_lc_srv', 'data'),
+    prevent_initial_call=True,
+)
+def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id):
+    """Removes the boxed time interval on the server using stored display bounds only."""
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
 
+    try:
+        if not selection_bounds or selection_bounds.get('xmin') is None:
+            raise PipeException('Draw a box selection on the lightcurve first.')
 
-# Delete selected points
-# clientside_callback(
-#     ClientsideFunction(
-#         namespace='clientside',
-#         function_name='deleteSelected'
-#     ),
-#     Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
-#     Input('btn_tess_delete', 'n_clicks'),
-#     State('store_tess_lightcurve_lc_srv', 'data'),
-#     prevent_initial_call=True
-# )
+        lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
+        trim_curvedash_display_range(
+            lcd,
+            selection_bounds['xmin'],
+            selection_bounds['xmax'],
+            display_epoch=jd0,
+        )
+        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('graph_tess_lc_srv', {'selectedData': None})
+        return str(uuid.uuid4()), None
+    except Exception as exc:
+        logging.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
+        alert_message = message.warning_alert(exc)
+        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        raise PreventUpdate
 
 
 def write_user_data_to_cache(user_data, user_tab_id):
@@ -1362,15 +1335,24 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
           Input('btn_download_tess_lc_srv', 'n_clicks'),
           State('store_user_tab_id_tess_lc_srv', 'data'),
           State('select_tess_lc_srv_format', 'value'),
+          State('graph_tess_lc_srv', 'relayoutData'),
+          State('store_tess_lc_srv_selection_bounds', 'data'),
           prevent_initial_call=True)
-def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format):
-    """Downloads a light curve to the user's computer via the lc_bridge export layer."""
+def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
+                                            relayout_data, selection_bounds):
+    """Downloads a lightcurve clipped to stored selection bounds or visible zoom."""
     if not n_clicks:
         raise PreventUpdate
 
     try:
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
+        lcd = prepare_lcd_for_export(
+            lcd,
+            selection_bounds=selection_bounds,
+            relayout_data=relayout_data,
+            display_epoch=jd0,
+        )
         profile = 'tess' if table_format == 'votable' else None
         file_bstring = export_curvedash(lcd, table_format, profile=profile)
 

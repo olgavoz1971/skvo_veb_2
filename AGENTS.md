@@ -75,6 +75,13 @@ my-dash-app/
 - Never use `dash_table.DataTable`; use `dash.AgGrid()` instead.
 - Never put secrets, API keys, or credentials in layout code or `dcc.Store`. Use environment variables and server-side logic only.
 
+- **Preserve Callback Architecture:** NEVER convert a client-side callback (`app.clientside_callback`) into a server-side Python callback unless explicitly requested by the user. Maintaining low-latency, browser-executed frontend performance takes absolute precedence over refactoring conveniences.
+
+- **Optimize State Boundaries & Data Transfer:** Prefer maintaining a clean separation between lightweight UI metadata and heavy application state to ensure high-performance network handling.
+  - Avoid serializing large datasets or back-end cached collections (such as dataframes, tables, or complex arrays) into client-side components or `dcc.Store` objects whenever possible.
+  - Standard browser-side `dcc.Store` targets are best reserved for lightweight UI tracking parameters, such as coordinate boundaries, range limits, configuration flags, or active tab UUIDs.
+  - When slicing, filtering, or cropping data stored in server-side caches, prefer transmitting only the small configuration boundaries (`xmin`, `xmax`) to the backend. It is generally more efficient to execute heavy computations or dataframe slicing directly on the server layer before updating visual charts.
+
 ## Dependencies and Mathematical Implementation Hierarchy
 
 When implementing physical formulas, statistical analysis, curve fitting, or coordinate transformations, you must follow this strict priority chain. **Never implement mathematical or astronomical algorithms from scratch.** Exhaust each level of the hierarchy before moving to the next:

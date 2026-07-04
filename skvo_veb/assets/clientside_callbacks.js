@@ -291,6 +291,42 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 console.error("deleteSelected Error:", error.message);
                 return window.dash_clientside.no_update;
             }
+        },
+
+        trimSelectedDisplayRange: function (n_clicks, selectionBounds, dataString, jd0) {
+            console.log("trimSelectedDisplayRange");
+            try {
+                if (!n_clicks || !dataString) {
+                    return window.dash_clientside.no_update;
+                }
+                if (!selectionBounds || selectionBounds.xmin === undefined || selectionBounds.xmax === undefined) {
+                    console.error("trimSelectedDisplayRange: missing selection bounds");
+                    return window.dash_clientside.no_update;
+                }
+
+                let left = Number(selectionBounds.xmin);
+                let right = Number(selectionBounds.xmax);
+
+                const leftJd = left + jd0;
+                const rightJd = right + jd0;
+                const fullData = JSON.parse(dataString);
+                const { columns, data: rows } = fullData.lightcurve;
+                const jdCol = columns.indexOf('jd');
+                if (jdCol === -1) {
+                    console.error("trimSelectedDisplayRange: jd column not found");
+                    return window.dash_clientside.no_update;
+                }
+
+                fullData.lightcurve.data = rows.filter(row => {
+                    const jd = Number(row[jdCol]);
+                    return jd < leftJd || jd > rightJd;
+                });
+
+                return JSON.stringify(fullData);
+            } catch (error) {
+                console.error("trimSelectedDisplayRange Error:", error.message);
+                return window.dash_clientside.no_update;
+            }
         }
     }
 });

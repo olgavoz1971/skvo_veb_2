@@ -1214,7 +1214,10 @@ def write_vo_lightcurve(
         refposition (str, optional): Time reference position (e.g. 'BARYCENTER', 'HELIOCENTER').
             Defaults to "BARYCENTER" (Obligatory).
         timescale (str, optional): Time scale. Defaults to "TCB" (Optional).
-        timeorigin (float, optional): Time origin/offset. Defaults to 2455197.5 (Optional).
+        timeorigin (float, optional): Time origin offset added to ``obs_time`` to obtain
+            absolute Julian Date. Use ``0`` when ``obs_time`` holds full JD; use
+            ``2400000.5`` (``JD_TO_MJD``) when ``obs_time`` holds Modified Julian Date.
+            Defaults to ``0``.
         votable_description (str, optional): High-level global description. Defaults to None.
         creator (str, optional): Pipeline or entity creator name. Defaults to None.
         zero_point_flux (float, optional): Zero point flux value. Defaults to None.
@@ -1437,6 +1440,8 @@ def write_vo_lightcurve(
         ('title', 'meta.note', 'Display title for the lightcurve figure'),
         ('name', 'meta.id', 'Target identifier'),
         ('stitched', 'meta.code', 'True when sectors were stitched and flux calibration is relative'),
+        ('cutout_source', 'meta.id;instr', 'Cutout data source: FFI or TPF'),
+        ('mask_mode', 'meta.code', 'Aperture mask mode: handmade, threshold, or pipeline'),
     )
     for param_name, param_ucd, param_desc in optional_char_params:
         param_val = meta_src.get(param_name)
