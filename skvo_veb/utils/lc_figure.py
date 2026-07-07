@@ -13,6 +13,44 @@ from skvo_veb.utils.my_tools import safe_none
 logger = logging.getLogger(__name__)
 
 
+def _format_sector_legend_labels(label_series: pd.Series) -> pd.Series:
+    """Formats sector ids as discrete legend labels (e.g. ``Sector 56``).
+
+    Args:
+        label_series (pandas.Series): Raw sector/group column from a lightcurve table.
+
+    Returns:
+        pandas.Series: String labels suitable for categorical colouring in Plotly.
+    """
+    def _one_label(value) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return 'Sector ?'
+        try:
+            return f'Sector {int(value)}'
+        except (TypeError, ValueError):
+            text = str(value).strip()
+            if text.lower().startswith('sector'):
+                return text
+            return f'Sector {text}' if text else 'Sector ?'
+
+    return label_series.map(_one_label)
+
+
+def _sector_legend_sort_key(label: str) -> tuple:
+    """Sort key so legend entries follow numeric sector order.
+
+    Args:
+        label (str): Legend label such as ``Sector 56``.
+
+    Returns:
+        tuple: Sort key for ``sorted(..., key=...)``.
+    """
+    parts = str(label).split()
+    if len(parts) >= 2 and parts[-1].lstrip('-').isdigit():
+        return (0, int(parts[-1]))
+    return (1, str(label))
+
+
 def build_curvedash_scatter_figure(
     lcd,
     title: str,
@@ -56,7 +94,8 @@ def build_curvedash_scatter_figure(
         xaxis_title = f'jd-{display_epoch}, {safe_none(lcd.time_unit)} {lcd.timescale}'
 
     label_series = lcd.lightcurve['label'] if lcd.lightcurve is not None else lcd.label
-    df = pd.concat([x, lcd.phot, label_series, lcd.perm_index], axis=1)
+    legend_labels = _format_sector_legend_labels(label_series) if color_by_label else label_series
+    df = pd.concat([x, lcd.phot, legend_labels, lcd.perm_index], axis=1)
     df.columns = [x_column, y_column, 'label', 'perm_index']
 
     scatter_kwargs = dict(
@@ -67,6 +106,9 @@ def build_curvedash_scatter_figure(
     )
     if color_by_label:
         scatter_kwargs['color'] = 'label'
+        scatter_kwargs['category_orders'] = {
+            'label': sorted(df['label'].unique(), key=_sector_legend_sort_key),
+        }
 
     fig = px.scatter(df, render_mode='webgl', **scatter_kwargs)
     fig.update_traces(
@@ -77,6 +119,8 @@ def build_curvedash_scatter_figure(
         mode='markers',
         marker=dict(size=4, symbol='circle'),
     )
+    if color_by_label:
+        fig.update_layout(coloraxis_showscale=False)
     y_parts = [y_label]
     if phot_description:
         y_parts.append(str(phot_description))
