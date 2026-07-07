@@ -2,6 +2,8 @@ import logging
 import os
 import tempfile
 
+logger = logging.getLogger(__name__)
+
 import pandas
 import pandas as pd
 # noinspection PyUnresolvedReferences
@@ -13,9 +15,6 @@ from pyasassn.client import SkyPatrolClient
 # from skvo_veb.utils.kurve import cook_lightcurve
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.my_tools import DBException, timeit, PipeException
-
-logging.basicConfig(filename=os.getenv('APP_LOG'), level=logging.INFO)
-
 
 # http://asas-sn.ifa.hawaii.edu/documentation/getting_started.html
 gaia_id_DP_Peg = 1791119426789765632
@@ -30,7 +29,7 @@ def _build_path_to_cache(gaia_id):
     """
     cache_dir = os.getenv('ASASSN_CACHE_DIR')
     if not cache_dir:
-        logging.warning('Environmental variable ASASSN_CACHE_DIR is not specified')
+        logger.warning('Environmental variable ASASSN_CACHE_DIR is not specified')
         return None
     os.makedirs(cache_dir, exist_ok=True)
     return os.path.join(cache_dir, f'asassn_lc_{gaia_id}.pkl')
@@ -53,7 +52,7 @@ def _load_from_cache(gaia_id) -> (pandas.DataFrame | None, float | None, float |
         df.attrs.clear()
         return df, epoch, period,
     except Exception as e:
-        logging.warning(f'request_asassn, bad or corrupted pickle file {path_to_cached_data}: {e}')
+        logger.warning(f'request_asassn, bad or corrupted pickle file {path_to_cached_data}: {e}')
         if path_to_cached_data and os.path.exists(path_to_cached_data):
             try:
                 os.remove(path_to_cached_data)
@@ -83,7 +82,7 @@ def _store_in_cache(source_id, df: pandas.DataFrame, epoch: float | None = None,
         df.to_pickle(temp_path)
         os.replace(temp_path, path_to_cached_data)
     except Exception as e:
-        logging.error(f'Store ASAS-SN lightcurve in cache failed for {path_to_cached_data}: {e}')
+        logger.error(f'Store ASAS-SN lightcurve in cache failed for {path_to_cached_data}: {e}')
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -110,7 +109,7 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
         try:
             client = SkyPatrolClient()
         except Exception as e:
-            logging.error('request_asassn SkyPatrolClient exception', e)
+            logger.error('request_asassn SkyPatrolClient exception', e)
             raise PipeException('load_asassn_lightcurve: both input names are None')
         try:
             # # res = client.query_list(gaia_id, catalog='stellar_main', id_col='gaia_id', download=True)
@@ -138,15 +137,15 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
                     epoch = 0 if epoch is None or (isinstance(epoch, float) and isnan(epoch)) else epoch
                     period = None if period is None or (isinstance(period, float) and isnan(period)) else period
                 except Exception as e:
-                    logging.warning(f'load_asassn_lightcurve: asas_sn_id did not extracted: {e}')
+                    logger.warning(f'load_asassn_lightcurve: asas_sn_id did not extracted: {e}')
             else:
                 raise PipeException('load_asassn_lightcurve: both input names are None')
-            logging.info('Lightcurve is ready')
+            logger.info('Lightcurve is ready')
             if hasattr(res, 'data'):
                 lc_df = res.data
             if lc_df is None or lc_df.empty:
                 _store_in_cache(caching_name, pd.DataFrame())
-                logging.warning(f'load_asassn_lightcurve: The source {caching_name} '
+                logger.warning(f'load_asassn_lightcurve: The source {caching_name} '
                                 f'was not found in the ASAS-SN database')
                 raise DBException(f'The source {caching_name} was not found in the ASAS-SN database')
             # if hasattr(res, 'catalog_info'):
@@ -159,7 +158,7 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
         except DBException:
             raise
         except Exception as e:
-            logging.warning(f'request_asassn request lightcurve exception {e}')
+            logger.warning(f'request_asassn request lightcurve exception {e}')
             raise DBException(f'It seems that the star {caching_name} was not found in the ASAS-SN database')
         # client.catalogs.master_list
         _store_in_cache(caching_name, lc_df, epoch, period)
@@ -187,15 +186,18 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
     except DBException:
         raise
     except Exception as e:
-        logging.error(f'load_asassn_lightcurve exception: {type(e).__name__} {e}')
+        logger.error(f'load_asassn_lightcurve exception: {type(e).__name__} {e}')
         raise PipeException(f'{caching_name}: ASAS-SN data structure is invalid')
     return lcd
 
 
 if __name__ == '__main__':
+    from skvo_veb.logging_config import configure_logging
+
+    configure_logging()
     try:
         test_lcd = load_asassn_lightcurve(gaia_id_no_ephem, band='V')
-        print(test_lcd.metadata)
+        logger.info('%s', test_lcd.metadata)
     except Exception as ee:
-        print(ee)
-    print('AHA!')
+        logger.exception('load_asassn_lightcurve failed: %s', ee)
+    logger.info('AHA!')

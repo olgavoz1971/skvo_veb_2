@@ -74,14 +74,12 @@ def purge_lightkurve_cached_fits(search_result: lk.SearchResult, row_idx: int) -
     """
     path = get_cached_fits_path(search_result, row_idx)
     if not path:
-        print(f"[PURGE FITS] No cached file on disk for row {row_idx}")
-        logger.info(f'purge_lightkurve_cached_fits: no cached file for row {row_idx}')
+        logger.info('[PURGE FITS] No cached file on disk for row %s', row_idx)
         return False
 
     try:
         os.remove(path)
-        print(f"[PURGE FITS] Deleted cached file: {path}")
-        logger.info(f'purge_lightkurve_cached_fits: deleted {path}')
+        logger.info('[PURGE FITS] Deleted cached file: %s', path)
         return True
     except OSError as exc:
         msg = f'Failed to delete cached FITS file {path}: {exc}'
@@ -100,15 +98,14 @@ def download_lightcurve_row(search_result: lk.SearchResult, row_idx: int):
     if row_idx < 0 or row_idx >= len(search_result):
         raise PipeException(f'Invalid search row index: {row_idx}')
 
-    print(f"[DOWNLOAD FITS] Fetching row {row_idx} from MAST / Lightkurve cache...")
-    logger.info(f'download_lightcurve_row: downloading row {row_idx}')
+    logger.info('[DOWNLOAD FITS] Fetching row %s from MAST / Lightkurve cache...', row_idx)
     try:
         lc = search_result[row_idx].download()
     except LightkurveError as exc:
-        logger.warning(f'download_lightcurve_row failed for row {row_idx}: {exc}')
+        logger.warning('download_lightcurve_row failed for row %s: %s', row_idx, exc)
         raise PipeException(f'Download failed for row {row_idx}: {exc}') from exc
 
-    print(f"[DOWNLOAD FITS] Success for row {row_idx}")
+    logger.info('[DOWNLOAD FITS] Success for row %s', row_idx)
     return lc
 
 
@@ -117,7 +114,10 @@ def download_lightcurve_row_with_recovery(search_result: lk.SearchResult, row_id
     try:
         return download_lightcurve_row(search_result, row_idx)
     except (LightkurveError, PipeException):
-        print(f"[DOWNLOAD FITS] Download failed for row {row_idx}; attempting cache purge and retry...")
+        logger.warning(
+            '[DOWNLOAD FITS] Download failed for row %s; attempting cache purge and retry...',
+            row_idx,
+        )
         purge_lightkurve_cached_fits(search_result, row_idx)
         return download_lightcurve_row(search_result, row_idx)
 

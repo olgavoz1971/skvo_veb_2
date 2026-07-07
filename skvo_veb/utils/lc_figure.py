@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import plotly.express as px
 
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_MAG
 from skvo_veb.utils.my_tools import safe_none
 
 logger = logging.getLogger(__name__)
@@ -41,9 +41,10 @@ def build_curvedash_scatter_figure(
     Returns:
         plotly.graph_objects.Figure: Scatter figure ready for ``dcc.Graph``.
     """
-    y_column = 'mag' if lcd.active_domain == 'mag' else 'flux'
-    y_label = 'magnitude' if lcd.active_domain == 'mag' else 'flux'
+    y_column = 'phot'
+    y_label = 'magnitude' if lcd.active_domain == DOMAIN_MAG else 'flux'
     phot_unit = lcd.phot_unit
+    is_magnitude = lcd.active_domain == DOMAIN_MAG
 
     if phase_view:
         x = lcd.phase
@@ -67,7 +68,7 @@ def build_curvedash_scatter_figure(
     if color_by_label:
         scatter_kwargs['color'] = 'label'
 
-    fig = px.scatter(df, **scatter_kwargs)
+    fig = px.scatter(df, render_mode='webgl', **scatter_kwargs)
     fig.update_traces(
         selected={'marker': {'color': 'orange', 'size': 6}},
         unselected={'marker': {'opacity': 0.85}},
@@ -93,6 +94,9 @@ def build_curvedash_scatter_figure(
         dragmode='zoom',
     )
 
+    if is_magnitude:
+        fig.update_yaxes(autorange='reversed')
+
     if lc_metadata is not None:
         xrange_left = lc_metadata.get('xrange_left')
         xrange_right = lc_metadata.get('xrange_right')
@@ -101,6 +105,9 @@ def build_curvedash_scatter_figure(
         if xrange_left is not None and xrange_right is not None:
             fig.update_xaxes(range=[xrange_left, xrange_right])
         if yrange_left is not None and yrange_right is not None:
-            fig.update_yaxes(range=[yrange_left, yrange_right])
+            if is_magnitude:
+                fig.update_yaxes(range=[max(yrange_left, yrange_right), min(yrange_left, yrange_right)])
+            else:
+                fig.update_yaxes(range=[yrange_left, yrange_right])
 
     return fig

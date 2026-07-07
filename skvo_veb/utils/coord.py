@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 import numpy as np
 from astropy.coordinates import SkyCoord
 # noinspection PyUnresolvedReferences
@@ -106,10 +110,12 @@ def parse_coord_to_skycoord(coord_str: str) -> SkyCoord:
 
 
 if __name__ == '__main__':
-    # res = coordequ_to_hms_dms_str()
+    from skvo_veb.logging_config import configure_logging
+
+    configure_logging()
     for coord_str_ in ['20 54 05.689 +37 01 17.38',
                        '20h54m06s +37d01m17s',
                        '313d31m30s +37d1m17s',
                        '313.525      37.021388888888886',
                        ]:
-        print(parse_coord_to_skycoord(coord_str_))
+        logger.info('%s', parse_coord_to_skycoord(coord_str_))

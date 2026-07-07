@@ -6,8 +6,8 @@ their associated physical units, zero-point calibrations, and metadata.
 """
 
 import logging
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 import io
 
@@ -113,7 +113,7 @@ class CurveDash:
 
     def __init__(self, jd=None, flux=None, flux_err=None, mag=None, mag_err=None,
                  label=None, active_domain: str | None = None, photcal: dict | None = None,
-                 flux_correction: str | None = None, zero_point=0.0,
+                 flux_correction: str | None = None,
                  name: str = '', lookup_name: str | None = None, gaia_id=None,
                  title: str = '',
                  band='',
@@ -140,7 +140,6 @@ class CurveDash:
             photcal (dict, optional): Photometric calibration metadata
                 (``zp_flux``, ``zp_mag``, ``mag_sys``, etc.) for on-demand conversion.
             flux_correction (str, optional): Type of flux correction applied.
-            zero_point (float, optional): Legacy zero point for magnitude display.
             name (str, optional): Target object name.
             lookup_name (str, optional): Alternative lookup name.
             gaia_id (int or str, optional): Gaia DR3 identifier.
@@ -234,7 +233,6 @@ class CurveDash:
             'epoch': epoch,
             'folded_view': folded_view,
             'mag_view': mag_view,
-            'zero_point': zero_point,
         }
         self.recalc_phase()
 
@@ -270,9 +268,11 @@ class CurveDash:
                     self.metadata['active_domain'] = DOMAIN_FLUX
             if self.metadata is not None and 'photcal' not in self.metadata:
                 self.metadata['photcal'] = {}
+            if self.metadata is not None:
+                self.metadata.pop('zero_point', None)
             return self
         except Exception as e:
-            logging.warning(f'curve_dash.__init__: {e}')
+            logger.warning(f'curve_dash.__init__: {e}')
             raise PipeException('CurveDash init: inconsistent serialized data')
 
     @staticmethod
@@ -357,7 +357,7 @@ class CurveDash:
             try:
                 jd = t['time'].jd
             except Exception as e:
-                logging.warning(f'curve_dash:from file: {e}')
+                logger.warning(f'curve_dash:from file: {e}')
                 raise DataStructureException("Inappropriate data type in the 'time' column")
         else:
             raise DataStructureException("Table must contain 'jd' or 'time' column")
@@ -614,7 +614,7 @@ class CurveDash:
         zp_mag = pc.get('zp_mag', FALLBACK_MAG_ZERO_POINT)
         return PhotCal(
             zp_flux=zp_flux,
-            zp_flux_unit=pc.get('zp_flux_unit') or 'Jy',
+            zp_flux_unit=pc.get('zp_flux_unit') or '',
             zp_mag=zp_mag,
             zp_mag_unit=pc.get('zp_mag_unit') or 'mag',
             mag_sys=pc.get('mag_sys', 'Vega'),
@@ -648,7 +648,7 @@ class CurveDash:
             flux_vals = np.array(flux_quantity.value, dtype=float)
             flux_unit_str = str(flux_quantity.unit)
         except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
-            logging.warning('PhotCal mag_to_flux failed (%s); using fallback formula.', exc)
+            logger.warning('PhotCal mag_to_flux failed (%s); using fallback formula.', exc)
             zp_m = photcal.zp_mag.value
             zp_f = photcal.zp_flux.value
             flux_vals = zp_f * 10 ** (-0.4 * (mag_values - zp_m))
@@ -697,13 +697,13 @@ class CurveDash:
             mag_quantity = photcal.flux_to_mag(flux_quantity)
             mag_vals = np.array(mag_quantity.value, dtype=float)
         except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
-            logging.warning('PhotCal flux_to_mag failed (%s); using fallback formula.', exc)
-            zp_m = photcal.zp_mag.value
-            zp_f = photcal.zp_flux.value
-            valid = flux_vals > 0
-            mag_vals = np.full_like(flux_vals, np.nan)
-            mag_vals[valid] = zp_m - 2.5 * np.log10(flux_vals[valid] / zp_f)
-
+            logger.critical('PhotCal flux_to_mag failed (%s)', exc)
+            # zp_m = photcal.zp_mag.value
+            # zp_f = photcal.zp_flux.value
+            # valid = flux_vals > 0
+            # mag_vals = np.full_like(flux_vals, np.nan)
+            # mag_vals[valid] = zp_m - 2.5 * np.log10(flux_vals[valid] / zp_f)
+            raise PipeException('PhotCal flux_to_mag failed (%s)', exc)
         if flux_err_col is not None:
             flux_vals = flux_col.values.astype(float)
             err_vals = flux_err_col.values.astype(float)
@@ -882,20 +882,6 @@ class CurveDash:
             # self.recalc_phase()
 
     @property
-    def zero_point(self):
-        """Gets or sets the zero point for magnitude calculations.
-
-        Returns:
-            float or None: The zero point value, or None if not set.
-        """
-        return self.metadata.get('zero_point') if self.metadata is not None else None
-
-    @zero_point.setter
-    def zero_point(self, value):
-        if self.metadata is not None:
-            self.metadata['zero_point'] = value
-
-    @property
     def period_unit(self):
         """Gets or sets the unit of the period.
 
@@ -930,7 +916,7 @@ class CurveDash:
 
     @epoch.setter
     def epoch(self, value):
-        logging.debug(f'Epoch setter, new epoch={value}')
+        logger.debug(f'Epoch setter, new epoch={value}')
         if self.metadata is not None:
             self.metadata['epoch'] = value
             # self.recalc_phase()
@@ -989,11 +975,11 @@ class CurveDash:
 
         # Shift the phase to keep the minimum within [0.2, 0.8] for a continuous Gaussian fit
         if initial_guess[1] < 0.2:
-            logging.debug('find_phase_of_min_gauss: shift left part to the right')
+            logger.debug('find_phase_of_min_gauss: shift left part to the right')
             x = np.where(x < 0.5, x + 1, x)  # shift left part to the right
             initial_guess[1] += 1
         elif initial_guess[1] > 0.8:
-            logging.debug('find_phase_of_min_gauss: shift right part to the left')
+            logger.debug('find_phase_of_min_gauss: shift right part to the left')
             x = np.where(x > 0.5, x - 1, x)  # shift right part to the left
             initial_guess[1] -= 1
 
@@ -1008,12 +994,12 @@ class CurveDash:
             # res = curve_fit(gaussian, x_fit, y_fit.to_numpy(),
             #                 p0=initial_guess)
             # The center of the eclipse is the mean of the Gaussian
-            logging.debug(f'find_phase_of_min_gauss: {popt=}')
+            logger.debug(f'find_phase_of_min_gauss: {popt=}')
             # popt = res[0]
             phase_of_min = popt[1]  # todo: check this warning
             return phase_of_min
         except RuntimeError as e:
-            logging.error(e)
+            logger.error(e)
             return None
 
     # todo: Rewrite the following methods in JavaScript

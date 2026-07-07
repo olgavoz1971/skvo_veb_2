@@ -22,6 +22,19 @@ FLUX_TO_MAG_ERR_FACTOR = 1.085736
 DOMAIN_FLUX = "flux"
 DOMAIN_MAG = "mag"
 
+# Keys for ``metadata['photcal']``: mirrors the IVOA VOTable ``<GROUP name="photcal">``
+# for the active photometry column. Multicolour support will extend this to a
+# per-column map; single-band curves store one group here.
+PHOTCAL_KEY_FILTER_IDENTIFIER = "filter_identifier"
+PHOTCAL_KEY_EFFECTIVE_WAVELENGTH = "effective_wavelength"
+PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT = "effective_wavelength_unit"
+PHOTCAL_KEY_FILTER_NAME = "filter_name"
+PHOTCAL_KEY_ZP_FLUX = "zp_flux"
+PHOTCAL_KEY_ZP_FLUX_UNIT = "zp_flux_unit"
+PHOTCAL_KEY_ZP_MAG = "zp_mag"
+PHOTCAL_KEY_ZP_MAG_UNIT = "zp_mag_unit"
+PHOTCAL_KEY_MAG_SYS = "mag_sys"
+
 # Supported user-facing lightcurve download formats (VOTable binary is the default).
 VOTABLE_FORMAT_BINARY = "votable_binary"
 VOTABLE_FORMAT_TEXT = "votable_text"

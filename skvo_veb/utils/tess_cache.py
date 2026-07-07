@@ -10,8 +10,7 @@ from os import getenv
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 
-# Configure logging path and level
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 import lightkurve
 from lightkurve import TessTargetPixelFile, TessLightCurve
@@ -52,7 +51,7 @@ def extract_coords(val):
     try:
         return SkyCoord.from_name(val_str)
     except Exception as e:
-        logging.debug(f"SkyCoord.from_name failed for '{val_str}': {e}")
+        logger.debug(f"SkyCoord.from_name failed for '{val_str}': {e}")
         
     # 4. As a final fallback, try our Simbad query directly
     try:
@@ -62,7 +61,7 @@ def extract_coords(val):
             coord = SkyCoord(ra=result['ra'][0], dec=result['dec'][0], unit=(u.deg, u.deg))
             return coord
     except Exception as e:
-        logging.warning(f"Simbad query fallback failed in tess_cache for '{val_str}': {e}")
+        logger.warning(f"Simbad query fallback failed in tess_cache for '{val_str}': {e}")
         
     return None
 
@@ -140,10 +139,10 @@ def _find_cached_file(prefix, extension='dill', **kwargs):
                     min_separation = separation
                     best_file_path = os.path.join(cache_dir, fname)
     except Exception as e:
-        logging.error(f"Error scanning cache directory: {e}")
+        logger.error(f"Error scanning cache directory: {e}")
 
     if best_file_path:
-        logging.info(f"Smarter Caching MATCH found! {best_file_path} is within {min_separation:.6f} deg of requested {target_val}")
+        logger.info(f"Smarter Caching MATCH found! {best_file_path} is within {min_separation:.6f} deg of requested {target_val}")
     return best_file_path
 
 
@@ -171,7 +170,7 @@ def _get_cache_filename(prefix, extension='dill', **kwargs):
     """
     cache_dir = os.getenv('TESS_CACHE_DIR')
     if not cache_dir:
-        logging.warning('Environmental variable TESS_CACHE_DIR is not specified')
+        logger.warning('Environmental variable TESS_CACHE_DIR is not specified')
         return None
     
     # Ensure the cache folder exists to avoid FileNotFoundError on write
@@ -197,7 +196,7 @@ def _get_cache_filename(prefix, extension='dill', **kwargs):
     unique_key = f"{prefix}_{hashed_args}.{extension}"
     cache_file_path = os.path.join(cache_dir, unique_key)
     
-    logging.debug(f"Resolved cache path for {prefix} (args: {kwargs}) -> {cache_file_path}")
+    logger.debug(f"Resolved cache path for {prefix} (args: {kwargs}) -> {cache_file_path}")
     return cache_file_path
 
 
@@ -228,7 +227,7 @@ def _save_atomically(filename, write_func):
         write_func(temp_path)
         os.replace(temp_path, filename)
     except Exception as e:
-        logging.error(f"Atomic cache write failed for {filename}: {e}")
+        logger.error(f"Atomic cache write failed for {filename}: {e}")
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -305,7 +304,7 @@ def load_tpf_fits(**kwargs):
         try:
             return TessTargetPixelFile(str(filename))
         except Exception as e:
-            logging.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
+            logger.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
             try:
                 os.remove(filename)
             except Exception:
@@ -338,7 +337,7 @@ def load_ffi_fits(**kwargs):
         try:
             return TessTargetPixelFile(str(filename))
         except Exception as e:
-            logging.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
+            logger.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
             try:
                 os.remove(filename)
             except Exception:
@@ -407,7 +406,7 @@ def load_lc_fits(**kwargs):
         try:
             return TessLightCurve.read(str(filename))
         except Exception as e:
-            logging.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
+            logger.warning(f"FITS Cache corruption detected in {filename}. Deleting file. Error: {e}")
             try:
                 os.remove(filename)
             except Exception:
@@ -444,7 +443,7 @@ def load(prefix, **kwargs):
             with open(filename, "rb") as f:
                 return dill.load(f)
         except Exception as e:
-            logging.warning(f"Cache corruption detected in {filename}. Deleting file. Error: {e}")
+            logger.warning(f"Cache corruption detected in {filename}. Deleting file. Error: {e}")
             try:
                 os.remove(filename)
             except Exception:
@@ -488,7 +487,7 @@ def save_lightcurve_collection(lc_collection, tar_filename):
                     tar.add(lc_filename, arcname=f"lightcurve_{i}.fits")
             os.replace(temp_tar_path, tar_filename)
         except Exception as e:
-            logging.error(f"Failed to write lightcurve collection atomically: {e}")
+            logger.error(f"Failed to write lightcurve collection atomically: {e}")
             if os.path.exists(temp_tar_path):
                 try:
                     os.remove(temp_tar_path)
@@ -525,7 +524,7 @@ def load_lightcurve_collection(tar_filename):
                         lc = lightkurve.LightCurve.read(file)
                         lc_collection.append(lc)
     except Exception as e:
-        logging.warning(f"Failed to read lightcurve collection from {tar_filename}. Error: {e}")
+        logger.warning(f"Failed to read lightcurve collection from {tar_filename}. Error: {e}")
         try:
             os.remove(tar_filename)
         except Exception:
@@ -557,7 +556,7 @@ def delete_target_cache(target, radius=None, size=None):
     """
     cache_dir = os.getenv('TESS_CACHE_DIR')
     if not cache_dir or not os.path.exists(cache_dir):
-        logging.warning("TESS_CACHE_DIR is not configured or does not exist.")
+        logger.warning("TESS_CACHE_DIR is not configured or does not exist.")
         return 0
 
     deleted_count = 0
@@ -587,11 +586,11 @@ def delete_target_cache(target, radius=None, size=None):
                         try:
                             os.remove(file_path)
                             deleted_count += 1
-                            logging.info(f"Clean Cache: Deleted coordinate-matched file {file_path}")
+                            logger.info(f"Clean Cache: Deleted coordinate-matched file {file_path}")
                         except Exception as e:
-                            logging.error(f"Clean Cache: Failed to delete {file_path}: {e}")
+                            logger.error(f"Clean Cache: Failed to delete {file_path}: {e}")
         except Exception as e:
-            logging.error(f"Clean Cache: Error scanning directory for coordinate-aware files: {e}")
+            logger.error(f"Clean Cache: Error scanning directory for coordinate-aware files: {e}")
 
     # 2. Compute exact fallback hashes and delete those files as well
     # Try multiple common prefixes and extension patterns
@@ -624,10 +623,10 @@ def delete_target_cache(target, radius=None, size=None):
             try:
                 os.remove(fpath)
                 deleted_count += 1
-                logging.info(f"Clean Cache: Deleted fallback-hashed file {fpath}")
+                logger.info(f"Clean Cache: Deleted fallback-hashed file {fpath}")
             except Exception as e:
-                logging.error(f"Clean Cache: Failed to delete {fpath}: {e}")
+                logger.error(f"Clean Cache: Failed to delete {fpath}: {e}")
 
-    logging.info(f"Clean Cache: Successfully completed cleanup for target={target!r}. Total files deleted: {deleted_count}")
+    logger.info(f"Clean Cache: Successfully completed cleanup for target={target!r}. Total files deleted: {deleted_count}")
     return deleted_count
 

@@ -7,8 +7,6 @@ DISK_CACHE = False
 
 import logging
 logger = logging.getLogger(__name__)
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
 
 import base64
 import io
@@ -44,8 +42,20 @@ from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import export_curvedash, build_curvedash_title, ingest_lightcurve_file, export_file_extension
-from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS, is_votable_export_format
+from skvo_veb.utils.lc_bridge import (
+    export_curvedash,
+    build_curvedash_title,
+    ingest_lightcurve_file,
+    export_file_extension,
+    apply_phot_domain_view,
+)
+from skvo_veb.utils.lc_config import (
+    DEFAULT_EXPORT_FORMAT,
+    EXPORT_FORMAT_OPTIONS,
+    DOMAIN_MAG,
+    DOMAIN_FLUX,
+    is_votable_export_format,
+)
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import prepare_lcd_for_export, trim_curvedash_display_range
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
@@ -213,6 +223,14 @@ def layout():
                             ),  # todo: add callback fired by stitch switch toggle, check it with user curve added
                             # endregion
                         ], style={'marginBottom': '5px'}),  # Flux options
+                        dbc.Switch(
+                            id='mag_view_tess_lc_srv_switch',
+                            label='Magnitude',
+                            value=False,
+                            label_style=switch_label_style_vert,
+                            persistence=False,
+                            style={'marginBottom': '5px', 'width': '100%'},
+                        ),
                         dbc.Button('rePlot Curve', id='recreate_selected_tess_lc_srv_button', size="sm",
                                    style={'width': '100%', 'marginBottom': '5px'}),
                         html.Details([
@@ -484,7 +502,7 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
         output['dec'] = dec
         output['resolved_coords'] = {'obj_name': obj_name.strip(), 'ra': ra, 'dec': dec}
     except Exception as e:
-        logging.warning(f"lightcurve_tess_srv.resolve_coordinates error: {e}")
+        logger.warning(f"lightcurve_tess_srv.resolve_coordinates error: {e}")
         output['alert_message'] = message.warning_alert(e)
         output['alert_style'] = {'display': 'block'}
 
@@ -657,7 +675,7 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
         else:
             raise PipeException('No data found')
     except Exception as e:
-        logging.warning(f'tess_lightcurve.search: {e}')
+        logger.warning(f'tess_lightcurve.search: {e}')
         output['selected_rows'] = []
         output['alert_message'] = message.warning_alert(e)
         output['alert_style'] = {'display': 'block'}  # show the alert
@@ -726,7 +744,7 @@ def extract_data_from_user_cache(user_tab_id):
     user_key = _compose_user_key(user_tab_id)
     user_data = user_cache.get(user_key, default=None)
     if user_data is None:  # m.b user's cache has been expired and deleted
-        logging.warning(f'lightcurve_tess: extract_data_from_user_cache time={time.time()} {user_tab_id=}')
+        logger.warning(f'lightcurve_tess: extract_data_from_user_cache time={time.time()} {user_tab_id=}')
         raise PipeException('Please, download light curve. User\'s cache is empty')
     # Implement sliding expiration:
     user_cache.set(user_key, user_data, expire=86400)  # Refresh the expiration time on read
@@ -797,7 +815,7 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         return output
 
     except Exception as e:
-        logging.warning(f'lightcurve_tess.replot_selected_curves: {e}')
+        logger.warning(f'lightcurve_tess.replot_selected_curves: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         return dash.no_update
@@ -830,7 +848,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         lcd.epoch = epoch + jd0
         # phi_min = lcd.find_phase_of_min_simple()
         phi_min = lcd.find_phase_of_min_gauss()
-        logging.debug(f'{phi_min=}')
+        logger.info(f'{phi_min=}')
         new_epoch = lcd.shift_epoch(phi_min)
         lcd.epoch = new_epoch
         lcd.recalc_phase()
@@ -839,7 +857,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
         return dummy_lc, new_epoch - jd0
     except Exception as e:
-        logging.warning(f'lightcurve_tess.shift_to_minimum: {e}')
+        logger.warning(f'lightcurve_tess.shift_to_minimum: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         return dash.no_update, dash.no_update
@@ -861,7 +879,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
 #             raise PipeException('Set the period and try again')
 #         return dash.no_update
 #     except Exception as e:
-#         logging.warning(f'lightcurve_tess.fold: {e}')
+#         logger.warning(f'lightcurve_tess.fold: {e}')
 #         alert_message = message.warning_alert(e)
 #         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
 #         return False
@@ -898,7 +916,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
 #         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
 #         return lcd.serialize(), dash.no_update
 #     except Exception as e:
-#         logging.warning(f'lightcurve_tess.fold: {e}')
+#         logger.warning(f'lightcurve_tess.fold: {e}')
 #         alert_message = message.warning_alert(e)
 #         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
 #         return dash.no_update, False
@@ -943,10 +961,69 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         return dummy_lc, dash.no_update
     except Exception as e:
-        logging.warning(f'lightcurve_tess.recalculate_phase: {e}')
+        logger.warning(f'lightcurve_tess.recalculate_phase: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         return dash.no_update, False
+
+
+@callback(
+    Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
+    Output('mag_view_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('mag_view_tess_lc_srv_switch', 'value'),
+    State('store_user_tab_id_tess_lc_srv', 'data'),
+    prevent_initial_call=True,
+)
+def toggle_mag_view(show_magnitude, user_tab_id):
+    """Converts the cached lightcurve to flux or magnitude and triggers a replot.
+
+    On failure the switch is reverted to match the unchanged cache domain so the
+    UI stays consistent with stored photometry.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+
+        desired_domain = DOMAIN_MAG if show_magnitude else DOMAIN_FLUX
+        if lcd.active_domain == desired_domain:
+            return dash.no_update, dash.no_update
+
+        apply_phot_domain_view(lcd, show_magnitude)
+        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
+        return str(uuid.uuid4()), dash.no_update
+    except Exception as exc:
+        logger.warning(f'lightcurve_tess_srv.toggle_mag_view: {exc}')
+        alert_message = message.warning_alert(exc)
+        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        switch_value = not show_magnitude
+        try:
+            js_lightcurve = extract_data_from_user_cache(user_tab_id)
+            lcd = CurveDash.from_serialized(js_lightcurve)
+            switch_value = lcd.active_domain == DOMAIN_MAG
+        except Exception:
+            pass
+        return dash.no_update, switch_value
+
+
+@callback(
+    Output('mag_view_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('store_tess_lightcurve_lc_srv', 'data'),
+    State('store_user_tab_id_tess_lc_srv', 'data'),
+    prevent_initial_call=True,
+)
+def sync_mag_view_switch(_, user_tab_id):
+    """Keeps the magnitude switch aligned with the active domain in server cache."""
+    if not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        return lcd.active_domain == DOMAIN_MAG
+    except Exception:
+        raise PreventUpdate
 
 
 @callback(Output('graph_tess_lc_srv', 'figure', allow_duplicate=True),
@@ -967,7 +1044,7 @@ def plot_tess_curve(_, user_tab_id, phase_view):
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         return fig
     except Exception as e:
-        logging.warning(f'lightcurve_tess.plot_tess_curve: {e}')
+        logger.warning(f'lightcurve_tess.plot_tess_curve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         return dash.no_update
@@ -1034,7 +1111,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
                 # Default to `[0.05, 0.10, 0.15, 0.20, 0.25, 0.33]` if not specified
                 duration_list = [float(x.strip()) for x in duration.split(',')]
             except Exception as e:
-                logging.warning(f'Periodogram: {str(e)}')
+                logger.warning(f'Periodogram: {str(e)}')
                 duration_list = None
             if duration_list is None:
                 kwargs = dict(method=method,
@@ -1071,6 +1148,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
+        # fig.add_trace(go.Scattergl(
             x=x, y=pg.power,
             # hoverinfo='none',  # Important
             hovertemplate='%{x:.4f}<extra></extra>',
@@ -1095,7 +1173,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
         output['results_row_style'] = {'display': 'block'}
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
     except Exception as e:
-        logging.warning(f'lightcurve_tess.periodogram: {e}')
+        logger.warning(f'lightcurve_tess.periodogram: {e}')
         output['results_row_style'] = {'display': 'none'}
         output['pg_row_style'] = {'display': 'none'}
         alert_message = message.warning_alert(e)
@@ -1176,22 +1254,22 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id):
         set_props('graph_tess_lc_srv', {'selectedData': None})
         return str(uuid.uuid4()), None
     except Exception as exc:
-        logging.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
+        logger.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
         alert_message = message.warning_alert(exc)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
-        raise PreventUpdate
+        raise dash.no_update
 
 
 def write_user_data_to_cache(user_data, user_tab_id):
     user_key = _compose_user_key(user_tab_id)
     user_cache.set(user_key, user_data,
                    expire=86400)  # in seconds todo: check and change it
-    logging.info(f'lightcurve_tess: write_user_data_to_cache time={time.time()}')
+    logger.info(f'lightcurve_tess: write_user_data_to_cache time={time.time()}')
 
 
 def generate_user_tab_id():
     user_tab_id = str(uuid.uuid4())  # Generate a unique tab_id
-    logging.info(f'Generated new tab_id: {user_tab_id}')
+    logger.info(f'Generated new tab_id: {user_tab_id}')
     return user_tab_id
 
 
@@ -1233,14 +1311,14 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
             logger.info(f"purge_redownload_selected_rows: Completed row {row_idx}: {action}")
 
         msg = 'Fresh MAST download completed:\n' + '\n'.join(summaries)
-        logging.info(f'purge_redownload_selected_rows: {msg}')
+        logger.info(f'purge_redownload_selected_rows: {msg}')
         return {
             'message_results': msg,
             'alert_message': message.info_alert(msg),
             'alert_style': {'display': 'block'},
         }
     except Exception as exc:
-        logging.error(f'purge_redownload_selected_rows failed: {exc}', exc_info=True)
+        logger.error(f'purge_redownload_selected_rows failed: {exc}', exc_info=True)
         return {
             'message_results': '',
             'alert_message': message.warning_alert(exc),
@@ -1316,7 +1394,7 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         output['message_results'] = 'Success, switch to the next Tab'
         set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
     except Exception as e:
-        logging.warning(f'lightcurve_tess.download_tess_curve {e}')
+        logger.warning(f'lightcurve_tess.download_tess_curve {e}')
         alert_message = message.warning_alert(e)
         output['graph_tab_disabled'] = True
         output['message_results'] = ''
@@ -1359,7 +1437,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
 
     except Exception as e:
-        logging.warning(f'tess_lc.download_to_user_tess_lc_srv_lightcurve: {e}')
+        logger.warning(f'tess_lc.download_to_user_tess_lc_srv_lightcurve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         ret = dash.no_update
@@ -1377,7 +1455,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
 #     try:
 #         period = float(period_str)
 #     except ValueError:
-#         logging.warning(f'lightcurve_tess.use_period1: {period_str} could not be converted into the float')
+#         logger.warning(f'lightcurve_tess.use_period1: {period_str} could not be converted into the float')
 #         period = None
 #     return period
 
@@ -1392,7 +1470,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
 #     try:
 #         period = float(period_str)
 #     except ValueError:
-#         logging.warning(f'lightcurve_tess.use_period2: {period_str} could not be converted into the float')
+#         logger.warning(f'lightcurve_tess.use_period2: {period_str} could not be converted into the float')
 #         period = None
 #     return period
 
@@ -1423,7 +1501,7 @@ def use_period(period_number, period_list):
 #     try:
 #         return period
 #     except ValueError:
-#         logging.warning(f'lightcurve_tess.use_period: {period} could not be converted into the float')
+#         logger.warning(f'lightcurve_tess.use_period: {period} could not be converted into the float')
 #         return None
 #
 #
@@ -1437,7 +1515,7 @@ def use_period(period_number, period_list):
 #     try:
 #         return 2 * period
 #     except ValueError:
-#         logging.warning(f'lightcurve_tess.use_period2: {period} could not be converted into the float')
+#         logger.warning(f'lightcurve_tess.use_period2: {period} could not be converted into the float')
 #         return None
 #
 #
@@ -1452,7 +1530,7 @@ def use_period(period_number, period_list):
 #         return 4 * period
 #         # period = float(period)
 #     except ValueError:
-#         logging.warning(f'lightcurve_tess.use_period4: {period} could not be converted into the float')
+#         logger.warning(f'lightcurve_tess.use_period4: {period} could not be converted into the float')
 #         # period = None
 #         return None
 #     # return 4 * period
@@ -1520,7 +1598,7 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
                 lcd_stored = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
 
                 if lcd_stored.lightcurve is None:
-                    logging.warning('lightcurve_tess: handle upload: no stored lightcurves found')
+                    logger.warning('lightcurve_tess: handle upload: no stored lightcurves found')
                     lc = lcd.serialize()
                 else:
                     lcd_stored.append(lcd)
@@ -1546,7 +1624,7 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         output['epoch_val'] = epoch if epoch is not None else dash.no_update
         set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
     except Exception as e:
-        logging.warning(f'lightcurve_tess.handle_upload {e}')
+        logger.warning(f'lightcurve_tess.handle_upload {e}')
         alert_message = message.warning_alert(e)
         output['graph_tab_disabled'] = True
         output['message_results'] = ''

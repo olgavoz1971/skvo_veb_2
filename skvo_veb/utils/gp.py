@@ -1,3 +1,7 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -200,8 +204,8 @@ def read_lc(full_filename):
 
     If mag_err is missing → filled with NaN
     """
-    print('read_lc')
-    print(f'Reading {full_filename}')
+    logger.info('read_lc')
+    logger.info(f'Reading {full_filename}')
     df = pd.read_csv(full_filename, sep=r'\s+', comment='#', header=None)
 
     if df.shape[1] == 2:
@@ -209,13 +213,13 @@ def read_lc(full_filename):
         df["mag_err"] = np.nan
     else:
         df.columns = ["jd", "mag", "mag_err"]
-    print(df.shape)
+    logger.info(df.shape)
 
     return df
 
 
 def load_interval_triples(file_obj):
-    print(f'Loading intervals from file_obj...')
+    logger.info(f'Loading intervals from file_obj...')
     result = []
     for line in file_obj:
         if isinstance(line, bytes):
@@ -229,7 +233,7 @@ def load_interval_triples(file_obj):
 
 
 def load_intervals(file_obj):
-    print(f'Loading intervals from file_obj...')
+    logger.info(f'Loading intervals from file_obj...')
     result = []
     for line in file_obj:
         if isinstance(line, bytes):
@@ -243,7 +247,7 @@ def load_intervals(file_obj):
 
 
 def load_intervals_from_file(filename_intervals):
-    print(f'Loading intervals from file...{filename_intervals}')
+    logger.info(f'Loading intervals from file...{filename_intervals}')
     result = []
     with open(filename_intervals) as f:
         for line in f:
@@ -340,7 +344,7 @@ def residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode):
     # robust noise estimate from residuals
     mad = median_abs_deviation(residuals, scale='normal')
 
-    print(f'{mad=:.3f} {np.std(residuals) * 0.5=:.3f} {mad_raw=:.3f}')
+    logger.info(f'{mad=:.3f} {np.std(residuals) * 0.5=:.3f} {mad_raw=:.3f}')
     mad = mad if mad > 0 else np.std(residuals) * 0.5
     noise_sigma = min(mad_raw, mad)  # type: ignore
 
@@ -457,7 +461,7 @@ def gp_peak_pipeline(
 
     # baseline = float(np.percentile(y, 5))
     # ampl_guess = np.percentile(y, 95) - baseline
-    print(f'{baseline=:.3f} {ampl_guess=:.3f}')
+    logger.info(f'{baseline=:.3f} {ampl_guess=:.3f}')
 
     # if ampl_guess <= 0:
     #     ampl_guess = np.std(y) if np.std(y) > 0 else 1.0
@@ -470,11 +474,11 @@ def gp_peak_pipeline(
     if params['guess_sigma'] or np.all(np.isnan(y_err)):
         noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode)
         noise_sigma /= params['noise_scale_divisor']  # empirical factor, allow user tune it
-        print(f'guessed {noise_sigma=:.3f}')
+        logger.info(f'guessed {noise_sigma=:.3f}')
         # propagate noise into normalized units
         noise_sigma_norm = noise_sigma / ampl_guess
     else:
-        print(f'noise_sigma mean {np.mean(y_err):.3f}')
+        logger.info(f'noise_sigma mean {np.mean(y_err):.3f}')
         y_err /= params['noise_scale_divisor']      # allow user to tweak (to manipulate!) the uncertainties
         noise_sigma_norm = y_err / ampl_guess
 
@@ -483,10 +487,10 @@ def gp_peak_pipeline(
     amplitude_bounds = (params['amplitude_min'], params['amplitude_max'])
 
     length_scale = params['length_scale_init']
-    # print(f'length_scale_guess={length_scale:.3f}')
+    # logger.info(f'length_scale_guess={length_scale:.3f}')
     ls_bounds = (params['length_scale_min'], params['length_scale_max'])
     y_norm_var = np.var(y_norm)
-    # print(f'{y_norm_var=:.3f}')
+    # logger.info(f'{y_norm_var=:.3f}')
 
     # Vertical scale kernel (Amplitude)
 
@@ -524,7 +528,7 @@ def gp_peak_pipeline(
     #                     noise_level_bounds=(params['white_noise_level_min'], params['white_noise_level_max']))
     # )
 
-    print(f'Start Gaussian Process with {kernel_type.upper()} kernel')
+    logger.info(f'Start Gaussian Process with {kernel_type.upper()} kernel')
 
     gp = GaussianProcessRegressor(
         kernel=kernel,
@@ -533,12 +537,12 @@ def gp_peak_pipeline(
         n_restarts_optimizer=3  # to find better _global_ optimum and do not get stuck in local one
     )
 
-    print('...')
+    logger.info('...')
 
     # --- 6. fit ---
     gp.fit(x.reshape(-1, 1), y_norm)  # sklearn expects a table of features, even if there is only one column (time).
 
-    # print(gp.kernel_)
+    # logger.info(gp.kernel_)
     # Extract kernel parameters
     k = gp.kernel_
     amplitude_final = k.k1.constant_value
@@ -547,7 +551,7 @@ def gp_peak_pipeline(
     # noise_level_final = k.k2.noise_level
     # amplitude_final = k.k1.k1.constant_value
 
-    print(f'Fit ready: {length_scale_final=:.3f} {amplitude_final=:.3f}')
+    logger.info(f'Fit ready: {length_scale_final=:.3f} {amplitude_final=:.3f}')
 
     # --- 7. predict ---
     # ------- 7.1 grid ---
@@ -568,7 +572,7 @@ def gp_peak_pipeline(
 
     jd_extr = jd_grid.ravel()[idx_extr]
     mean_extr = mean_grid.ravel()[idx_extr]
-    print(f'From GP predict: {jd_extr=:.10f} {mean_extr=:.10f}')
+    logger.info(f'From GP predict: {jd_extr=:.10f} {mean_extr=:.10f}')
 
     # --- 10. Uncertainty via Posterior Sampling ---
     # Draw samples: (n_points, n_samples)
@@ -596,7 +600,7 @@ def gp_peak_pipeline(
     # This way we probably overestimate time-of-extremum uncertainties
     jd_extr_std = float(np.std(extr_jds))
     jd_extr_mean = float(np.mean(extr_jds))
-    print(f'From samples: {jd_extr_std=:.7f} {jd_extr_mean=:.7f}')
+    logger.info(f'From samples: {jd_extr_std=:.7f} {jd_extr_mean=:.7f}')
 
     # --- 11. Plotting ---
 
@@ -685,7 +689,7 @@ def main():
         for piece in pieces_list:
             jd_min, jd_max = piece[0], piece[-1]
 
-            # print(f'Start with {jd_min} : {jd_max} piece')
+            # logger.info(f'Start with {jd_min} : {jd_max} piece')
 
             if len(select_jd_interval(df0, jd_min, jd_max)) < LEN_MIN:
                 continue

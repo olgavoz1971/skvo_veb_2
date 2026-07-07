@@ -635,6 +635,95 @@ def get_error_colnames(table, base_ucd=None):
     return errors
 
 
+def is_magnitude_phot_column(table: Table, colname: str = "phot") -> bool:
+    """Detects whether a ``phot`` column holds magnitudes rather than flux.
+
+    Uses column unit and UCD metadata following VO photometry conventions.
+
+    Args:
+        table (astropy.table.Table): Source table.
+        colname (str): Photometry column name.
+
+    Returns:
+        bool: True when the column represents magnitudes.
+    """
+    if colname not in table.colnames:
+        return False
+    col = table[colname]
+    if col.unit is not None:
+        try:
+            if col.unit.is_equivalent(u.mag):
+                return True
+        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError):
+            pass
+    ucd = (col.info.meta or {}).get("ucd", "")
+    if "phot.mag" in ucd:
+        return True
+    if "phot.flux" in ucd:
+        return False
+    return False
+
+
+def assign_photometry_column_semantics(
+    table: Table,
+    phot_col: str = "phot",
+    error_col: str | None = "flux_error",
+    *,
+    force_magnitude: bool | None = None,
+) -> Table:
+    """Assigns VO UCD metadata to generic ``phot`` and error columns.
+
+    Args:
+        table (astropy.table.Table): Export or upload table to annotate.
+        phot_col (str): Primary photometry column name.
+        error_col (str, optional): Uncertainty column name.
+        force_magnitude (bool, optional): Override automatic domain detection.
+
+    Returns:
+        astropy.table.Table: The same table with UCD metadata updated in place.
+    """
+    if phot_col not in table.colnames:
+        return table
+    is_mag = force_magnitude if force_magnitude is not None else is_magnitude_phot_column(table, phot_col)
+    phot_ucd = "phot.mag" if is_mag else "phot.flux;em.opt"
+    err_ucd = "stat.error;phot.mag" if is_mag else "stat.error;phot.flux;em.opt"
+    if table[phot_col].info.meta is None:
+        table[phot_col].info.meta = {}
+    table[phot_col].info.meta["ucd"] = phot_ucd
+    if error_col and error_col in table.colnames:
+        if table[error_col].info.meta is None:
+            table[error_col].info.meta = {}
+        table[error_col].info.meta["ucd"] = err_ucd
+    return table
+
+
+def resolve_votable_phot_field_labels(table: Table, phot_col: str = "phot", error_col: str = "flux_error") -> dict:
+    """Returns VOTable field UCDs and descriptions for a ``phot`` column.
+
+    Args:
+        table (astropy.table.Table): Export table containing ``phot``.
+        phot_col (str): Photometry column name.
+        error_col (str): Uncertainty column name.
+
+    Returns:
+        dict: Keys ``phot_ucd``, ``error_ucd``, ``phot_description``, ``error_description``.
+    """
+    is_mag = is_magnitude_phot_column(table, phot_col)
+    if is_mag:
+        return {
+            "phot_ucd": "phot.mag",
+            "error_ucd": "stat.error;phot.mag",
+            "phot_description": "Photometry (magnitude)",
+            "error_description": "Statistical uncertainty of magnitude",
+        }
+    return {
+        "phot_ucd": "phot.flux;em.opt",
+        "error_ucd": "stat.error;phot.flux;em.opt",
+        "phot_description": "Photometry (flux)",
+        "error_description": "Statistical uncertainty of flux",
+    }
+
+
 def _promote_to_vo_standards(table):
     """Heuristically assigns Unified Content Descriptors (UCDs) and physical units to table columns.
 
@@ -654,13 +743,17 @@ def _promote_to_vo_standards(table):
             if 'mag' in name_low:
                 col.unit = u.mag
             elif 'flux' in name_low:
-                col.unit = u.Jy  # default assumption
+                # col.unit = u.Jy  # default assumption
+                col.unit = 'electron s-1'  # default assumption
             elif any(k in name_low for k in ['time', 'jd', 'mjd']):
                 col.unit = u.d
 
         if not col.info.meta or not col.info.meta.get('ucd'):
-            if col.info.meta is None: col.info.meta = {}
-            if 'mag' in name_low:
+            if col.info.meta is None:
+                col.info.meta = {}
+            if name_low == 'phot':
+                ucd = 'phot.mag' if is_magnitude_phot_column(table, colname) else 'phot.flux;em.opt'
+            elif 'mag' in name_low:
                 ucd = 'phot.mag'
             elif 'flux' in name_low:
                 ucd = 'phot.flux'
@@ -669,7 +762,7 @@ def _promote_to_vo_standards(table):
             else:
                 continue
 
-            if any(k in name_low for k in ['err', 'uncert', 'sigma']):
+            if any(k in name_low for k in ['err', 'uncert', 'sigma']) and name_low != 'phot':
                 ucd = f"stat.error;{ucd}"
             col.info.meta['ucd'] = ucd
     return table
@@ -1110,13 +1203,14 @@ class VOLightCurve:
         output_stream_or_path,
         table_name: str,
         filter_identifier: str,
-        refposition: str = "BARYCENTER",
-        timescale: str = "TCB",
-        timeorigin: float = 2455197.5,
+        refposition: str = "HELIOCENTER",
+        timescale: str = "UTC", # could we reasonable presume this for old-fashioned handmade scripts?
+        timeorigin: float = 0,
         votable_description: str | None = None,
         creator: str | None = None,
         zero_point_flux: float | None = None,
-        zero_point_flux_unit: str = "Jy",
+        # zero_point_flux_unit: str = "Jy", #    No assumption about calibrated things
+        zero_point_flux_unit: str = "",
         zero_point_ref_mag: float | None = None,
         zero_point_ref_mag_unit: str = "mag",
         magnitude_system: str = "Vega",
@@ -1169,8 +1263,12 @@ def print_col_ucd(lc: VOLightCurve):
         lc (VOLightCurve): The lightcurve object whose columns should be printed.
     """
     for colname in lc.colnames:
-        print(f"Col: {colname:10} Unit: {lc[colname].unit} "
-              f"UCD: {lc[colname].info.meta.get('ucd', 'None')}")
+        logger.info(
+            "Col: %-10s Unit: %s UCD: %s",
+            colname,
+            lc[colname].unit,
+            lc[colname].info.meta.get('ucd', 'None'),
+        )
 
 
 def write_vo_lightcurve(
@@ -1184,7 +1282,7 @@ def write_vo_lightcurve(
     votable_description: str | None = None,
     creator: str | None = None,
     zero_point_flux: float | None = None,
-    zero_point_flux_unit: str = "Jy",
+    zero_point_flux_unit: str = "",
     zero_point_ref_mag: float | None = None,
     zero_point_ref_mag_unit: str = "mag",
     magnitude_system: str = "Vega",
@@ -1221,7 +1319,7 @@ def write_vo_lightcurve(
         votable_description (str, optional): High-level global description. Defaults to None.
         creator (str, optional): Pipeline or entity creator name. Defaults to None.
         zero_point_flux (float, optional): Zero point flux value. Defaults to None.
-        zero_point_flux_unit (str, optional): Unit of zeroPointFlux. Defaults to "Jy".
+        zero_point_flux_unit (str, optional): Unit of zeroPointFlux.
         zero_point_ref_mag (float, optional): Reference magnitude zero point. Defaults to None.
         zero_point_ref_mag_unit (str, optional): Unit of zeroPointReferenceMagnitude. Defaults to "mag".
         magnitude_system (str, optional): Type of magnitude system. Defaults to "Vega".
@@ -1336,6 +1434,7 @@ def write_vo_lightcurve(
     res.time_systems.append(ts)
 
     # Standardize Table Fields and cross-link with systems
+    phot_labels = resolve_votable_phot_field_labels(t_out)
     for f in tab.fields:
         if f.name == 'obs_time':
             f.ID = 'obs_time'
@@ -1345,15 +1444,15 @@ def write_vo_lightcurve(
             f.description = 'Time'
         elif f.name == 'phot':
             f.ID = 'phot'
-            f.ucd = 'phot.flux;em.opt'
+            f.ucd = phot_labels['phot_ucd']
             f.unit = str(t_out['phot'].unit or 's**-1')
             f.ref = 'phot_def'
-            f.description = 'Photometry (flux or magnitude)'
+            f.description = phot_labels['phot_description']
         elif f.name == 'flux_error':
             f.ID = 'flux_error'
-            f.ucd = 'stat.error;phot.flux;em.opt'
+            f.ucd = phot_labels['error_ucd']
             f.unit = str(t_out['flux_error'].unit or 's**-1')
-            f.description = 'Statistical uncertainty of photometry'
+            f.description = phot_labels['error_description']
         elif f.name == 'label':
             f.ID = 'label'
             f.ucd = 'meta.id;meta.dataset'
@@ -1475,29 +1574,32 @@ def main():
         # 'data/my_g3.vot',
         # 'data/ASas19pm.dat'
     ]:
-        print(f'\n\n\n Ingesting {filename}')
+        logger.info('Ingesting %s', filename)
         lc = VOLightCurve(file_path=filename)
         print_col_ucd(lc)
-        print(f'{lc.photdms=}')
-        print(f'{lc.timesys=}\n')
-        print('time columns:', get_time_colnames(lc))
-        print('flux columns:', get_flux_colnames(lc))
-        print('mag columns:', get_mag_colnames(lc))
+        logger.info('%s', lc.photdms)
+        logger.info('%s', lc.timesys)
+        logger.info('time columns: %s', get_time_colnames(lc))
+        logger.info('flux columns: %s', get_flux_colnames(lc))
+        logger.info('mag columns: %s', get_mag_colnames(lc))
 
-        print(lc[0])
-        print('\n\n\n All flux columns. Convert into magnitudes')
+        logger.info('%s', lc[0])
+        logger.info('All flux columns. Convert into magnitudes')
         for colname in lc.get_flux_colnames():
             out_colname = f'magnitude_from_{colname}'
-            print(f'flux:{colname} --> mag:{out_colname}')
+            logger.info('flux:%s --> mag:%s', colname, out_colname)
             lc.add_mag_column_from_flux(colname, out_colname)
-            print(lc[out_colname, colname][0])
-        print('\n\n\nAll magnitude columns. Convert into flux')
+            logger.info('%s', lc[out_colname, colname][0])
+        logger.info('All magnitude columns. Convert into flux')
         for colname in lc.get_mag_colnames():
             out_colname = f'flux_from_{colname}'
-            print(f'mag:{colname} --> flux:{out_colname}')
+            logger.info('mag:%s --> flux:%s', colname, out_colname)
             lc.add_flux_column_from_mag(colname, out_colname)
-            print(lc[out_colname, colname][0])
+            logger.info('%s', lc[out_colname, colname][0])
 
 
 if __name__ == "__main__":
+    from skvo_veb.logging_config import configure_logging
+
+    configure_logging()
     main()

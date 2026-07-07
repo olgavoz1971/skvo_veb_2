@@ -38,3 +38,6 @@ skypatrol/
 # Results
 docs/test_binary_output.vot
 docs/test_plain_output.vot
+
+# Other
+canvases/

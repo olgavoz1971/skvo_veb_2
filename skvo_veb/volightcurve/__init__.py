@@ -18,4 +18,6 @@ __all__ = [
     "print_col_ucd",
     "is_mag_column",
     "is_flux_column",
+    "is_magnitude_phot_column",
+    "assign_photometry_column_semantics",
 ]

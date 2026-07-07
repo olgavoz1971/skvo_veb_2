@@ -1,12 +1,13 @@
+from skvo_veb.logging_config import configure_logging
+
+configure_logging()
+
 import logging
 import dash
 import dash_bootstrap_components as dbc
 from skvo_veb.app import app, server
 from skvo_veb.config import Config
 from skvo_veb.components import footer
-
-# Configure package-level Logging
-logging.basicConfig(filename=Config.APP_LOG, level=logging.INFO)
 
 # Define root layout
 app.layout = dbc.Container([

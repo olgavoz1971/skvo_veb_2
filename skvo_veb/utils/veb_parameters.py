@@ -1,6 +1,6 @@
 import logging
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 from dash.dcc import Markdown
 
@@ -131,7 +131,7 @@ def _format_value(value, precision: int | None):
                     err = float(err)
                     err_str = f'\({err:.{precision}f}\)' if err else ''
             except Exception as e_:
-                logging.warning(f'table_from_dict: format_value {value=}, {precision=} {e_}')
+                logger.warning(f'table_from_dict: format_value {value=}, {precision=} {e_}')
                 pass
         text = f'{val_str}    {err_str}'
     except (TypeError, ValueError):
@@ -165,7 +165,7 @@ def table_from_dict(di: dict | None, params_catalog: str) -> list:
             except ValueError:
                 desc_ = opt
         except Exception as e:
-            logging.warning(f'parse_options {opt}: {repr(e)}')
+            logger.warning(f'parse_options {opt}: {repr(e)}')
         return desc_, unit_, prec_
 
     if ('GAIA' and 'PHOTOMETRIC') in params_catalog.upper():
@@ -189,7 +189,7 @@ def table_from_dict(di: dict | None, params_catalog: str) -> list:
     # Then add the rest:
     for key, val in di.items():
         desc, unit, prec = key, None, None
-        logging.warning(f'The description of parameter {key} is missing from the database')
+        logger.warning(f'The description of parameter {key} is missing from the database')
         row_list.append([_format_field_name(desc, unit), _format_value(val, prec)])
     return row_list
 

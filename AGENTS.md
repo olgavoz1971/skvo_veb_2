@@ -50,6 +50,7 @@ my-dash-app/
 - **Loading Spinners**: Show a spinner while data is loading to improve perceived performance by wrapping components that may be slow to update with `dcc.Loading`.
 - **Background Callbacks**: Use background callbacks for long-running work. For tasks that take more than a few seconds, use `background=True` in the callback decorator, along with the configured manager: `manager=background_callback_manager`.
 - **Validate Callback Outputs**: Return strings for `children`, lists of component objects for `children` on containers, dicts for `figure`, and lists of dicts for `AgGrid` `rowData` and `columnDefs`.
+- **dash.no_update vs raise PreventUpdate**: do not raise PreventUpdate after calling set_props in the callback, return dash.no_update in these cases
 
 ## Layout and Styling
 - **Custom Style Sheets**: For external stylesheets and CSS files, put core layout styles, layout grids, and structural overrides into custom files inside the `assets/` directory.
@@ -162,6 +163,7 @@ Keep this structural pipeline in mind for every interactive feature you build:
 
 ## Logging Standards & Terminal Output
 
+* **Central configuration:** Do not call ``logging.basicConfig`` in individual modules. Logging is initialised once via ``skvo_veb.logging_config.configure_logging()`` (invoked from ``skvo_veb/__init__.py`` on app import). Set ``APP_LOG`` for a mirrored file log; all records also go to stderr.
 * **NO `print()` STATEMENTS:** Under no circumstances should the agent use the raw `print()` function for terminal logging, debugging, or status updates in application files.
 * **Mandatory Logger Usage:** Every file contains an explicitly defined module-level logger (`logger = logging.getLogger(__name__)`). You MUST route all diagnostic output, errors, and informational messages through this identifier using the appropriate severity levels:
   * `logger.debug()` for fine-grained execution tracing.
@@ -172,3 +174,5 @@ Keep this structural pipeline in mind for every interactive feature you build:
 - Every new or modified Python function/method must include a clean Google-style docstring.
 - The docstring must briefly state the purpose, expected inputs (with types), and return values.
 - Write docstrings immediately during the code generation phase; do not skip them for later.
+
+- **No Silent Fallbacks or Blind Failure Mitigation:** You are strictly forbidden from implementing *any* fallback mechanisms without explicit consultation with Developer

@@ -142,8 +142,7 @@ def pick_closest_native_id(search_result: lk.SearchResult, query_coord: SkyCoord
     if best_native_id is None:
         raise PipeException('Could not determine closest target from search results')
 
-    print(f"[SEARCH LC] Cone search narrowed to native_id={best_native_id!r} (closest match)")
-    logger.info(f'pick_closest_native_id: selected {best_native_id} at {best_distance} arcsec')
+    logger.info('[SEARCH LC] Cone search narrowed to native_id=%r (closest match)', best_native_id)
     return best_native_id
 
 
@@ -163,8 +162,11 @@ def fetch_comprehensive_search(native_id: str) -> lk.SearchResult:
     target = native_id_to_search_target(native_id)
     prefix = native_id.split(':', 1)[0]
 
-    print(f"[SEARCH LC] Querying MAST for comprehensive metadata: native_id={native_id!r}, target={target!r}")
-    logger.info(f'fetch_comprehensive_search: target={target!r}, native_id={native_id!r}')
+    logger.info(
+        '[SEARCH LC] Querying MAST for comprehensive metadata: native_id=%r, target=%r',
+        native_id,
+        target,
+    )
 
     if prefix == 'TIC':
         result = lk.search_lightcurve(target, mission='TESS')
@@ -178,7 +180,7 @@ def fetch_comprehensive_search(native_id: str) -> lk.SearchResult:
     if len(result) == 0:
         raise PipeException(f'No comprehensive light curves found for {native_id}')
 
-    print(f"[SEARCH LC] MAST returned {len(result)} records for {native_id!r}")
+    logger.info('[SEARCH LC] MAST returned %s records for %r', len(result), native_id)
     return result
 
 
@@ -200,7 +202,12 @@ def search_lightcurves_cached(
     is_cone = radius is not None and radius > 0
 
     if native_id is None:
-        print(f"\n[SEARCH LC] Initial MAST lookup: target={target!r}, radius={radius!r}, mode={search_mode}")
+        logger.info(
+            '[SEARCH LC] Initial MAST lookup: target=%r, radius=%r, mode=%s',
+            target,
+            radius,
+            search_mode,
+        )
         if is_cone:
             initial = lk.search_lightcurve(target, radius=radius)
         else:
@@ -213,20 +220,26 @@ def search_lightcurves_cached(
             native_id = pick_closest_native_id(initial, query_coord)
         else:
             native_id = _dominant_native_id(initial)
-            print(f"[SEARCH LC] Resolved native_id={native_id!r} from initial search")
+            logger.info('[SEARCH LC] Resolved native_id=%r from initial search', native_id)
 
     cached = cache.load(CACHE_PREFIX, native_id=native_id)
     if cached is not None:
-        print(f"[CACHE HIT] Lightcurve search metadata found for native_id={native_id!r} ({len(cached)} records)")
-        logger.info(f'search_lightcurves_cached: cache HIT for {native_id!r}')
+        logger.info(
+            '[CACHE HIT] Lightcurve search metadata found for native_id=%r (%s records)',
+            native_id,
+            len(cached),
+        )
         return cached, native_id
 
-    print(f"[CACHE MISS] Lightcurve search metadata NOT cached for native_id={native_id!r}")
-    logger.info(f'search_lightcurves_cached: cache MISS for {native_id!r}')
+    logger.info('[CACHE MISS] Lightcurve search metadata NOT cached for native_id=%r', native_id)
 
     comprehensive = fetch_comprehensive_search(native_id)
     cache.save(comprehensive, CACHE_PREFIX, native_id=native_id)
-    print(f"[CACHE SAVE] Stored {len(comprehensive)} metadata records under native_id={native_id!r}")
+    logger.info(
+        '[CACHE SAVE] Stored %s metadata records under native_id=%r',
+        len(comprehensive),
+        native_id,
+    )
     logger.info(f'search_lightcurves_cached: saved {len(comprehensive)} rows for {native_id!r}')
 
     return comprehensive, native_id

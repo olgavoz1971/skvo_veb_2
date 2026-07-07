@@ -10,8 +10,6 @@ DISK_CACHE_LOCAL = False
 
 import logging
 logger = logging.getLogger(__name__)
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
 
 import aladin_lite_react_component
 import astropy.units as u
@@ -36,9 +34,10 @@ from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_processor
 from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX, DOMAIN_MAG
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
+    apply_phot_domain_view,
     build_cutout_title,
     enrich_cutout_curvedash,
     resolve_cutout_mask_mode,
@@ -180,7 +179,7 @@ def layout():
                                           persistence=True, switch=True,
                                           style={'font-size': label_font_size}),  # style={'margin-left': 'auto'}),
                         ]),
-                        dbc.Button('Plot pixel', id='replot_pixel_button', size="sm",
+                        dbc.Button('rePlot pixel', id='replot_pixel_button', size="sm",
                                    style={'width': '100%'}),
                         html.Details([
                             html.Summary('Mask', style={'font-size': label_font_size}),
@@ -271,6 +270,17 @@ def layout():
                                       id='flatten_switch_label',
                                       style={'font-size': label_font_size}),
                         ], direction='horizontal'),
+                        dbc.Stack([
+                            dbc.Switch(
+                                value=False,
+                                style={'font-size': label_font_size},
+                                id='mag_view_cutout_switch',
+                                persistence=True,
+                            ),
+                            dbc.Label('Magnitude',
+                                      id='mag_view_cutout_switch_label',
+                                      style={'font-size': label_font_size}),
+                        ], direction='horizontal'),
                         dbc.Collapse([
                             dbc.Stack([
                                 dbc.Label('Display:', id='flux_trend_switch_label',
@@ -313,6 +323,9 @@ def layout():
                             dbc.Tooltip('Switch on to remove long-term trends '
                                         'using a Savitzky–Golay filter. Choose the parameters below',
                                         target='flatten_switch_label', placement='bottom'),
+                            dbc.Tooltip('Display photometry as magnitude instead of flux '
+                                        '(applied on rePlot curve)',
+                                        target='mag_view_cutout_switch_label', placement='bottom'),
                             dbc.Tooltip('Length of the filter window '
                                         '(number of data points, must be an odd positive integer). '
                                         'Controls the smoothness of trend removal',
@@ -651,7 +664,7 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
 
     except Exception as e:
         logger.error(f"tess_cutout.download_sector: Error during download: {e}", exc_info=True)
-        logging.error(f"tess_cutout.download_sector: Failed to download sector data: {e}", exc_info=True)
+        logger.error(f"tess_cutout.download_sector: Failed to download sector data: {e}", exc_info=True)
         alert_message = message.warning_alert(e)
         output['sector_results'] = ''
         output['graph_tab_disabled'] = True
@@ -826,7 +839,7 @@ def create_mask(clickData, pixel_metadata,
     if not auto_mask:  # todo count here pipeline mask if selected and presented
         raise PreventUpdate
     if clickData is None:
-        logging.debug('create_mask: nothing')
+        logger.debug('create_mask: nothing')
         raise PreventUpdate
 
     x = int(clickData['points'][0]['x'])
@@ -837,7 +850,7 @@ def create_mask(clickData, pixel_metadata,
     else:
         path_to_pixel_data = pixel_metadata['path']
         pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(path_to_pixel_data)
-        logging.debug(f'create_mask: {x}, {y}, {threshold=}')
+        logger.debug(f'create_mask: {x}, {y}, {threshold=}')
         mask = pixel_data.create_threshold_mask(threshold=threshold, reference_pixel=(x, y))
 
     return mask.tolist()
@@ -993,7 +1006,8 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
     lcd = CurveDash.from_serialized(js_lightcurve)
     title = build_cutout_title(lcd)
     xaxis_title = f'jd-{jd0}, {safe_none(lcd.time_unit)} {lcd.timescale}'
-    y_label = 'magnitude' if lcd.active_domain == 'mag' else 'flux'
+    is_magnitude = lcd.active_domain == DOMAIN_MAG
+    y_label = 'magnitude' if is_magnitude else 'flux'
     yaxis_title = f'{y_label} {safe_none(lcd.flux_correction)}, {safe_none(lcd.phot_unit)}'
 
     xrange_left = xrange_right = yrange_left = yrange_right = None
@@ -1026,7 +1040,14 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
     if xrange_left is not None and xrange_right is not None:
         layout_kwargs['xaxis'] = dict(range=[xrange_left, xrange_right])
     if yrange_left is not None and yrange_right is not None:
-        layout_kwargs['yaxis'] = dict(range=[yrange_left, yrange_right])
+        if is_magnitude:
+            layout_kwargs['yaxis'] = dict(
+                range=[max(yrange_left, yrange_right), min(yrange_left, yrange_right)]
+            )
+        else:
+            layout_kwargs['yaxis'] = dict(range=[yrange_left, yrange_right])
+    elif is_magnitude:
+        layout_kwargs['yaxis'] = dict(autorange='reversed')
 
     fig.update_layout(**layout_kwargs)
     return fig
@@ -1051,6 +1072,7 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
         flatten_window=State('flatten_window_input', 'value'),
         flatten_break_gap=State('flatten_break_gap_input', 'value'),
         flatten_order=State('flatten_order_input', 'value'),
+        show_magnitude=State('mag_view_cutout_switch', 'value'),
         auto_mask=State('auto_mask_switch', 'value'),
         mask_type=State('mask_type_switch', 'value'),
     ),
@@ -1059,7 +1081,7 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
 )
 def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
                       flatten, show_trend, flatten_window, flatten_break_gap, flatten_order,
-                      auto_mask, mask_type):
+                      show_magnitude, auto_mask, mask_type):
     """Computes an uncalibrated cutout lightcurve and stores it in the selected slot.
 
     Scientific extraction is delegated to ``tess_processor.process_lightcurve_computation``.
@@ -1076,6 +1098,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         flatten_window: Flattening window length.
         flatten_break_gap: Flattening break tolerance.
         flatten_order: Flattening polynomial order.
+        show_magnitude: When true, convert photometry to magnitude before storing.
         auto_mask: Automatic mask generation toggle.
         mask_type (str): ``'pipeline'`` or ``'threshold'`` when auto mask is enabled.
 
@@ -1119,6 +1142,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
             active_domain=DOMAIN_FLUX,
         )
         enrich_cutout_curvedash(lcd, pixel_metadata, sector, mask_mode, ra=ra_val, dec=dec_val)
+        apply_phot_domain_view(lcd, bool(show_magnitude))
         jsons = lcd.serialize()
 
 
@@ -1131,7 +1155,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
 
     except Exception as e:
-        logging.warning(f'tess_cutout.plot_lightcurve: {e}')
+        logger.warning(f'tess_cutout.plot_lightcurve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
     return output
@@ -1191,7 +1215,7 @@ def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
         set_props('accordion_tess_lc', {'active_item': active_item})
 
     except Exception as e:
-        logging.warning(f'tess_cutout.plot_lightcurve: {e}')
+        logger.warning(f'tess_cutout.plot_lightcurve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
@@ -1264,7 +1288,7 @@ def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
         set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
         set_props('accordion_tess_lc', {'active_item': active_item})
     except Exception as e:
-        logging.warning(f'tess_cutout.plot_difference: {e}')
+        logger.warning(f'tess_cutout.plot_difference: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
@@ -1336,12 +1360,12 @@ def mark_star(coord, fig, wcs_dict):
         tuple: ``(ra, dec, updated_figure)``.
     """
     if coord is None:
-        logging.warning(f'mark_star: coord is None')
+        logger.warning(f'mark_star: coord is None')
         raise PreventUpdate
     ra = coord.get('ra', None)
     dec = coord.get('dec', None)
     if ra is None or dec is None:
-        logging.warning(f'mark_star: ra or dec is None')
+        logger.warning(f'mark_star: ra or dec is None')
         raise PreventUpdate
     # noinspection PyUnresolvedReferences
     sky_coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame='icrs')
@@ -1397,7 +1421,7 @@ def resolve_coordinates(n_clicks, obj_name):
         output['dec'] = dec
         output['resolved_coords'] = {'obj_name': obj_name.strip(), 'ra': ra, 'dec': dec}
     except Exception as e:
-        logging.warning(f"tess_cutout.resolve_coordinates error: {e}")
+        logger.warning(f"tess_cutout.resolve_coordinates error: {e}")
         output['alert_message'] = message.warning_alert(e)
         output['alert_style'] = {'display': 'block'}
 
@@ -1720,7 +1744,7 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
         set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
 
     except Exception as e:
-        logging.warning(f'tess_cutout.download_tess_lightcurve: {e}')
+        logger.warning(f'tess_cutout.download_tess_lightcurve: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
         ret = no_update

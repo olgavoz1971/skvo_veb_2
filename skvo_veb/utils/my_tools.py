@@ -1,6 +1,7 @@
 import logging
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
+
+logger = logging.getLogger(__name__)
+
 import re
 import time
 
@@ -46,7 +47,7 @@ def timeit(f):
         ts = time.time()
         result = f(*args, **kw)
         te = time.time()
-        logging.debug(f'func:{f.__name__} args:{args, kw} took: {(te - ts):2.4f} sec')
+        logger.debug(f'func:{f.__name__} args:{args, kw} took: {(te - ts):2.4f} sec')
         return result
 
     return timed

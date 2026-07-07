@@ -5,8 +5,9 @@ import io
 import numpy as np
 
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import export_curvedash, ingest_lightcurve_file, volc_to_curvedash
+from skvo_veb.utils.lc_bridge import export_curvedash, ingest_lightcurve_file, volc_to_curvedash, apply_phot_domain_view
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, EXPORT_FORMATS, VOTABLE_FORMAT_BINARY, VOTABLE_FORMAT_TEXT
+from skvo_veb.utils.tess_config import resolve_tess_photcal
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 
 
@@ -20,7 +21,7 @@ def _sample_lcd():
         name='TIC 123',
         lookup_name='Target A',
         active_domain=DOMAIN_FLUX,
-        flux_unit='e-/s',
+        flux_unit='electron s-1',
     )
     lcd.metadata['ra'] = 10.5
     lcd.metadata['dec'] = -20.25
@@ -28,8 +29,7 @@ def _sample_lcd():
     lcd.metadata['epoch'] = 2459000.25
     lcd.metadata['authors'] = ['SPOC']
     lcd.metadata['flux_origins'] = ['pdcsap']
-    lcd.metadata['filter'] = 'TESS'
-    lcd.metadata['photcal'] = {'zp_flux': 999.0}
+    lcd.metadata['photcal'] = resolve_tess_photcal(['SPOC'])
     return lcd
 
 
@@ -61,9 +61,9 @@ def test_csv_export_has_no_metadata_header():
     """CSV must contain data columns only."""
     lcd = _sample_lcd()
     payload = export_curvedash(lcd, 'csv').decode('utf-8')
-    assert 'jd' in payload.splitlines()[0]
+    assert 'phot' in payload.splitlines()[0]
     assert '# name' not in payload
-    assert 'flux' in payload.splitlines()[0]
+    assert 'flux_error' in payload.splitlines()[0] or 'phot' in payload.splitlines()[0]
 
 
 def test_tabular_round_trip_preserves_data_and_ecsv_meta():
@@ -84,8 +84,17 @@ def test_tabular_round_trip_preserves_data_and_ecsv_meta():
             assert restored.epoch == lcd.epoch
             assert restored.metadata.get('authors') == ['SPOC']
             assert restored.metadata.get('flux_origins') == ['pdcsap']
-            assert restored.metadata.get('filter') == 'TESS'
-            assert restored.metadata.get('photcal') == {}
+            assert restored.metadata.get('photcal', {}).get('filter_name') == 'TESS'
+            assert 'filter_identifier' not in (restored.metadata.get('photcal') or {})
+
+
+def test_votable_mag_export_uses_mag_ucds():
+    """Magnitude-domain export should tag the phot column with phot.mag UCDs."""
+    lcd = _sample_lcd()
+    apply_phot_domain_view(lcd, True)
+    xml = export_curvedash(lcd, VOTABLE_FORMAT_BINARY, profile='tess').decode('utf-8')
+    assert 'ucd="phot.mag"' in xml
+    assert 'stat.error;phot.mag' in xml
 
 
 def test_votable_binary_and_text_encodings_differ():
@@ -106,3 +115,4 @@ def test_votable_round_trip_still_works():
     restored = volc_to_curvedash(volc, 'lc.vot', preserve_photcal=True)
     assert len(restored.lightcurve) == 3
     assert len(volc) == 3
+    assert restored.metadata.get('photcal', {}).get('filter_identifier') == 'TESS/TESS.Red'

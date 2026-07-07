@@ -8,7 +8,11 @@ import io
 import numpy as np
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash
-from skvo_veb.utils.tess_config import is_spoc_pipeline
+from skvo_veb.utils.tess_config import (
+    TESS_SPOC_ZERO_POINT_FLUX,
+    is_spoc_pipeline,
+    resolve_tess_photcal,
+)
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 
 
@@ -37,6 +41,7 @@ def test_tess_export():
     lcd.metadata['authors'] = ["SPOC"]
     lcd.metadata['sectors'] = ["40"]
     lcd.metadata['flux_origins'] = ["pdcsap"]
+    lcd.metadata['photcal'] = resolve_tess_photcal(lcd.metadata['authors'])
 
     assert is_spoc_pipeline(lcd.metadata.get('authors', [])) is True
 
@@ -45,7 +50,7 @@ def test_tess_export():
     assert "zeroPointFlux" in xml_spoc
     assert "zeroPointReferenceMagnitude" in xml_spoc
     assert "TESS/TESS.Red" in xml_spoc
-    assert "2632" in xml_spoc
+    assert str(TESS_SPOC_ZERO_POINT_FLUX) in xml_spoc
     assert "20.44" in xml_spoc
     assert 'Photometry method(s): pdcsap' in xml_spoc
     assert 'name="label"' in xml_spoc
@@ -64,12 +69,15 @@ def test_tess_export():
     lcd_qlp.metadata['ra'] = 256.698
     lcd_qlp.metadata['dec'] = -54.050
     lcd_qlp.metadata['authors'] = ["QLP"]
+    lcd_qlp.metadata['photcal'] = resolve_tess_photcal(lcd_qlp.metadata['authors'])
 
     assert is_spoc_pipeline(lcd_qlp.metadata['authors']) is False
 
     xml_qlp = export_curvedash(lcd_qlp, 'votable_binary', profile='tess').decode('utf-8')
     assert "zeroPointFlux" not in xml_qlp
     assert "zeroPointReferenceMagnitude" not in xml_qlp
+    assert "TESS/TESS.Red" in xml_qlp
+    assert "effectiveWavelength" in xml_qlp
 
     lcd_stitched = CurveDash(
         name="TIC 159717514",
@@ -88,7 +96,7 @@ def test_tess_export():
     lcd_stitched.metadata['sectors'] = ["40", "41"]
     lcd_stitched.metadata['flux_origins'] = ["pdcsap"]
     lcd_stitched.metadata['stitched'] = True
-    lcd_stitched.metadata['photcal'] = {}
+    lcd_stitched.metadata['photcal'] = resolve_tess_photcal(lcd_stitched.metadata['authors'], stitched=True)
 
     xml_stitched = export_curvedash(lcd_stitched, 'votable_binary', profile='tess').decode('utf-8')
     assert "zeroPointFlux" not in xml_stitched

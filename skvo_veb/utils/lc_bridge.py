@@ -13,17 +13,28 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_MAG,
     EXPORT_FORMATS,
     JD_TO_MJD,
+    PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
+    PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
+    PHOTCAL_KEY_FILTER_IDENTIFIER,
+    PHOTCAL_KEY_FILTER_NAME,
+    PHOTCAL_KEY_MAG_SYS,
+    PHOTCAL_KEY_ZP_FLUX,
+    PHOTCAL_KEY_ZP_FLUX_UNIT,
+    PHOTCAL_KEY_ZP_MAG,
+    PHOTCAL_KEY_ZP_MAG_UNIT,
     is_votable_export_format,
     votable_binary_encoding,
 )
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import (
     VOLightCurve,
+    assign_photometry_column_semantics,
     get_time_colnames,
     get_flux_colnames,
     get_mag_colnames,
     get_error_colnames,
     is_mag_column,
+    is_magnitude_phot_column,
     write_vo_lightcurve,
 )
 
@@ -146,19 +157,22 @@ def tabular_table_to_curvedash(table: Table, filename: str):
     if time_col in ("obs_time", "mjd") and np.nanmax(jd_vals) < 1e6:
         jd_vals = jd_vals + JD_TO_MJD
 
-    if "flux" in table.colnames:
+    if "phot" in table.colnames:
+        phot_col = "phot"
+        is_mag = is_magnitude_phot_column(table, phot_col)
+    elif "flux" in table.colnames:
         phot_col, is_mag = "flux", False
     elif "mag" in table.colnames:
         phot_col, is_mag = "mag", True
-    elif "phot" in table.colnames:
-        phot_col, is_mag = "phot", False
     else:
         raise ValueError("No photometry column found in the uploaded tabular file.")
 
-    err_col = "flux_err" if phot_col == "flux" else "mag_err"
-    if err_col not in table.colnames and phot_col == "flux" and "flux_error" in table.colnames:
-        err_col = "flux_error"
-    if err_col in table.colnames:
+    err_col = None
+    for candidate in ("flux_error", "phot_error", "flux_err", "mag_err"):
+        if candidate in table.colnames:
+            err_col = candidate
+            break
+    if err_col is not None:
         err_vals = np.asarray(table[err_col], dtype=float)
     else:
         err_vals = np.zeros(len(jd_vals), dtype=float)
@@ -272,17 +286,8 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     meaningful = set(time_cols + mag_cols + flux_cols + error_cols)
     flag_col = next((c for c in lc.table.colnames if c not in meaningful), None)
 
-    # Photometry Calibration Extraction
-    photdm = lc.photdms.get(primary_col)
-    photcal = photdm.photcal if photdm else None
-
-    photcal_meta = {
-        "zp_flux": photcal.zp_flux.value if photcal else 1.0,
-        "zp_flux_unit": photcal.zp_flux.unit.to_string('vounit') if photcal else '',
-        "zp_mag": photcal.zp_mag.value if photcal else 0.0,
-        "zp_mag_unit": photcal.zp_mag.unit.to_string('vounit') if photcal else '',
-        "mag_sys": photcal.mag_sys if photcal else 'Unknown'
-    }
+    # Photometry calibration extraction (full photcal GROUP)
+    photcal_meta = _extract_photcal_meta(lc, primary_col)
 
     # Data Extraction
     # .value is used to strip Astropy units before JSON serialization
@@ -512,7 +517,7 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
     try:
         packet = json.loads(json_str)
     except json.JSONDecodeError:
-        print("Error: Input is not a valid JSON string.")
+        logger.error("Error: Input is not a valid JSON string.")
         return
 
     schema = packet.get("schema", {})
@@ -520,40 +525,34 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
     photcal = meta.get("photcal", {})
     data = packet.get("data", [])
 
-    print("=" * 80)
-    print(f"{'VOLightCurve JSON Transport Package':^80}")
-    print("=" * 80)
-
-    # 1. Metadata Section
-    print(f"PRIMARY DOMAIN: {meta.get('active_domain', 'Unknown').upper()}")
-    print(f"JD0 (Offset):   {meta.get('jd0', 'N/A')}")
-    print(f"CALIBRATION:    Sys: {photcal.get('mag_sys', 'N/A')}")
-    print(f"                ZP Mag:  {photcal.get('zp_mag')} {photcal.get('zp_mag_unit')}")
-    print(f"                ZP Flux: {photcal.get('zp_flux')} {photcal.get('zp_flux_unit')}")
-    print("-" * 80)
-
-    # 2. Schema Section
-    print("SCHEMA / COLUMN MAPPING:")
+    lines = [
+        "=" * 80,
+        f"{'VOLightCurve JSON Transport Package':^80}",
+        "=" * 80,
+        f"PRIMARY DOMAIN: {meta.get('active_domain', 'Unknown').upper()}",
+        f"JD0 (Offset):   {meta.get('jd0', 'N/A')}",
+        f"CALIBRATION:    Sys: {photcal.get('mag_sys', 'N/A')}",
+        f"                ZP Mag:  {photcal.get('zp_mag')} {photcal.get('zp_mag_unit')}",
+        f"                ZP Flux: {photcal.get('zp_flux')} {photcal.get('zp_flux_unit')}",
+        "-" * 80,
+        "SCHEMA / COLUMN MAPPING:",
+    ]
     for key, colname in schema.items():
-        # Display "[Not Provided]" if the colname is None/Null
         label = colname if colname else "[Not Provided]"
-        print(f"  {key:10} -> {label}")
-    print("-" * 80)
+        lines.append(f"  {key:10} -> {label}")
+    lines.append("-" * 80)
 
-    # 3. Data Summary Section
     total_rows = len(data)
-    print(f"DATA ({total_rows} rows):")
+    lines.append(f"DATA ({total_rows} rows):")
 
-    # Clean Headers: Use the actual column name or a placeholder if missing
     h_time = schema.get('time') or "Time"
     h_val = schema.get('value') or "Value"
     h_err = schema.get('error') or "Error"
     h_flag = schema.get('flag') or "Flag"
 
     headers = [h_time, h_val, h_err, h_flag]
-    # Increased width to 18 to handle long JDs and names
-    print(f"  {' | '.join([f'{h:^18}' for h in headers])}")
-    print(f"  {'-' * 78}")
+    lines.append(f"  {' | '.join([f'{h:^18}' for h in headers])}")
+    lines.append(f"  {'-' * 78}")
 
     def format_row(row):
         parts = []
@@ -567,21 +566,22 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
                 parts.append(f"{str(item):^18}")
         return " | ".join(parts)
 
-    # Rows (head and tail)
     if total_rows > (max_rows * 2):
         for row in data[:max_rows]:
-            print(f"  {format_row(row)}")
+            lines.append(f"  {format_row(row)}")
 
         divider = [". . ."] * 4
-        print(f"  {' | '.join([f'{d:^18}' for d in divider])}")
+        lines.append(f"  {' | '.join([f'{d:^18}' for d in divider])}")
 
         for row in data[-max_rows:]:
-            print(f"  {format_row(row)}")
+            lines.append(f"  {format_row(row)}")
     else:
         for row in data:
-            print(f"  {format_row(row)}")
+            lines.append(f"  {format_row(row)}")
 
-    print("=" * 80)
+    lines.append("=" * 80)
+    for line in lines:
+        logger.info(line)
 
 
 def _parse_list_meta(value):
@@ -649,6 +649,122 @@ def build_curvedash_title(lcd) -> str:
     return name or lookup or 'Uploaded lightcurve'
 
 
+def _strip_zero_points_from_photcal(photcal: dict | None) -> dict:
+    """Removes zero-point keys while preserving filter passband metadata.
+
+    Args:
+        photcal (dict, optional): Serialised photcal GROUP metadata.
+
+    Returns:
+        dict: Photcal metadata without absolute calibration fields.
+    """
+    pc = dict(photcal or {})
+    for key in (
+        PHOTCAL_KEY_ZP_FLUX,
+        PHOTCAL_KEY_ZP_FLUX_UNIT,
+        PHOTCAL_KEY_ZP_MAG,
+        PHOTCAL_KEY_ZP_MAG_UNIT,
+        PHOTCAL_KEY_MAG_SYS,
+    ):
+        pc.pop(key, None)
+    return pc
+
+
+def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
+    """Serialises an IVOA photcal GROUP into CurveDash ``metadata['photcal']``.
+
+    Captures filter identifier, effective wavelength, magnitude system, and
+    zero-point fields for the active photometry column.
+
+    Args:
+        photdm: ``PhotDM`` instance from ``VOLightCurve.photdms``, or None.
+        table_meta (dict, optional): Table-level metadata (e.g. ECSV ``filter`` param).
+
+    Returns:
+        dict: JSON-serialisable photcal GROUP metadata.
+    """
+    meta: dict = {}
+    table_meta = table_meta or {}
+
+    phot_filter = photdm.filter if photdm else None
+    if phot_filter and phot_filter.filter_id:
+        meta[PHOTCAL_KEY_FILTER_IDENTIFIER] = phot_filter.filter_id
+    if phot_filter and phot_filter.spectral_location is not None:
+        try:
+            wl_m = phot_filter.spectral_location.to(u.m)
+            meta[PHOTCAL_KEY_EFFECTIVE_WAVELENGTH] = float(wl_m.value)
+            meta[PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT] = "m"
+        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
+            logger.warning("Could not serialise effective wavelength: %s", exc)
+
+    filter_name = table_meta.get("filter") or table_meta.get("filter_name")
+    if filter_name:
+        meta[PHOTCAL_KEY_FILTER_NAME] = str(filter_name)
+
+    photcal = photdm.photcal if photdm else None
+    if photcal is not None:
+        if photcal.zp_flux is not None:
+            meta[PHOTCAL_KEY_ZP_FLUX] = float(photcal.zp_flux.value)
+            meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = photcal.zp_flux.unit.to_string("vounit")
+        if photcal.zp_mag is not None:
+            meta[PHOTCAL_KEY_ZP_MAG] = float(photcal.zp_mag.value)
+            meta[PHOTCAL_KEY_ZP_MAG_UNIT] = (
+                photcal.zp_mag.unit.to_string("vounit") if photcal.zp_mag.unit else "mag"
+            )
+        if photcal.mag_sys:
+            meta[PHOTCAL_KEY_MAG_SYS] = photcal.mag_sys
+
+    return meta
+
+
+def _photcal_group_to_votable_fields(photcal: dict | None, include_zero_points: bool = True) -> dict:
+    """Maps stored ``metadata['photcal']`` onto ``write_vo_lightcurve`` keyword arguments.
+
+    Args:
+        photcal (dict): Serialised photcal GROUP from CurveDash metadata.
+        include_zero_points (bool): When false, omit zero-point PARAM values.
+
+    Returns:
+        dict: Subset of ``write_vo_lightcurve`` kwargs derived from stored metadata.
+    """
+    photcal = photcal or {}
+    fields = {}
+
+    filter_id = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER)
+    if filter_id:
+        fields["filter_identifier"] = filter_id
+
+    eff_wl = photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH)
+    if eff_wl is not None:
+        fields["effective_wavelength"] = float(eff_wl)
+        fields["effective_wavelength_unit"] = photcal.get(
+            PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT, "m"
+        )
+
+    filter_name = photcal.get(PHOTCAL_KEY_FILTER_NAME)
+    if filter_name:
+        fields["filter_name"] = filter_name
+
+    if include_zero_points:
+        zp_flux = photcal.get(PHOTCAL_KEY_ZP_FLUX)
+        zp_mag = photcal.get(PHOTCAL_KEY_ZP_MAG)
+        if zp_flux is not None and zp_mag is not None:
+            fields["zero_point_flux"] = float(zp_flux)
+            fields["zero_point_ref_mag"] = float(zp_mag)
+            fields["zero_point_flux_unit"] = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT, "")
+            fields["magnitude_system"] = photcal.get(PHOTCAL_KEY_MAG_SYS, "Vega")
+        else:
+            fields["zero_point_flux"] = None
+            fields["zero_point_ref_mag"] = None
+    else:
+        fields["zero_point_flux"] = None
+        fields["zero_point_ref_mag"] = None
+        if photcal.get(PHOTCAL_KEY_MAG_SYS):
+            fields["magnitude_system"] = photcal[PHOTCAL_KEY_MAG_SYS]
+
+    return fields
+
+
 def _extract_photcal_meta(volc: VOLightCurve, phot_col: str) -> dict:
     """Extracts photometric calibration metadata from a VOLightCurve column.
 
@@ -657,17 +773,11 @@ def _extract_photcal_meta(volc: VOLightCurve, phot_col: str) -> dict:
         phot_col (str): Primary photometry column name.
 
     Returns:
-        dict: Serialisable zero-point metadata for CurveDash storage.
+        dict: Serialisable photcal GROUP metadata for CurveDash storage.
     """
     photdm = volc.photdms.get(phot_col)
-    photcal = photdm.photcal if photdm else None
-    return {
-        "zp_flux": photcal.zp_flux.value if photcal else 1.0,
-        "zp_flux_unit": photcal.zp_flux.unit.to_string("vounit") if photcal else "Jy",
-        "zp_mag": photcal.zp_mag.value if photcal else 0.0,
-        "zp_mag_unit": photcal.zp_mag.unit.to_string("vounit") if photcal else "mag",
-        "mag_sys": photcal.mag_sys if photcal else "Unknown",
-    }
+    table_meta = volc.table.meta or {}
+    return _serialise_photcal_group(photdm, table_meta)
 
 
 def _time_column_to_jd_array(volc: VOLightCurve, time_col: str) -> np.ndarray:
@@ -769,7 +879,8 @@ def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
     if meta.get("method"):
         lcd.metadata["flux_origins"] = _parse_list_meta(meta["method"])
     if meta.get("filter"):
-        lcd.metadata["filter"] = meta["filter"]
+        lcd.metadata.setdefault("photcal", {})
+        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] = meta["filter"]
     for key in ("ra", "dec", "period", "epoch", "name"):
         if meta.get(key) is not None:
             lcd.metadata[key] = meta[key]
@@ -813,7 +924,11 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         phot_vals = phot_vals.value
 
     meta = volc.table.meta or {}
-    is_mag = phot_col == 'mag' or is_mag_column(volc.table, phot_col)
+    is_mag = (
+        phot_col == "mag"
+        or (phot_col == "phot" and is_magnitude_phot_column(volc.table, phot_col))
+        or is_mag_column(volc.table, phot_col)
+    )
     photcal_meta = _extract_photcal_meta(volc, phot_col) if preserve_photcal else {}
 
     err_col = _resolve_photometry_error_column(volc, phot_col)
@@ -887,12 +1002,15 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         _apply_tabular_meta_to_curvedash(lcd, meta)
     if meta.get('stitched') in (True, 'true', 'True', '1', 1):
         lcd.metadata['stitched'] = True
-        lcd.metadata['photcal'] = {}
+        lcd.metadata['photcal'] = _strip_zero_points_from_photcal(lcd.metadata.get('photcal'))
     for key in ('cutout_source', 'mask_mode'):
         if key in meta:
             lcd.metadata[key] = meta[key]
     if meta.get('cutout_source') or meta.get('mask_mode'):
-        lcd.metadata['photcal'] = {}
+        lcd.metadata['photcal'] = _strip_zero_points_from_photcal(lcd.metadata.get('photcal'))
+        if not lcd.metadata['photcal']:
+            from skvo_veb.utils import tess_config
+            lcd.metadata['photcal'] = tess_config.tess_filter_group_meta()
         title = build_cutout_title(lcd)
     else:
         title = build_curvedash_title(lcd)
@@ -956,7 +1074,24 @@ def curvedash_to_table(lcd) -> Table:
     if meta_export:
         t_out.meta = meta_export
 
+    assign_photometry_column_semantics(
+        t_out,
+        force_magnitude=(lcd.active_domain == DOMAIN_MAG),
+    )
     return t_out
+
+
+def apply_phot_domain_view(lcd, show_magnitude: bool) -> None:
+    """Converts the stored lightcurve to flux or magnitude view in place.
+
+    Args:
+        lcd (CurveDash): Cached lightcurve to mutate.
+        show_magnitude (bool): When true, convert to magnitude domain.
+    """
+    if show_magnitude:
+        lcd.convert_to_mag()
+    else:
+        lcd.convert_to_flux()
 
 
 def curvedash_to_tabular_table(lcd) -> Table:
@@ -977,31 +1112,27 @@ def curvedash_to_tabular_table(lcd) -> Table:
 
     tab = Table()
     tab['jd'] = lcd.jd.values
-    if lcd.active_domain == DOMAIN_MAG:
-        tab['mag'] = lcd.phot.values
-        if lcd.phot_err is not None:
-            tab['mag_err'] = lcd.phot_err.values
-        if lcd.phot_unit:
-            try:
-                tab['mag'].unit = u.mag
-                tab['mag_err'].unit = u.mag
-            except ValueError:
-                logger.warning('Could not assign magnitude units during tabular export.')
-    else:
-        tab['flux'] = lcd.phot.values
-        if lcd.phot_err is not None:
-            tab['flux_err'] = lcd.phot_err.values
-        phot_unit = lcd.phot_unit
-        if phot_unit:
-            try:
-                tab['flux'].unit = u.Unit(phot_unit)
-                tab['flux_err'].unit = u.Unit(phot_unit)
-            except ValueError:
-                logger.warning('Could not assign flux units during tabular export.')
+    tab['phot'] = lcd.phot.values
+    if lcd.phot_err is not None:
+        tab['flux_error'] = lcd.phot_err.values
+
+    phot_unit = lcd.phot_unit
+    if phot_unit:
+        try:
+            unit = u.mag if lcd.active_domain == DOMAIN_MAG else u.Unit(phot_unit)
+            tab['phot'].unit = unit
+            if 'flux_error' in tab.colnames:
+                tab['flux_error'].unit = unit
+        except (ValueError, u.UnitsError, u.UnitTypeError):
+            logger.warning('Could not assign photometric units during tabular export.')
 
     if lcd.label is not None and 'label' in lcd.lightcurve.columns:
         tab['label'] = lcd.lightcurve['label'].values
 
+    assign_photometry_column_semantics(
+        tab,
+        force_magnitude=(lcd.active_domain == DOMAIN_MAG),
+    )
     return tab
 
 
@@ -1024,9 +1155,9 @@ def _build_ecsv_metadata(lcd) -> dict:
     for key in ('ra', 'dec', 'period', 'epoch'):
         if meta.get(key) is not None:
             header[key] = meta[key]
-    filter_name = meta.get('filter') or meta.get('filter_name')
+    filter_name = (meta.get("photcal") or {}).get(PHOTCAL_KEY_FILTER_NAME)
     if filter_name:
-        header['filter'] = filter_name
+        header["filter"] = filter_name
     authors = _parse_list_meta(meta.get('authors'))
     if authors:
         header['pipeline'] = ', '.join(str(a) for a in authors)
@@ -1216,7 +1347,7 @@ def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, r
     if not isinstance(lcd, CurveDash):
         raise PipeException('enrich_cutout_curvedash expects a CurveDash instance.')
 
-    lcd.metadata['photcal'] = {}
+    lcd.metadata['photcal'] = tess_config.tess_filter_group_meta()
     lcd.metadata['authors'] = [tess_config.CUTOUT_PIPELINE_AUTHOR]
     lcd.metadata['sectors'] = [str(sector)]
     lcd.metadata['cutout_source'] = str(pixel_metadata.get('pixel_type', 'TPF')).upper()
@@ -1266,25 +1397,23 @@ def _build_cutout_votable_kwargs(lcd) -> dict:
         f"{processing_note}"
     )
 
+    photcal = meta.get('photcal') or {}
+    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=False)
+
     return {
         "table_name": f"TESS_cutout_{sanitize_filename(tic_id)}",
-        "filter_identifier": tess_config.TESS_FILTER_IDENTIFIER,
         "refposition": tess_config.TESS_REFPOSITION,
         "timescale": tess_config.TESS_TIMESCALE,
         "timeorigin": JD_TO_MJD,
         "votable_description": desc_core + calibration_note,
         "table_description": desc_core + calibration_note,
         "creator": f"TESS {tess_config.CUTOUT_PIPELINE_AUTHOR} cutout",
-        "zero_point_flux": None,
-        "zero_point_ref_mag": None,
-        "effective_wavelength": tess_config.TESS_EFFECTIVE_WAVELENGTH.to(u.m).value,
-        "effective_wavelength_unit": "m",
         "ra": meta.get('ra'),
         "dec": meta.get('dec'),
-        "filter_name": "TESS",
         "period": meta.get('period'),
         "epoch": meta.get('epoch'),
         "binary": True,
+        **photcal_fields,
     }
 
 
@@ -1303,9 +1432,16 @@ def _build_tess_votable_kwargs(lcd) -> dict:
     if not authors and lcd.metadata.get('author'):
         authors = [lcd.metadata.get('author')]
     pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
-    is_spoc = tess_config.is_spoc_pipeline(authors)
     is_stitched = _is_stitched_lightcurve(lcd)
-    include_zero_points = is_spoc and not is_stitched
+    photcal = lcd.metadata.get('photcal') or {}
+    include_zero_points = (
+        photcal.get(PHOTCAL_KEY_ZP_FLUX) is not None
+        and photcal.get(PHOTCAL_KEY_ZP_MAG) is not None
+        and not is_stitched
+    )
+    photcal_fields = _photcal_group_to_votable_fields(
+        photcal, include_zero_points=include_zero_points
+    )
     tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
 
     sectors = _parse_list_meta(lcd.metadata.get('sectors')) or []
@@ -1322,7 +1458,6 @@ def _build_tess_votable_kwargs(lcd) -> dict:
 
     return {
         "table_name": f"TESS_{sanitize_filename(tic_id)}",
-        "filter_identifier": tess_config.TESS_FILTER_IDENTIFIER,
         "refposition": tess_config.TESS_REFPOSITION,
         "timescale": tess_config.TESS_TIMESCALE,
         "timeorigin": JD_TO_MJD,
@@ -1339,20 +1474,19 @@ def _build_tess_votable_kwargs(lcd) -> dict:
             f"{calibration_note}"
         ),
         "creator": f"TESS {pipeline_str} Pipeline",
-        "zero_point_flux": tess_config.TESS_SPOC_ZERO_POINT_FLUX if include_zero_points else None,
-        "zero_point_ref_mag": tess_config.TESS_SPOC_ZERO_POINT_REF_MAG if include_zero_points else None,
-        "effective_wavelength": tess_config.TESS_EFFECTIVE_WAVELENGTH.to(u.m).value,
-        "effective_wavelength_unit": "m",
         "ra": lcd.metadata.get('ra'),
         "dec": lcd.metadata.get('dec'),
-        "filter_name": "TESS",
         "period": lcd.metadata.get('period'),
         "epoch": lcd.metadata.get('epoch'),
         "binary": True,
+        **photcal_fields,
     }
 
 
 def main():
+    from skvo_veb.logging_config import configure_logging
+
+    configure_logging()
     # filename = 'data/ASAS19pm/ASas19pm.DAT'
     # lc = vo.VOLightCurve(file_path=filename)
     # print(lc)
@@ -1365,10 +1499,10 @@ def main():
         # 'data/my_g3.vot',
         'data/ASAS19pm/ASas19pm.dat'
     ]:
-        print(f'\n\n\n Ingesting {filename}')
+        logger.info('Ingesting %s', filename)
 
         lc1 = read_to_volc(filename)
-        print(lc1)
+        logger.info('%s', lc1)
         json_str = pack_volc_to_json(lc1)
         pretty_print_lc_json(json_str)
 

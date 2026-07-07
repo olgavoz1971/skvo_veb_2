@@ -16,7 +16,7 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.tess_config import TESS_TIMEORIGIN
+from skvo_veb.utils.tess_config import TESS_TIMEORIGIN, resolve_tess_photcal
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +133,8 @@ def create_lc_from_selected_rows(
             ])
         flux_unit = str(lc_list[0].flux.unit)
 
+    photcal_meta = resolve_tess_photcal(authors, stitched=stitch)
+
     lcd = CurveDash(
         name=lc_list[0].LABEL,
         lookup_name=metadata.get('lookup_name', None),
@@ -144,6 +146,7 @@ def create_lc_from_selected_rows(
         timescale='tdb',
         flux_unit=flux_unit,
         active_domain=DOMAIN_FLUX,
+        photcal=photcal_meta,
         folded_view=phase_view,
         period=period,
         epoch=epoch,
@@ -164,7 +167,6 @@ def create_lc_from_selected_rows(
     lcd.metadata['flux_origins'] = flux_origins
     if stitch:
         lcd.metadata['stitched'] = True
-        lcd.metadata['photcal'] = {}
 
     title = (
         f'{lcd.lookup_name} {lc_list[0].LABEL} sector: {",".join(sectors)} '

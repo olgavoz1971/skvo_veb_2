@@ -1,6 +1,6 @@
 import logging
-from os import getenv
-logging.basicConfig(filename=getenv('APP_LOG'), level=logging.INFO)
+
+logger = logging.getLogger(__name__)
 
 import warnings
 from astropy.coordinates import SkyCoord
@@ -20,7 +20,7 @@ def _get_simbad_table(name) -> tuple[str, SkyCoord] | None:
             # so = Simbad.query_object(name)
             simbad_table = Simbad.query_objectids(name)
         except Exception as e:
-            logging.info(f' !!!!!!!!!!!! Simbad connection error {repr(e)}')
+            logger.info(f' !!!!!!!!!!!! Simbad connection error {repr(e)}')
             raise PipeException(e)
         return simbad_table
 
@@ -66,8 +66,11 @@ def get_gaia_id_by_simbad_name(name):
 
 
 if __name__ == '__main__':
+    from skvo_veb.logging_config import configure_logging
+
+    configure_logging()
     name_ = 'OGLE LMC570.29.000434'
     ret1 = get_gaia_id_by_simbad_name(name_)
-    print(f'simbad: {ret1}')
+    logger.info('simbad: %s', ret1)
     ret2 = get_gaia_id_from_gaia_veb_table(name_)
-    print(f'VEB: {ret2}')
+    logger.info('VEB: %s', ret2)
