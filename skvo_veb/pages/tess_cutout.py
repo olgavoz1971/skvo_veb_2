@@ -104,7 +104,7 @@ def layout():
                         dbc.Stack([
                             dbc.Button('Search', id='search_tess_button', size='sm'),
                             dbc.Button('Cancel', id='cancel_search_tess_button', size='sm', disabled=True),
-                            dbc.Button('Clean Cache', id='clean_cache_tess_button', size='sm', color='danger'),
+                            dbc.Button('Clean Cache', id='clean_cache_tess_button', size='sm', outline=True, color='warning'),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),
                         dcc.RadioItems(
                             id='ffi_tpf_switch',

@@ -13,6 +13,12 @@ from numpy import isnan
 from pyasassn.client import SkyPatrolClient
 
 # from skvo_veb.utils.kurve import cook_lightcurve
+from skvo_veb.utils.asassn_config import (
+    ASASSN_FLUX_UNIT,
+    ASASSN_PIPELINE,
+    asassn_calibration_catalog,
+    resolve_asassn_photcal,
+)
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.my_tools import DBException, timeit, PipeException
 
@@ -171,12 +177,21 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
         if os.getenv('CUT_ASASSN'):  # for debugging
             df = df[:5]
 
-        lcd = CurveDash(gaia_id=gaia_id,
-                        jd=df['jd'], flux=df['flux'], flux_err=df['flux_err'],
-                        band=band,
-                        timescale='hjd',  # todo Check
-                        epoch=epoch,
-                        period=period, period_unit=str(day))
+        lcd = CurveDash(
+            gaia_id=gaia_id,
+            jd=df['jd'],
+            flux=df['flux'],
+            flux_err=df['flux_err'],
+            band=band,
+            flux_unit=ASASSN_FLUX_UNIT,
+            photcal=resolve_asassn_photcal(band),
+            timescale='hjd',
+            epoch=epoch,
+            period=period,
+            period_unit=str(day),
+        )
+        lcd.metadata['authors'] = [ASASSN_PIPELINE]
+        lcd.metadata['calibration_catalog'] = asassn_calibration_catalog(band)
 
         # lc = cook_lightcurve(df, timescale='tcg',
         #                              flux_unit='', flux_err_unit='',

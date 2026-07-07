@@ -1192,7 +1192,7 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
     Args:
         lcd (CurveDash): Application lightcurve state container.
         table_format (str): Target format identifier (e.g. ``'votable_binary'``, ``'ascii.ecsv'``).
-        profile (str, optional): Export profile name (``'tess'`` or ``'cutout'`` for VOTable).
+        profile (str, optional): Export profile name (``'tess'``, ``'cutout'``, or ``'asassn'`` for VOTable).
 
     Returns:
         bytes: Serialised file content.
@@ -1216,10 +1216,12 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
             kwargs = _build_tess_votable_kwargs(lcd)
         elif profile == 'cutout':
             kwargs = _build_cutout_votable_kwargs(lcd)
+        elif profile == 'asassn':
+            kwargs = _build_asassn_votable_kwargs(lcd)
         else:
             raise PipeException(
                 f"Unsupported VOTable export profile '{profile}'. "
-                "Use profile='tess' or profile='cutout'."
+                "Use profile='tess', profile='cutout', or profile='asassn'."
             )
         kwargs['binary'] = votable_binary_encoding(table_format)
         buf = io.BytesIO()
@@ -1478,6 +1480,60 @@ def _build_tess_votable_kwargs(lcd) -> dict:
         "dec": lcd.metadata.get('dec'),
         "period": lcd.metadata.get('period'),
         "epoch": lcd.metadata.get('epoch'),
+        "binary": True,
+        **photcal_fields,
+    }
+
+
+def _build_asassn_votable_kwargs(lcd) -> dict:
+    """Builds keyword arguments for ASAS-SN Sky Patrol VOTable export.
+
+    Filter passband and zero-point metadata are read from ``metadata['photcal']``,
+    populated at ingest from ``asassn_config`` for the active ``V`` or ``g`` band.
+
+    Args:
+        lcd (CurveDash): ASAS-SN lightcurve with band and photcal metadata.
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+    """
+    from skvo_veb.utils import asassn_config
+
+    meta = lcd.metadata or {}
+    band = lcd.band or meta.get('band') or 'unknown'
+    target_id = lcd.gaia_id or meta.get('gaia_id') or meta.get('name') or 'unknown'
+
+    if band in asassn_config.ASASSN_BANDS:
+        calibration = meta.get('calibration_catalog') or asassn_config.asassn_calibration_catalog(band)
+        photcal = meta.get('photcal') or asassn_config.resolve_asassn_photcal(band)
+        wavelength_label = asassn_config.asassn_effective_wavelength_display(band)
+    else:
+        calibration = meta.get('calibration_catalog') or 'unknown'
+        photcal = meta.get('photcal') or {}
+        wavelength_label = 'unknown'
+    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=True)
+
+    desc_core = (
+        f"ASAS-SN Sky Patrol lightcurve for target {target_id}. "
+        f"Filter band: {band}. Effective wavelength: {wavelength_label}. "
+        f"Calibrated against {calibration}. "
+        f"Observation times are Heliocentric Julian Date; "
+        f"``obs_time`` is Modified Julian Date (MJD = JD - {JD_TO_MJD}). "
+        f"Photometry flux unit: {asassn_config.ASASSN_FLUX_UNIT}."
+    )
+
+    return {
+        "table_name": f"ASASSN_{sanitize_filename(str(target_id))}_{band}",
+        "refposition": asassn_config.ASASSN_REFPOSITION,
+        "timescale": asassn_config.ASASSN_TIMESCALE,
+        "timeorigin": JD_TO_MJD,
+        "votable_description": desc_core,
+        "table_description": desc_core,
+        "creator": asassn_config.ASASSN_PIPELINE,
+        "ra": meta.get('ra'),
+        "dec": meta.get('dec'),
+        "period": meta.get('period'),
+        "epoch": meta.get('epoch'),
         "binary": True,
         **photcal_fields,
     }

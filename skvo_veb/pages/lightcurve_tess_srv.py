@@ -134,7 +134,7 @@ def layout():
                             dbc.Button('Search', id='basic_search_tess_lc_srv_button', size="sm"),
                             dbc.Button('Cancel', id='cancel_basic_search_tess_lc_srv_button',
                                        size="sm", disabled=True),
-                            dbc.Button('Clean Cache', id='clean_cache_tess_lc_srv_button', size="sm", color='danger'),
+                            dbc.Button('Clean Cache', id='clean_cache_tess_lc_srv_button', size="sm", outline=True, color='warning'),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),
                         dbc.Stack([
                             dcc.Upload(
@@ -158,8 +158,8 @@ def layout():
                                     dbc.Stack([
                                         dbc.Button('Download curves', id='download_tess_lc_srv_button', size="sm",
                                                    className="me-2"),
-                                        dbc.Button('Purge FITS & redownload', id='purge_redownload_tess_lc_srv_button',
-                                                   size="sm", color='warning', className="me-2"),
+                                        dbc.Button('reDownload', id='purge_redownload_tess_lc_srv_button',
+                                                   size="sm", outline=True, color='warning', className="me-2"),
                                         dbc.Button('Cancel', id='cancel_download_tess_lc_srv_button', size="sm",
                                                    disabled=True),
                                     ], direction='horizontal', gap=2)
