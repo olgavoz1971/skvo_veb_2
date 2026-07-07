@@ -9,6 +9,11 @@ pipeline), build uncalibrated lightcurves, and export them via the shared
 DISK_CACHE_LOCAL = False
 
 import logging
+
+from skvo_veb.logging_config import configure_logging
+
+configure_logging()
+
 logger = logging.getLogger(__name__)
 
 import aladin_lite_react_component
@@ -43,6 +48,7 @@ from skvo_veb.utils.lc_bridge import (
     resolve_cutout_mask_mode,
     export_file_extension,
 )
+from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS, is_votable_export_format
 from skvo_veb.utils.lc_interaction import prepare_lcd_for_export
 from skvo_veb.utils.my_tools import PipeException, safe_none, log_gamma, sanitize_filename, positive_float_pattern
@@ -1001,56 +1007,17 @@ def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None
         lc_metadata (dict, optional): Optional axis range overrides from relayout events.
 
     Returns:
-        plotly.graph_objects.Figure: Scatter+line figure in relative JD coordinates.
+        plotly.graph_objects.Figure: Scatter figure in relative JD coordinates.
     """
     lcd = CurveDash.from_serialized(js_lightcurve)
-    title = build_cutout_title(lcd)
-    xaxis_title = f'jd-{jd0}, {safe_none(lcd.time_unit)} {lcd.timescale}'
-    is_magnitude = lcd.active_domain == DOMAIN_MAG
-    y_label = 'magnitude' if is_magnitude else 'flux'
-    yaxis_title = f'{y_label} {safe_none(lcd.flux_correction)}, {safe_none(lcd.phot_unit)}'
-
-    xrange_left = xrange_right = yrange_left = yrange_right = None
-    if lc_metadata is not None:
-        xrange_left = lc_metadata.get('xrange_left')
-        xrange_right = lc_metadata.get('xrange_right')
-        yrange_left = lc_metadata.get('yrange_left')
-        yrange_right = lc_metadata.get('yrange_right')
-
-    fig = go.Figure()
-    x = lcd.jd - jd0 if lcd.jd is not None else lcd.jd
-    y = lcd.phot
-    fig.add_trace(go.Scatter(
-        x=x, y=y,
-        selected={'marker': {'color': 'orange', 'size': 6}},
-        unselected={'marker': {'opacity': 0.85}},
-        hoverinfo='none',
-        hovertemplate=None,
-        mode='markers+lines',
-        marker=dict(color='blue', size=6, symbol='circle'),
-        line=dict(color='blue', width=1),
-    ))
-    layout_kwargs = dict(
-        title=title,
-        showlegend=False,
-        margin=dict(l=0, b=20, t=30, r=20),
-        xaxis_title=xaxis_title,
-        yaxis_title=yaxis_title,
+    return build_curvedash_scatter_figure(
+        lcd,
+        title=build_cutout_title(lcd),
+        display_epoch=jd0,
+        lc_metadata=lc_metadata,
+        color_by_label=False,
+        phot_description=safe_none(lcd.flux_correction) or None,
     )
-    if xrange_left is not None and xrange_right is not None:
-        layout_kwargs['xaxis'] = dict(range=[xrange_left, xrange_right])
-    if yrange_left is not None and yrange_right is not None:
-        if is_magnitude:
-            layout_kwargs['yaxis'] = dict(
-                range=[max(yrange_left, yrange_right), min(yrange_left, yrange_right)]
-            )
-        else:
-            layout_kwargs['yaxis'] = dict(range=[yrange_left, yrange_right])
-    elif is_magnitude:
-        layout_kwargs['yaxis'] = dict(autorange='reversed')
-
-    fig.update_layout(**layout_kwargs)
-    return fig
 
 
 @callback(

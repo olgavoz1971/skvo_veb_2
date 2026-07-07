@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import warnings
+from contextlib import contextmanager
 from os import getenv
 
 _LOG_FORMAT = '%(asctime)s %(levelname)s [%(name)s] %(message)s'
@@ -71,3 +73,69 @@ def configure_logging(level: int | None = None) -> None:
             )
 
     configure_logging._configured = True
+
+
+class LogWarningError(Exception):
+    """Raised when a monitored logger emits at or above the configured level."""
+
+
+class _RaiseOnLogHandler(logging.Handler):
+    """Handler that aborts logging by raising ``LogWarningError``."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Raises ``LogWarningError`` with the formatted log message.
+
+        Args:
+            record (logging.LogRecord): Record being logged.
+        """
+        raise LogWarningError(self.format(record))
+
+
+@contextmanager
+def log_warnings_as_errors(*logger_names: str, level: int = logging.WARNING):
+    """Turns WARNING (or higher) log records on named loggers into exceptions.
+
+    Attach a temporary handler so ``logger.warning()`` in third-party code
+    (e.g. Lightkurve) surfaces as ``LogWarningError`` instead of only appearing
+    on stderr. Handlers are removed when the context exits.
+
+    Args:
+        *logger_names (str): Logger names to monitor (e.g. ``'lightkurve.periodogram'``).
+        level (int): Minimum level that triggers an exception.
+
+    Yields:
+        None
+
+    Raises:
+        LogWarningError: If a monitored logger emits at ``level`` or above.
+    """
+    attached: list[tuple[logging.Logger, _RaiseOnLogHandler]] = []
+    try:
+        for name in logger_names:
+            monitored = logging.getLogger(name)
+            handler = _RaiseOnLogHandler()
+            handler.setLevel(level)
+            handler.setFormatter(logging.Formatter('%(message)s'))
+            monitored.addHandler(handler)
+            attached.append((monitored, handler))
+        yield
+    finally:
+        for monitored, handler in attached:
+            monitored.removeHandler(handler)
+
+
+@contextmanager
+def warnings_and_log_as_errors(*logger_names: str, log_level: int = logging.WARNING):
+    """Combines ``warnings.simplefilter('error')`` with ``log_warnings_as_errors``.
+
+    Args:
+        *logger_names (str): Logger names passed to ``log_warnings_as_errors``.
+        log_level (int): Minimum log level that triggers ``LogWarningError``.
+
+    Yields:
+        None
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        with log_warnings_as_errors(*logger_names, level=log_level):
+            yield

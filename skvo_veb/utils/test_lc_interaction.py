@@ -2,14 +2,18 @@
 
 import numpy as np
 
+import pytest
+
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_FLUX
 from skvo_veb.utils.lc_interaction import (
     prepare_lcd_for_export,
+    require_time_view_for_trim,
     resolve_export_display_x_range,
     trim_curvedash_display_range,
     trim_curvedash_from_plot_selection,
 )
+from skvo_veb.utils.my_tools import PipeException
 
 
 def _sample_lcd():
@@ -22,6 +26,13 @@ def _sample_lcd():
         name='TIC 1',
         active_domain=DOMAIN_FLUX,
     )
+
+
+def test_require_time_view_for_trim_rejects_folded_view():
+    """Trim must not run when the plot x-axis is phase."""
+    with pytest.raises(PipeException, match='time view'):
+        require_time_view_for_trim(True)
+    require_time_view_for_trim(False)
 
 
 def test_trim_removes_selected_display_range():

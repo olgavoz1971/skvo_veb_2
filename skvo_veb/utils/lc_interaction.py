@@ -124,6 +124,21 @@ def resolve_export_display_x_range(
     return extract_display_x_range_from_relayout(relayout_data, lc_metadata)
 
 
+def require_time_view_for_trim(phase_view: bool) -> None:
+    """Rejects trim when the plot x-axis is folded phase rather than time.
+
+    Args:
+        phase_view (bool): True when the UI shows phase on the x-axis.
+
+    Raises:
+        PipeException: If ``phase_view`` is true.
+    """
+    if phase_view:
+        raise PipeException(
+            'Trim is only available in time view. Switch off the folded view first'
+        )
+
+
 def trim_curvedash_display_range(lcd, left_display: float, right_display: float,
                                  display_epoch: float = DEFAULT_EPOCH_JD):
     """Permanently removes observations inside a display-axis time interval.

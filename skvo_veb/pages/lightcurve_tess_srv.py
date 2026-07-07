@@ -6,6 +6,11 @@ import time
 DISK_CACHE = False
 
 import logging
+
+from skvo_veb.logging_config import configure_logging, warnings_and_log_as_errors
+
+configure_logging()
+
 logger = logging.getLogger(__name__)
 
 import base64
@@ -57,7 +62,11 @@ from skvo_veb.utils.lc_config import (
     is_votable_export_format,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
-from skvo_veb.utils.lc_interaction import prepare_lcd_for_export, trim_curvedash_display_range
+from skvo_veb.utils.lc_interaction import (
+    prepare_lcd_for_export,
+    require_time_view_for_trim,
+    trim_curvedash_display_range,
+)
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
 from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
@@ -1078,7 +1087,6 @@ def plot_tess_curve(_, user_tab_id, phase_view):
     prevent_initial_call=True)
 def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
                 p_min, p_max, duration, nyquist_factor, normalization, frequency_factor):
-    import warnings
     from scipy.signal import find_peaks
 
     if not n_clicks:
@@ -1111,7 +1119,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
                 # Default to `[0.05, 0.10, 0.15, 0.20, 0.25, 0.33]` if not specified
                 duration_list = [float(x.strip()) for x in duration.split(',')]
             except Exception as e:
-                logger.warning(f'Periodogram: {str(e)}')
+                logger.warning(f'Periodogram: {e}')
                 duration_list = None
             if duration_list is None:
                 kwargs = dict(method=method,
@@ -1124,19 +1132,16 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
                               maximum_period=safe_float(p_max, None),
                               frequency_factor=safe_float(frequency_factor, 10),
                               duration=duration_list)
-        # Turn specified warnings into exceptions. It's pretty useful when working with the lightkurve module
         try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('error', RuntimeWarning)
-                pg = kurve.to_periodogram(**kwargs)  # Will raise an exception on divide-by-zero
-                # Extract top 5 periods:
+            with warnings_and_log_as_errors('lightkurve.periodogram', 'lightkurve'):
+                pg = kurve.to_periodogram(**kwargs)
                 distance = max(len(pg.power) // 100, 1)
                 peaks, _ = find_peaks(pg.power, distance=distance)
                 sorted_peaks = peaks[np.argsort(pg.power[peaks])[::-1]]
                 top_periods = pg.period[sorted_peaks[:top_periods_number]].value
                 output['periodogram_result_store'] = top_periods
-        except RuntimeWarning as e:
-            raise PipeException(f'Periodogram computation failed: {str(e)}')
+        except Exception as e:
+            raise PipeException(f'Periodogram computation failed: {e}') from e
         if period_freq == 'frequency':
             x = pg.frequency
             xaxis_title = 'Frequency, 1/d'
@@ -1231,14 +1236,16 @@ clientside_callback(
     Input('trim_tess_lc_srv_button', 'n_clicks'),
     State('store_tess_lc_srv_selection_bounds', 'data'),
     State('store_user_tab_id_tess_lc_srv', 'data'),
+    State('fold_tess_lc_srv_switch', 'value'),
     prevent_initial_call=True,
 )
-def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id):
+def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view):
     """Removes the boxed time interval on the server using stored display bounds only."""
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
 
     try:
+        require_time_view_for_trim(phase_view)
         if not selection_bounds or selection_bounds.get('xmin') is None:
             raise PipeException('Draw a box selection on the lightcurve first.')
 
@@ -1257,7 +1264,7 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id):
         logger.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
         alert_message = message.warning_alert(exc)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
-        raise dash.no_update
+        return dash.no_update
 
 
 def write_user_data_to_cache(user_data, user_tab_id):
@@ -1410,9 +1417,11 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
           State('select_tess_lc_srv_format', 'value'),
           State('graph_tess_lc_srv', 'relayoutData'),
           State('store_tess_lc_srv_selection_bounds', 'data'),
+          State('period_tess_lc_srv_input', 'value'),
+          State('epoch_tess_lc_srv_input', 'value'),
           prevent_initial_call=True)
 def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
-                                            relayout_data, selection_bounds):
+                                            relayout_data, selection_bounds, period, epoch):
     """Downloads a lightcurve clipped to stored selection bounds or visible zoom."""
     if not n_clicks:
         raise PreventUpdate
@@ -1420,6 +1429,16 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
     try:
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
+        
+        # Update period and epoch in the exported lightcurve metadata if they exist
+        period_val = safe_float(period)
+        epoch_val = safe_float(epoch, 0)
+        if period_val is not None:
+            lcd.period = period_val
+            lcd.period_unit = 'd'
+        if epoch_val is not None:
+            lcd.epoch = epoch_val + jd0
+            
         lcd = prepare_lcd_for_export(
             lcd,
             selection_bounds=selection_bounds,
