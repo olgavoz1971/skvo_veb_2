@@ -602,6 +602,11 @@ def create_shapes(target_mask):
         lc1=Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
         lc2=Output('lc2_store', 'data', allow_duplicate=True),
         lc3=Output('lc3_store', 'data', allow_duplicate=True),
+        lc_metadata=Output('store_tess_cutout_lightcurve_metadata', 'data', allow_duplicate=True),
+        selection_bounds=Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
+        fig1=Output('curve_graph_1', 'figure', allow_duplicate=True),
+        fig2=Output('curve_graph_2', 'figure', allow_duplicate=True),
+        fig3=Output('curve_graph_3', 'figure', allow_duplicate=True),
     ),
     inputs=dict(
         n_clicks=Input('download_sector_button', 'n_clicks'),
@@ -666,6 +671,16 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         output['active_tab'] = 'tess_graph_tab'
         set_props('div_tess_download_alert', {'children': '', 'style': {'display': 'none'}})
 
+        empty_fig = _empty_lightcurve_figure()
+        output['lc1'] = None
+        output['lc2'] = None
+        output['lc3'] = None
+        output['lc_metadata'] = {}
+        output['selection_bounds'] = None
+        output['fig1'] = empty_fig
+        output['fig2'] = empty_fig
+        output['fig3'] = empty_fig
+
         logger.info(f"tess_cutout.download_sector: Success! Saved/Loaded local path: {pixel_data.path}, Target Coordinate RA DEC: {pixel_data.ra} {pixel_data.dec}, Metadata Shape: {pixel_data.shape}")
 
     except Exception as e:
@@ -676,10 +691,6 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         output['graph_tab_disabled'] = True
         set_props('div_tess_download_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
-    # clear lightcurves:
-    output['lc1'] = None
-    output['lc2'] = None
-    output['lc3'] = None
     return output
 
 
@@ -999,6 +1010,20 @@ clientside_callback(
 )
 
 
+def _empty_lightcurve_figure():
+    """Returns a blank Plotly figure for the cutout lightcurve graphs.
+
+    Returns:
+        plotly.graph_objects.Figure: Empty scatter layout matching the page default.
+    """
+    return go.Figure().update_layout(
+        title='',
+        margin=dict(l=0, b=20, t=30, r=20),
+        xaxis_title='time',
+        yaxis_title='flux',
+    )
+
+
 def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None):
     """Builds a Plotly figure for one stored cutout lightcurve.
 
@@ -1130,9 +1155,9 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
 
 @callback(
     output=dict(
-        fig1=Output('curve_graph_1', 'figure'),
-        fig2=Output('curve_graph_2', 'figure'),
-        fig3=Output('curve_graph_3', 'figure'),
+        fig1=Output('curve_graph_1', 'figure', allow_duplicate=True),
+        fig2=Output('curve_graph_2', 'figure', allow_duplicate=True),
+        fig3=Output('curve_graph_3', 'figure', allow_duplicate=True),
     ),
     inputs=dict(
         lc1=Input('store_tess_cutout_lightcurve', 'data'),
@@ -1140,7 +1165,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         lc3=Input('lc3_store', 'data'),
     ),
     state=dict(lc_metadata=State('store_tess_cutout_lightcurve_metadata', 'data')),
-    prevent_initial_call=False,
+    prevent_initial_call='initial_duplicate',
 )
 def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
     """Refreshes one or more cutout lightcurve graphs when store data changes.
@@ -1154,12 +1179,10 @@ def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
     Returns:
         dict: Updated figures for ``curve_graph_1``–``curve_graph_3``.
     """
-    if not any([lc1, lc2, lc3]):
+    if not ctx.triggered:
         raise PreventUpdate
 
-    triggered_ids = {t['prop_id'].split('.')[0] for t in ctx.triggered} if ctx.triggered else set()
-    if not triggered_ids:
-        raise PreventUpdate
+    triggered_ids = {t['prop_id'].split('.')[0] for t in ctx.triggered}
 
     logger.debug(f"plot_lightcurve triggered: triggered_ids={triggered_ids} ctx.triggered_id={ctx.triggered_id}")
 
@@ -1171,15 +1194,24 @@ def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
         if lc1:
             output['fig1'] = create_lightcurve_figure(lc1, lc_metadata)
             active_item = ['accordion_item_1']
+        elif 'store_tess_cutout_lightcurve' in triggered_ids:
+            output['fig1'] = _empty_lightcurve_figure()
+
         if lc2:
             output['fig2'] = create_lightcurve_figure(lc2)
             active_item = ['accordion_item_2']
+        elif 'lc2_store' in triggered_ids:
+            output['fig2'] = _empty_lightcurve_figure()
+
         if lc3:
             output['fig3'] = create_lightcurve_figure(lc3)
             active_item = ['accordion_item_3']
+        elif 'lc3_store' in triggered_ids:
+            output['fig3'] = _empty_lightcurve_figure()
 
-        set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
-        set_props('accordion_tess_lc', {'active_item': active_item})
+        if any([lc1, lc2, lc3]):
+            set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
+            set_props('accordion_tess_lc', {'active_item': active_item})
 
     except Exception as e:
         logger.warning(f'tess_cutout.plot_lightcurve: {e}')
