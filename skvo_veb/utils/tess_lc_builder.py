@@ -16,7 +16,7 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.tess_config import TESS_TIMEORIGIN, resolve_tess_photcal
+from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, resolve_photcal
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def create_lc_from_selected_rows(
             ])
         flux_unit = str(lc_list[0].flux.unit)
 
-    photcal_meta = resolve_tess_photcal(authors, stitched=stitch)
+    photcal_meta = resolve_photcal(authors, stitched=stitch)
 
     lcd = CurveDash(
         name=lc_list[0].LABEL,
@@ -162,6 +162,7 @@ def create_lc_from_selected_rows(
 
     lcd.metadata['ra'] = ra_val
     lcd.metadata['dec'] = dec_val
+    lcd.metadata['mission'] = 'tess'
     lcd.metadata['authors'] = authors
     lcd.metadata['sectors'] = sectors
     lcd.metadata['flux_origins'] = flux_origins

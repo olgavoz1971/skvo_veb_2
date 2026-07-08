@@ -3,7 +3,7 @@
 import io
 import numpy as np
 
-from skvo_veb.utils.asassn_config import (
+from skvo_veb.utils.mission_config.asassn import (
     ASASSN_G_FILTER_IDENTIFIER,
     ASASSN_G_MAG_SYS,
     ASASSN_V_FILTER_IDENTIFIER,
@@ -74,6 +74,17 @@ def test_asassn_votable_export_v_band():
     assert "zeroPointReferenceMagnitude" in xml
     assert ASASSN_V_MAG_SYS in xml
     assert "APASS" in xml
+
+
+def test_asassn_votable_export_by_lookup_name():
+    """VOTable export uses lookup_name when Gaia ID is absent."""
+    lcd = _sample_asassn_lcd("g")
+    lcd.metadata["gaia_id"] = None
+    lcd.metadata["lookup_name"] = "V* DP Peg"
+    lcd.metadata["name"] = "V* DP Peg"
+    xml = export_curvedash(lcd, "votable_binary", profile="asassn").decode("utf-8")
+    assert "V* DP Peg" in xml
+    assert "None" not in xml
 
 
 def test_asassn_ecsv_export():

@@ -178,7 +178,7 @@ class PhotCal:
         self._mag_sys = value.strip()
 
     def mag_to_flux(self, mag):
-        """Converts an astronomical magnitude to physical flux density.
+        """Converts an astronomical magnitude to flux (instrumental or calibratied flux density).
 
         The computation is performed using unit-safe astropy quantities.
 
@@ -186,18 +186,22 @@ class PhotCal:
             mag (astropy.units.Quantity): The magnitude to be converted.
 
         Returns:
-            astropy.units.Quantity: The computed flux density.
+            astropy.units.Quantity: The computed flux
 
         Raises:
-            astropy.units.UnitsError: If the input magnitude's unit does not match
-                the calibrated zero-point magnitude's unit.
+            astropy.units.UnitsError: If the input magnitude's unit is incompatible with
+                the calibrated zero-point magnitude unit.
         """
         if mag.unit is None or not mag.unit.is_equivalent(self._zp_mag.unit):
-            raise u.UnitsError(f'flux column unit[{mag.unit}] and zero_point unit[{self._zp_mag.unit}] must match')
-        return self.zp_flux * 10 ** (-0.4 * (mag - self.zp_mag).value)  # oh!
+            raise u.UnitsError(
+                f"magnitude column unit[{mag.unit}] and zero_point unit[{self._zp_mag.unit}] must match"
+            )
+        mag_zp = mag.to(self._zp_mag.unit)
+        delta_mag = (mag_zp - self._zp_mag).to_value(self._zp_mag.unit)
+        return self._zp_flux * 10 ** (-0.4 * delta_mag)
 
     def flux_to_mag(self, flux):
-        """Converts physical flux density to an astronomical magnitude.
+        """Converts flux to an astronomical magnitude.
 
         The computation is performed using unit-safe astropy quantities.
 
@@ -208,13 +212,72 @@ class PhotCal:
             astropy.units.Quantity: The computed astronomical magnitude.
 
         Raises:
-            astropy.units.UnitsError: If the input flux's unit does not match
-                the calibrated zero-point flux's unit.
+            astropy.units.UnitsError: If the input flux's unit is incompatible with
+                the calibrated zero-point flux unit.
         """
         if flux.unit is None or not flux.unit.is_equivalent(self._zp_flux.unit):
-            raise u.UnitsError(f'flux column unit[{flux.unit}] and zero_point unit[{self._zp_flux.unit}] must match')
-        ratio = (flux / self._zp_flux).value
-        return self.zp_mag - 2.5 * np.log10(ratio) * u.mag  # oh!
+            raise u.UnitsError(
+                f"flux column unit[{flux.unit}] and zero_point unit[{self._zp_flux.unit}] must match"
+            )
+        flux_zp = flux.to(self._zp_flux.unit)
+        ratio = (flux_zp / self._zp_flux).to_value(u.dimensionless_unscaled)
+        return self._zp_mag - 2.5 * np.log10(ratio) * self._zp_mag.unit
+
+    def mag_err_to_flux_err(self, mag, mag_err):
+        """Propagates magnitude uncertainties to flux using ``mag_to_flux``.
+
+        For the Pogson relation implemented in ``mag_to_flux``, the flux uncertainty is
+        ``|dF/dm| * sigma_m`` with ``|dF/dm| = 0.4 ln(10) F``.
+
+        Args:
+            mag (astropy.units.Quantity): Magnitude values.
+            mag_err (astropy.units.Quantity): Magnitude uncertainties (equivalent to mag).
+
+        Returns:
+            astropy.units.Quantity: Flux uncertainties in the zero-point flux unit.
+
+        Raises:
+            astropy.units.UnitsError: If magnitude or uncertainty units are incompatible.
+        """
+        flux = self.mag_to_flux(mag)
+        pogson_slope = 0.4 * np.log(10.0)
+        if mag_err.unit is None or not mag_err.unit.is_equivalent(self._zp_mag.unit):
+            raise u.UnitsError(
+                f"magnitude error unit[{mag_err.unit}] and zero_point unit[{self._zp_mag.unit}] must match"
+            )
+        mag_err_zp = mag_err.to(self._zp_mag.unit)
+        sigma_m = mag_err_zp.to_value(self._zp_mag.unit)
+        return np.abs(flux * pogson_slope * sigma_m)
+
+    def flux_err_to_mag_err(self, flux, flux_err):
+        """Propagates flux uncertainties to magnitude using the ``flux_to_mag`` derivative.
+
+        For the Pogson relation implemented in ``flux_to_mag``, the magnitude uncertainty is
+        ``|dm/dF| * sigma_F`` with ``|dm/dF| = 2.5 / (F ln 10)``.
+
+        Args:
+            flux (astropy.units.Quantity): Flux values.
+            flux_err (astropy.units.Quantity): Flux uncertainties (same unit as ``flux``).
+
+        Returns:
+            astropy.units.Quantity: Magnitude uncertainties.
+
+        Raises:
+            astropy.units.UnitsError: If flux or uncertainty units are incompatible.
+        """
+        if flux.unit is None or not flux.unit.is_equivalent(self._zp_flux.unit):
+            raise u.UnitsError(
+                f"flux column unit[{flux.unit}] and zero_point unit[{self._zp_flux.unit}] must match"
+            )
+        flux_zp = flux.to(self._zp_flux.unit)
+        if flux_err.unit is None or not flux_err.unit.is_equivalent(self._zp_flux.unit):
+            raise u.UnitsError(
+                f"flux error unit[{flux_err.unit}] and zero_point unit[{self._zp_flux.unit}] must match"
+            )
+        err_zp = flux_err.to(self._zp_flux.unit)
+        ln10 = np.log(10.0)
+        ratio = (err_zp / flux_zp).to_value(u.dimensionless_unscaled)
+        return (2.5 / ln10) * np.abs(ratio) * self._zp_mag.unit
 
     def __repr__(self):
         return (f"<PhotCal zeroPoint.referenceMagnitude={self.zp_mag}: "
@@ -653,6 +716,7 @@ def is_magnitude_phot_column(table: Table, colname: str = "phot") -> bool:
     if col.unit is not None:
         try:
             if col.unit.is_equivalent(u.mag):
+                col.unit.to(u.mag)
                 return True
         except (u.UnitsError, u.UnitTypeError, TypeError, ValueError):
             pass
@@ -1103,10 +1167,15 @@ class VOLightCurve:
             # Check physical equivalence: Flux Density is power/area/freq (or wavelength)
             ucd = 'phot.flux'
             if hasattr(flux, 'unit') and flux.unit is not None:
-                # Check if it's a density (per Hz OR per AA/m/nm)
-                u_flux_nu = u.W / (u.m ** 2 * u.Hz)  # Like Jy
-                u_flux_lam = u.W / (u.m ** 2 * u.m)  # Like erg/(s*cm2*AA)
-                if flux.unit.is_equivalent(u_flux_nu) or flux.unit.is_equivalent(u_flux_lam):
+                u_flux_nu = u.W / (u.m ** 2 * u.Hz)
+                u_flux_lam = u.W / (u.m ** 2 * u.m)
+                is_flux_density = False
+                for ref_unit in (u_flux_nu, u_flux_lam):
+                    if flux.unit.is_equivalent(ref_unit):
+                        flux.unit.to(ref_unit)
+                        is_flux_density = True
+                        break
+                if is_flux_density:
                     ucd = 'phot.flux.density'
 
             self.table[colname_out] = flux

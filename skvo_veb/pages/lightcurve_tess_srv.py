@@ -68,7 +68,7 @@ from skvo_veb.utils.lc_interaction import (
     trim_curvedash_display_range,
 )
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
-from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
+from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
 from skvo_veb.utils.my_tools import (
     safe_none,

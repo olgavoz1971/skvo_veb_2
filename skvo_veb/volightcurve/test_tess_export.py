@@ -8,7 +8,7 @@ import io
 import numpy as np
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash
-from skvo_veb.utils.tess_config import (
+from skvo_veb.utils.mission_config.tess import (
     TESS_SPOC_ZERO_POINT_FLUX,
     is_spoc_pipeline,
     resolve_tess_photcal,

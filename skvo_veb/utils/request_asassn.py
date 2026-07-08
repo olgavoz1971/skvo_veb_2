@@ -13,9 +13,10 @@ from numpy import isnan
 from pyasassn.client import SkyPatrolClient
 
 # from skvo_veb.utils.kurve import cook_lightcurve
-from skvo_veb.utils.asassn_config import (
+from skvo_veb.utils.mission_config.asassn import (
     ASASSN_FLUX_UNIT,
     ASASSN_PIPELINE,
+    MISSION_ID,
     asassn_calibration_catalog,
     resolve_asassn_photcal,
 )
@@ -178,7 +179,9 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
             df = df[:5]
 
         lcd = CurveDash(
-            gaia_id=gaia_id,
+            name=source_id.strip() if source_id is not None else str(gaia_id),
+            lookup_name=source_id.strip() if source_id is not None else None,
+            gaia_id=gaia_id if source_id is None else None,
             jd=df['jd'],
             flux=df['flux'],
             flux_err=df['flux_err'],
@@ -191,13 +194,10 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
             period_unit=str(day),
         )
         lcd.metadata['authors'] = [ASASSN_PIPELINE]
+        lcd.metadata['mission'] = MISSION_ID
         lcd.metadata['calibration_catalog'] = asassn_calibration_catalog(band)
+        lcd.metadata['title'] = f'ASAS-SN {lcd.lookup_name or lcd.name} {band}'
 
-        # lc = cook_lightcurve(df, timescale='tcg',
-        #                              flux_unit='', flux_err_unit='',
-        #                              epoch_jd=epoch, period_day=period)
-        # period_unit = None if not period else 'day'
-        # metadata = {'gaia_id': gaia_id, 'epoch': epoch, 'period': period, 'period_unit': period_unit, 'band': band}
     except DBException:
         raise
     except Exception as e:

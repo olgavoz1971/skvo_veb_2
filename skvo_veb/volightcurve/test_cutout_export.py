@@ -5,7 +5,11 @@ import re
 import io
 import numpy as np
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import export_curvedash, enrich_cutout_curvedash, resolve_cutout_mask_mode
+from skvo_veb.utils.lc_bridge import export_curvedash
+from skvo_veb.utils.mission_config.tess import (
+    enrich_cutout_curvedash,
+    resolve_cutout_mask_mode,
+)
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 

@@ -27,6 +27,7 @@ from skvo_veb.utils.lc_config import (
 )
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import (
+    PhotCal,
     VOLightCurve,
     assign_photometry_column_semantics,
     get_time_colnames,
@@ -64,15 +65,6 @@ Basic lightcurve data + metadate structure is
         }
     }
 }
-"""
-
-# Shared JS Logic for Dash Client-side Callbacks
-# todo: this is a stub
-JS_CODE = """
-window.photUtils = {
-    magToFlux: (mag, zp_mag, zp_flux) => zp_flux * Math.pow(10, -0.4 * (mag - zp_mag)),
-    fluxToMag: (flux, zp_mag, zp_flux) => zp_mag - 2.5 * Math.log10(flux / zp_flux)
-};
 """
 
 
@@ -370,8 +362,8 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
     f = data[valid_mask, 3]     # Apply mask, keep flags as objects/strings
     # f = data[:, 3]
 
-    # apply JD0
-    jd0 = meta.get('jd0', 0)
+    # apply JD0 (packed from VOLightCurve.timesys.jd0)
+    jd0 = _jd0_from_packet_meta(meta)
     if jd0:
         t += jd0
 
@@ -381,27 +373,31 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
     e_data = e
 
     if view_mode != current_domain:
-        zp_m = photcal['zp_mag']
-        # todo: !!!!!!!!!
-        # zp_m = 5.0
-        zp_f = photcal['zp_flux']
+        pc = photcal_from_metadata(photcal)
+        flux_unit = pc.zp_flux.unit
 
-        if view_mode == 'flux' and current_domain == 'mag':
-            # Mag -> Flux
-            y_data = zp_f * 10**(-0.4 * (v - zp_m))
+        if view_mode == DOMAIN_FLUX and current_domain == DOMAIN_MAG:
+            mag_q = v * u.mag
+            flux_q = pc.mag_to_flux(mag_q)
+            y_data = np.asarray(flux_q.value, dtype=float)
             if has_err:
-                # sigma_f = f * 0.921 * sigma_m
-                e_data = y_data * 0.921034 * e
+                err_q = e * u.mag
+                e_data = np.asarray(
+                    pc.mag_err_to_flux_err(mag_q, err_q).value, dtype=float
+                )
 
-        elif view_mode == 'mag' and current_domain == 'flux':
-            # Flux -> Mag (Safeguard against zero/negative flux)
+        elif view_mode == DOMAIN_MAG and current_domain == DOMAIN_FLUX:
             mask = v > 0
             y_data = np.full_like(v, np.nan)
-            y_data[mask] = zp_m - 2.5 * np.log10(v[mask] / zp_f)
+            flux_q = v[mask] * flux_unit
+            y_data[mask] = np.asarray(pc.flux_to_mag(flux_q).value, dtype=float)
 
             if has_err:
                 e_data = np.full_like(e, np.nan)
-                e_data[mask] = 1.085736 * (e[mask] / v[mask])
+                err_q = e[mask] * flux_unit
+                e_data[mask] = np.asarray(
+                    pc.flux_err_to_mag_err(flux_q, err_q).value, dtype=float
+                )
 
     return {
         'x': t,
@@ -670,11 +666,74 @@ def _strip_zero_points_from_photcal(photcal: dict | None) -> dict:
     return pc
 
 
+def photcal_from_metadata(photcal: dict | None) -> PhotCal:
+    """Builds a ``PhotCal`` from CurveDash ``metadata['photcal']``.
+
+    Required keys: ``PHOTCAL_KEY_ZP_FLUX``, ``PHOTCAL_KEY_ZP_MAG``,
+    ``PHOTCAL_KEY_ZP_FLUX_UNIT``. Optional magnitude-system and unit keys are passed
+    through when present; otherwise ``PhotCal`` constructor defaults apply.
+
+    Args:
+        photcal (dict): Serialised photcal GROUP from CurveDash metadata.
+
+    Returns:
+        PhotCal: Calibration for mag/flux conversion.
+
+    Raises:
+        ValueError: If required zero-point fields are missing.
+    """
+    if not photcal:
+        raise ValueError("photcal metadata is required for domain conversion.")
+
+    zp_flux = photcal.get(PHOTCAL_KEY_ZP_FLUX)
+    zp_mag = photcal.get(PHOTCAL_KEY_ZP_MAG)
+    zp_flux_unit = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
+    if zp_flux is None or zp_mag is None or not zp_flux_unit:
+        raise ValueError(
+            "Incomplete photcal metadata for conversion: "
+            "require zp_flux, zp_mag, and zp_flux_unit."
+        )
+
+    kwargs = {
+        "zp_flux": float(zp_flux),
+        "zp_flux_unit": zp_flux_unit,
+        "zp_mag": float(zp_mag),
+    }
+    zp_mag_unit = photcal.get(PHOTCAL_KEY_ZP_MAG_UNIT)
+    if zp_mag_unit:
+        kwargs["zp_mag_unit"] = zp_mag_unit
+    mag_sys = photcal.get(PHOTCAL_KEY_MAG_SYS)
+    if mag_sys:
+        kwargs["mag_sys"] = mag_sys
+    return PhotCal(**kwargs)
+
+
+def _jd0_from_packet_meta(meta: dict) -> float:
+    """Returns JD0 from a JSON transport packet ``meta`` block.
+
+    The value is written by ``pack_volc_to_json`` from ``VOLightCurve.timesys.jd0``.
+
+    Args:
+        meta (dict): Transport ``meta`` block.
+
+    Returns:
+        float: Julian Date origin offset (``0.0`` is valid when explicitly stored).
+
+    Raises:
+        ValueError: If ``jd0`` is absent from ``meta``.
+    """
+    if "jd0" not in meta:
+        raise ValueError(
+            "Transport meta missing 'jd0' (expected from VOLightCurve.timesys.jd0)."
+        )
+    return float(meta["jd0"])
+
+
 def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
     """Serialises an IVOA photcal GROUP into CurveDash ``metadata['photcal']``.
 
-    Captures filter identifier, effective wavelength, magnitude system, and
-    zero-point fields for the active photometry column.
+    Reads filter and zero-point fields from ``PhotDM`` / table metadata only;
+    no bridge-level calibration defaults are invented.
 
     Args:
         photdm: ``PhotDM`` instance from ``VOLightCurve.photdms``, or None.
@@ -737,9 +796,9 @@ def _photcal_group_to_votable_fields(photcal: dict | None, include_zero_points: 
     eff_wl = photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH)
     if eff_wl is not None:
         fields["effective_wavelength"] = float(eff_wl)
-        fields["effective_wavelength_unit"] = photcal.get(
-            PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT, "m"
-        )
+        eff_wl_unit = photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT)
+        if eff_wl_unit:
+            fields["effective_wavelength_unit"] = eff_wl_unit
 
     filter_name = photcal.get(PHOTCAL_KEY_FILTER_NAME)
     if filter_name:
@@ -751,16 +810,21 @@ def _photcal_group_to_votable_fields(photcal: dict | None, include_zero_points: 
         if zp_flux is not None and zp_mag is not None:
             fields["zero_point_flux"] = float(zp_flux)
             fields["zero_point_ref_mag"] = float(zp_mag)
-            fields["zero_point_flux_unit"] = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT, "")
-            fields["magnitude_system"] = photcal.get(PHOTCAL_KEY_MAG_SYS, "Vega")
+            zp_flux_unit = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
+            if zp_flux_unit:
+                fields["zero_point_flux_unit"] = zp_flux_unit
+            mag_sys = photcal.get(PHOTCAL_KEY_MAG_SYS)
+            if mag_sys:
+                fields["magnitude_system"] = mag_sys
         else:
             fields["zero_point_flux"] = None
             fields["zero_point_ref_mag"] = None
     else:
         fields["zero_point_flux"] = None
         fields["zero_point_ref_mag"] = None
-        if photcal.get(PHOTCAL_KEY_MAG_SYS):
-            fields["magnitude_system"] = photcal[PHOTCAL_KEY_MAG_SYS]
+        mag_sys = photcal.get(PHOTCAL_KEY_MAG_SYS)
+        if mag_sys:
+            fields["magnitude_system"] = mag_sys
 
     return fields
 
@@ -1007,11 +1071,10 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         if key in meta:
             lcd.metadata[key] = meta[key]
     if meta.get('cutout_source') or meta.get('mask_mode'):
-        lcd.metadata['photcal'] = _strip_zero_points_from_photcal(lcd.metadata.get('photcal'))
-        if not lcd.metadata['photcal']:
-            from skvo_veb.utils import tess_config
-            lcd.metadata['photcal'] = tess_config.tess_filter_group_meta()
-        title = build_cutout_title(lcd)
+        from skvo_veb.utils.mission_config import tess as tess_mission
+
+        tess_mission.apply_upload_cutout_metadata(lcd)
+        title = tess_mission.build_cutout_title(lcd)
     else:
         title = build_curvedash_title(lcd)
     lcd.title = title
@@ -1149,8 +1212,14 @@ def _build_ecsv_metadata(lcd) -> dict:
     """
     meta = lcd.metadata or {}
     header = {}
-    name = meta.get('name') or lcd.name or lcd.title
-    if name:
+    name = (
+        meta.get('lookup_name')
+        or lcd.lookup_name
+        or meta.get('name')
+        or lcd.name
+        or lcd.title
+    )
+    if name and str(name).lower() != 'none':
         header['name'] = name
     for key in ('ra', 'dec', 'period', 'epoch'):
         if meta.get(key) is not None:
@@ -1183,6 +1252,40 @@ def export_file_extension(table_format: str) -> str:
     return CurveDash.get_file_extension(table_format)
 
 
+_VOTABLE_EXPORT_BUILDERS = {
+    "tess": ("skvo_veb.utils.mission_config.tess", "build_archive_votable_kwargs"),
+    "cutout": ("skvo_veb.utils.mission_config.tess", "build_cutout_votable_kwargs"),
+    "asassn": ("skvo_veb.utils.mission_config.asassn", "build_votable_kwargs"),
+}
+
+
+def _votable_kwargs_for_profile(lcd, profile: str) -> dict:
+    """Resolves ``write_vo_lightcurve`` kwargs for a named export profile.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+        profile (str): Export profile name (``tess``, ``cutout``, or ``asassn``).
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+
+    Raises:
+        PipeException: If ``profile`` is not registered.
+    """
+    import importlib
+
+    spec = _VOTABLE_EXPORT_BUILDERS.get(profile)
+    if spec is None:
+        supported = ", ".join(sorted(_VOTABLE_EXPORT_BUILDERS))
+        raise PipeException(
+            f"Unsupported VOTable export profile '{profile}'. "
+            f"Supported profiles: {supported}."
+        )
+    module_name, func_name = spec
+    mod = importlib.import_module(module_name)
+    return getattr(mod, func_name)(lcd)
+
+
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
     """Exports a CurveDash instance to the requested file format.
 
@@ -1212,17 +1315,7 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
         )
 
     if is_votable_export_format(table_format):
-        if profile == 'tess':
-            kwargs = _build_tess_votable_kwargs(lcd)
-        elif profile == 'cutout':
-            kwargs = _build_cutout_votable_kwargs(lcd)
-        elif profile == 'asassn':
-            kwargs = _build_asassn_votable_kwargs(lcd)
-        else:
-            raise PipeException(
-                f"Unsupported VOTable export profile '{profile}'. "
-                "Use profile='tess', profile='cutout', or profile='asassn'."
-            )
+        kwargs = _votable_kwargs_for_profile(lcd, profile)
         kwargs['binary'] = votable_binary_encoding(table_format)
         buf = io.BytesIO()
         write_vo_lightcurve(
@@ -1264,279 +1357,6 @@ def _is_stitched_lightcurve(lcd) -> bool:
         return True
     title = meta.get('title') or getattr(lcd, 'title', None) or ''
     return str(title).startswith('Stitched curve')
-
-
-def resolve_cutout_mask_mode(auto_mask, mask_type: str | None) -> str:
-    """Maps UI mask controls to a descriptive mask mode label.
-
-    Args:
-        auto_mask: Truthy when automatic mask generation is enabled.
-        mask_type (str, optional): ``'pipeline'`` or ``'threshold'`` when auto mask is on.
-
-    Returns:
-        str: One of ``'handmade'``, ``'threshold'``, or ``'pipeline'``.
-    """
-    if not auto_mask:
-        return 'handmade'
-    if mask_type == 'pipeline':
-        return 'pipeline'
-    return 'threshold'
-
-
-def build_cutout_title(lcd) -> str:
-    """Builds a display title for user cutout lightcurves.
-
-    Args:
-        lcd (CurveDash): Cutout lightcurve with cutout metadata populated.
-
-    Returns:
-        str: Title string for Plotly figures and export metadata.
-    """
-    from skvo_veb.utils.curve_dash import CurveDash
-
-    if not isinstance(lcd, CurveDash):
-        return 'TESS cutout lightcurve'
-
-    meta = lcd.metadata or {}
-    stored = meta.get('title') or lcd.title
-    if stored:
-        return stored
-
-    parts = []
-    source = meta.get('cutout_source') or meta.get('pixel_type')
-    if source:
-        parts.append(str(source).upper())
-
-    lookup = meta.get('lookup_name') or ''
-    name = meta.get('name') or ''
-    if lookup:
-        parts.append(str(lookup))
-    if name and str(name) != str(lookup):
-        parts.append(str(name))
-
-    sectors = _parse_list_meta(meta.get('sectors'))
-    if sectors:
-        parts.append(f"sector:{','.join(sectors)}")
-
-    mask_mode = meta.get('mask_mode')
-    if mask_mode:
-        parts.append(f"mask:{mask_mode}")
-
-    parts.append('user cutout')
-    return ' '.join(parts) if parts else 'TESS cutout lightcurve'
-
-
-def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, ra=None, dec=None):
-    """Attaches cutout-specific metadata to a CurveDash instance.
-
-    User cutout photometry is uncalibrated; ``photcal`` is cleared and the pipeline
-    author is tagged as ``user`` for VOTable export.
-
-    Args:
-        lcd (CurveDash): Newly constructed cutout lightcurve.
-        pixel_metadata (dict): Sector download metadata (``pixel_type``, ``lookup_name``, etc.).
-        sector (int or str): TESS sector number.
-        mask_mode (str): ``handmade``, ``threshold``, or ``pipeline``.
-        ra (float, optional): Target right ascension in degrees.
-        dec (float, optional): Target declination in degrees.
-
-    Returns:
-        CurveDash: The same instance with metadata and title populated.
-    """
-    from skvo_veb.utils import tess_config
-    from skvo_veb.utils.curve_dash import CurveDash
-
-    if not isinstance(lcd, CurveDash):
-        raise PipeException('enrich_cutout_curvedash expects a CurveDash instance.')
-
-    lcd.metadata['photcal'] = tess_config.tess_filter_group_meta()
-    lcd.metadata['authors'] = [tess_config.CUTOUT_PIPELINE_AUTHOR]
-    lcd.metadata['sectors'] = [str(sector)]
-    lcd.metadata['cutout_source'] = str(pixel_metadata.get('pixel_type', 'TPF')).upper()
-    lcd.metadata['mask_mode'] = mask_mode
-    if ra is not None:
-        lcd.metadata['ra'] = ra
-    if dec is not None:
-        lcd.metadata['dec'] = dec
-
-    title = build_cutout_title(lcd)
-    lcd.title = title
-    lcd.metadata['title'] = title
-    return lcd
-
-
-def _build_cutout_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for uncalibrated TESS cutout VOTable export.
-
-    FFI and TPF cutout photometry is aperture-based and uncalibrated; zero points
-    are never written. Source type and mask mode are recorded in descriptions.
-
-    Args:
-        lcd (CurveDash): Cutout lightcurve with ``cutout_source`` and ``mask_mode`` metadata.
-
-    Returns:
-        dict: Keyword arguments for ``write_vo_lightcurve``.
-    """
-    from skvo_veb.utils import tess_config
-
-    meta = lcd.metadata or {}
-    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
-    source = str(meta.get('cutout_source') or meta.get('pixel_type') or 'unknown').upper()
-    mask_mode = meta.get('mask_mode', 'unknown')
-    sectors = _parse_list_meta(meta.get('sectors')) or []
-    sectors_str = ", ".join(sectors) if sectors else "unknown"
-    flux_correction = meta.get('flux_correction') or ''
-    processing_note = f" Processing applied: {flux_correction}." if flux_correction else ""
-
-    calibration_note = (
-        " Photometry is uncalibrated aperture summation; "
-        "photometric zero points are omitted from the PhotCal group."
-    )
-    desc_core = (
-        f"Uncalibrated TESS cutout lightcurve for target {tic_id}. "
-        f"Data source: {source}. Aperture mask mode: {mask_mode}. "
-        f"Sector: {sectors_str}. Pipeline: {tess_config.CUTOUT_PIPELINE_AUTHOR}."
-        f"{processing_note}"
-    )
-
-    photcal = meta.get('photcal') or {}
-    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=False)
-
-    return {
-        "table_name": f"TESS_cutout_{sanitize_filename(tic_id)}",
-        "refposition": tess_config.TESS_REFPOSITION,
-        "timescale": tess_config.TESS_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": desc_core + calibration_note,
-        "table_description": desc_core + calibration_note,
-        "creator": f"TESS {tess_config.CUTOUT_PIPELINE_AUTHOR} cutout",
-        "ra": meta.get('ra'),
-        "dec": meta.get('dec'),
-        "period": meta.get('period'),
-        "epoch": meta.get('epoch'),
-        "binary": True,
-        **photcal_fields,
-    }
-
-
-def _build_tess_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for TESS-profile VOTable export.
-
-    Args:
-        lcd (CurveDash): Application lightcurve with TESS metadata.
-
-    Returns:
-        dict: Keyword arguments for ``write_vo_lightcurve``.
-    """
-    from skvo_veb.utils import tess_config
-
-    authors = lcd.metadata.get('authors', [])
-    if not authors and lcd.metadata.get('author'):
-        authors = [lcd.metadata.get('author')]
-    pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
-    is_stitched = _is_stitched_lightcurve(lcd)
-    photcal = lcd.metadata.get('photcal') or {}
-    include_zero_points = (
-        photcal.get(PHOTCAL_KEY_ZP_FLUX) is not None
-        and photcal.get(PHOTCAL_KEY_ZP_MAG) is not None
-        and not is_stitched
-    )
-    photcal_fields = _photcal_group_to_votable_fields(
-        photcal, include_zero_points=include_zero_points
-    )
-    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
-
-    sectors = _parse_list_meta(lcd.metadata.get('sectors')) or []
-    flux_origins = _parse_list_meta(lcd.metadata.get('flux_origins')) or []
-    methods_str = ", ".join(dict.fromkeys(flux_origins)) if flux_origins else "unknown"
-    sectors_str = ", ".join(sectors) if sectors else "unknown"
-
-    calibration_note = (
-        " Photometric zero points are omitted because sector stitching invalidates "
-        "pipeline flux calibration."
-        if is_stitched
-        else ""
-    )
-
-    return {
-        "table_name": f"TESS_{sanitize_filename(tic_id)}",
-        "refposition": tess_config.TESS_REFPOSITION,
-        "timescale": tess_config.TESS_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": (
-            f"TESS space telescope lightcurve for target {tic_id}, "
-            f"processed via the {pipeline_str} pipeline. "
-            f"Photometry method(s): {methods_str}."
-            f"{calibration_note}"
-        ),
-        "table_description": (
-            f"Photometric time-series observations of {tic_id} from the TESS mission. "
-            f"Data produced by the {pipeline_str} pipeline. "
-            f"Sectors: {sectors_str}. Photometry method(s): {methods_str}."
-            f"{calibration_note}"
-        ),
-        "creator": f"TESS {pipeline_str} Pipeline",
-        "ra": lcd.metadata.get('ra'),
-        "dec": lcd.metadata.get('dec'),
-        "period": lcd.metadata.get('period'),
-        "epoch": lcd.metadata.get('epoch'),
-        "binary": True,
-        **photcal_fields,
-    }
-
-
-def _build_asassn_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for ASAS-SN Sky Patrol VOTable export.
-
-    Filter passband and zero-point metadata are read from ``metadata['photcal']``,
-    populated at ingest from ``asassn_config`` for the active ``V`` or ``g`` band.
-
-    Args:
-        lcd (CurveDash): ASAS-SN lightcurve with band and photcal metadata.
-
-    Returns:
-        dict: Keyword arguments for ``write_vo_lightcurve``.
-    """
-    from skvo_veb.utils import asassn_config
-
-    meta = lcd.metadata or {}
-    band = lcd.band or meta.get('band') or 'unknown'
-    target_id = lcd.gaia_id or meta.get('gaia_id') or meta.get('name') or 'unknown'
-
-    if band in asassn_config.ASASSN_BANDS:
-        calibration = meta.get('calibration_catalog') or asassn_config.asassn_calibration_catalog(band)
-        photcal = meta.get('photcal') or asassn_config.resolve_asassn_photcal(band)
-        wavelength_label = asassn_config.asassn_effective_wavelength_display(band)
-    else:
-        calibration = meta.get('calibration_catalog') or 'unknown'
-        photcal = meta.get('photcal') or {}
-        wavelength_label = 'unknown'
-    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=True)
-
-    desc_core = (
-        f"ASAS-SN Sky Patrol lightcurve for target {target_id}. "
-        f"Filter band: {band}. Effective wavelength: {wavelength_label}. "
-        f"Calibrated against {calibration}. "
-        f"Observation times are Heliocentric Julian Date; "
-        f"``obs_time`` is Modified Julian Date (MJD = JD - {JD_TO_MJD}). "
-        f"Photometry flux unit: {asassn_config.ASASSN_FLUX_UNIT}."
-    )
-
-    return {
-        "table_name": f"ASASSN_{sanitize_filename(str(target_id))}_{band}",
-        "refposition": asassn_config.ASASSN_REFPOSITION,
-        "timescale": asassn_config.ASASSN_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": desc_core,
-        "table_description": desc_core,
-        "creator": asassn_config.ASASSN_PIPELINE,
-        "ra": meta.get('ra'),
-        "dec": meta.get('dec'),
-        "period": meta.get('period'),
-        "epoch": meta.get('epoch'),
-        "binary": True,
-        **photcal_fields,
-    }
 
 
 def main():

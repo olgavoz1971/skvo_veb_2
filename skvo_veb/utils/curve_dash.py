@@ -26,10 +26,8 @@ from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
     DOMAIN_FLUX,
     DOMAIN_MAG,
-    FALLBACK_MAG_ZERO_POINT,
-    FLUX_TO_MAG_ERR_FACTOR,
-    MAG_TO_FLUX_ERR_FACTOR,
 )
+from skvo_veb.utils.lc_bridge import photcal_from_metadata
 
 from astropy import units as u
 
@@ -217,7 +215,7 @@ class CurveDash:
         self.metadata = {
             'name': name,
             'lookup_name': lookup_name,
-            'gaia_id': str(gaia_id),
+            'gaia_id': str(gaia_id) if gaia_id is not None else None,
             'band': band,
             'cross_ident': cross_ident,
             'time_unit': time_unit,
@@ -606,19 +604,11 @@ class CurveDash:
 
         Returns:
             skvo_veb.volightcurve.lightcurve.PhotCal: Calibration for mag/flux conversion.
-        """
-        from skvo_veb.volightcurve.lightcurve import PhotCal
 
-        pc = self.photcal
-        zp_flux = pc.get('zp_flux', 1.0)
-        zp_mag = pc.get('zp_mag', FALLBACK_MAG_ZERO_POINT)
-        return PhotCal(
-            zp_flux=zp_flux,
-            zp_flux_unit=pc.get('zp_flux_unit') or '',
-            zp_mag=zp_mag,
-            zp_mag_unit=pc.get('zp_mag_unit') or 'mag',
-            mag_sys=pc.get('mag_sys', 'Vega'),
-        )
+        Raises:
+            ValueError: If stored photcal metadata is incomplete.
+        """
+        return photcal_from_metadata(self.photcal)
 
     def convert_to_flux(self) -> None:
         """Converts stored magnitude data to flux in-place.
@@ -642,20 +632,17 @@ class CurveDash:
 
         photcal = self._resolve_photcal()
         mag_values = mag_col.values.astype(float)
-        try:
-            mag_quantity = mag_values * u.mag
-            flux_quantity = photcal.mag_to_flux(mag_quantity)
-            flux_vals = np.array(flux_quantity.value, dtype=float)
-            flux_unit_str = str(flux_quantity.unit)
-        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
-            logger.warning('PhotCal mag_to_flux failed (%s); using fallback formula.', exc)
-            zp_m = photcal.zp_mag.value
-            zp_f = photcal.zp_flux.value
-            flux_vals = zp_f * 10 ** (-0.4 * (mag_values - zp_m))
-            flux_unit_str = str(photcal.zp_flux.unit)
+        mag_quantity = mag_values * u.mag
+        flux_quantity = photcal.mag_to_flux(mag_quantity)
+        flux_vals = np.array(flux_quantity.value, dtype=float)
+        flux_unit_str = str(flux_quantity.unit)
 
         if mag_err_col is not None:
-            flux_err_vals = flux_vals * MAG_TO_FLUX_ERR_FACTOR * mag_err_col.values
+            err_quantity = mag_err_col.values.astype(float) * u.mag
+            flux_err_vals = np.array(
+                photcal.mag_err_to_flux_err(mag_quantity, err_quantity).value,
+                dtype=float,
+            )
         else:
             flux_err_vals = np.zeros_like(flux_vals)
 
@@ -709,7 +696,12 @@ class CurveDash:
             err_vals = flux_err_col.values.astype(float)
             valid = flux_vals > 0
             mag_err_vals = np.full_like(flux_vals, np.nan)
-            mag_err_vals[valid] = FLUX_TO_MAG_ERR_FACTOR * (err_vals[valid] / flux_vals[valid])
+            flux_unit = self.flux_unit_ap or u.dimensionless_unscaled
+            flux_q = flux_vals[valid] * flux_unit
+            err_q = err_vals[valid] * flux_unit
+            mag_err_vals[valid] = np.array(
+                photcal.flux_err_to_mag_err(flux_q, err_q).value, dtype=float
+            )
         else:
             mag_err_vals = np.zeros_like(mag_vals)
 
@@ -928,7 +920,15 @@ class CurveDash:
         Returns:
             str or None: The Gaia identifier as a string, or None if not set.
         """
-        return self.metadata.get('gaia_id') if self.metadata else None
+        if not self.metadata:
+            return None
+        val = self.metadata.get('gaia_id')
+        if val is None:
+            return None
+        text = str(val).strip()
+        if not text or text.lower() == 'none':
+            return None
+        return text
 
     @property
     def band(self):

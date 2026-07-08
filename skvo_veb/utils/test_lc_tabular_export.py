@@ -7,7 +7,7 @@ import numpy as np
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash, ingest_lightcurve_file, volc_to_curvedash, apply_phot_domain_view
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, EXPORT_FORMATS, VOTABLE_FORMAT_BINARY, VOTABLE_FORMAT_TEXT
-from skvo_veb.utils.tess_config import resolve_tess_photcal
+from skvo_veb.utils.mission_config.tess import resolve_photcal as resolve_tess_photcal
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 
 

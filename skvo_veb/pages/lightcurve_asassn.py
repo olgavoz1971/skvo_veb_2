@@ -32,6 +32,7 @@ from skvo_veb.utils.lc_config import (
     EXPORT_FORMAT_OPTIONS,
     is_votable_export_format,
 )
+from skvo_veb.utils.mission_config.asassn import resolve_target_identifier
 from skvo_veb.utils.my_tools import is_like_gaia_id, DBException, sanitize_filename
 from skvo_veb.utils.request_asassn import load_asassn_lightcurve
 from skvo_veb.utils.request_gaia import decipher_source_id
@@ -474,7 +475,7 @@ def download_asassn_lc(n_clicks, js_lightcurve, table_format):
         profile = 'asassn' if is_votable_export_format(table_format) else None
         file_bstring = export_curvedash(lcd, table_format, profile=profile)
 
-        gaia_part = lcd.gaia_id or (lcd.metadata or {}).get('gaia_id') or 'unknown'
+        gaia_part = resolve_target_identifier(lcd)
         outfile_base = sanitize_filename(f'lc_asassn_{gaia_part}_{lcd.band}')
         ext = export_file_extension(table_format)
         outfile = f'{outfile_base}.{ext}'

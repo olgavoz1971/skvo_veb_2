@@ -43,10 +43,13 @@ from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX, DOMAI
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
     apply_phot_domain_view,
+    export_file_extension,
+)
+from skvo_veb.utils.mission_config.tess import (
+    TESS_TIMEORIGIN as jd0_tess,
     build_cutout_title,
     enrich_cutout_curvedash,
     resolve_cutout_mask_mode,
-    export_file_extension,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS, is_votable_export_format
@@ -59,13 +62,9 @@ register_page(__name__, name='TESS cutout',
               title='TESS cutout Tool',
               in_navbar=True)
 
-from skvo_veb.utils.tess_config import TESS_TIMEORIGIN as jd0_tess
-
-switch_label_style = {'display': 'inline-block', 'padding': '5px'}  # In the row, otherwise 'block'
-# switch_label_style = {'display': 'block', 'padding': '2px'}  # In the row, otherwise 'block'
+switch_label_style = {'display': 'inline-block', 'padding': '5px'}
 label_font_size = '0.8em'
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
-
 
 _coord_text = tess_processor._coord_text
 _has_coord = tess_processor.has_coord
