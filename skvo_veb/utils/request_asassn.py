@@ -13,6 +13,7 @@ from numpy import isnan
 from pyasassn.client import SkyPatrolClient
 
 # from skvo_veb.utils.kurve import cook_lightcurve
+from skvo_veb.utils.lc_config import resolve_catalog_epoch
 from skvo_veb.utils.mission_config.asassn import (
     ASASSN_FLUX_UNIT,
     ASASSN_PIPELINE,
@@ -54,7 +55,7 @@ def _load_from_cache(gaia_id) -> (pandas.DataFrame | None, float | None, float |
         return None, None, None
     try:
         df = pd.read_pickle(path_to_cached_data)
-        epoch = df.attrs.get('epoch', None)
+        epoch = resolve_catalog_epoch(df.attrs.get('epoch', None))
         period = df.attrs.get('period', None)
         df.attrs.clear()
         return df, epoch, period,
@@ -126,10 +127,8 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
                                         download=True)
                 if hasattr(res, 'catalog_info'):
                     # res.catalog_info.replace({float('nan'): None}, inplace=True)
-                    epoch = getattr(res.catalog_info, 'epoch', [None])[0]
+                    epoch = resolve_catalog_epoch(getattr(res.catalog_info, 'epoch', [None])[0])
                     period = getattr(res.catalog_info, 'period', [None])[0]
-                    # epoch = None if epoch is None or (isinstance(epoch, float) and isnan(epoch)) else epoch
-                    epoch = 0 if epoch is None or (isinstance(epoch, float) and isnan(epoch)) else epoch
                     period = None if period is None or (isinstance(period, float) and isnan(period)) else period
             elif source_id is not None:
                 res = client.simbad_lookup(source_id, download=True)
@@ -139,9 +138,8 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
                     res_params = client.adql_query(f'SELECT epoch, period '
                                                    f'FROM aavsovsx WHERE asas_sn_id = {asas_sn_id}',
                                                    download=False)
-                    epoch = res_params.get('epoch')[0]
+                    epoch = resolve_catalog_epoch(res_params.get('epoch')[0])
                     period = res_params.get('period')[0]
-                    epoch = 0 if epoch is None or (isinstance(epoch, float) and isnan(epoch)) else epoch
                     period = None if period is None or (isinstance(period, float) and isnan(period)) else period
                 except Exception as e:
                     logger.warning(f'load_asassn_lightcurve: asas_sn_id did not extracted: {e}')

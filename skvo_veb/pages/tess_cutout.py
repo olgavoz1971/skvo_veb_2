@@ -39,7 +39,16 @@ from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_processor
 from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0, DOMAIN_FLUX, DOMAIN_MAG
+from skvo_veb.utils.lc_config import (
+    DEFAULT_EPOCH_JD as jd0,
+    DEFAULT_EXPORT_FORMAT,
+    DOMAIN_FLUX,
+    DOMAIN_MAG,
+    EXPORT_FORMAT_OPTIONS,
+    TIME_AXIS_DATE,
+    TIME_AXIS_MJD,
+    is_votable_export_format,
+)
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
     apply_phot_domain_view,
@@ -52,8 +61,11 @@ from skvo_veb.utils.mission_config.tess import (
     resolve_cutout_mask_mode,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
-from skvo_veb.utils.lc_config import DEFAULT_EXPORT_FORMAT, EXPORT_FORMAT_OPTIONS, is_votable_export_format
-from skvo_veb.utils.lc_interaction import prepare_lcd_for_export
+from skvo_veb.utils.lc_interaction import (
+    prepare_lcd_for_export,
+    require_time_view_for_trim,
+    trim_curvedash_from_selection_bounds,
+)
 from skvo_veb.utils.my_tools import PipeException, safe_none, log_gamma, sanitize_filename, positive_float_pattern
 
 register_page(__name__, name='TESS cutout',
@@ -286,6 +298,22 @@ def layout():
                                       id='mag_view_cutout_switch_label',
                                       style={'font-size': label_font_size}),
                         ], direction='horizontal'),
+                        dcc.RadioItems(
+                            id='time_axis_cutout_switch',
+                            options=[
+                                {'label': ' MJD', 'value': TIME_AXIS_MJD},
+                                {'label': ' Date', 'value': TIME_AXIS_DATE},
+                            ],
+                            value=TIME_AXIS_MJD,
+                            persistence=True,
+                            labelStyle={
+                                'display': 'inline-block',
+                                'marginRight': '12px',
+                                'font-size': label_font_size,
+                            },
+                            inputStyle={'marginRight': '4px'},
+                            style={'marginBottom': '5px'},
+                        ),
                         dbc.Collapse([
                             dbc.Stack([
                                 dbc.Label('Display:', id='flux_trend_switch_label',
@@ -1023,21 +1051,27 @@ def _empty_lightcurve_figure():
     )
 
 
-def create_lightcurve_figure(js_lightcurve: str | None, lc_metadata: dict = None):
+def create_lightcurve_figure(
+    js_lightcurve: str | None,
+    lc_metadata: dict = None,
+    time_axis_mode: str = TIME_AXIS_MJD,
+):
     """Builds a Plotly figure for one stored cutout lightcurve.
 
     Args:
         js_lightcurve (str): Serialised ``CurveDash`` JSON from ``dcc.Store``.
         lc_metadata (dict, optional): Optional axis range overrides from relayout events.
+        time_axis_mode (str): ``mjd`` or ``date`` for the time-axis display.
 
     Returns:
-        plotly.graph_objects.Figure: Scatter figure in relative JD coordinates.
+        plotly.graph_objects.Figure: Scatter figure in MJD or calendar date coordinates.
     """
     lcd = CurveDash.from_serialized(js_lightcurve)
     return build_curvedash_scatter_figure(
         lcd,
         title=build_cutout_title(lcd),
         display_epoch=jd0,
+        time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         lc_metadata=lc_metadata,
         color_by_label=False,
         phot_description=safe_none(lcd.flux_correction) or None,
@@ -1162,17 +1196,19 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         lc1=Input('store_tess_cutout_lightcurve', 'data'),
         lc2=Input('lc2_store', 'data'),
         lc3=Input('lc3_store', 'data'),
+        time_axis_mode=Input('time_axis_cutout_switch', 'value'),
     ),
     state=dict(lc_metadata=State('store_tess_cutout_lightcurve_metadata', 'data')),
     prevent_initial_call='initial_duplicate',
 )
-def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
+def plot_lightcurve(lc1, lc2, lc3, time_axis_mode, lc_metadata):
     """Refreshes one or more cutout lightcurve graphs when store data changes.
 
     Args:
         lc1 (str): Serialised primary lightcurve JSON.
         lc2 (str): Serialised second-slot lightcurve JSON.
         lc3 (str): Serialised third-slot lightcurve JSON.
+        time_axis_mode (str): ``mjd`` or ``date`` for the time-axis display.
         lc_metadata (dict): Optional axis range overrides for the primary graph.
 
     Returns:
@@ -1190,20 +1226,21 @@ def plot_lightcurve(lc1, lc2, lc3, lc_metadata):
     active_item = ['accordion_item_1']
 
     try:
+        axis_mode = time_axis_mode or TIME_AXIS_MJD
         if lc1:
-            output['fig1'] = create_lightcurve_figure(lc1, lc_metadata)
+            output['fig1'] = create_lightcurve_figure(lc1, lc_metadata, axis_mode)
             active_item = ['accordion_item_1']
         elif 'store_tess_cutout_lightcurve' in triggered_ids:
             output['fig1'] = _empty_lightcurve_figure()
 
         if lc2:
-            output['fig2'] = create_lightcurve_figure(lc2)
+            output['fig2'] = create_lightcurve_figure(lc2, time_axis_mode=axis_mode)
             active_item = ['accordion_item_2']
         elif 'lc2_store' in triggered_ids:
             output['fig2'] = _empty_lightcurve_figure()
 
         if lc3:
-            output['fig3'] = create_lightcurve_figure(lc3)
+            output['fig3'] = create_lightcurve_figure(lc3, time_axis_mode=axis_mode)
             active_item = ['accordion_item_3']
         elif 'lc3_store' in triggered_ids:
             output['fig3'] = _empty_lightcurve_figure()
@@ -1676,18 +1713,41 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
 # Capture box-select x-axis bounds locally (~16 bytes). Full selectedData stays in the browser.
 clientside_callback(
     """
-    function(selectedData) {
+    function(selectedData, timeAxisMode) {
         if (!selectedData || !selectedData.range || !selectedData.range.x) {
             return window.dash_clientside.no_update;
         }
         const x = selectedData.range.x;
-        return {xmin: Math.min(x[0], x[1]), xmax: Math.max(x[0], x[1])};
+        const a = x[0];
+        const b = x[1];
+        let xmin;
+        let xmax;
+        if (typeof a === 'string' || typeof b === 'string') {
+            xmin = a < b ? a : b;
+            xmax = a < b ? b : a;
+        } else {
+            xmin = Math.min(a, b);
+            xmax = Math.max(a, b);
+        }
+        const mode = timeAxisMode || ((typeof a === 'string' || typeof b === 'string') ? 'date' : 'mjd');
+        return {xmin: xmin, xmax: xmax, time_axis_mode: mode};
     }
     """,
     Output('store_tess_cutout_selection_bounds', 'data'),
     Input('curve_graph_1', 'selectedData'),
+    State('time_axis_cutout_switch', 'value'),
     prevent_initial_call=True,
 )
+
+
+@callback(
+    Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
+    Input('time_axis_cutout_switch', 'value'),
+    prevent_initial_call=True,
+)
+def clear_cutout_selection_bounds_on_time_axis_change(_time_axis_mode):
+    """Clears stale box bounds when the user switches MJD/Date display."""
+    return None
 
 
 @callback(Output('download_tess_lightcurve', 'data'),  # ------ Download -----
@@ -1697,9 +1757,10 @@ clientside_callback(
           State('curve_graph_1', 'relayoutData'),
           State('store_tess_cutout_selection_bounds', 'data'),
           State('store_tess_cutout_lightcurve_metadata', 'data'),
+          State('time_axis_cutout_switch', 'value'),
           prevent_initial_call=True)
 def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_data,
-                             selection_bounds, lc_metadata):
+                             selection_bounds, lc_metadata, time_axis_mode):
     """Exports the primary cutout lightcurve, clipped to the active selection or zoom.
 
     VOTable export uses the ``cutout`` profile (uncalibrated; no PhotCal zero points).
@@ -1729,6 +1790,7 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
             relayout_data=relayout_data,
             lc_metadata=lc_metadata,
             display_epoch=jd0,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
 
         profile = 'cutout' if is_votable_export_format(table_format) else None
@@ -1750,27 +1812,36 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
     return ret
 
 
-# Trim lightcurves stored on the client side within the boundaries defined by box-selection
-clientside_callback(
-    f"""
-    function(n_clicks, selectionBounds, dataString) {{
-        const trimmed = dash_clientside.clientside.trimSelectedDisplayRange(
-            n_clicks, selectionBounds, dataString, {jd0});
-        if (trimmed === window.dash_clientside.no_update) {{
-            return [window.dash_clientside.no_update, window.dash_clientside.no_update];
-        }}
-        return [trimmed, null];
-    }}
-    """,
-    [
-        Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
-        Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
-    ],
+# Trim lightcurves stored on the client within the boundaries defined by box-selection.
+@callback(
+    Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
+    Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
+    Output('curve_graph_1', 'selectedData', allow_duplicate=True),
     Input('cut_tess_button', 'n_clicks'),
     State('store_tess_cutout_selection_bounds', 'data'),
     State('store_tess_cutout_lightcurve', 'data'),
+    State('time_axis_cutout_switch', 'value'),
     prevent_initial_call=True,
 )
+def trim_cutout_lightcurve(n_clicks, selection_bounds, js_lightcurve, time_axis_mode):
+    """Removes the boxed time interval from the primary cutout lightcurve store."""
+    if not n_clicks or not js_lightcurve:
+        raise PreventUpdate
+    try:
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        trim_curvedash_from_selection_bounds(
+            lcd,
+            selection_bounds,
+            display_epoch=jd0,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
+        )
+        set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
+        return lcd.serialize(), None, None
+    except Exception as exc:
+        logger.warning('tess_cutout.trim_cutout_lightcurve: %s', exc)
+        alert_message = message.warning_alert(exc)
+        set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        return no_update, no_update, no_update
 
 
 if __name__ == '__main__':  # So this is a local version

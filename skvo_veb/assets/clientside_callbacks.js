@@ -1,5 +1,81 @@
 window.dash_clientside = Object.assign({}, window.dash_clientside, {
     clientside: {
+        _permFromCustomData: function (customValue) {
+            if (customValue === undefined || customValue === null) {
+                return null;
+            }
+            return Array.isArray(customValue) ? customValue[0] : customValue;
+        },
+
+        _permSetToSelectedPoints: function (trace, permSet) {
+            const custom = trace.customdata || [];
+            const indices = [];
+            for (let index = 0; index < custom.length; index += 1) {
+                const perm = window.dash_clientside.clientside._permFromCustomData(custom[index]);
+                if (perm !== null && permSet.has(perm)) {
+                    indices.push(index);
+                }
+            }
+            return indices;
+        },
+
+        _figureSelectionPatch: function (figure, permList) {
+            const permSet = new Set(permList || []);
+            const patch = new dash_clientside.Patch();
+            (figure.data || []).forEach((trace, traceIndex) => {
+                const selectedpoints = window.dash_clientside.clientside._permSetToSelectedPoints(trace, permSet);
+                patch.assign(['data', traceIndex, 'selectedpoints'], selectedpoints);
+            });
+            patch.assign(['layout', 'selections'], []);
+            return patch.build();
+        },
+
+        mergeLcPointSelection: function (selectedData, clickData, currentPerm, figure) {
+            try {
+                const triggered = dash_clientside.callback_context.triggered[0];
+                if (!triggered) {
+                    return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+                }
+
+                const triggerProp = triggered.prop_id.split('.')[1];
+                let triggerData = triggerProp === 'selectedData' ? selectedData : clickData;
+                if (!triggerData || !triggerData.points || !triggerData.points.length) {
+                    return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+                }
+                if (!figure || !figure.data || !figure.data.length) {
+                    return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+                }
+
+                const permSet = new Set(currentPerm || []);
+                triggerData.points.forEach((point) => {
+                    const perm = window.dash_clientside.clientside._permFromCustomData(point.customdata);
+                    if (perm !== null) {
+                        permSet.add(perm);
+                    }
+                });
+
+                const newPerm = Array.from(permSet);
+                const figurePatch = window.dash_clientside.clientside._figureSelectionPatch(figure, newPerm);
+                return [newPerm, figurePatch];
+            } catch (error) {
+                console.error('mergeLcPointSelection Error:', error.message);
+                return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+            }
+        },
+
+        clearLcSelection: function (_, figure) {
+            try {
+                if (!figure || !figure.data || !figure.data.length) {
+                    return [[], window.dash_clientside.no_update];
+                }
+                const figurePatch = window.dash_clientside.clientside._figureSelectionPatch(figure, []);
+                return [[], figurePatch];
+            } catch (error) {
+                console.error('clearLcSelection Error:', error.message);
+                return [window.dash_clientside.no_update, window.dash_clientside.no_update];
+            }
+        },
+
         clearInput: function clearInput(_, inputValue) {
             return null;
         },

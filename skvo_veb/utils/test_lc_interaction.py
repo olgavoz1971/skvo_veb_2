@@ -5,13 +5,15 @@ import numpy as np
 import pytest
 
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_FLUX
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_FLUX, TIME_AXIS_DATE
 from skvo_veb.utils.lc_interaction import (
+    plot_x_to_jd,
     prepare_lcd_for_export,
     require_time_view_for_trim,
     resolve_export_display_x_range,
     trim_curvedash_display_range,
     trim_curvedash_from_plot_selection,
+    trim_curvedash_from_selection_bounds,
 )
 from skvo_veb.utils.my_tools import PipeException
 
@@ -49,6 +51,29 @@ def test_export_prefers_selection_over_zoom():
     bounds = {'xmin': 59000.0, 'xmax': 59000.5}
     relayout = {'xaxis.range[0]': 58999.5, 'xaxis.range[1]': 59001.0}
     assert resolve_export_display_x_range(bounds, relayout) == (59000.0, 59000.5)
+
+
+def test_trim_from_date_selection_bounds():
+    """Date-axis box bounds must convert to JD before trimming."""
+    from astropy.time import Time
+
+    lcd = _sample_lcd()
+    left = Time(2459000.25, format='jd').isot
+    right = Time(2459000.75, format='jd').isot
+    bounds = {'xmin': left, 'xmax': right, 'time_axis_mode': TIME_AXIS_DATE}
+    trim_curvedash_from_selection_bounds(lcd, bounds)
+    assert len(lcd.lightcurve) == 3
+    np.testing.assert_allclose(lcd.jd, [2459000.0, 2459001.0, 2459001.5])
+
+
+def test_plot_x_to_jd_accepts_plotly_unix_milliseconds():
+    """Plotly date-axis selections may arrive as Unix milliseconds."""
+    from astropy.time import Time
+
+    expected_jd = 2459000.5
+    ms = Time(expected_jd, format='jd').unix * 1000.0
+    actual_jd = plot_x_to_jd(ms, TIME_AXIS_DATE, DEFAULT_EPOCH_JD)
+    assert abs(actual_jd - expected_jd) < 1e-5
 
 
 def test_prepare_lcd_for_export_keeps_source_unmodified():

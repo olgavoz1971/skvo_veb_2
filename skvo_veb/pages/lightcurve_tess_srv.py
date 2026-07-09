@@ -59,13 +59,15 @@ from skvo_veb.utils.lc_config import (
     EXPORT_FORMAT_OPTIONS,
     DOMAIN_MAG,
     DOMAIN_FLUX,
+    TIME_AXIS_DATE,
+    TIME_AXIS_MJD,
     is_votable_export_format,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import (
     prepare_lcd_for_export,
     require_time_view_for_trim,
-    trim_curvedash_display_range,
+    trim_curvedash_from_selection_bounds,
 )
 from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
@@ -239,6 +241,22 @@ def layout():
                             label_style=switch_label_style_vert,
                             persistence=False,
                             style={'marginBottom': '5px', 'width': '100%'},
+                        ),
+                        dcc.RadioItems(
+                            id='time_axis_tess_lc_srv_switch',
+                            options=[
+                                {'label': ' MJD', 'value': TIME_AXIS_MJD},
+                                {'label': ' Date', 'value': TIME_AXIS_DATE},
+                            ],
+                            value=TIME_AXIS_MJD,
+                            persistence=True,
+                            labelStyle={
+                                'display': 'inline-block',
+                                'marginRight': '12px',
+                                'font-size': label_font_size,
+                            },
+                            inputStyle={'marginRight': '4px'},
+                            style={'marginBottom': '5px'},
                         ),
                         dbc.Button('rePlot Curve', id='recreate_selected_tess_lc_srv_button', size="sm",
                                    style={'width': '100%', 'marginBottom': '5px'}),
@@ -760,13 +778,14 @@ def extract_data_from_user_cache(user_tab_id):
     return user_data
 
 
-def plot_lc(js_lightcurve: str, phase_view: bool):
+def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXIS_MJD):
     lcd = CurveDash.from_serialized(js_lightcurve)
     return build_curvedash_scatter_figure(
         lcd,
         title=build_curvedash_title(lcd),
         display_epoch=jd0,
         phase_view=phase_view,
+        time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         color_by_label=True,
     )
 
@@ -1037,11 +1056,12 @@ def sync_mag_view_switch(_, user_tab_id):
 
 @callback(Output('graph_tess_lc_srv', 'figure', allow_duplicate=True),
           Input('store_tess_lightcurve_lc_srv', 'data'),
+          Input('time_axis_tess_lc_srv_switch', 'value'),
           State('store_user_tab_id_tess_lc_srv', 'data'),
           State('fold_tess_lc_srv_switch', 'value'),
           prevent_initial_call='initial_duplicate',
           )
-def plot_tess_curve(_, user_tab_id, phase_view):
+def plot_tess_curve(_, time_axis_mode, user_tab_id, phase_view):
     if not user_tab_id:
         raise PreventUpdate
     user_key = _compose_user_key(user_tab_id)
@@ -1049,7 +1069,7 @@ def plot_tess_curve(_, user_tab_id, phase_view):
         raise PreventUpdate
     try:
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
-        fig = plot_lc(js_lightcurve, phase_view)
+        fig = plot_lc(js_lightcurve, phase_view, time_axis_mode)
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         return fig
     except Exception as e:
@@ -1216,18 +1236,41 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
 # Capture box-select x-axis bounds locally (~16 bytes). No lightcurve leaves the server cache.
 clientside_callback(
     """
-    function(selectedData) {
+    function(selectedData, timeAxisMode) {
         if (!selectedData || !selectedData.range || !selectedData.range.x) {
             return window.dash_clientside.no_update;
         }
         const x = selectedData.range.x;
-        return {xmin: Math.min(x[0], x[1]), xmax: Math.max(x[0], x[1])};
+        const a = x[0];
+        const b = x[1];
+        let xmin;
+        let xmax;
+        if (typeof a === 'string' || typeof b === 'string') {
+            xmin = a < b ? a : b;
+            xmax = a < b ? b : a;
+        } else {
+            xmin = Math.min(a, b);
+            xmax = Math.max(a, b);
+        }
+        const mode = timeAxisMode || ((typeof a === 'string' || typeof b === 'string') ? 'date' : 'mjd');
+        return {xmin: xmin, xmax: xmax, time_axis_mode: mode};
     }
     """,
     Output('store_tess_lc_srv_selection_bounds', 'data'),
     Input('graph_tess_lc_srv', 'selectedData'),
+    State('time_axis_tess_lc_srv_switch', 'value'),
     prevent_initial_call=True,
 )
+
+
+@callback(
+    Output('store_tess_lc_srv_selection_bounds', 'data', allow_duplicate=True),
+    Input('time_axis_tess_lc_srv_switch', 'value'),
+    prevent_initial_call=True,
+)
+def clear_srv_selection_bounds_on_time_axis_change(_time_axis_mode):
+    """Clears stale box bounds when the user switches MJD/Date display."""
+    return None
 
 
 @callback(
@@ -1237,24 +1280,22 @@ clientside_callback(
     State('store_tess_lc_srv_selection_bounds', 'data'),
     State('store_user_tab_id_tess_lc_srv', 'data'),
     State('fold_tess_lc_srv_switch', 'value'),
+    State('time_axis_tess_lc_srv_switch', 'value'),
     prevent_initial_call=True,
 )
-def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view):
+def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, time_axis_mode):
     """Removes the boxed time interval on the server using stored display bounds only."""
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
 
     try:
         require_time_view_for_trim(phase_view)
-        if not selection_bounds or selection_bounds.get('xmin') is None:
-            raise PipeException('Draw a box selection on the lightcurve first.')
-
         lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
-        trim_curvedash_display_range(
+        trim_curvedash_from_selection_bounds(
             lcd,
-            selection_bounds['xmin'],
-            selection_bounds['xmax'],
+            selection_bounds,
             display_epoch=jd0,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
         write_user_data_to_cache(lcd.serialize(), user_tab_id)
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
@@ -1264,7 +1305,7 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view):
         logger.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
         alert_message = message.warning_alert(exc)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
-        return dash.no_update
+        return dash.no_update, dash.no_update
 
 
 def write_user_data_to_cache(user_data, user_tab_id):
@@ -1417,11 +1458,13 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
           State('select_tess_lc_srv_format', 'value'),
           State('graph_tess_lc_srv', 'relayoutData'),
           State('store_tess_lc_srv_selection_bounds', 'data'),
+          State('time_axis_tess_lc_srv_switch', 'value'),
           State('period_tess_lc_srv_input', 'value'),
           State('epoch_tess_lc_srv_input', 'value'),
           prevent_initial_call=True)
 def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
-                                            relayout_data, selection_bounds, period, epoch):
+                                            relayout_data, selection_bounds, time_axis_mode,
+                                            period, epoch):
     """Downloads a lightcurve clipped to stored selection bounds or visible zoom."""
     if not n_clicks:
         raise PreventUpdate
@@ -1444,6 +1487,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
             selection_bounds=selection_bounds,
             relayout_data=relayout_data,
             display_epoch=jd0,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
         profile = 'tess' if is_votable_export_format(table_format) else None
         file_bstring = export_curvedash(lcd, table_format, profile=profile)

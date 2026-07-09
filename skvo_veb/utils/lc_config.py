@@ -5,11 +5,82 @@ bridge and CurveDash layers. Instrument-specific parameters (e.g. TESS) belong
 in dedicated modules under ``utils/mission_config/``.
 """
 
+from __future__ import annotations
+
+import math
+
 # Julian Date offset for Modified Julian Date: MJD = JD - JD_TO_MJD.
 JD_TO_MJD = 2400000.5
 
 # Display epoch for relative JD axes (jd - DEFAULT_EPOCH_JD).
 DEFAULT_EPOCH_JD = JD_TO_MJD
+
+
+def resolve_catalog_epoch(epoch) -> float | None:
+    """Normalises a catalogue folding epoch for ``CurveDash`` ingestion.
+
+    Sky Patrol and legacy caches use ``0`` as a missing-epoch sentinel. Those
+    values are treated as absent so ``CurveDash`` falls back to
+    ``DEFAULT_EPOCH_JD``.
+
+    Args:
+        epoch: Raw epoch from a catalogue, cache, or upload metadata.
+
+    Returns:
+        float or None: Valid Julian Date epoch, or ``None`` when missing/invalid.
+    """
+    if epoch is None:
+        return None
+    try:
+        value = float(epoch)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value == 0:
+        return None
+    return value
+
+
+def display_epoch_offset(
+    epoch_jd,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+) -> float:
+    """Converts an absolute epoch Julian Date to the UI input offset.
+
+    The fold controls label ``Epoch-{display_epoch}`` expects values relative to
+    ``display_epoch`` (typically MJD). Missing or sentinel epochs display as
+    ``0.0``, matching the default ``DEFAULT_EPOCH_JD`` reference.
+
+    Args:
+        epoch_jd: Absolute Julian Date stored on the lightcurve, if any.
+        display_epoch (float): Reference subtracted for the input field.
+
+    Returns:
+        float: Epoch relative to ``display_epoch``.
+    """
+    resolved = resolve_catalog_epoch(epoch_jd)
+    if resolved is None:
+        return 0.0
+    return float(resolved) - float(display_epoch)
+
+# Time-axis display modes for lightcurve plots (time view only).
+TIME_AXIS_MJD = "mjd"
+TIME_AXIS_DATE = "date"
+TIME_AXIS_MODES = (TIME_AXIS_MJD, TIME_AXIS_DATE)
+DEFAULT_TIME_AXIS_MODE = TIME_AXIS_MJD
+
+
+def normalize_time_axis_mode(time_axis_mode: str | None) -> str:
+    """Normalises a UI time-axis mode to a supported constant.
+
+    Args:
+        time_axis_mode (str): ``mjd`` or ``date`` from a page control.
+
+    Returns:
+        str: ``TIME_AXIS_MJD`` or ``TIME_AXIS_DATE``.
+    """
+    if time_axis_mode == TIME_AXIS_DATE:
+        return TIME_AXIS_DATE
+    return TIME_AXIS_MJD
 
 # Photometric domain identifiers stored in CurveDash metadata.
 DOMAIN_FLUX = "flux"
