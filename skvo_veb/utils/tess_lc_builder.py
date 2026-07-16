@@ -20,6 +20,34 @@ from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, resolve_photcal
 
 logger = logging.getLogger(__name__)
 
+TESS_FLUX_METHOD_PDCSAP = "pdcsap"
+TESS_FLUX_METHOD_SAP = "sap"
+TESS_FLUX_METHOD_BACKGROUND = "background"
+
+
+def _apply_flux_method(lc, flux_method: str) -> str:
+    """Selects the photometry column to plot from a Lightkurve TESS light curve.
+
+    Args:
+        lc: Lightkurve ``LightCurve`` or ``TessLightCurve`` instance.
+        flux_method (str): ``pdcsap``, ``sap``, or ``background`` (``sap_bkg``).
+
+    Returns:
+        str: Origin label stored in ``flux_origins`` metadata.
+    """
+    if flux_method == TESS_FLUX_METHOD_PDCSAP and "pdcsap_flux" in lc.columns:
+        lc.flux = lc.pdcsap_flux
+        return TESS_FLUX_METHOD_PDCSAP
+    if flux_method == TESS_FLUX_METHOD_SAP and "sap_flux" in lc.columns:
+        lc.flux = lc.sap_flux
+        return TESS_FLUX_METHOD_SAP
+    if flux_method == TESS_FLUX_METHOD_BACKGROUND and "sap_bkg" in lc.columns:
+        lc.flux = lc.sap_bkg
+        if "sap_bkg_err" in lc.columns:
+            lc.flux_err = lc.sap_bkg_err
+        return "sap_bkg"
+    return lc.FLUX_ORIGIN
+
 
 def create_lc_from_selected_rows(
     selected_rows,
@@ -41,7 +69,7 @@ def create_lc_from_selected_rows(
         selected_rows: Selected AgGrid row indices or row dicts.
         table_data: Full AgGrid row data when indices are supplied.
         stitch (bool): Whether to stitch sectors into one continuous curve.
-        flux_method (str): Flux column selector (``'pdcsap'`` or ``'sap'``).
+        flux_method (str): Flux column selector (``'pdcsap'``, ``'sap'``, or ``'background'``).
         metadata (dict): Target metadata including optional ``lookup_name``.
         phase_view (bool, optional): Initial folded-view flag.
         period (float, optional): Variability period in days.
@@ -94,14 +122,7 @@ def create_lc_from_selected_rows(
                     cache.save(search_lcf_refined, "search_lcf_refined", **args)
             lc = lightkurve_cache.download_lightcurve_row_with_recovery(search_lcf_refined, 0)
 
-        if flux_method == 'pdcsap' and 'pdcsap_flux' in lc.columns:
-            lc.flux = lc.pdcsap_flux
-            flux_origin = flux_method
-        elif flux_method == 'sap' and 'sap_flux' in lc.columns:
-            lc.flux = lc.sap_flux
-            flux_origin = flux_method
-        else:
-            flux_origin = lc.FLUX_ORIGIN
+        flux_origin = _apply_flux_method(lc, flux_method)
 
         sectors.append(str(lc.SECTOR))
         authors.append(lc.AUTHOR)

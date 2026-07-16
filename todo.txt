@@ -1,8 +1,11 @@
 TESS Curve page
-1) resolve -> do not touch list of sectors
+		1) resolve -> do not touch list of sectors
 1a) clean -> list of sectors, lightcurves, pixel
 
-2) Add background to the flux options alongside with SAP, PDSAP etc
+	2) Add background to the flux options alongside with SAP, PDSAP etc
 
 3) rePlot curve Curve 1 --> Curve 2 --> Curve 1 (does not open accorion
 item 1)
+
+359.5350045273501
+55.046286677779946

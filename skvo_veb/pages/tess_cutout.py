@@ -125,6 +125,14 @@ def layout():
                             ],
                             value='tpf',
                             labelStyle={'display': 'inline-block', 'padding': '5px'}),
+                        dbc.Spinner(
+                            children=html.Div(
+                                id='div_tess_tools_alert',
+                                style={'display': 'none', 'marginTop': '8px'},
+                            ),
+                            size='sm',
+                            spinner_style={'width': '2rem', 'height': '2rem'},
+                        ),
                     ], md=3, sm=4, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),  # SearchTools
                     dbc.Col([
@@ -195,6 +203,28 @@ def layout():
                             dbc.Checklist(options=[{'label': 'Sum', 'value': 1}], value=0, id='sum_switch',
                                           persistence=True, switch=True,
                                           style={'font-size': label_font_size}),  # style={'margin-left': 'auto'}),
+                            html.Div(
+                                [
+                                    dbc.Label(
+                                        'Frame',
+                                        html_for='cutout_frame_slider',
+                                        style={'font-size': label_font_size, 'marginBottom': '4px'},
+                                    ),
+                                    dcc.Slider(
+                                        id='cutout_frame_slider',
+                                        min=0,
+                                        max=0,
+                                        step=1,
+                                        value=0,
+                                        marks=None,
+                                        tooltip={'placement': 'bottom', 'always_visible': True},
+                                        disabled=True,
+                                        updatemode='drag',
+                                    ),
+                                ],
+                                id='cutout_frame_slider_row',
+                                style={'display': 'none', 'marginTop': '8px'},
+                            ),
                         ]),
                         dbc.Button('rePlot pixel', id='replot_pixel_button', size="sm",
                                    style={'width': '100%'}),
@@ -688,6 +718,7 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         pixel_metadata['lookup_name'] = lookup_name
         pixel_metadata['path'] = pixel_data.path
         pixel_metadata['shape'] = pixel_data.shape
+        pixel_metadata['n_cadences'] = int(pixel_data.shape[0])
         pixel_metadata['pipeline_mask'] = pixel_data.pipeline_mask
         output['wcs'] = dict(pixel_data.wcs.to_header())
         output['pixel_metadata'] = pixel_metadata
@@ -750,78 +781,153 @@ def toggle_flatten_collapse(flatten_switch):
 
 
 @callback(
-    [Output('px_tess_graph', 'figure', allow_duplicate=True),
-     Output('mask_store', 'data', allow_duplicate=True)],
-    [Input('replot_pixel_button', 'n_clicks'),
-     Input('store_pixel_metadata', 'data')],
-    [State('input_tess_gamma', 'value'),
-     State('thresh_input', 'value'),
-     State('sum_switch', 'value'),
-     State('mask_type_switch', 'value'),
-     State('auto_mask_switch', 'value')],
+    output=dict(
+        px_fig=Output('px_tess_graph', 'figure', allow_duplicate=True),
+        mask_store_out=Output('mask_store', 'data', allow_duplicate=True),
+        slider_min=Output('cutout_frame_slider', 'min'),
+        slider_max=Output('cutout_frame_slider', 'max'),
+        slider_value=Output('cutout_frame_slider', 'value'),
+        slider_disabled=Output('cutout_frame_slider', 'disabled'),
+        slider_marks=Output('cutout_frame_slider', 'marks'),
+        slider_row_style=Output('cutout_frame_slider_row', 'style'),
+    ),
+    inputs=dict(
+        replot_clicks=Input('replot_pixel_button', 'n_clicks'),
+        pixel_metadata=Input('store_pixel_metadata', 'data'),
+        frame_index=Input('cutout_frame_slider', 'value'),
+        sum_it=Input('sum_switch', 'value'),
+    ),
+    state=dict(
+        gamma=State('input_tess_gamma', 'value'),
+        threshold=State('thresh_input', 'value'),
+        mask_type=State('mask_type_switch', 'value'),
+        auto_mask=State('auto_mask_switch', 'value'),
+        mask_store=State('mask_store', 'data'),
+    ),
     prevent_initial_call='initial_duplicate',
 )
-def plot_pixel(n_clicks, pixel_metadata, gamma, threshold, sum_it, mask_type, auto_mask):
+def plot_pixel(
+    replot_clicks,
+    pixel_metadata,
+    frame_index,
+    sum_it,
+    gamma,
+    threshold,
+    mask_type,
+    auto_mask,
+    mask_store,
+):
     """Plots the downloaded TPF/FFI cutout and initialises the aperture mask store.
 
+    A frame slider browses individual cadences when ``Sum`` is off and the cutout
+    contains more than one frame.
+
     Args:
-        n_clicks: Replot button click count (ignored on metadata-only refresh).
+        replot_clicks: Replot button click count.
         pixel_metadata (dict): Downloaded sector metadata including local file path.
+        frame_index (int): Selected cadence index from the frame slider.
+        sum_it: When true, sum all cadences; otherwise show the selected frame.
         gamma (float): Log-scale gamma for pixel display.
         threshold (float): Threshold for automatic mask generation.
-        sum_it: When true, sum all cadences; otherwise show the first frame.
         mask_type (str): ``pipeline`` or ``threshold`` for automatic masks.
         auto_mask: Automatic mask generation toggle.
+        mask_store (list): Existing handmade mask, reused when only the frame changes.
 
     Returns:
-        tuple: ``(figure, mask_list)`` for the pixel graph and mask store.
+        dict: Pixel figure, mask store, and frame-slider layout properties.
     """
     if not pixel_metadata or not pixel_metadata.get('path'):
         raise PreventUpdate
-    if ctx.triggered_id == "replot_pixel_button" and n_clicks is None:
+    if ctx.triggered_id == 'replot_pixel_button' and replot_clicks is None:
         raise PreventUpdate
-    pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(pixel_metadata['path'])
-    px_shape = pixel_data.shape[1:]
-    mask = np.full(px_shape, False)
-    if auto_mask:
-        mask = (
-            pixel_data.pipeline_mask if mask_type == "pipeline"
-            else pixel_data.create_threshold_mask(threshold=threshold, reference_pixel="center")
-        )
-    mask_shapes = create_shapes(mask)
 
-    if sum_it:
-        data_to_show = np.sum(pixel_data.flux[:], axis=0)
+    path = pixel_metadata['path']
+    flux_cube, time_values = tess_processor.load_cutout_flux_cube(path)
+    n_cadences = flux_cube.shape[0]
+    sum_cadences = bool(sum_it)
+    slider_layout = tess_processor.cutout_frame_slider_layout(n_cadences, sum_cadences)
+
+    if ctx.triggered_id in ('store_pixel_metadata', 'replot_pixel_button'):
+        frame_index = 0
+    elif frame_index is None:
+        frame_index = 0
+
+    data_to_show, active_frame = tess_processor.select_cutout_display_frame(
+        flux_cube,
+        frame_index=int(frame_index),
+        sum_cadences=sum_cadences,
+    )
+    px_shape = flux_cube.shape[1:]
+
+    reuse_mask = (
+        ctx.triggered_id == 'cutout_frame_slider'
+        and mask_store is not None
+        and len(mask_store) == px_shape[0]
+        and len(mask_store[0]) == px_shape[1]
+    )
+    if reuse_mask:
+        mask = np.array(mask_store, dtype=bool)
     else:
-        data_to_show = pixel_data.flux[0]  # take only the first crop
+        mask = np.full(px_shape, False)
+        if auto_mask:
+            if mask_type == 'pipeline':
+                mask = np.array(pixel_metadata['pipeline_mask'], dtype=bool)
+            else:
+                pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(path)
+                mask = pixel_data.create_threshold_mask(
+                    threshold=threshold,
+                    reference_pixel='center',
+                )
 
-    # fig = px.imshow(data_to_show.value, color_continuous_scale='Viridis', origin='lower') fig = imshow_logscale(
-    # data_to_show.value, scale_method=log_gamma, color_continuous_scale='Viridis', origin='lower')
+    mask_shapes = create_shapes(mask)
     show_colorbar = False
-    fig = imshow_logscale(data_to_show.value, scale_method=log_gamma, color_continuous_scale='Viridis', origin='lower',
-                          show_colorbar=show_colorbar, gamma=gamma)
-    # fig.update_traces(hovertemplate="%{z:.0f}<extra></extra>", hoverinfo="z")
+    fig = imshow_logscale(
+        data_to_show,
+        scale_method=log_gamma,
+        color_continuous_scale='Viridis',
+        origin='lower',
+        show_colorbar=show_colorbar,
+        gamma=gamma,
+    )
     if show_colorbar:
-        coloraxis_colorbar = dict(len=0.9,  # Set the length (fraction of plot height, e.g., 0.5 = half the plot height)
-                                  thickness=15  # Set the thickness (in pixels)
-                                  )
+        coloraxis_colorbar = dict(len=0.9, thickness=15)
         coloraxis_showscale = True
     else:
         coloraxis_colorbar = None
         coloraxis_showscale = False
-    fig.update_layout(title=dict(
-        text=f'{pixel_metadata.get("lookup_name", "")} '
-             f'{pixel_metadata.get("target", "")} '
-             f'{pixel_metadata.get("author", "")}',
-        font=dict(size=12)
-    ),
+
+    time_btjd = float(time_values[active_frame]) if time_values.size > active_frame else None
+    fig.update_layout(
+        title=dict(
+            text=tess_processor.format_cutout_pixel_title(
+                pixel_metadata,
+                frame_index=active_frame,
+                n_cadences=n_cadences,
+                time_btjd=time_btjd,
+                sum_cadences=sum_cadences,
+            ),
+            font=dict(size=12),
+        ),
         coloraxis_showscale=coloraxis_showscale,
         coloraxis_colorbar=coloraxis_colorbar,
-        xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=False),
-        showlegend=False, margin=dict(l=20, b=20, t=20, r=20),
-        shapes=mask_shapes)
+        xaxis=dict(showticklabels=False),
+        yaxis=dict(showticklabels=False),
+        showlegend=False,
+        margin=dict(l=20, b=20, t=20, r=20),
+        shapes=mask_shapes,
+    )
 
-    return fig, mask.tolist()
+    slider_value = active_frame if slider_layout['disabled'] is False else 0
+    return dict(
+        px_fig=fig,
+        mask_store_out=mask.tolist(),
+        slider_min=slider_layout['min'],
+        slider_max=slider_layout['max'],
+        slider_value=slider_value,
+        slider_disabled=slider_layout['disabled'],
+        slider_marks=slider_layout['marks'],
+        slider_row_style=slider_layout['row_style'],
+    )
 
 
 # download_selected_pixel moved to skvo_veb/utils/tess_processor.py
@@ -1415,8 +1521,8 @@ def mark_star(coord, fig, wcs_dict):
         ra=Output('ra_tess_input', 'value', allow_duplicate=True),
         dec=Output('dec_tess_input', 'value', allow_duplicate=True),
         resolved_coords=Output('store_resolved_coords', 'data'),
-        alert_message=Output('div_tess_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_search_alert', 'style', allow_duplicate=True),
+        alert_message=Output('div_tess_tools_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('resolve_tess_button', 'n_clicks')),
     state=dict(
@@ -1650,8 +1756,8 @@ def restore_tess_cutout_tabs(pixel_metadata, lc1):
 
 @callback(
     output=dict(
-        alert_message=Output('div_tess_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_search_alert', 'style', allow_duplicate=True),
+        alert_message=Output('div_tess_tools_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('clean_cache_tess_button', 'n_clicks')),
     state=dict(

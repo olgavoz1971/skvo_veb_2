@@ -1,5 +1,7 @@
 import os
 import logging
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 import lightkurve
@@ -251,4 +253,106 @@ def resolve_search_target(obj_name, ra, dec, resolved_coords):
         raise PipeException("Please enter an object name or RA/DEC coordinates.")
     target = f"{_coord_text(ra)} {_coord_text(dec)}"
     return target, 'coordinates_only'
+
+
+@lru_cache(maxsize=8)
+def load_cutout_flux_cube(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Loads a cutout flux cube and cadence timestamps from a local FITS path.
+
+    Args:
+        path (str): Absolute path to a TESS cutout FITS file.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: ``(flux_cube, time_btjd)`` with shape
+            ``(n_cadence, ny, nx)`` and length ``n_cadence``.
+    """
+    pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(path)
+    flux_cube = np.asarray(pixel_data.flux.value, dtype=float)
+    if flux_cube.ndim == 2:
+        flux_cube = flux_cube[np.newaxis, ...]
+    time_values = np.asarray(getattr(pixel_data.time, 'value', pixel_data.time), dtype=float)
+    if time_values.ndim == 0:
+        time_values = np.array([float(time_values)])
+    if time_values.size != flux_cube.shape[0]:
+        time_values = np.arange(flux_cube.shape[0], dtype=float)
+    return flux_cube, time_values
+
+
+def select_cutout_display_frame(
+    flux_cube: np.ndarray,
+    *,
+    frame_index: int,
+    sum_cadences: bool,
+) -> tuple[np.ndarray, int]:
+    """Selects the 2D cutout image to display from a cadence stack.
+
+    Args:
+        flux_cube (np.ndarray): Flux array with shape ``(n_cadence, ny, nx)``.
+        frame_index (int): Cadence index when not summing.
+        sum_cadences (bool): When true, return the sum over all cadences.
+
+    Returns:
+        tuple[np.ndarray, int]: Display image and the cadence index used for labelling.
+    """
+    if sum_cadences or flux_cube.shape[0] <= 1:
+        return np.sum(flux_cube, axis=0), 0
+    clamped = int(max(0, min(frame_index, flux_cube.shape[0] - 1)))
+    return flux_cube[clamped], clamped
+
+
+def cutout_frame_slider_layout(n_cadences: int, sum_cadences: bool) -> dict:
+    """Builds Dash slider properties for browsing a TPF cadence stack.
+
+    Args:
+        n_cadences (int): Number of cadence frames in the cutout.
+        sum_cadences (bool): Whether the UI is in summed-frame mode.
+
+    Returns:
+        dict: Slider min/max/value/disabled/marks and container visibility style.
+    """
+    enabled = n_cadences > 1 and not sum_cadences
+    max_idx = max(n_cadences - 1, 0)
+    marks = {0: '1', max_idx: str(n_cadences)} if enabled and n_cadences > 1 else None
+    return {
+        'min': 0,
+        'max': max_idx,
+        'disabled': not enabled,
+        'marks': marks,
+        'row_style': {'display': 'block', 'marginTop': '8px'} if enabled else {'display': 'none'},
+    }
+
+
+def format_cutout_pixel_title(
+    pixel_metadata: dict,
+    *,
+    frame_index: int,
+    n_cadences: int,
+    time_btjd: float | None,
+    sum_cadences: bool,
+) -> str:
+    """Formats the pixel-cutout graph title with optional cadence context.
+
+    Args:
+        pixel_metadata (dict): Stored cutout metadata from the download callback.
+        frame_index (int): Active cadence index (0-based).
+        n_cadences (int): Total number of cadence frames.
+        time_btjd (float, optional): BTJD timestamp for the active frame.
+        sum_cadences (bool): Whether all cadences are summed in the display.
+
+    Returns:
+        str: Title text for the pixel graph.
+    """
+    base = ' '.join(
+        part for part in (
+            pixel_metadata.get('lookup_name', ''),
+            pixel_metadata.get('target', ''),
+            pixel_metadata.get('author', ''),
+        )
+        if part
+    ).strip()
+    if sum_cadences and n_cadences > 1:
+        return f'{base} (sum of {n_cadences} frames)'
+    if n_cadences > 1 and time_btjd is not None:
+        return f'{base} (frame {frame_index + 1}/{n_cadences}, BTJD {time_btjd:.4f})'
+    return base
 

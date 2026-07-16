@@ -149,6 +149,14 @@ def layout():
                             dbc.Switch(id='switch_append_tess_lc_srv', label='Append', value=False,
                                        label_style=switch_label_style, persistence=False),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),  # upload
+                        dbc.Spinner(
+                            children=html.Div(
+                                id='div_tess_lc_srv_tools_alert',
+                                style={'display': 'none', 'marginTop': '8px'},
+                            ),
+                            size='sm',
+                            spinner_style={'width': '2rem', 'height': '2rem'},
+                        ),
                     ], lg=3, md=4, sm=5, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),
                     # Search tools
@@ -221,7 +229,8 @@ def layout():
                                 options=[   # type: ignore
                                     {'label': 'pdc_sap', 'value': 'pdcsap'},
                                     {'label': 'sap', 'value': 'sap'},
-                                    {'label': 'default', 'value': 'default'},
+                                    {'label': 'default flux', 'value': 'default'},
+                                    {'label': 'background', 'value': 'background'},
                                 ],
                                 value='pdcsap',
                                 labelStyle=switch_label_style,
@@ -497,8 +506,8 @@ def toggle_pg_option_collapse(method):
         ra=Output('ra_tess_lc_srv_input', 'value', allow_duplicate=True),
         dec=Output('dec_tess_lc_srv_input', 'value', allow_duplicate=True),
         resolved_coords=Output('store_resolved_coords_tess_lc_srv', 'data'),
-        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+        alert_message=Output('div_tess_lc_srv_tools_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('resolve_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -538,8 +547,8 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
 
 @callback(
     output=dict(
-        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
+        alert_message=Output('div_tess_lc_srv_tools_alert', 'children', allow_duplicate=True),
+        alert_style=Output('div_tess_lc_srv_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('clean_cache_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -692,6 +701,8 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
             output['metadata'] = {'lookup_name': display_name, 'native_id': native_id}
             output['search_store'] = {
                 'native_id': native_id,
+                'lookup_name': display_name,
+                'table_header': display_title,
                 'search_result': search_lcf.table.to_pandas().to_dict(),
             }
             output['table_data'] = data
@@ -711,6 +722,32 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     return output
 
 
+def _table_header_from_search_store(search_store) -> str:
+    """Builds the sector-table title from a persisted search-store payload.
+
+    Args:
+        search_store (dict): Serialised Lightkurve search metadata and rows.
+
+    Returns:
+        str: Human-readable table header text.
+    """
+    if not search_store:
+        return ''
+    cached_header = search_store.get('table_header')
+    if cached_header:
+        return str(cached_header)
+    lookup_name = search_store.get('lookup_name', '')
+    native_id = search_store.get('native_id', '')
+    if native_id:
+        target_id_str = str(native_id).strip().replace(':', ' ')
+        if target_id_str.isdigit():
+            target_id_str = f'TIC {target_id_str}'
+        if lookup_name and lookup_name.lower() != target_id_str.lower():
+            return f'{lookup_name} ({target_id_str})'
+        return lookup_name or target_id_str
+    return str(lookup_name)
+
+
 @callback(
     output=dict(
         table_header=Output('table_tess_lc_srv_header', "children", allow_duplicate=True),
@@ -719,28 +756,28 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     ),
     inputs=dict(
         search_store=Input('store_tess_lc_search_result', 'data'),
-        metadata=Input('store_tess_lightcurve_lc_srv_metadata', 'data'),
+    ),
+    state=dict(
+        current_rows=State("data_tess_lc_srv_table", "rowData"),
     ),
     prevent_initial_call='initial_duplicate',
 )
-def restore_lc_srv_search_table(search_store, metadata):
+def restore_lc_srv_search_table(search_store, current_rows):
+    """Rebuilds the sector table only when the search-result store changes.
+
+    Resolve and other coordinate helpers must not refresh this table. Session
+    restore after navigation is handled here; a fresh Search populates the grid
+    directly in ``basic_search``.
+    """
+    if ctx.triggered_id != 'store_tess_lc_search_result':
+        raise PreventUpdate
     rows = table_rows_from_lk_search_dict(search_store)
     if not rows:
         raise PreventUpdate
-    lookup_name = (metadata or {}).get('lookup_name', '')
-    native_id = (metadata or {}).get('native_id', '')
-    if native_id:
-        target_id_str = str(native_id).strip().replace(':', ' ')
-        if target_id_str.isdigit():
-            target_id_str = f'TIC {target_id_str}'
-        if lookup_name and lookup_name.lower() != target_id_str.lower():
-            table_header = f'{lookup_name} ({target_id_str})'
-        else:
-            table_header = lookup_name or target_id_str
-    else:
-        table_header = lookup_name
+    if rows == (current_rows or []):
+        raise PreventUpdate
     return {
-        'table_header': table_header,
+        'table_header': _table_header_from_search_store(search_store),
         'table_data': rows,
         'content_style': {'display': 'block'},
     }
