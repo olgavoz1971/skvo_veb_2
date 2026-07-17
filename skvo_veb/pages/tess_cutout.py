@@ -1157,6 +1157,45 @@ def _empty_lightcurve_figure():
     )
 
 
+_CUTOUT_LC_STORE_ACCORDION = {
+    'store_tess_cutout_lightcurve': 'accordion_item_1',
+    'lc2_store': 'accordion_item_2',
+    'lc3_store': 'accordion_item_3',
+}
+
+
+def _cutout_accordion_active_for_trigger(
+    triggered_id: str | None,
+    triggered_ids: set[str],
+):
+    """Resolve accordion ``active_item`` after a lightcurve store update.
+
+    Opens only the accordion panel that matches the store that changed.
+    Manual accordion toggles and unrelated triggers (e.g. time-axis mode) are
+    left unchanged via ``no_update``.
+
+    Args:
+        triggered_id: Primary callback trigger component id.
+        triggered_ids: Set of all component ids that fired in this callback.
+
+    Returns:
+        list[str] | dash.no_update: Single open accordion item id, or no update.
+    """
+    if triggered_id == 'time_axis_cutout_switch':
+        return no_update
+
+    lc_stores = set(_CUTOUT_LC_STORE_ACCORDION)
+    if triggered_id in lc_stores:
+        return [_CUTOUT_LC_STORE_ACCORDION[triggered_id]]
+
+    lc_triggered = triggered_ids & lc_stores
+    if len(lc_triggered) == 1:
+        store_id = next(iter(lc_triggered))
+        return [_CUTOUT_LC_STORE_ACCORDION[store_id]]
+
+    return no_update
+
+
 def create_lightcurve_figure(
     js_lightcurve: str | None,
     lc_metadata: dict = None,
@@ -1297,6 +1336,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         fig1=Output('curve_graph_1', 'figure', allow_duplicate=True),
         fig2=Output('curve_graph_2', 'figure', allow_duplicate=True),
         fig3=Output('curve_graph_3', 'figure', allow_duplicate=True),
+        accordion_active=Output('accordion_tess_lc', 'active_item', allow_duplicate=True),
     ),
     inputs=dict(
         lc1=Input('store_tess_cutout_lightcurve', 'data'),
@@ -1318,7 +1358,7 @@ def plot_lightcurve(lc1, lc2, lc3, time_axis_mode, lc_metadata):
         lc_metadata (dict): Optional axis range overrides for the primary graph.
 
     Returns:
-        dict: Updated figures for ``curve_graph_1``–``curve_graph_3``.
+        dict: Updated figures for ``curve_graph_1``–``curve_graph_3`` and accordion state.
     """
     if not ctx.triggered:
         raise PreventUpdate
@@ -1329,31 +1369,31 @@ def plot_lightcurve(lc1, lc2, lc3, time_axis_mode, lc_metadata):
 
     output_keys = list(ctx.outputs_grouping.keys())
     output = {key: no_update for key in output_keys}
-    active_item = ['accordion_item_1']
 
     try:
         axis_mode = time_axis_mode or TIME_AXIS_MJD
         if lc1:
             output['fig1'] = create_lightcurve_figure(lc1, lc_metadata, axis_mode)
-            active_item = ['accordion_item_1']
         elif 'store_tess_cutout_lightcurve' in triggered_ids:
             output['fig1'] = _empty_lightcurve_figure()
 
         if lc2:
             output['fig2'] = create_lightcurve_figure(lc2, time_axis_mode=axis_mode)
-            active_item = ['accordion_item_2']
         elif 'lc2_store' in triggered_ids:
             output['fig2'] = _empty_lightcurve_figure()
 
         if lc3:
             output['fig3'] = create_lightcurve_figure(lc3, time_axis_mode=axis_mode)
-            active_item = ['accordion_item_3']
         elif 'lc3_store' in triggered_ids:
             output['fig3'] = _empty_lightcurve_figure()
 
+        output['accordion_active'] = _cutout_accordion_active_for_trigger(
+            ctx.triggered_id,
+            triggered_ids,
+        )
+
         if any([lc1, lc2, lc3]):
             set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
-            set_props('accordion_tess_lc', {'active_item': active_item})
 
     except Exception as e:
         logger.warning(f'tess_cutout.plot_lightcurve: {e}')
@@ -1364,12 +1404,19 @@ def plot_lightcurve(lc1, lc2, lc3, time_axis_mode, lc_metadata):
 
 
 @callback(
-    Output('curve_graph_3', 'figure', allow_duplicate=True),
-    [Input('plot_difference_button', 'n_clicks'),
-     State('store_tess_cutout_lightcurve', 'data'),
-     State('lc2_store', 'data'),
-     State('compare_switch', 'value')],
-    prevent_initial_call=True
+    output=dict(
+        fig3=Output('curve_graph_3', 'figure', allow_duplicate=True),
+        accordion_active=Output('accordion_tess_lc', 'active_item', allow_duplicate=True),
+    ),
+    inputs=dict(
+        n_clicks=Input('plot_difference_button', 'n_clicks'),
+    ),
+    state=dict(
+        jsons_1=State('store_tess_cutout_lightcurve', 'data'),
+        jsons_2=State('lc2_store', 'data'),
+        comparison_method=State('compare_switch', 'value'),
+    ),
+    prevent_initial_call=True,
 )
 def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
     """Plots the difference or ratio of two stored cutout lightcurves in slot 3.
@@ -1381,11 +1428,12 @@ def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
         comparison_method (str): ``subtract`` or ``divide``.
 
     Returns:
-        plotly.graph_objects.Figure or no_update: Third graph figure.
+        dict: Third graph figure and accordion state.
     """
     if n_clicks is None:
         raise PreventUpdate
     fig = no_update
+    accordion_active = no_update
     try:
         if jsons_1 is None or jsons_2 is None:
             raise PipeException('Plot both: the First and Second Light Curves first')
@@ -1425,15 +1473,14 @@ def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
                           # xaxis={'dtick': 1000},
                           # 'showticklabels': False},# todo tune it
                           )
-        active_item = ['accordion_item_3']
+        accordion_active = ['accordion_item_3']
         set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
-        set_props('accordion_tess_lc', {'active_item': active_item})
     except Exception as e:
         logger.warning(f'tess_cutout.plot_difference: {e}')
         alert_message = message.warning_alert(e)
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
-    return fig
+    return dict(fig3=fig, accordion_active=accordion_active)
 
 
 def mark_cross(fig, x, y, cross_size=0.3, line_width=2, color='cyan'):
