@@ -7,10 +7,14 @@ and that the upload handler correctly ingests VOTable files via ``volc_to_curved
 
 import io
 import os
+
 import numpy as np
+import pytest
+
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
+from skvo_veb.utils.mission_config.tess import resolve_tess_photcal
 from skvo_veb.volightcurve.lightcurve import VOLightCurve
 
 
@@ -39,6 +43,7 @@ def test_tess_upload_integration():
     lcd.metadata['authors'] = ["SPOC"]
     lcd.metadata['sectors'] = ["40"]
     lcd.metadata['flux_origins'] = ["pdcsap"]
+    lcd.metadata['photcal'] = resolve_tess_photcal(lcd.metadata['authors'])
 
     buf = io.BytesIO()
     buf.write(export_curvedash(lcd, 'votable_binary', profile='tess'))
@@ -74,8 +79,7 @@ def test_tess_real_file_upload():
     """Tests ingestion of a real TESS VOTable file from disk."""
     real_file_path = 'data/lc_tess__TIC_455790537_sector__16_author__SPOC_methods__pdcsap.vot'
     if not os.path.exists(real_file_path):
-        print(f"Skipping real file upload test: {real_file_path} not found.")
-        return
+        pytest.skip(f"Fixture not found: {real_file_path}")
 
     volc = VOLightCurve(real_file_path)
     assert len(volc) == 16717

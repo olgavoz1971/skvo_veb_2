@@ -49,7 +49,7 @@ def test_ecsv_export_stores_basic_metadata_only():
     lcd = _sample_lcd()
     payload = export_curvedash(lcd, 'ascii.ecsv').decode('utf-8')
     assert '# meta:' in payload
-    assert 'name: TIC 123' in payload
+    assert 'name: Target A' in payload
     assert 'pipeline: SPOC' in payload
     assert 'method: pdcsap' in payload
     assert 'filter: TESS' in payload

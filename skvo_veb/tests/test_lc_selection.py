@@ -1,8 +1,6 @@
 """Tests for lightcurve selection helpers."""
 
 import numpy as np
-import plotly.express as px
-import pytest
 
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_FLUX
