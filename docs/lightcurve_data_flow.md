@@ -2,6 +2,8 @@
 
 This document describes how lightcurve data is ingested, processed, serialised, stored, and passed across the layers of the `skvo_veb` application. It defines structural boundaries between standard astronomical models, application transport formats, and interactive UI state.
 
+**Planned extension:** multi-mission archive adapters (search + fetch) are specified in [mission_lightcurve_providers.md](mission_lightcurve_providers.md). Fetch from missions returns `VOLightCurve`; conversion to `CurveDash` remains in this document's pipeline.
+
 **Last updated:** 2026-07-02 — domain-aware ingestion, bridge export profiles, on-demand conversion.
 
 ---

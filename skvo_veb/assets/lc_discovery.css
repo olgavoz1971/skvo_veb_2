@@ -1,0 +1,149 @@
+/* Lightcurve Discovery page — layout tweaks (matches TESS srv density). */
+
+.lc-discovery-page-title {
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+.lc-discovery-intro {
+    line-height: 1.45;
+}
+
+.lc-discovery-field-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 10px;
+}
+
+.lc-discovery-field-row {
+    display: grid;
+    grid-template-columns: 4.25em minmax(0, 1fr) 6.5em 1.25em;
+    align-items: center;
+    column-gap: 0.5rem;
+}
+
+.lc-discovery-field-label {
+    margin: 0;
+    width: 4.25em;
+    flex-shrink: 0;
+}
+
+.lc-discovery-field-input {
+    width: 100%;
+    min-width: 0;
+}
+
+.lc-discovery-field-row-target .lc-discovery-field-input-wide {
+    grid-column: 2 / 4;
+}
+
+.lc-discovery-field-row-target .lc-discovery-field-help {
+    grid-column: 4;
+    justify-self: start;
+}
+
+.lc-discovery-field-row-radius .lc-discovery-field-input {
+    grid-column: 2;
+}
+
+.lc-discovery-field-row-radius .lc-discovery-field-unit {
+    grid-column: 3;
+    width: 100%;
+    min-width: 0;
+}
+
+.lc-discovery-field-help-spacer {
+    grid-column: 4;
+}
+
+.lc-discovery-object-card .card-body {
+    line-height: 1.45;
+}
+
+.lc-discovery-object-markdown {
+    font-size: inherit;
+    color: inherit;
+}
+
+.lc-discovery-object-markdown strong,
+.lc-discovery-object-markdown code {
+    font-weight: inherit;
+    color: inherit;
+    background: transparent;
+}
+
+.lc-discovery-object-markdown :last-child {
+    margin-bottom: 0;
+}
+
+.lc-discovery-help-btn {
+    display: inline;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 0 0.1em;
+    margin: 0;
+    color: #446e9b;
+    font-family: "Comic Sans MS", "Comic Sans", cursive;
+    font-size: 1.05em;
+    font-weight: 900;
+    line-height: 1;
+    cursor: pointer;
+    vertical-align: baseline;
+    user-select: none;
+}
+
+.lc-discovery-help-btn:hover,
+.lc-discovery-help-btn:focus-visible {
+    color: #2a4566;
+    background: transparent;
+    text-decoration: underline;
+    outline: none;
+    box-shadow: none;
+}
+
+.lc-discovery-help-popover {
+    max-width: min(24rem, 92vw);
+}
+
+.lc-discovery-help-popover .popover-body {
+    max-height: min(50vh, 20rem);
+    overflow-y: auto;
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+.lc-discovery-catalog-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.lc-discovery-catalog-grid {
+    height: clamp(240px, 45vh, 480px);
+    width: 100%;
+}
+
+.lc-discovery-graph-wrap {
+    width: 100%;
+    min-height: 280px;
+    height: clamp(280px, 55vh, 560px);
+}
+
+.lc-discovery-tabs.nav-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
+@media (max-width: 575.98px) {
+    .lc-discovery-catalog-grid {
+        height: clamp(220px, 40vh, 360px);
+    }
+}

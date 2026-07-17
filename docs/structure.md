@@ -1,17 +1,18 @@
 skvo_veb/
 ├── assets/
 ├── components/         # frontend components
-├── pages/              # frontend
-├── utils/              # backend only — no test_*.py files anymore
-├── tests/              # all unit/integration tests
-│   ├── test_lc_interaction.py
-│   ├── test_lc_selection.py
-│   ├── test_lc_epoch.py
-│   ├── test_lc_tabular_export.py
-│   ├── test_asassn_export.py
-│   └── volightcurve/
-│       ├── test_cutout_export.py
-│       ├── test_tess_export.py
-│       ├── test_tess_upload.py
-│       └── test_write_vo.py
-└── volightcurve/       # common module
+├── pages/              # frontend (includes lightcurve_discovery.py)
+├── lc_providers/       # plugin registry: strategy/adapters + shared provider interface (no Dash)
+├── volightcurve/       # IVOA VO lightcurve standard (ingest + write_vo_lightcurve)
+├── utils/              # backend — no test_*.py files
+│   ├── mission_config/ # static PhotCal + export profiles per mission
+│   ├── lc_bridge.py    # VOLightCurve ↔ CurveDash ↔ export
+│   ├── lc_discovery_search.py  # Discovery search orchestration (§9)
+│   ├── simbad_resolver.py      # shared Simbad resolve for orchestrator
+│   └── …
+└── tests/              # all unit/integration tests
+    ├── test_lc_*.py
+    ├── test_asassn_export.py
+    └── volightcurve/
+
+**Architecture docs:** see `docs/mission_lightcurve_providers.md` for the multi-mission LC page, search orchestration (§9), and provider API.
