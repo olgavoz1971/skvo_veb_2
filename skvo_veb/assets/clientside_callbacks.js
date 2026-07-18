@@ -423,6 +423,21 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             };
             const fmt = timeFormat || 'mjd';
             return placeholders[fmt] || placeholders.mjd;
+        },
+
+        lcDiscoveryCatalogHighlightRules: function (highlightName) {
+            const patch = new dash_clientside.Patch();
+            if (!highlightName) {
+                patch.rowClassRules = {};
+                return patch;
+            }
+            const encoded = JSON.stringify(String(highlightName));
+            patch.rowClassRules = {
+                'lc-discovery-row-highlight': (
+                    'params.data && params.data.aladin_name === ' + encoded
+                ),
+            };
+            return patch;
         }
     }
 });

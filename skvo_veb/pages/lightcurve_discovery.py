@@ -6,16 +6,27 @@ Styles: ``assets/lc_discovery.css``.
 
 import logging
 
+import aladin_lite_react_component
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import plotly.express as px
-from dash import Input, Output, State, callback, clientside_callback, dcc, html, register_page
+from dash import Input, Output, State, callback, clientside_callback, ctx, dcc, html, register_page, set_props
 from dash.dependencies import ClientsideFunction
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components import message
 from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.registry import list_missions
+from skvo_veb.utils.lc_discovery_aladin import (
+    aladin_fov_degrees,
+    aladin_marker_name,
+    aladin_remount_key,
+    aladin_selected_star_from_row,
+    aladin_target_from_metadata,
+    catalog_row_from_cell_clicked,
+    catalog_rows_to_aladin_stars,
+    find_catalog_row_by_aladin_name,
+)
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
     catalog_rows_for_aggrid,
@@ -47,9 +58,9 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'headerName': 'Sep (″)',
         'type': 'numericColumn',
         'sortable': True,
-        'width': 72,
-        'maxWidth': 80,
-        'suppressSizeToFit': True,
+        'minWidth': 55,
+        'maxWidth': 100,
+        # 'suppressSizeToFit': True,
     },
     {
         'field': 'object_name',
@@ -61,16 +72,17 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'field': 'filter_name',
         'headerName': 'Filter',
         'sortable': True,
-        'minWidth': 72,
-        'maxWidth': 96,
+        'minWidth': 80,
+        # 'maxWidth': 96,
+        'suppressSizeToFit': True,
     },
     {
         'field': 't_min',
         'headerName': 't_min',
         'type': 'numericColumn',
         'sortable': True,
-        'width': 68,
-        'maxWidth': 76,
+        # 'width': 68,
+        'minWidth': 70,
         'suppressSizeToFit': True,
     },
     {
@@ -78,26 +90,26 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'headerName': 't_max',
         'type': 'numericColumn',
         'sortable': True,
-        'width': 68,
-        'maxWidth': 76,
+        # 'width': 68,
+        'minWidth': 70,
         'suppressSizeToFit': True,
     },
     {
         'field': 'ra_deg',
-        'headerName': 'RA°',
+        'headerName': 'RA',
         'type': 'numericColumn',
         'sortable': True,
-        'width': 88,
-        'maxWidth': 96,
+        # 'width': 88,
+        'minWidth': 90,
         'suppressSizeToFit': True,
     },
     {
         'field': 'dec_deg',
-        'headerName': 'Dec°',
+        'headerName': 'Dec',
         'type': 'numericColumn',
         'sortable': True,
-        'width': 88,
-        'maxWidth': 96,
+        # 'width': 88,
+        'minWidth': 90,
         'suppressSizeToFit': True,
     },
     {
@@ -141,6 +153,62 @@ LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD = 'Latest MJD (optional)'
 _LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves.'
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN = {'display': 'none'}
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE = {'display': 'block'}
+_LC_DISCOVERY_ALADIN_WIDTH = 400
+_LC_DISCOVERY_ALADIN_HEIGHT = 400
+
+
+def _lc_discovery_aladin_placeholder(message: str):
+    """Builds the empty-state content shown before catalogue markers exist.
+
+    Args:
+        message (str): User-facing placeholder text.
+
+    Returns:
+        html.P: Placeholder element for the Aladin container.
+    """
+    return html.P(message, className='lc-discovery-aladin-empty text-muted mb-0')
+
+
+def _build_lc_discovery_aladin_view(row_data, search_metadata):
+    """Builds a fresh Aladin instance with catalogue markers applied at mount time.
+
+    The bundled ``aladin_lite_react_component`` package only loads ``stars`` during
+    its initial script load; updating the prop later is a no-op. Remounting via a
+    changing React ``key`` matches the legacy query-by-coordinates page behaviour.
+
+    Args:
+        row_data (list[dict]): Current AgGrid catalogue rows.
+        search_metadata (dict, optional): Serialised search outcome metadata.
+
+    Returns:
+        dash.html components: Aladin view or an empty-state placeholder.
+    """
+    if not row_data:
+        return _lc_discovery_aladin_placeholder(
+            'Submit a query to show sources on the sky map.'
+        )
+
+    stars = catalog_rows_to_aladin_stars(row_data)
+    if not stars:
+        return _lc_discovery_aladin_placeholder(
+            'No sky coordinates are available for these catalogue rows.'
+        )
+
+    return html.Div(
+        key=aladin_remount_key(search_metadata, row_data),
+        children=[
+            aladin_lite_react_component.AladinLiteReactComponent(
+                id='lc_discovery_aladin',
+                width=_LC_DISCOVERY_ALADIN_WIDTH,
+                height=_LC_DISCOVERY_ALADIN_HEIGHT,
+                fov=aladin_fov_degrees(search_metadata, row_data),
+                target=aladin_target_from_metadata(search_metadata, row_data),
+                stars=stars,
+            ),
+        ],
+        className='lc-discovery-aladin-wrap',
+    )
+
 
 def _mission_radio_options():
     """Builds mission radio options from the provider registry.
@@ -489,8 +557,8 @@ def _search_results_panel():
     )
     return dbc.Col(
         [
-            dbc.Spinner(
-                children=[
+            html.Div(
+                [
                     html.Div(
                         [
                             html.Div(
@@ -512,30 +580,70 @@ def _search_results_panel():
                                 ],
                                 className='lc-discovery-catalog-header-row',
                             ),
-                            html.Div(
-                                dag.AgGrid(
-                                    id='lc_discovery_catalog_table',
-                                    columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
-                                    rowData=[],
-                                    columnSize='autoSize',
-                                    defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
-                                    dashGridOptions={
-                                        'theme': 'themeBalham',
-                                        'rowSelection': 'single',
-                                        'suppressRowClickSelection': False,
-                                        'animateRows': True,
-                                        'pagination': True,
-                                        'paginationPageSize': 10,
-                                        'domLayout': 'normal',
-                                        'suppressHorizontalScroll': False,
-                                        'alwaysShowHorizontalScroll': True,
-                                        'enableCellTextSelection': True,
-                                        'ensureDomOrder': True,
-                                    },
-                                    className='lc-discovery-catalog-aggrid ag-theme-balham',
-                                    style={'height': '100%', 'width': '100%'},
-                                ),
-                                className='lc-discovery-catalog-grid',
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        html.Div(
+                                            dag.AgGrid(
+                                                id='lc_discovery_catalog_table',
+                                                columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
+                                                rowData=[],
+                                                columnSize='autoSize',
+                                                defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
+                                                dashGridOptions={
+                                                    'theme': 'themeBalham',
+                                                    'rowHeight': 22,
+                                                    'headerHeight': 24,
+                                                    'rowSelection': {
+                                                        'mode': 'singleRow',
+                                                        'checkboxes': False,
+                                                        'enableClickSelection': True,
+                                                    },
+                                                    'animateRows': False,
+                                                    'pagination': True,
+                                                    'paginationPageSize': 10,
+                                                    'domLayout': 'normal',
+                                                    'suppressHorizontalScroll': False,
+                                                    'alwaysShowHorizontalScroll': True,
+                                                    'enableCellTextSelection': True,
+                                                    'ensureDomOrder': True,
+                                                    'getRowId': {
+                                                        'function': 'params.data.lc_key'
+                                                    },
+                                                },
+                                                className='lc-discovery-catalog-aggrid ag-theme-balham',
+                                                style={'height': '100%', 'width': '100%'},
+                                            ),
+                                            className='lc-discovery-catalog-grid',
+                                        ),
+                                        lg=7,
+                                        md=7,
+                                        sm=12,
+                                        xs=12,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            html.Div(
+                                                _lc_discovery_aladin_placeholder(
+                                                    'Submit a query to show sources on the sky map.'
+                                                ),
+                                                id='lc_discovery_aladin_container',
+                                                className='lc-discovery-aladin-wrap',
+                                            ),
+                                            html.P(
+                                                'Click a table row to highlight the object on the map, '
+                                                'and vice versa.',
+                                                className='lc-discovery-aladin-hint text-muted mb-0',
+                                            ),
+                                        ],
+                                        lg=5,
+                                        md=5,
+                                        sm=12,
+                                        xs=12,
+                                        className='lc-discovery-aladin-col',
+                                    ),
+                                ],
+                                className='g-2 lc-discovery-catalog-body-row',
                             ),
                         ],
                         id='lc_discovery_catalog_row',
@@ -684,9 +792,10 @@ def layout():
             dcc.Store(id='store_lc_discovery_user_tab_id', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_catalog', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_selected_key', **SESSION_STORE),
+            dcc.Store(id='store_lc_discovery_highlight_name', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_resolved_target', **SESSION_STORE),
         ],
-        className='g-10',
+        className='g-10 lc-discovery-page',
         fluid=True,
         style={'display': 'flex', 'flexDirection': 'column'},
     )
@@ -703,6 +812,7 @@ def layout():
     Output('lc_discovery_search_alert', 'style'),
     Output('store_lc_discovery_catalog', 'data'),
     Output('store_lc_discovery_resolved_target', 'data'),
+    Output('store_lc_discovery_highlight_name', 'data'),
     Input('lc_discovery_mission_switch', 'value'),
     prevent_initial_call=True,
 )
@@ -721,6 +831,7 @@ def clear_catalog_on_mission_change(_mission_id):
         _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
         None,
         {'display': 'none'},
+        None,
         None,
         None,
     )
@@ -793,6 +904,9 @@ def submit_catalog_search(
     if not n_clicks:
         raise PreventUpdate
 
+    set_props('lc_discovery_object_card', {'style': {'display': 'none'}})
+    set_props('lc_discovery_object_card_markdown', {'children': ''})
+
     def _update_search_status(message: str) -> None:
         """Replaces the Discovery status bar with the current search step.
 
@@ -864,6 +978,130 @@ def submit_catalog_search(
     )
 
 
+@callback(
+    Output('lc_discovery_aladin_container', 'children'),
+    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
+    Input('store_lc_discovery_resolved_target', 'data'),
+    State('lc_discovery_catalog_table', 'rowData'),
+    prevent_initial_call=True,
+)
+def refresh_lc_discovery_aladin(search_metadata, row_data):
+    """Rebuilds Aladin only when a new search completes, not on row selection.
+
+    Args:
+        search_metadata (dict, optional): Serialised search outcome metadata.
+        row_data (list[dict]): Current AgGrid catalogue rows.
+
+    Returns:
+        tuple: Fresh Aladin view (or placeholder) and cleared highlight store.
+    """
+    return _build_lc_discovery_aladin_view(row_data, search_metadata), None
+
+
+@callback(
+    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
+    Input('lc_discovery_catalog_table', 'cellClicked'),
+    Input('lc_discovery_catalog_table', 'selectedRows'),
+    Input('lc_discovery_aladin', 'selectedStar'),
+    State('store_lc_discovery_highlight_name', 'data'),
+    State('lc_discovery_catalog_table', 'rowData'),
+    prevent_initial_call=True,
+)
+def update_lc_discovery_highlight_from_ui(
+    cell_clicked,
+    selected_rows,
+    selected_star,
+    current_highlight_name,
+    row_data,
+):
+    """Records the active catalogue row from either the table or the sky map.
+
+    A shared store avoids ping-pong callbacks that re-write ``selectedRows`` and
+    ``selectedStar`` against each other (which made both the grid and Aladin blink).
+
+    Args:
+        cell_clicked (dict, optional): AgGrid ``cellClicked`` event payload.
+        selected_rows (list[dict]): AgGrid selected rows.
+        selected_star (dict, optional): Aladin ``selectedStar`` payload.
+        current_highlight_name (str, optional): Current highlight marker name.
+        row_data (list[dict]): Current AgGrid catalogue rows.
+
+    Returns:
+        tuple: Marker name and ``lc_key`` for the highlighted row.
+
+    Raises:
+        PreventUpdate: When the highlight is unchanged or cannot be resolved.
+    """
+    if not ctx.triggered:
+        raise PreventUpdate
+
+    triggered_prop = ctx.triggered[0]['prop_id']
+    component_id, _, triggered_field = triggered_prop.partition('.')
+
+    if component_id == 'lc_discovery_catalog_table':
+        row = None
+        if triggered_field == 'cellClicked':
+            row = catalog_row_from_cell_clicked(cell_clicked, row_data or [])
+        elif selected_rows:
+            row = selected_rows[0]
+        if row is None:
+            raise PreventUpdate
+        if row.get('ra_deg') is None or row.get('dec_deg') is None:
+            raise PreventUpdate
+        highlight_name = aladin_marker_name(row)
+        lc_key = row.get('lc_key')
+    elif component_id == 'lc_discovery_aladin':
+        if not selected_star or not selected_star.get('name') or not row_data:
+            raise PreventUpdate
+        highlight_name = str(selected_star['name'])
+        matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
+        if matched_row is None:
+            raise PreventUpdate
+        lc_key = matched_row.get('lc_key')
+    else:
+        raise PreventUpdate
+
+    if highlight_name == current_highlight_name:
+        raise PreventUpdate
+    return highlight_name, lc_key
+
+
+@callback(
+    Output('lc_discovery_aladin', 'selectedStar', allow_duplicate=True),
+    Input('store_lc_discovery_highlight_name', 'data'),
+    State('lc_discovery_catalog_table', 'rowData'),
+    State('lc_discovery_aladin', 'selectedStar'),
+    prevent_initial_call=True,
+)
+def sync_lc_discovery_highlight_to_aladin(highlight_name, row_data, current_star):
+    """Highlights an Aladin marker when the shared store changes from a table click.
+
+    Map clicks are already handled inside the Aladin component; this callback runs
+    only for table-driven highlight changes.
+
+    Args:
+        highlight_name (str, optional): Shared marker name from the highlight store.
+        row_data (list[dict]): Current AgGrid catalogue rows.
+        current_star (dict, optional): Current Aladin ``selectedStar`` payload.
+
+    Returns:
+        dict: Updated Aladin ``selectedStar`` payload.
+
+    Raises:
+        PreventUpdate: When the map already shows the requested marker.
+    """
+    if not highlight_name or not row_data:
+        raise PreventUpdate
+    if current_star and current_star.get('name') == highlight_name:
+        raise PreventUpdate
+
+    matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
+    if matched_row is None:
+        raise PreventUpdate
+    return aladin_selected_star_from_row(matched_row)
+
+
 clientside_callback(
     ClientsideFunction(
         namespace='clientside',
@@ -880,4 +1118,14 @@ clientside_callback(
     ),
     Output('lc_discovery_time_max_input', 'placeholder'),
     Input('lc_discovery_time_max_format_select', 'value'),
+)
+
+clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='lcDiscoveryCatalogHighlightRules',
+    ),
+    Output('lc_discovery_catalog_table', 'dashGridOptions'),
+    Input('store_lc_discovery_highlight_name', 'data'),
+    prevent_initial_call=True,
 )

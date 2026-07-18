@@ -70,6 +70,8 @@ class SearchOutcome:
             "row_count": len(self.catalog),
             "time_start_mjd": self.time_start_mjd,
             "time_end_mjd": self.time_end_mjd,
+            "radius_value": self.radius_value,
+            "radius_unit": self.radius_unit,
         }
 
 
@@ -747,5 +749,11 @@ def catalog_rows_for_aggrid(catalog: Table) -> list[dict]:
                         display_row[time_key] = int(round(float(time_value)))
                 except (TypeError, ValueError):
                     pass
+        object_name = str(display_row.get("object_name") or "object")
+        filter_name = str(display_row.get("filter_name") or "")
+        if filter_name:
+            display_row["aladin_name"] = f"{object_name} ({filter_name})"
+        else:
+            display_row["aladin_name"] = object_name
         formatted_rows.append(display_row)
     return formatted_rows

@@ -1,4 +1,25 @@
-/* Lightcurve Discovery page — layout tweaks (matches TESS srv density). */
+/* Lightcurve Discovery — responsive layout tokens and page tweaks.
+ *
+ * Unit policy (production):
+ * - rem/em: typography, spacing, radii (respects user root font / zoom)
+ * - clamp(rem, vh, rem): panel heights (small monitors + low viewport height)
+ * - px: Ag Grid theme hairlines only (third-party grid expects pixel metrics)
+ */
+
+.lc-discovery-page {
+    --lc-discovery-space-xs: 0.25rem;
+    --lc-discovery-space-sm: 0.375rem;
+    --lc-discovery-space-md: 0.5rem;
+    --lc-discovery-space-lg: 0.625rem;
+    --lc-discovery-space-xl: 0.75rem;
+    --lc-discovery-text-xs: 0.75rem;
+    --lc-discovery-text-sm: 0.85rem;
+    --lc-discovery-radius-sm: 0.25rem;
+    --lc-discovery-panel-height: clamp(15rem, 45vh, 30rem);
+    --lc-discovery-panel-height-compact: clamp(13.75rem, 38vh, 22.5rem);
+    --lc-discovery-graph-height: clamp(17.5rem, 55vh, 35rem);
+    --lc-discovery-card-max-height: clamp(5rem, 22vh, 10rem);
+}
 
 .lc-discovery-page-title {
     line-height: 1.25;
@@ -12,27 +33,27 @@
 .lc-discovery-field-stack {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    margin-bottom: 10px;
+    gap: var(--lc-discovery-space-sm);
+    margin-bottom: var(--lc-discovery-space-lg);
 }
 
 .lc-discovery-submit-actions {
-    margin-bottom: 10px;
+    margin-bottom: var(--lc-discovery-space-lg);
 }
 
 .lc-discovery-search-status {
-    margin-bottom: 10px;
-    padding: 6px 8px;
-    font-size: 0.75rem;
+    margin-bottom: var(--lc-discovery-space-lg);
+    padding: var(--lc-discovery-space-sm) var(--lc-discovery-space-md);
+    font-size: var(--lc-discovery-text-xs);
     line-height: 1.4;
     background: rgba(255, 255, 255, 0.35);
-    border-radius: 4px;
+    border-radius: var(--lc-discovery-radius-sm);
 }
 
 .lc-discovery-field-row {
     display: grid;
     align-items: center;
-    column-gap: 0.5rem;
+    column-gap: var(--lc-discovery-space-md);
 }
 
 .lc-discovery-field-label {
@@ -80,7 +101,11 @@
 }
 
 .lc-discovery-object-card .card-body {
-    line-height: 1.45;
+    line-height: 1.15;
+    max-height: var(--lc-discovery-card-max-height);
+    font-size: var(--lc-discovery-text-sm);
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .lc-discovery-object-markdown {
@@ -132,7 +157,7 @@
 .lc-discovery-help-popover .popover-body {
     max-height: min(50vh, 20rem);
     overflow-y: auto;
-    font-size: 0.85rem;
+    font-size: var(--lc-discovery-text-sm);
     line-height: 1.45;
 }
 
@@ -141,8 +166,8 @@
     flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
+    gap: var(--lc-discovery-space-md);
+    margin-bottom: var(--lc-discovery-space-md);
 }
 
 .lc-discovery-catalog-title-row {
@@ -150,6 +175,7 @@
     align-items: baseline;
     gap: 0.35rem;
     width: 100%;
+    min-width: 0;
 }
 
 .lc-discovery-catalog-title {
@@ -158,9 +184,54 @@
 }
 
 .lc-discovery-catalog-grid {
-    height: clamp(240px, 45vh, 480px);
+    height: var(--lc-discovery-panel-height);
     width: 100%;
+    min-height: 0;
     overflow-x: auto;
+}
+
+.lc-discovery-catalog-body-row {
+    align-items: stretch;
+}
+
+.lc-discovery-aladin-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lc-discovery-space-md);
+    min-width: 0;
+}
+
+.lc-discovery-aladin-wrap {
+    width: 100%;
+    max-width: 100%;
+    min-height: var(--lc-discovery-panel-height);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    overflow: hidden;
+}
+
+.lc-discovery-aladin-wrap > div {
+    max-width: 100%;
+}
+
+.lc-discovery-aladin-hint {
+    font-size: var(--lc-discovery-text-sm);
+    line-height: 1.4;
+}
+
+.lc-discovery-aladin-empty {
+    font-size: var(--lc-discovery-text-sm);
+    line-height: 1.4;
+    padding: var(--lc-discovery-space-xl) var(--lc-discovery-space-xs);
+}
+
+/* Ag Grid: keep pixel metrics for row geometry; use rem for readable text scaling. */
+.lc-discovery-catalog-aggrid.ag-theme-balham {
+    --ag-row-height: 1.8rem;
+    --ag-header-height: 1.8rem;
+    --ag-cell-horizontal-padding: 2px;
+    --ag-font-size: 0.75rem;
 }
 
 .lc-discovery-catalog-aggrid .ag-root-wrapper,
@@ -170,16 +241,39 @@
 }
 
 .lc-discovery-catalog-aggrid .ag-cell,
+.lc-discovery-catalog-aggrid .ag-header-cell,
 .lc-discovery-catalog-aggrid .ag-header-cell-label {
     user-select: text;
     -webkit-user-select: text;
     cursor: text;
+    line-height: 1.15;
+}
+
+.lc-discovery-catalog-aggrid .ag-cell,
+.lc-discovery-catalog-aggrid .ag-cell-wrapper {
+    display: flex;
+    align-items: center;
+}
+
+.lc-discovery-catalog-aggrid .ag-header-cell {
+    display: flex;
+    align-items: center;
+}
+
+.lc-discovery-catalog-aggrid .ag-header-cell-label {
+    display: flex;
+    align-items: center;
+}
+
+.lc-discovery-catalog-aggrid .lc-discovery-row-highlight {
+    background-color: #fff3cd !important;
+    font-weight: 600;
 }
 
 .lc-discovery-graph-wrap {
     width: 100%;
-    min-height: 280px;
-    height: clamp(280px, 55vh, 560px);
+    min-height: var(--lc-discovery-graph-height);
+    height: var(--lc-discovery-graph-height);
 }
 
 .lc-discovery-tabs.nav-tabs {
@@ -191,7 +285,23 @@
 }
 
 @media (max-width: 575.98px) {
-    .lc-discovery-catalog-grid {
-        height: clamp(220px, 40vh, 360px);
+    .lc-discovery-page {
+        --lc-discovery-panel-height: var(--lc-discovery-panel-height-compact);
+        --lc-discovery-graph-height: clamp(14rem, 45vh, 28rem);
+        --lc-discovery-card-max-height: clamp(4.5rem, 18vh, 8rem);
+    }
+}
+
+@media (max-height: 720px) {
+    .lc-discovery-page {
+        --lc-discovery-panel-height: clamp(11rem, 38vh, 22rem);
+        --lc-discovery-graph-height: clamp(12rem, 42vh, 24rem);
+        --lc-discovery-card-max-height: clamp(4rem, 16vh, 7rem);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .lc-discovery-tabs.nav-tabs {
+        scroll-behavior: auto;
     }
 }
