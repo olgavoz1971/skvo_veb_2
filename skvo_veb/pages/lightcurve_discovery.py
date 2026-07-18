@@ -9,7 +9,8 @@ import logging
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import plotly.express as px
-from dash import Input, Output, State, callback, dcc, html, register_page
+from dash import Input, Output, State, callback, clientside_callback, dcc, html, register_page
+from dash.dependencies import ClientsideFunction
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components import message
@@ -17,10 +18,10 @@ from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.registry import list_missions
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
-    catalog_results_subtitle,
     catalog_rows_for_aggrid,
     run_catalog_search_for_mission,
 )
+from skvo_veb.utils.lc_discovery_time_bounds import parse_discovery_time_bounds
 from skvo_veb.utils.my_tools import PipeException, positive_float_pattern
 from skvo_veb.utils.page_session import SESSION_STORE
 
@@ -42,26 +43,104 @@ mission_label_style = {'display': 'block', 'padding': '2px'}
 
 LC_DISCOVERY_CATALOG_COLUMNS = [
     {
-        'field': '#',
-        'headerName': '#',
-        'checkboxSelection': True,
-        'headerCheckboxSelection': True,
-        'maxWidth': 70,
-        'pinned': 'left',
+        'field': 'distance_arcsec',
+        'headerName': 'Sep (″)',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 72,
+        'maxWidth': 80,
+        'suppressSizeToFit': True,
     },
-    {'field': 'distance_arcsec', 'headerName': 'Sep (″)', 'type': 'numericColumn', 'minWidth': 72},
-    {'field': 'object_name', 'headerName': 'Object', 'minWidth': 100, 'flex': 2},
-    {'field': 'filter_name', 'headerName': 'Filter', 'minWidth': 90, 'flex': 1},
-    {'field': 'ra_deg', 'headerName': 'RA°', 'type': 'numericColumn', 'minWidth': 88},
-    {'field': 'dec_deg', 'headerName': 'Dec°', 'type': 'numericColumn', 'minWidth': 88},
-    {'field': 'n_points', 'headerName': 'N', 'type': 'numericColumn', 'maxWidth': 64},
+    {
+        'field': 'object_name',
+        'headerName': 'Object',
+        'sortable': True,
+        'minWidth': 200,
+    },
+    {
+        'field': 'filter_name',
+        'headerName': 'Filter',
+        'sortable': True,
+        'minWidth': 72,
+        'maxWidth': 96,
+    },
+    {
+        'field': 't_min',
+        'headerName': 't_min',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 68,
+        'maxWidth': 76,
+        'suppressSizeToFit': True,
+    },
+    {
+        'field': 't_max',
+        'headerName': 't_max',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 68,
+        'maxWidth': 76,
+        'suppressSizeToFit': True,
+    },
+    {
+        'field': 'ra_deg',
+        'headerName': 'RA°',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 88,
+        'maxWidth': 96,
+        'suppressSizeToFit': True,
+    },
+    {
+        'field': 'dec_deg',
+        'headerName': 'Dec°',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 88,
+        'maxWidth': 96,
+        'suppressSizeToFit': True,
+    },
+    {
+        'field': 'n_points',
+        'headerName': 'N',
+        'type': 'numericColumn',
+        'sortable': True,
+        'width': 52,
+        'maxWidth': 60,
+        'suppressSizeToFit': True,
+    },
 ]
+
+LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF = {
+    'filter': False,
+    'floatingFilter': False,
+    'sortable': True,
+    'unSortIcon': True,
+    'suppressHeaderFilterButton': True,
+    'suppressHeaderMenuButton': True,
+    'resizable': True,
+    'wrapText': False,
+    'autoHeight': False,
+}
 
 LC_DISCOVERY_RADIUS_UNIT_OPTIONS = [
     {'label': 'arcsec', 'value': 'arcsec'},
     {'label': 'arcmin', 'value': 'arcmin'},
     {'label': 'deg', 'value': 'deg'},
 ]
+
+LC_DISCOVERY_TIME_FORMAT_OPTIONS = [
+    {'label': 'MJD', 'value': 'mjd'},
+    {'label': 'JD', 'value': 'jd'},
+    {'label': 'Date', 'value': 'date'},
+]
+
+LC_DISCOVERY_TIME_MIN_PLACEHOLDER_MJD = 'Earliest MJD (optional)'
+LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD = 'Latest MJD (optional)'
+
+_LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves.'
+_LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN = {'display': 'none'}
+_LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE = {'display': 'block'}
 
 def _mission_radio_options():
     """Builds mission radio options from the provider registry.
@@ -86,7 +165,7 @@ def _default_mission_id():
 
 
 def _click_help(help_id: str, title: str, body, *, placement: str = 'bottom'):
-    """Builds a click-triggered ``?`` control and its popover (Target field only for now).
+    """Builds a click-triggered ``?`` control and its popover.
 
     Args:
         help_id (str): Short slug used to build unique component ids.
@@ -121,6 +200,77 @@ def _click_help(help_id: str, title: str, body, *, placement: str = 'bottom'):
         className='lc-discovery-help-popover',
     )
     return button, popover
+
+
+def _time_bound_field_row(bound: str):
+    """Builds one optional time-bound row (input, format selector, help).
+
+    Args:
+        bound (str): ``min`` or ``max`` — selects component ids and help copy.
+
+    Returns:
+        tuple: ``(field_row_div, help_popover)`` for the Search tools stack.
+    """
+    is_min = bound == 'min'
+    input_id = f'lc_discovery_time_{bound}_input'
+    format_id = f'lc_discovery_time_{bound}_format_select'
+    default_placeholder = (
+        LC_DISCOVERY_TIME_MIN_PLACEHOLDER_MJD
+        if is_min
+        else LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD
+    )
+    help_title = 'Earliest time' if is_min else 'Latest time'
+    help_body = [
+        html.P(
+            'Optional limit on the lightcurve epoch span returned by the catalogue '
+            'search. Leave this field blank for an open bound.',
+            className='mb-2',
+        ),
+        html.P(
+            'Blank earliest time means no lower limit (include all data from the '
+            'beginning). Blank latest time means no upper limit (include all data '
+            'to the end). You may set either bound alone — for example, only a '
+            'latest time returns all lightcurves earlier than that epoch.',
+            className='mb-2',
+        ),
+        html.P(
+            'Provider searches always receive these limits in MJD after conversion '
+            'from the selected format below.',
+            className='mb-2',
+        ),
+        html.P('Supported formats:', className='mb-1'),
+        html.Ul(
+            [
+                html.Li('MJD — modified Julian date (default), e.g. 57123.45'),
+                html.Li('JD — Julian date, e.g. 2457123.45'),
+                html.Li('Date — calendar date (UTC), e.g. 2015-06-01'),
+            ],
+            className='mb-0 ps-3',
+        ),
+    ]
+    help_btn, help_pop = _click_help(f'time_{bound}', help_title, help_body)
+    field_row = html.Div(
+        [
+            dcc.Input(
+                id=input_id,
+                persistence=True,
+                type='search',
+                inputMode='numeric',
+                placeholder=default_placeholder,
+                className='lc-discovery-field-input',
+            ),
+            dbc.Select(
+                id=format_id,
+                options=LC_DISCOVERY_TIME_FORMAT_OPTIONS,
+                value='mjd',
+                persistence=True,
+                className='lc-discovery-field-unit',
+            ),
+            html.Div(help_btn, className='lc-discovery-field-help'),
+        ],
+        className='lc-discovery-field-row lc-discovery-field-row-time',
+    )
+    return field_row, help_pop
 
 
 def _resolved_target_card():
@@ -169,6 +319,27 @@ def _search_tools_panel():
             ),
         ],
     )
+    time_min_row, time_min_help = _time_bound_field_row('min')
+    time_max_row, time_max_help = _time_bound_field_row('max')
+    radius_help_btn, radius_help_pop = _click_help(
+        'radius',
+        'Search radius',
+        [
+            html.P(
+                'Cone search: catalogue rows within this radius of the search '
+                'centre are returned. The centre comes from Target when you enter '
+                'sky coordinates (ICRS), or from Simbad when a name resolves to '
+                'a position.',
+                className='mb-2',
+            ),
+            html.P(
+                'Not used when the provider matches Target directly by object name '
+                'or mission archive identifier (for example, a Gaia DR3 source_id). '
+                'In those cases the search goes straight to that object.',
+                className='mb-0',
+            ),
+        ],
+    )
     return dbc.Col(
         [
             html.Div(
@@ -193,19 +364,14 @@ def _search_tools_panel():
                     ),
                     html.Div(
                         [
-                            dbc.Label(
-                                'Radius',
-                                html_for='lc_discovery_radius_input',
-                                className='lc-discovery-field-label',
-                            ),
                             dcc.Input(
                                 id='lc_discovery_radius_input',
                                 persistence=True,
                                 type='search',
                                 inputMode='numeric',
-                                value='10',
+                                value='2',
                                 pattern=positive_float_pattern,
-                                placeholder='10',
+                                placeholder='Search radius',
                                 className='lc-discovery-field-input',
                             ),
                             dbc.Select(
@@ -215,18 +381,15 @@ def _search_tools_panel():
                                 persistence=True,
                                 className='lc-discovery-field-unit',
                             ),
-                            html.Span(
-                                className='lc-discovery-field-help-spacer',
-                                **{'aria-hidden': 'true'},
-                            ),
+                            html.Div(radius_help_btn, className='lc-discovery-field-help'),
                         ],
-                        className='lc-discovery-field-row lc-discovery-field-row-radius',
+                        className='lc-discovery-field-row lc-discovery-field-row-time',
                     ),
+                    time_min_row,
+                    time_max_row,
                 ],
                 className='lc-discovery-field-stack',
             ),
-            target_help_pop,
-            _resolved_target_card(),
             dbc.Stack(
                 [
                     dbc.Button(
@@ -244,8 +407,19 @@ def _search_tools_panel():
                 ],
                 direction='horizontal',
                 gap=2,
-                style=stack_wrap_style,
+                className='lc-discovery-submit-actions',
             ),
+            html.Div(
+                '',
+                id='lc_discovery_search_status',
+                className='lc-discovery-search-status',
+                style=_LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
+            ),
+            target_help_pop,
+            radius_help_pop,
+            time_min_help,
+            time_max_help,
+            _resolved_target_card(),
             dbc.Spinner(
                 children=html.Div(
                     id='lc_discovery_search_tools_alert',
@@ -257,7 +431,7 @@ def _search_tools_panel():
             html.Hr(className='my-2'),
             html.Details(
                 [
-                    html.Summary('Mission'),
+                    html.Summary('Data provider'),
                     dcc.RadioItems(
                         id='lc_discovery_mission_switch',
                         options=_mission_radio_options(),
@@ -289,6 +463,30 @@ def _search_results_panel():
     Returns:
         dash_bootstrap_components.Col: Responsive white results panel with AgGrid.
     """
+    catalog_help_btn, catalog_help_pop = _click_help(
+        'catalog_results',
+        'Catalogue results',
+        [
+            html.P(
+                'Each row is one lightcurve product you can load — typically one '
+                'object in one filter passband (mission-specific splits apply, '
+                'e.g. TESS sectors).',
+                className='mb-2',
+            ),
+            html.P(
+                'The layout follows IVOA Simple Spectral Access (SSA) and ObsCore '
+                'ideas: one row equals one data product. You do not need to know '
+                'those standards to use this page.',
+                className='mb-2',
+            ),
+            html.P(
+                'Columns t_min and t_max give the time coverage of each product in '
+                'MJD (ObsCore-style names). They may be empty when the archive '
+                'does not report a span.',
+                className='mb-0',
+            ),
+        ],
+    )
     return dbc.Col(
         [
             dbc.Spinner(
@@ -297,15 +495,19 @@ def _search_results_panel():
                         [
                             html.Div(
                                 [
-                                    html.H3(
-                                        'Catalog search results',
-                                        id='lc_discovery_catalog_header',
-                                        className='fs-5 mb-1',
-                                    ),
-                                    html.P(
-                                        'Submit a cone search to list available lightcurves.',
-                                        id='lc_discovery_catalog_subtitle',
-                                        className='text-muted mb-0',
+                                    html.Div(
+                                        [
+                                            html.H3(
+                                                _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
+                                                id='lc_discovery_catalog_header',
+                                                className='fs-5 mb-0 lc-discovery-catalog-title',
+                                            ),
+                                            html.Div(
+                                                catalog_help_btn,
+                                                className='lc-discovery-field-help',
+                                            ),
+                                        ],
+                                        className='lc-discovery-catalog-title-row',
                                     ),
                                 ],
                                 className='lc-discovery-catalog-header-row',
@@ -315,8 +517,8 @@ def _search_results_panel():
                                     id='lc_discovery_catalog_table',
                                     columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
                                     rowData=[],
-                                    columnSize='responsiveSizeToFit',
-                                    defaultColDef={'filter': True, 'sortable': True, 'resizable': True},
+                                    columnSize='autoSize',
+                                    defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
                                     dashGridOptions={
                                         'theme': 'themeBalham',
                                         'rowSelection': 'single',
@@ -326,7 +528,11 @@ def _search_results_panel():
                                         'paginationPageSize': 10,
                                         'domLayout': 'normal',
                                         'suppressHorizontalScroll': False,
+                                        'alwaysShowHorizontalScroll': True,
+                                        'enableCellTextSelection': True,
+                                        'ensureDomOrder': True,
                                     },
+                                    className='lc-discovery-catalog-aggrid ag-theme-balham',
                                     style={'height': '100%', 'width': '100%'},
                                 ),
                                 className='lc-discovery-catalog-grid',
@@ -337,6 +543,7 @@ def _search_results_panel():
                     html.Div(id='lc_discovery_search_alert', style={'display': 'none'}),
                 ],
             ),
+            catalog_help_pop,
         ],
         lg=9,
         md=8,
@@ -485,18 +692,13 @@ def layout():
     )
 
 
-_LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Catalog search results'
-_LC_DISCOVERY_CATALOG_SUBTITLE_DEFAULT = (
-    'Submit a query to list available lightcurves.'
-)
-
-
 @callback(
     Output('lc_discovery_catalog_table', 'rowData'),
     Output('lc_discovery_catalog_header', 'children'),
-    Output('lc_discovery_catalog_subtitle', 'children'),
     Output('lc_discovery_object_card_markdown', 'children'),
     Output('lc_discovery_object_card', 'style'),
+    Output('lc_discovery_search_status', 'children'),
+    Output('lc_discovery_search_status', 'style'),
     Output('lc_discovery_search_alert', 'children'),
     Output('lc_discovery_search_alert', 'style'),
     Output('store_lc_discovery_catalog', 'data'),
@@ -513,9 +715,10 @@ def clear_catalog_on_mission_change(_mission_id):
     return (
         [],
         _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
-        _LC_DISCOVERY_CATALOG_SUBTITLE_DEFAULT,
         '',
         {'display': 'none'},
+        '',
+        _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
         None,
         {'display': 'none'},
         None,
@@ -526,9 +729,10 @@ def clear_catalog_on_mission_change(_mission_id):
 @callback(
     Output('lc_discovery_catalog_table', 'rowData', allow_duplicate=True),
     Output('lc_discovery_catalog_header', 'children', allow_duplicate=True),
-    Output('lc_discovery_catalog_subtitle', 'children', allow_duplicate=True),
     Output('lc_discovery_object_card_markdown', 'children', allow_duplicate=True),
     Output('lc_discovery_object_card', 'style', allow_duplicate=True),
+    Output('lc_discovery_search_status', 'children', allow_duplicate=True),
+    Output('lc_discovery_search_status', 'style', allow_duplicate=True),
     Output('lc_discovery_search_alert', 'children', allow_duplicate=True),
     Output('lc_discovery_search_alert', 'style', allow_duplicate=True),
     Output('store_lc_discovery_catalog', 'data', allow_duplicate=True),
@@ -538,15 +742,38 @@ def clear_catalog_on_mission_change(_mission_id):
     State('lc_discovery_target_input', 'value'),
     State('lc_discovery_radius_input', 'value'),
     State('lc_discovery_radius_unit_select', 'value'),
+    State('lc_discovery_time_min_input', 'value'),
+    State('lc_discovery_time_min_format_select', 'value'),
+    State('lc_discovery_time_max_input', 'value'),
+    State('lc_discovery_time_max_format_select', 'value'),
     running=[
         (Output('lc_discovery_submit_query_button', 'disabled'), True, False),
         (Output('lc_discovery_cancel_query_button', 'disabled'), False, True),
     ],
     cancel=[Input('lc_discovery_cancel_query_button', 'n_clicks')],
+    progress=[
+        Output('lc_discovery_search_status', 'children'),
+        Output('lc_discovery_search_status', 'style'),
+    ],
+    progress_default=(
+        '',
+        _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
+    ),
     background=True,
     prevent_initial_call=True,
 )
-def submit_catalog_search(n_clicks, mission_id, target, radius_text, radius_unit):
+def submit_catalog_search(
+    set_progress,
+    n_clicks,
+    mission_id,
+    target,
+    radius_text,
+    radius_unit,
+    time_min_text,
+    time_min_format,
+    time_max_text,
+    time_max_format,
+):
     """Runs the background catalogue search for the selected mission and target.
 
     Args:
@@ -555,6 +782,10 @@ def submit_catalog_search(n_clicks, mission_id, target, radius_text, radius_unit
         target (str): Target field text.
         radius_text (str): Radius input value.
         radius_unit (str): Radius unit selector value.
+        time_min_text (str): Earliest-time entry value.
+        time_min_format (str): Earliest-time format selector value.
+        time_max_text (str): Latest-time entry value.
+        time_max_format (str): Latest-time format selector value.
 
     Returns:
         tuple: AgGrid rows, markdown card, stores, and optional alert components.
@@ -562,29 +793,51 @@ def submit_catalog_search(n_clicks, mission_id, target, radius_text, radius_unit
     if not n_clicks:
         raise PreventUpdate
 
+    def _update_search_status(message: str) -> None:
+        """Replaces the Discovery status bar with the current search step.
+
+        Args:
+            message (str): Concise status text for the active step.
+        """
+        set_progress((message, _LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE))
+
     logger.info(
-        "Discovery Submit clicked mission=%r target=%r radius=%r %r.",
+        "Discovery Submit clicked mission=%r target=%r radius=%r %r "
+        "time_min=%r (%s) time_max=%r (%s).",
         mission_id,
         target,
         radius_text,
         radius_unit,
+        time_min_text,
+        time_min_format,
+        time_max_text,
+        time_max_format,
     )
     empty_alert = (None, {'display': 'none'})
     try:
+        time_bounds = parse_discovery_time_bounds(
+            time_min_text,
+            time_min_format,
+            time_max_text,
+            time_max_format,
+        )
         outcome = run_catalog_search_for_mission(
             mission_id,
             target,
             radius_text,
             radius_unit,
+            time_bounds=time_bounds,
+            status_update=_update_search_status,
         )
     except PipeException as exc:
         logger.warning("Discovery search failed: %s", exc)
         return (
             [],
             _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
-            _LC_DISCOVERY_CATALOG_SUBTITLE_DEFAULT,
             '',
             {'display': 'none'},
+            '',
+            _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
             message.warning_alert(exc),
             {'display': 'block'},
             None,
@@ -601,10 +854,30 @@ def submit_catalog_search(n_clicks, mission_id, target, radius_text, radius_unit
     return (
         row_data,
         catalog_results_header(outcome),
-        catalog_results_subtitle(outcome),
         outcome.resolved_markdown,
         {'display': 'block'},
+        '',
+        _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
         *empty_alert,
         row_data,
         outcome.to_store_dict(),
     )
+
+
+clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='lcDiscoveryMinTimePlaceholder',
+    ),
+    Output('lc_discovery_time_min_input', 'placeholder'),
+    Input('lc_discovery_time_min_format_select', 'value'),
+)
+
+clientside_callback(
+    ClientsideFunction(
+        namespace='clientside',
+        function_name='lcDiscoveryMaxTimePlaceholder',
+    ),
+    Output('lc_discovery_time_max_input', 'placeholder'),
+    Input('lc_discovery_time_max_format_select', 'value'),
+)

@@ -16,16 +16,28 @@
     margin-bottom: 10px;
 }
 
+.lc-discovery-submit-actions {
+    margin-bottom: 10px;
+}
+
+.lc-discovery-search-status {
+    margin-bottom: 10px;
+    padding: 6px 8px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    background: rgba(255, 255, 255, 0.35);
+    border-radius: 4px;
+}
+
 .lc-discovery-field-row {
     display: grid;
-    grid-template-columns: 4.25em minmax(0, 1fr) 6.5em 1.25em;
     align-items: center;
     column-gap: 0.5rem;
 }
 
 .lc-discovery-field-label {
     margin: 0;
-    width: 4.25em;
+    width: 3em;
     flex-shrink: 0;
 }
 
@@ -34,27 +46,37 @@
     min-width: 0;
 }
 
+.lc-discovery-field-row-target {
+    grid-template-columns: 3em minmax(0, 1fr) 1.25em;
+}
+
 .lc-discovery-field-row-target .lc-discovery-field-input-wide {
-    grid-column: 2 / 4;
-}
-
-.lc-discovery-field-row-target .lc-discovery-field-help {
-    grid-column: 4;
-    justify-self: start;
-}
-
-.lc-discovery-field-row-radius .lc-discovery-field-input {
     grid-column: 2;
 }
 
-.lc-discovery-field-row-radius .lc-discovery-field-unit {
+.lc-discovery-field-row-target .lc-discovery-field-help {
     grid-column: 3;
+    justify-self: start;
+}
+
+.lc-discovery-field-row-time {
+    grid-template-columns: minmax(0, 1fr) 6.5em 1.25em;
+}
+
+.lc-discovery-field-row-time .lc-discovery-field-input {
+    grid-column: 1;
+    width: 100%;
+}
+
+.lc-discovery-field-row-time .lc-discovery-field-unit {
+    grid-column: 2;
     width: 100%;
     min-width: 0;
 }
 
-.lc-discovery-field-help-spacer {
-    grid-column: 4;
+.lc-discovery-field-row-time .lc-discovery-field-help {
+    grid-column: 3;
+    justify-self: start;
 }
 
 .lc-discovery-object-card .card-body {
@@ -123,9 +145,35 @@
     margin-bottom: 0.5rem;
 }
 
+.lc-discovery-catalog-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    width: 100%;
+}
+
+.lc-discovery-catalog-title {
+    line-height: 1.25;
+    word-break: break-word;
+}
+
 .lc-discovery-catalog-grid {
     height: clamp(240px, 45vh, 480px);
     width: 100%;
+    overflow-x: auto;
+}
+
+.lc-discovery-catalog-aggrid .ag-root-wrapper,
+.lc-discovery-catalog-aggrid .ag-center-cols-viewport,
+.lc-discovery-catalog-aggrid .ag-body-viewport {
+    overflow-x: auto;
+}
+
+.lc-discovery-catalog-aggrid .ag-cell,
+.lc-discovery-catalog-aggrid .ag-header-cell-label {
+    user-select: text;
+    -webkit-user-select: text;
+    cursor: text;
 }
 
 .lc-discovery-graph-wrap {

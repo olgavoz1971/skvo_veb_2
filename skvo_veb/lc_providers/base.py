@@ -65,6 +65,8 @@ class MissionLightcurveProvider(ABC):
         radius_arcsec: float | None = None,
         object_name: str | None = None,
         archive_id: str | None = None,
+        time_start_mjd: float | None = None,
+        time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
         """Returns a standardised catalog table for the requested search.
@@ -75,6 +77,10 @@ class MissionLightcurveProvider(ABC):
             radius_arcsec (float, optional): Cone radius in arcseconds.
             object_name (str, optional): Catalogue name or identifier.
             archive_id (str, optional): Mission-native archive id for direct lookup.
+            time_start_mjd (float, optional): Lower time limit in MJD; ``None`` is
+                unbounded below (include all data from the beginning).
+            time_end_mjd (float, optional): Upper time limit in MJD; ``None`` is
+                unbounded above (include all data to the end).
             **mission_options: Mission-specific options.
 
         Returns:

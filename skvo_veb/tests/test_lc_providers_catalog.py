@@ -23,9 +23,11 @@ def _sample_catalog_row() -> dict:
         "distance_arcsec": 1.2,
         "ra_deg": 189.23,
         "dec_deg": -12.45,
-        "object_name": "Gaia DR3 1111111111111111111",
+        "object_name": "Gaia DR3 1936512041221649536",
         "filter_name": "Gaia G",
-        "lc_key": encode_lc_key("gaia", {"source_id": 1111111111111111111, "band": "G"}),
+        "lc_key": encode_lc_key("gaia", {"source_id": 1936512041221649536, "band": "G"}),
+        "t_min": 57100.0,
+        "t_max": 57200.0,
         "n_points": 24,
     }
 
@@ -41,6 +43,8 @@ def test_empty_catalog_table_has_required_columns():
         "object_name",
         "filter_name",
         "lc_key",
+        "t_min",
+        "t_max",
         "n_points",
     ):
         assert name in table.colnames
@@ -59,7 +63,7 @@ def test_catalog_table_to_row_dicts_round_trip():
     table = validate_catalog_table(Table([_sample_catalog_row()]))
     rows = catalog_table_to_row_dicts(table)
     assert len(rows) == 1
-    assert rows[0]["object_name"].startswith("Gaia DR3")
+    assert rows[0]["object_name"] == "Gaia DR3 1936512041221649536"
     assert rows[0]["n_points"] == 24
 
 

@@ -403,6 +403,26 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 console.error("trimSelectedDisplayRange Error:", error.message);
                 return window.dash_clientside.no_update;
             }
+        },
+
+        lcDiscoveryMinTimePlaceholder: function (timeFormat) {
+            const placeholders = {
+                mjd: 'Earliest MJD (optional)',
+                jd: 'Earliest JD (optional)',
+                date: 'Earliest date, e.g. 2015-06-01',
+            };
+            const fmt = timeFormat || 'mjd';
+            return placeholders[fmt] || placeholders.mjd;
+        },
+
+        lcDiscoveryMaxTimePlaceholder: function (timeFormat) {
+            const placeholders = {
+                mjd: 'Latest MJD (optional)',
+                jd: 'Latest JD (optional)',
+                date: 'Latest date, e.g. 2020-12-31',
+            };
+            const fmt = timeFormat || 'mjd';
+            return placeholders[fmt] || placeholders.mjd;
         }
     }
 });

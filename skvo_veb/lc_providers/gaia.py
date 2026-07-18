@@ -1,8 +1,9 @@
-"""Mock/template Gaia DR3 lightcurve provider for Lightcurve Discovery development.
+"""Gaia DR3 debug lightcurve provider for Lightcurve Discovery development.
 
-This adapter returns synthetic catalog rows and epoch photometry. It demonstrates
-the provider contract without remote VO queries. Replace internals with pyvo /
-Gaia archive access in a later step; keep the public API unchanged.
+This adapter exposes a fixed micro-catalogue of three real Gaia DR3 sources
+with transparent synthetic epoch photometry for UI testing. Catalogue rows
+use Gaia ``source_id`` labels only; common names are resolved via Simbad in
+the Discovery orchestration layer, not by the Gaia provider.
 """
 
 from __future__ import annotations
@@ -21,10 +22,19 @@ from skvo_veb.lc_providers.base import (
     MissionCapabilities,
     MissionLightcurveProvider,
 )
-from skvo_veb.lc_providers.catalog_schema import empty_catalog_table, validate_catalog_table
+from skvo_veb.lc_providers.catalog_schema import (
+    empty_catalog_table,
+    filter_catalog_table_by_time_bounds,
+    validate_catalog_table,
+)
 from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.mission_config import gaia as gaia_config
+from skvo_veb.utils.mission_config.gaia_debug_catalog import (
+    GaiaDr3DebugSource,
+    all_debug_sources,
+    debug_source_by_id,
+)
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
@@ -37,13 +47,7 @@ _GAIA_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_MOCK_SOURCE_OFFSETS = (
-    {"source_id": 1111111111111111111, "delta_ra_arcsec": 0.0, "delta_dec_arcsec": 0.0, "g_mag": 12.34},
-    {"source_id": 2222222222222222222, "delta_ra_arcsec": 2.5, "delta_dec_arcsec": -1.2, "g_mag": 14.08},
-    {"source_id": 3333333333333333333, "delta_ra_arcsec": -4.0, "delta_dec_arcsec": 3.1, "g_mag": 15.72},
-)
-
-_MOCK_SOURCE_BY_ID = {entry["source_id"]: entry for entry in _MOCK_SOURCE_OFFSETS}
+_SYNTHETIC_EPOCH_POINTS = 48
 
 
 def parse_gaia_source_id(text: str | None) -> int | None:
@@ -69,11 +73,38 @@ def parse_gaia_source_id(text: str | None) -> int | None:
     return None
 
 
+def _resolve_debug_source(
+    *,
+    archive_id: str | None = None,
+    object_name: str | None = None,
+) -> GaiaDr3DebugSource | None:
+    """Resolves a debug-catalogue entry from a Gaia ``source_id`` string only.
+
+    Gaia does not resolve common names or Simbad identifiers. Only numeric
+    Gaia DR3 ``source_id`` strings (optionally prefixed with ``Gaia DR3``)
+    are accepted.
+
+    Args:
+        archive_id (str, optional): Gaia ``source_id`` string.
+        object_name (str, optional): Gaia ``source_id`` string from the UI.
+
+    Returns:
+        GaiaDr3DebugSource or None: Matching debug entry, if present.
+    """
+    for candidate in (archive_id, object_name):
+        if candidate is None:
+            continue
+        source_id = parse_gaia_source_id(str(candidate))
+        if source_id is not None:
+            return debug_source_by_id(source_id)
+    return None
+
+
 class GaiaDr3Provider(MissionLightcurveProvider):
-    """Template Gaia DR3 provider with deterministic mock search/fetch data."""
+    """Gaia DR3 debug provider with a fixed three-source transparent catalogue."""
 
     mission_id = gaia_config.MISSION_ID
-    display_name = "Gaia DR3 (mock)"
+    display_name = "Gaia DR3 (debug)"
     export_profile = gaia_config.MISSION_ID
     capabilities = MissionCapabilities(
         supports_cone_search=True,
@@ -93,15 +124,19 @@ class GaiaDr3Provider(MissionLightcurveProvider):
     def pick_archive_id_from_simbad(self, simbad_result: SimbadResolveResult) -> MissionArchiveMatch | None:
         """Selects a Gaia DR3 source id from Simbad cross-identifiers.
 
+        Only identifiers present in the debug micro-catalogue are accepted.
+
         Args:
             simbad_result (SimbadResolveResult): Shared Simbad resolve payload.
 
         Returns:
-            MissionArchiveMatch or None: Gaia source id when present in Simbad ids.
+            MissionArchiveMatch or None: Gaia source id when present in the debug set.
         """
         for identifier in simbad_result.identifiers:
             source_id = parse_gaia_source_id(identifier)
             if source_id is None:
+                continue
+            if debug_source_by_id(source_id) is None:
                 continue
             label = gaia_config.format_source_name(source_id)
             return MissionArchiveMatch(
@@ -119,71 +154,80 @@ class GaiaDr3Provider(MissionLightcurveProvider):
         radius_arcsec: float | None = None,
         object_name: str | None = None,
         archive_id: str | None = None,
+        time_start_mjd: float | None = None,
+        time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Returns mock Gaia DR3 catalogue rows for cone or direct-id queries.
+        """Returns debug Gaia DR3 SSA-style catalogue rows for cone or direct lookup.
+
+        Each row is one plottable lightcurve product (one Gaia passband for one
+        debug source). Unknown source ids or sky regions outside the three debug
+        objects return an empty table.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): Gaia id string or other mission-specific name.
+            object_name (str, optional): Gaia ``source_id`` string (``Gaia DR3 …`` or digits).
             archive_id (str, optional): Gaia ``source_id`` for direct lookup.
+            time_start_mjd (float, optional): Lower time limit in MJD.
+            time_end_mjd (float, optional): Upper time limit in MJD.
             **mission_options: Reserved for future Gaia-specific filters.
 
         Returns:
             astropy.table.Table: Standardised catalog table (possibly empty).
         """
-        if archive_id is not None:
-            source_id = parse_gaia_source_id(str(archive_id))
-            if source_id is None:
-                return empty_catalog_table()
-            return self._catalog_by_source_id(source_id)
-
-        if object_name:
-            source_id = parse_gaia_source_id(object_name)
-            if source_id is not None:
-                return self._catalog_by_source_id(source_id)
-            return empty_catalog_table()
+        debug_source = _resolve_debug_source(
+            archive_id=archive_id,
+            object_name=object_name,
+        )
+        if debug_source is not None:
+            table = self._catalog_for_debug_source(debug_source, distance_arcsec=0.0)
+            return filter_catalog_table_by_time_bounds(
+                table,
+                time_start_mjd=time_start_mjd,
+                time_end_mjd=time_end_mjd,
+            )
 
         if ra_deg is not None and dec_deg is not None and radius_arcsec is not None:
-            return self._catalog_cone(ra_deg=ra_deg, dec_deg=dec_deg, radius_arcsec=radius_arcsec)
+            table = self._catalog_cone(
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                radius_arcsec=radius_arcsec,
+            )
+            return filter_catalog_table_by_time_bounds(
+                table,
+                time_start_mjd=time_start_mjd,
+                time_end_mjd=time_end_mjd,
+            )
 
         return empty_catalog_table()
 
-    def _catalog_by_source_id(self, source_id: int) -> Table:
-        """Builds a direct-id mock catalogue row for one Gaia source.
+    def _catalog_for_debug_source(
+        self,
+        debug_source: GaiaDr3DebugSource,
+        *,
+        distance_arcsec: float,
+    ) -> Table:
+        """Builds SSA/ObsCore rows for one debug-catalogue source.
 
         Args:
-            source_id (int): Gaia DR3 source identifier.
+            debug_source (GaiaDr3DebugSource): Fixed debug source record.
+            distance_arcsec (float): Separation from the search centre in arcseconds.
 
         Returns:
-            astropy.table.Table: One-row catalogue or empty when unsupported.
+            astropy.table.Table: Three rows (G, BP, RP) or empty when invalid.
         """
-        template = _MOCK_SOURCE_BY_ID.get(source_id)
-        if template is not None:
-            ra_deg = 100.0 + template["delta_ra_arcsec"] / 3600.0
-            dec_deg = 10.0 + template["delta_dec_arcsec"] / 3600.0
-            g_mag = template["g_mag"]
-            distance_arcsec = 0.0
-        else:
-            ra_deg = 180.0 + (source_id % 1000) * 0.001
-            dec_deg = -20.0 + (source_id % 997) * 0.001
-            g_mag = 12.0 + (source_id % 50) * 0.05
-            distance_arcsec = np.nan
-
-        row = self._build_catalog_row(
-            source_id=source_id,
-            ra_deg=ra_deg,
-            dec_deg=dec_deg,
-            g_mag=g_mag,
+        rows = self._ssa_products_for_source(
+            debug_source=debug_source,
             distance_arcsec=distance_arcsec,
-            provider_note="Mock Gaia DR3 direct source_id lookup",
         )
-        return validate_catalog_table(Table([row]))
+        if not rows:
+            return empty_catalog_table()
+        return validate_catalog_table(Table(rows))
 
     def _catalog_cone(self, *, ra_deg: float, dec_deg: float, radius_arcsec: float) -> Table:
-        """Returns mock sources within a cone around the supplied centre.
+        """Returns debug SSA products within a cone around the supplied centre.
 
         Args:
             ra_deg (float): Cone centre right ascension in degrees.
@@ -199,85 +243,111 @@ class GaiaDr3Provider(MissionLightcurveProvider):
             radius_arcsec=radius_arcsec,
         )
         centre = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-        rows = []
-        for template in _MOCK_SOURCE_OFFSETS:
-            source_coord = centre.spherical_offsets_by(
-                template["delta_ra_arcsec"] * u.arcsec,
-                template["delta_dec_arcsec"] * u.arcsec,
+        rows: list[dict] = []
+        for debug_source in all_debug_sources():
+            source_coord = SkyCoord(
+                ra=debug_source.ra_deg * u.deg,
+                dec=debug_source.dec_deg * u.deg,
+                frame="icrs",
             )
             separation = centre.separation(source_coord).to_value(u.arcsec)
             if separation > radius:
                 continue
-            rows.append(
-                self._build_catalog_row(
-                    source_id=template["source_id"],
-                    ra_deg=float(source_coord.ra.deg),
-                    dec_deg=float(source_coord.dec.deg),
-                    g_mag=template["g_mag"],
+            rows.extend(
+                self._ssa_products_for_source(
+                    debug_source=debug_source,
                     distance_arcsec=separation,
-                    provider_note="Mock Gaia DR3 cone search row",
                 )
             )
         if not rows:
             return empty_catalog_table()
         return validate_catalog_table(Table(rows))
 
+    def _ssa_products_for_source(
+        self,
+        *,
+        debug_source: GaiaDr3DebugSource,
+        distance_arcsec: float,
+    ) -> list[dict]:
+        """Splits one debug source into Gaia SSA/ObsCore catalogue products.
+
+        Args:
+            debug_source (GaiaDr3DebugSource): Fixed debug source record.
+            distance_arcsec (float): Separation from search centre in arcseconds.
+
+        Returns:
+            list[dict]: One standardised row dict per Gaia passband product.
+        """
+        return [
+            self._build_catalog_row(
+                debug_source=debug_source,
+                band=band,
+                distance_arcsec=distance_arcsec,
+            )
+            for band in gaia_config.GAIA_MOCK_BANDS
+        ]
+
     def _build_catalog_row(
         self,
         *,
-        source_id: int,
-        ra_deg: float,
-        dec_deg: float,
-        g_mag: float,
+        debug_source: GaiaDr3DebugSource,
+        band: str,
         distance_arcsec: float,
-        provider_note: str,
     ) -> dict:
-        """Builds one standardised catalogue row dict for the mock provider.
+        """Builds one standardised SSA catalogue row dict for a debug source.
 
         Args:
-            source_id (int): Gaia source identifier.
-            ra_deg (float): Source right ascension in degrees.
-            dec_deg (float): Source declination in degrees.
-            g_mag (float): Mock G-band magnitude.
+            debug_source (GaiaDr3DebugSource): Fixed debug source record.
+            band (str): Gaia passband code (``G``, ``BP``, ``RP``).
             distance_arcsec (float): Separation from search centre in arcseconds.
-            provider_note (str): Row annotation for the UI.
 
         Returns:
             dict: Row payload matching the shared catalogue schema.
         """
-        band = gaia_config.GAIA_G_BAND
+        band = gaia_config.normalise_band(band)
+        band_model = debug_source.band_models[band]
+        source_id = debug_source.source_id
         lc_key = encode_lc_key(
             self.mission_id,
             {
                 "source_id": source_id,
                 "band": band,
-                "ra_deg": ra_deg,
-                "dec_deg": dec_deg,
+                "ra_deg": debug_source.ra_deg,
+                "dec_deg": debug_source.dec_deg,
             },
         )
-        return {
+        row = {
             "distance_arcsec": distance_arcsec,
-            "ra_deg": ra_deg,
-            "dec_deg": dec_deg,
-            "object_name": gaia_config.format_source_name(source_id),
-            "filter_name": gaia_config.GAIA_G_FILTER_NAME,
+            "ra_deg": debug_source.ra_deg,
+            "dec_deg": debug_source.dec_deg,
+            "object_name": debug_source.catalogue_object_name,
+            "filter_name": gaia_config.filter_name_for_band(band),
             "lc_key": lc_key,
-            "filter_identifier": gaia_config.GAIA_G_FILTER_IDENTIFIER,
-            "n_points": 24,
-            "mag": g_mag,
+            "t_min": debug_source.t_min,
+            "t_max": debug_source.t_max,
+            "filter_identifier": gaia_config.filter_identifier_for_band(band),
+            "n_points": _SYNTHETIC_EPOCH_POINTS,
+            "mag": band_model.mean_mag,
             "survey": gaia_config.GAIA_SURVEY,
-            "provider_note": provider_note,
+            "provider_note": debug_source.provider_note,
+            "epoch": band_model.epoch_mjd,
         }
+        if band_model.period_days is not None:
+            row["period"] = band_model.period_days
+        return row
 
     def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
-        """Builds a synthetic Gaia G-band lightcurve for the requested ``lc_key``.
+        """Builds synthetic Gaia passband epoch photometry for a debug ``lc_key``.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
-            force_refresh (bool): Accepted for API compatibility; mock data is deterministic.
+            force_refresh (bool): Accepted for API compatibility; data are deterministic.
 
         Returns:
             VOLightCurve: VO-standard lightcurve parsed from generated VOTable bytes.
+
+        Raises:
+            PipeException: When the key is invalid or refers to a non-debug source.
         """
         if not self.validate_lc_key(lc_key):
             raise PipeException(f"{self.display_name}: invalid lightcurve key.")
@@ -291,7 +361,13 @@ class GaiaDr3Provider(MissionLightcurveProvider):
         if source_id is None:
             raise PipeException(f"{self.display_name}: lc_key payload missing source_id.")
 
-        table = _build_mock_epoch_table(source_id=int(source_id))
+        debug_source = debug_source_by_id(int(source_id))
+        if debug_source is None:
+            raise PipeException(
+                f"{self.display_name}: source_id {source_id} is not in the debug catalogue."
+            )
+
+        table = _build_synthetic_epoch_table(debug_source, band=str(band))
         buffer = io.BytesIO()
         write_vo_lightcurve(
             buffer,
@@ -306,7 +382,7 @@ class GaiaDr3Provider(MissionLightcurveProvider):
         buffer.seek(0)
         volc = VOLightCurve(buffer)
         logger.info(
-            "Gaia mock fetch source_id=%s band=%s n_points=%s force_refresh=%s",
+            "Gaia debug fetch source_id=%s band=%s n_points=%s force_refresh=%s",
             source_id,
             band,
             len(volc),
@@ -315,27 +391,52 @@ class GaiaDr3Provider(MissionLightcurveProvider):
         return volc
 
 
-def _build_mock_epoch_table(source_id: int) -> Table:
-    """Creates deterministic mock Gaia epoch photometry for one source.
+def _build_synthetic_epoch_table(debug_source: GaiaDr3DebugSource, *, band: str) -> Table:
+    """Creates transparent synthetic Gaia epoch photometry for one debug product.
 
     Args:
-        source_id (int): Gaia source identifier used to seed the synthetic curve.
+        debug_source (GaiaDr3DebugSource): Fixed debug source record.
+        band (str): Gaia passband code.
 
     Returns:
         astropy.table.Table: Table with ``obs_time``, ``phot``, and ``flux_error``.
     """
-    rng = np.random.default_rng(source_id % (2**32))
-    n_points = 24
-    base_mjd = 59000.0 + (source_id % 1000) * 0.01
-    obs_time = base_mjd + np.sort(rng.uniform(0.0, 400.0, n_points))
-    base_mag = 12.0 + (source_id % 97) * 0.01
-    phot = base_mag + 0.08 * np.sin(np.linspace(0.0, 4.0 * np.pi, n_points))
-    phot += rng.normal(0.0, 0.01, n_points)
-    flux_error = np.clip(rng.normal(0.015, 0.004, n_points), 0.005, None)
+    band_code = gaia_config.normalise_band(band)
+    band_model = debug_source.band_models[band_code]
+    seed = (debug_source.source_id % (2**32)) + hash(band_code) % (2**16)
+    rng = np.random.default_rng(seed)
+
+    obs_time = np.linspace(
+        debug_source.t_min,
+        debug_source.t_max,
+        _SYNTHETIC_EPOCH_POINTS,
+    )
+
+    if band_model.period_days is not None:
+        phase = 2.0 * np.pi * (obs_time - band_model.epoch_mjd) / band_model.period_days
+        phot = band_model.mean_mag + band_model.amplitude_mag * np.sin(phase)
+        phot += rng.normal(0.0, band_model.noise_sigma_mag, _SYNTHETIC_EPOCH_POINTS)
+    else:
+        span = float(obs_time[-1] - obs_time[0]) or 1.0
+        centred = (obs_time - float(obs_time[0])) / span
+        drift = 0.10 * (centred - 0.5)
+        red_noise = np.cumsum(rng.normal(0.0, 0.012, _SYNTHETIC_EPOCH_POINTS))
+        red_noise -= np.mean(red_noise)
+        phot = band_model.mean_mag + drift + red_noise
+        phot += rng.normal(0.0, band_model.noise_sigma_mag, _SYNTHETIC_EPOCH_POINTS)
+
+    flux_error = np.clip(
+        rng.normal(band_model.noise_sigma_mag, 0.004, _SYNTHETIC_EPOCH_POINTS),
+        0.005,
+        None,
+    )
 
     table = Table()
     table["obs_time"] = obs_time
     table["phot"] = phot
     table["flux_error"] = flux_error
     table.meta["time_unit_note"] = f"MJD with origin {JD_TO_MJD}"
+    table.meta["synthetic_model"] = debug_source.lc_kind
+    if band_model.period_days is not None:
+        table.meta["period_days"] = band_model.period_days
     return table

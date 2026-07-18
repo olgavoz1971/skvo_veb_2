@@ -20,13 +20,13 @@ REQUIRED_CATALOG_COLUMNS = (
     "object_name",
     "filter_name",
     "lc_key",
+    "t_min",
+    "t_max",
 )
 
 OPTIONAL_CATALOG_COLUMNS = (
     "filter_identifier",
     "n_points",
-    "time_start_mjd",
-    "time_end_mjd",
     "mag",
     "survey",
     "provider_note",
@@ -41,10 +41,10 @@ CATALOG_COLUMN_DTYPES = {
     "object_name": object,
     "filter_name": object,
     "lc_key": object,
+    "t_min": np.float64,
+    "t_max": np.float64,
     "filter_identifier": object,
     "n_points": np.int64,
-    "time_start_mjd": np.float64,
-    "time_end_mjd": np.float64,
     "mag": np.float64,
     "survey": object,
     "provider_note": object,
@@ -164,3 +164,77 @@ def append_catalog_rows(base: Table, extra: Table) -> Table:
     if len(extra) == 0:
         return validate_catalog_table(base)
     return validate_catalog_table(vstack([validate_catalog_table(base), validate_catalog_table(extra)]))
+
+
+def catalog_row_overlaps_time_bounds(
+    row_t_min,
+    row_t_max,
+    *,
+    time_start_mjd: float | None,
+    time_end_mjd: float | None,
+) -> bool:
+    """Checks whether one catalogue row overlaps a query time window in MJD.
+
+    Row ``t_min`` / ``t_max`` follow ObsCore-style naming (MJD). Masked or NaN
+    row bounds are treated as unknown coverage and are kept in the result.
+
+    ``time_start_mjd`` / ``time_end_mjd`` use ``None`` for an open bound
+    (negative or positive infinity respectively).
+
+    Args:
+        row_t_min: Catalogue row coverage start in MJD.
+        row_t_max: Catalogue row coverage end in MJD.
+        time_start_mjd (float, optional): Query lower bound in MJD.
+        time_end_mjd (float, optional): Query upper bound in MJD.
+
+    Returns:
+        bool: True when the row time span intersects the query window.
+    """
+    if row_t_min is np.ma.masked or row_t_max is np.ma.masked:
+        return True
+    if np.isnan(float(row_t_min)) or np.isnan(float(row_t_max)):
+        return True
+    query_start = float("-inf") if time_start_mjd is None else float(time_start_mjd)
+    query_end = float("inf") if time_end_mjd is None else float(time_end_mjd)
+    return float(row_t_min) <= query_end and float(row_t_max) >= query_start
+
+
+def filter_catalog_table_by_time_bounds(
+    table: Table,
+    *,
+    time_start_mjd: float | None,
+    time_end_mjd: float | None,
+) -> Table:
+    """Filters a catalogue table to rows overlapping optional MJD time bounds.
+
+    Args:
+        table (astropy.table.Table): Candidate catalogue from a provider search.
+        time_start_mjd (float, optional): Query lower bound in MJD.
+        time_end_mjd (float, optional): Query upper bound in MJD.
+
+    Returns:
+        astropy.table.Table: Filtered catalogue (possibly empty).
+    """
+    if time_start_mjd is None and time_end_mjd is None:
+        return table
+    if len(table) == 0:
+        return table
+    if "t_min" not in table.colnames or "t_max" not in table.colnames:
+        logger.warning(
+            "Catalogue table lacks t_min/t_max columns; skipping time-bound filter."
+        )
+        return table
+
+    keep_mask = [
+        catalog_row_overlaps_time_bounds(
+            row["t_min"],
+            row["t_max"],
+            time_start_mjd=time_start_mjd,
+            time_end_mjd=time_end_mjd,
+        )
+        for row in table
+    ]
+    filtered = table[keep_mask]
+    if len(filtered) == 0:
+        return empty_catalog_table()
+    return validate_catalog_table(filtered)

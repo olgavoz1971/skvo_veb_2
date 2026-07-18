@@ -13,6 +13,24 @@ from skvo_veb.utils.my_tools import PipeException
 
 logger = logging.getLogger(__name__)
 
+_CONNECTIVITY_MESSAGE_HINTS = (
+    "network is unreachable",
+    "name or service not known",
+    "connection refused",
+    "connection reset",
+    "timed out",
+    "timeout",
+    "no route to host",
+    "temporary failure in name resolution",
+    "failed to establish a new connection",
+    "max retries exceeded",
+    "nodename nor servname provided",
+    "getaddrinfo failed",
+    "errno 101",
+    "errno 110",
+    "errno 111",
+)
+
 
 @dataclass(frozen=True)
 class SimbadResolveResult:
@@ -31,6 +49,46 @@ class SimbadResolveResult:
     identifiers: tuple[str, ...]
     ra_deg: float
     dec_deg: float
+
+
+def _is_connectivity_error(exc: BaseException) -> bool:
+    """Returns whether an exception indicates network failure rather than no match.
+
+    Args:
+        exc (BaseException): Exception raised by Simbad, Sesame, or HTTP clients.
+
+    Returns:
+        bool: ``True`` when the failure is likely due to connectivity.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    if isinstance(exc, OSError) and not isinstance(exc, FileNotFoundError):
+        return True
+
+    try:
+        import requests
+
+        if isinstance(exc, requests.exceptions.RequestException):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        from urllib.error import URLError
+
+        if isinstance(exc, URLError):
+            return True
+    except ImportError:
+        pass
+
+    message = str(exc).lower()
+    if any(hint in message for hint in _CONNECTIVITY_MESSAGE_HINTS):
+        return True
+
+    cause = exc.__cause__
+    if cause is not None and cause is not exc:
+        return _is_connectivity_error(cause)
+    return False
 
 
 def _table_column(row, *names: str):
@@ -85,6 +143,33 @@ def _skycoord_from_simbad_row(row) -> SkyCoord:
         )
 
 
+def _raise_simbad_resolution_failure(
+    query: str,
+    *,
+    connectivity_errors: list[BaseException],
+    last_error: BaseException | None,
+) -> None:
+    """Raises a user-facing resolution error with an accurate cause.
+
+    Args:
+        query (str): User-supplied target name.
+        connectivity_errors (list[BaseException]): Network-related failures seen.
+        last_error (BaseException, optional): Final exception from Sesame fallback.
+
+    Raises:
+        PipeException: When Simbad/Sesame resolution cannot complete.
+    """
+    if connectivity_errors:
+        raise PipeException(
+            f"Cannot reach Simbad or Sesame to resolve '{query}'. "
+            "Check your network connection and try again."
+        ) from (last_error or connectivity_errors[-1])
+
+    raise PipeException(
+        f"Object '{query}' was not found in Simbad or Sesame."
+    ) from last_error
+
+
 def resolve_simbad_name(name: str) -> SimbadResolveResult:
     """Resolves an object name through Simbad (with Sesame fallback for coordinates).
 
@@ -95,7 +180,8 @@ def resolve_simbad_name(name: str) -> SimbadResolveResult:
         SimbadResolveResult: Main id, identifier list, and ICRS coordinates.
 
     Raises:
-        PipeException: When the name is empty or cannot be resolved.
+        PipeException: When the name is empty, the archive is unreachable, or the
+            name cannot be resolved.
     """
     query = str(name or "").strip()
     if not query:
@@ -107,6 +193,7 @@ def resolve_simbad_name(name: str) -> SimbadResolveResult:
     main_id = query
     identifiers: list[str] = []
     coord: SkyCoord | None = None
+    connectivity_errors: list[BaseException] = []
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=UserWarning)
@@ -127,6 +214,8 @@ def resolve_simbad_name(name: str) -> SimbadResolveResult:
             else:
                 logger.info("Simbad query_object returned no rows for %r.", query)
         except Exception as exc:
+            if _is_connectivity_error(exc):
+                connectivity_errors.append(exc)
             logger.warning("Simbad query_object failed for %r: %s", query, exc)
 
         try:
@@ -146,9 +235,12 @@ def resolve_simbad_name(name: str) -> SimbadResolveResult:
             else:
                 logger.info("Simbad query_objectids returned no rows for %r.", query)
         except Exception as exc:
+            if _is_connectivity_error(exc):
+                connectivity_errors.append(exc)
             logger.warning("Simbad query_objectids failed for %r: %s", query, exc)
 
     if coord is None:
+        sesame_error: BaseException | None = None
         try:
             logger.info(
                 "Simbad coordinates missing for %r; trying Sesame (SkyCoord.from_name) …",
@@ -157,9 +249,15 @@ def resolve_simbad_name(name: str) -> SimbadResolveResult:
             coord = SkyCoord.from_name(query)
             logger.info("Resolved %r via Sesame/SkyCoord.from_name fallback.", query)
         except Exception as exc:
-            raise PipeException(
-                f"Object '{query}' was not found in Simbad or Sesame."
-            ) from exc
+            sesame_error = exc
+            if _is_connectivity_error(exc):
+                connectivity_errors.append(exc)
+            logger.warning("Sesame fallback failed for %r: %s", query, exc)
+            _raise_simbad_resolution_failure(
+                query,
+                connectivity_errors=connectivity_errors,
+                last_error=sesame_error,
+            )
 
     unique_ids = tuple(dict.fromkeys([main_id, *identifiers]))
     logger.info(
