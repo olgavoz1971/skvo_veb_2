@@ -7,6 +7,8 @@
  */
 
 .lc-discovery-page {
+    font-size: 0.85rem;
+    --lc-discovery-select-font-size: 0.85rem;
     --lc-discovery-space-xs: 0.25rem;
     --lc-discovery-space-sm: 0.375rem;
     --lc-discovery-space-md: 0.5rem;
@@ -87,6 +89,11 @@
 .lc-discovery-field-row-time .lc-discovery-field-input {
     grid-column: 1;
     width: 100%;
+}
+
+.lc-discovery-page .lc-discovery-field-unit,
+.lc-discovery-page .lc-discovery-field-unit.form-select {
+    font-size: var(--lc-discovery-select-font-size);
 }
 
 .lc-discovery-field-row-time .lc-discovery-field-unit {

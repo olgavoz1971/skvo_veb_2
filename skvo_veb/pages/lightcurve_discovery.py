@@ -568,7 +568,7 @@ def _search_results_panel():
                                             html.H3(
                                                 _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
                                                 id='lc_discovery_catalog_header',
-                                                className='fs-5 mb-0 lc-discovery-catalog-title',
+                                                className='fs-6 mb-0 lc-discovery-catalog-title',
                                             ),
                                             html.Div(
                                                 catalog_help_btn,
