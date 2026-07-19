@@ -341,22 +341,24 @@ class PhotDM:
 class CooSys:
     """Represents a coordinate system reference frame for spatial coordinates.
 
-    Used to model coordinate system metadata.
+    Used to model VOTable ``<COOSYS>`` metadata (reference frame and epoch).
     """
 
-    def __init__(self, epoch=2016, system='ICRS'):
+    def __init__(self, *, epoch=2016, system='ICRS', coosys_id='system'):
         """Initialises a CooSys instance.
 
         Args:
-            epoch (float or int, optional): The reference epoch of the coordinates.
-                Defaults to 2016.
-            system (str, optional): The reference coordinate system/frame. Defaults to 'ICRS'.
+            epoch (float, int, or str, optional): Reference epoch of the coordinates
+                (e.g. proper-motion epoch for Gaia). Defaults to 2016.
+            system (str, optional): Reference coordinate system/frame. Defaults to ``ICRS``.
+            coosys_id (str, optional): VOTable ``COOSYS/@ID`` value. Defaults to ``system``.
         """
         self.epoch = epoch
         self.system = system
+        self.coosys_id = coosys_id
 
     def __repr__(self):
-        return f"<CooSys epoch={self.epoch}: system={self.system}>"
+        return f"<CooSys id={self.coosys_id} epoch={self.epoch}: system={self.system}>"
 
 
 class TimeSys:
@@ -415,6 +417,33 @@ def extract_timesys_from_astropy(vot_file):
                 timescale=ts.timescale or 'UTC'
             )
     return TimeSys()
+
+
+def extract_coosys_from_astropy(vot_file):
+    """Extracts CooSys metadata from astropy VOTableFile tree.
+
+    Args:
+        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
+
+    Returns:
+        CooSys or None: Populated coordinate-system metadata when present.
+    """
+    for res in vot_file.resources:
+        if not res.coordinate_systems:
+            continue
+        cs = res.coordinate_systems[0]
+        epoch = cs.epoch
+        if epoch is not None:
+            try:
+                epoch = float(epoch)
+            except (TypeError, ValueError):
+                pass
+        return CooSys(
+            coosys_id=cs.ID or "system",
+            system=cs.system or "ICRS",
+            epoch=epoch if epoch is not None else 2016,
+        )
+    return None
 
 
 def extract_photdm_from_astropy(vot_file):
@@ -592,6 +621,41 @@ def extract_timesys(tree):
 
     tree.apply(find_ts)
     return TimeSys(**data)
+
+
+def extract_coosys(tree):
+    """GAVO tree walker for COOSYS metadata.
+
+    Args:
+        tree: The GAVO VOTable tree node/element to parse.
+
+    Returns:
+        CooSys or None: Populated coordinate-system metadata when present.
+    """
+    data = {"coosys_id": "system", "epoch": None, "system": None}
+
+    def find_cs(node, text, attrs, childIter):
+        if node.name_ == "COOSYS":
+            data["coosys_id"] = attrs.get("ID", "system")
+            data["system"] = attrs.get("system")
+            epoch = attrs.get("epoch")
+            if epoch is not None:
+                try:
+                    data["epoch"] = float(epoch)
+                except (TypeError, ValueError):
+                    data["epoch"] = epoch
+        for child in childIter:
+            if hasattr(child, "apply"):
+                child.apply(find_cs)
+
+    tree.apply(find_cs)
+    if not data["system"]:
+        return None
+    return CooSys(
+        coosys_id=data["coosys_id"],
+        system=data["system"],
+        epoch=data["epoch"] if data["epoch"] is not None else 2016,
+    )
 
 
 def find_columns_by_ucd(table, ucd_fragment):
@@ -958,7 +1022,7 @@ class VOLightCurve:
         self.file_path = file_path
         self.table = None
         self.timesys = TimeSys()
-        self.coosys = CooSys()
+        self.coosys = None
         self.photdms = {}  # maps column_name -> PhotDM instance
 
         self._ingest(file_path)
@@ -1000,6 +1064,7 @@ class VOLightCurve:
                             self.table.meta[param.name] = param.value
                     
                     self.timesys = extract_timesys_from_astropy(tree)
+                    self.coosys = extract_coosys_from_astropy(tree)
                     self.photdms = extract_photdm_from_astropy(tree)
                     self.table = _promote_to_vo_standards(self.table)
                     astropy_success = True
@@ -1022,6 +1087,7 @@ class VOLightCurve:
 
                     self.table = _promote_to_vo_standards(self.table)
                     self.timesys = extract_timesys(votable_tree)
+                    self.coosys = extract_coosys(votable_tree)
                     self.photdms = extract_photdm(votable_tree)
                     return
                 except Exception as e_gavo:
@@ -1292,12 +1358,15 @@ class VOLightCurve:
         period: float | None = None,
         epoch: float | None = None,
         binary: bool = True,
+        coosys_id: str = "system",
+        coosys_system: str | None = None,
+        coosys_epoch: float | str | None = None,
     ):
         """Writes this lightcurve to a compliant IVOA VOTable XML file.
 
         Refer to `write_vo_lightcurve` for detailed argument descriptions.
         """
-        return write_vo_lightcurve(
+        write_kwargs = dict(
             output_stream_or_path=output_stream_or_path,
             table_data=self.table,
             table_name=table_name,
@@ -1322,6 +1391,19 @@ class VOLightCurve:
             epoch=epoch,
             binary=binary,
         )
+        if self.coosys is not None:
+            write_kwargs.update(
+                coosys_id=self.coosys.coosys_id,
+                coosys_system=self.coosys.system,
+                coosys_epoch=self.coosys.epoch,
+            )
+        elif coosys_system is not None:
+            write_kwargs.update(
+                coosys_id=coosys_id,
+                coosys_system=coosys_system,
+                coosys_epoch=coosys_epoch,
+            )
+        return write_vo_lightcurve(**write_kwargs)
 
 
 
@@ -1364,6 +1446,9 @@ def write_vo_lightcurve(
     period: float | None = None,
     epoch: float | None = None,
     binary: bool = True,
+    coosys_id: str = "system",
+    coosys_system: str | None = None,
+    coosys_epoch: float | str | None = None,
 ):
     """Writes a lightcurve to a compliant IVOA VOTable (v1.4) XML file/stream.
 
@@ -1402,9 +1487,13 @@ def write_vo_lightcurve(
         epoch (float, optional): Reference time epoch in days. Defaults to None.
         binary (bool, optional): If True, encodes table data in BINARY format.
             If False, encodes in TABLEDATA XML format. Defaults to True.
+        coosys_id (str, optional): ``COOSYS/@ID`` when writing coordinate metadata.
+        coosys_system (str, optional): ``COOSYS/@system`` (e.g. ``ICRS``). When omitted,
+            no ``<COOSYS>`` element is written unless supplied via a ``VOLightCurve``.
+        coosys_epoch (float or str, optional): ``COOSYS/@epoch`` (proper-motion epoch).
     """
     import astropy.io.votable as vot
-    from astropy.io.votable.tree import Group, Param, Info, FieldRef, TimeSys
+    from astropy.io.votable.tree import Group, Param, Info, FieldRef, TimeSys, CooSys as VOTableCooSys
     import pandas as pd
 
     # Extract astropy Table
@@ -1501,6 +1590,14 @@ def write_vo_lightcurve(
         config={'version_1_4_or_later': True}
     )
     res.time_systems.append(ts)
+
+    if coosys_system is not None:
+        cs = VOTableCooSys(
+            ID=coosys_id or "system",
+            system=coosys_system,
+            epoch=str(coosys_epoch) if coosys_epoch is not None else None,
+        )
+        res.coordinate_systems.append(cs)
 
     # Standardize Table Fields and cross-link with systems
     phot_labels = resolve_votable_phot_field_labels(t_out)

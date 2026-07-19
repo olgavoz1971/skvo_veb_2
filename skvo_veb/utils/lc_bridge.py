@@ -1264,6 +1264,10 @@ _VOTABLE_EXPORT_BUILDERS = {
 def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
     """Captures TIMESYS and VOTable envelope fields for later mission-blind export.
 
+    Ingested ``TIMESYS/@timeorigin`` is stored as ``source_timeorigin`` for
+    provenance only. Export always writes ``obs_time`` in MJD via
+    ``curvedash_to_table`` and therefore uses ``JD_TO_MJD`` as ``timeorigin``.
+
     Args:
         volc (VOLightCurve): Parsed provider fetch product.
         filename (str): Bridge filename stem used during ingest.
@@ -1281,7 +1285,7 @@ def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
         if timesys.refposition:
             envelope["refposition"] = str(timesys.refposition).upper()
         if timesys.timeorigin is not None:
-            envelope["timeorigin"] = float(timesys.timeorigin)
+            envelope["source_timeorigin"] = float(timesys.timeorigin)
 
     table_name = table_meta.get("name") or table_meta.get("ID")
     if table_name:
@@ -1299,6 +1303,13 @@ def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
     if creator:
         envelope["creator"] = str(creator)
 
+    coosys = volc.coosys
+    if coosys is not None and coosys.system:
+        envelope["coosys_id"] = str(coosys.coosys_id or "system")
+        envelope["coosys_system"] = str(coosys.system)
+        if coosys.epoch is not None:
+            envelope["coosys_epoch"] = coosys.epoch
+
     return envelope
 
 
@@ -1307,6 +1318,11 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
 
     Used by mission-agnostic pages (e.g. Lightcurve Discovery) where fetch already
     produced a VO-compliant product and export must not select a mission profile.
+
+    ``curvedash_to_table`` always serialises ``obs_time`` in Modified Julian Date
+    (MJD). The exported ``TIMESYS/@timeorigin`` is therefore always ``JD_TO_MJD``,
+    independent of the archive's native offset stored in
+    ``metadata['vo_envelope']['source_timeorigin']``.
 
     Args:
         lcd (CurveDash): Application lightcurve with ``metadata['photcal']`` and
@@ -1350,7 +1366,7 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         "filter_identifier": filter_identifier,
         "refposition": envelope.get("refposition") or "BARYCENTER",
         "timescale": envelope.get("timescale") or str(meta.get("timescale") or "TCB").upper(),
-        "timeorigin": float(envelope.get("timeorigin", JD_TO_MJD)),
+        "timeorigin": JD_TO_MJD,
         "ra": meta.get("ra"),
         "dec": meta.get("dec"),
         "period": meta.get("period"),
@@ -1365,6 +1381,13 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
     creator = envelope.get("creator")
     if creator:
         kwargs["creator"] = creator
+
+    coosys_system = envelope.get("coosys_system")
+    if coosys_system:
+        kwargs["coosys_id"] = envelope.get("coosys_id") or "system"
+        kwargs["coosys_system"] = str(coosys_system)
+        if envelope.get("coosys_epoch") is not None:
+            kwargs["coosys_epoch"] = envelope["coosys_epoch"]
 
     return kwargs
 

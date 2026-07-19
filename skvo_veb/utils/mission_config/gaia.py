@@ -28,6 +28,9 @@ MISSION_ID = "gaia"
 
 GAIA_TIMESCALE = "TCB"
 GAIA_REFPOSITION = "BARYCENTER"
+GAIA_COOSYS_ID = "system"
+GAIA_COOSYS_SYSTEM = "ICRS"
+GAIA_COOSYS_EPOCH = 2016.0
 GAIA_PIPELINE = "Gaia DR3 (debug catalogue)"
 GAIA_SURVEY = "Gaia DR3"
 
@@ -197,5 +200,8 @@ def build_fetch_votable_kwargs(
         "effective_wavelength_unit": photcal[PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT],
         "ra": ra_deg,
         "dec": dec_deg,
+        "coosys_id": GAIA_COOSYS_ID,
+        "coosys_system": GAIA_COOSYS_SYSTEM,
+        "coosys_epoch": GAIA_COOSYS_EPOCH,
         "binary": True,
     }

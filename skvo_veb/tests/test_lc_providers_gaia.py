@@ -150,6 +150,10 @@ def test_gaia_fetch_lightcurve_returns_volightcurve():
     assert "obs_time" in volc.colnames
     assert "phot" in volc.colnames
     assert volc.photdms["phot"].filter.filter_id == GAIA_G_FILTER_IDENTIFIER
+    assert volc.coosys is not None
+    assert volc.coosys.coosys_id == "system"
+    assert volc.coosys.system == "ICRS"
+    assert float(volc.coosys.epoch) == 2016.0
 
 
 def test_gaia_fetch_rejects_unknown_source_id():
