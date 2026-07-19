@@ -13,6 +13,7 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_MAG,
     EXPORT_FORMATS,
     JD_TO_MJD,
+    METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
     PHOTCAL_KEY_FILTER_IDENTIFIER,
@@ -1058,6 +1059,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
 
     lcd.metadata['ra'] = meta.get('ra')
     lcd.metadata['dec'] = meta.get('dec')
+    lcd.metadata[METADATA_KEY_VO_ENVELOPE] = _extract_vo_envelope_meta(volc, filename=filename)
     for key in ('authors', 'sectors', 'flux_origins'):
         if key in meta:
             lcd.metadata[key] = _parse_list_meta(meta[key])
@@ -1259,19 +1261,131 @@ _VOTABLE_EXPORT_BUILDERS = {
 }
 
 
-def _votable_kwargs_for_profile(lcd, profile: str) -> dict:
-    """Resolves ``write_vo_lightcurve`` kwargs for a named export profile.
+def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
+    """Captures TIMESYS and VOTable envelope fields for later mission-blind export.
 
     Args:
-        lcd (CurveDash): Application lightcurve state container.
-        profile (str): Export profile name (``tess``, ``cutout``, or ``asassn``).
+        volc (VOLightCurve): Parsed provider fetch product.
+        filename (str): Bridge filename stem used during ingest.
+
+    Returns:
+        dict: JSON-serialisable envelope metadata for ``CurveDash.metadata``.
+    """
+    table_meta = volc.table.meta or {}
+    envelope: dict[str, str | float] = {}
+
+    timesys = volc.timesys
+    if timesys is not None:
+        if timesys.timescale:
+            envelope["timescale"] = str(timesys.timescale).upper()
+        if timesys.refposition:
+            envelope["refposition"] = str(timesys.refposition).upper()
+        if timesys.timeorigin is not None:
+            envelope["timeorigin"] = float(timesys.timeorigin)
+
+    table_name = table_meta.get("name") or table_meta.get("ID")
+    if table_name:
+        envelope["table_name"] = str(table_name)
+    else:
+        envelope["table_name"] = sanitize_filename(Path(filename).stem)
+
+    description = table_meta.get("description")
+    if description:
+        text = str(description)
+        envelope["table_description"] = text
+        envelope["votable_description"] = text
+
+    creator = table_meta.get("creator")
+    if creator:
+        envelope["creator"] = str(creator)
+
+    return envelope
+
+
+def build_votable_kwargs_from_metadata(lcd) -> dict:
+    """Builds ``write_vo_lightcurve`` kwargs from ingested ``CurveDash`` metadata.
+
+    Used by mission-agnostic pages (e.g. Lightcurve Discovery) where fetch already
+    produced a VO-compliant product and export must not select a mission profile.
+
+    Args:
+        lcd (CurveDash): Application lightcurve with ``metadata['photcal']`` and
+            ``metadata['vo_envelope']`` populated by ``volc_to_curvedash``.
 
     Returns:
         dict: Keyword arguments for ``write_vo_lightcurve``.
 
     Raises:
-        PipeException: If ``profile`` is not registered.
+        PipeException: When mandatory photometric metadata is missing.
     """
+    meta = lcd.metadata or {}
+    envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
+    photcal = meta.get("photcal") or {}
+
+    filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER)
+    if not filter_identifier:
+        raise PipeException(
+            "Cannot export VOTable: missing filter_identifier in CurveDash photcal metadata. "
+            "Re-load the lightcurve from the archive provider."
+        )
+
+    is_stitched = _is_stitched_lightcurve(lcd)
+    include_zero_points = (
+        photcal.get(PHOTCAL_KEY_ZP_FLUX) is not None
+        and photcal.get(PHOTCAL_KEY_ZP_MAG) is not None
+        and not is_stitched
+    )
+    photcal_fields = _photcal_group_to_votable_fields(
+        photcal,
+        include_zero_points=include_zero_points,
+    )
+
+    table_name = envelope.get("table_name") or sanitize_filename(lcd.title or lcd.name or "lightcurve")
+    description = envelope.get("table_description") or envelope.get("votable_description")
+    if not description and lcd.title:
+        description = f"Lightcurve export for {lcd.title}."
+
+    kwargs = {
+        "table_name": str(table_name),
+        "filter_identifier": filter_identifier,
+        "refposition": envelope.get("refposition") or "BARYCENTER",
+        "timescale": envelope.get("timescale") or str(meta.get("timescale") or "TCB").upper(),
+        "timeorigin": float(envelope.get("timeorigin", JD_TO_MJD)),
+        "ra": meta.get("ra"),
+        "dec": meta.get("dec"),
+        "period": meta.get("period"),
+        "epoch": meta.get("epoch"),
+        **photcal_fields,
+    }
+
+    if description:
+        kwargs["table_description"] = description
+        kwargs["votable_description"] = envelope.get("votable_description") or description
+
+    creator = envelope.get("creator")
+    if creator:
+        kwargs["creator"] = creator
+
+    return kwargs
+
+
+def _votable_kwargs_for_profile(lcd, profile: str | None) -> dict:
+    """Resolves ``write_vo_lightcurve`` kwargs for a named or metadata export path.
+
+    Args:
+        lcd (CurveDash): Application lightcurve state container.
+        profile (str, optional): Legacy export profile name (``tess``, ``cutout``,
+            ``asassn``). When ``None``, kwargs are assembled from ingested metadata.
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+
+    Raises:
+        PipeException: If ``profile`` is set but not registered.
+    """
+    if profile is None:
+        return build_votable_kwargs_from_metadata(lcd)
+
     import importlib
 
     spec = _VOTABLE_EXPORT_BUILDERS.get(profile)
@@ -1289,13 +1403,14 @@ def _votable_kwargs_for_profile(lcd, profile: str) -> dict:
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
     """Exports a CurveDash instance to the requested file format.
 
-    VOTable uses ``write_vo_lightcurve`` with mission profiles. ECSV stores basic
-    metadata in the header; CSV and commented-header DAT export data columns only.
+    VOTable export uses ``write_vo_lightcurve``. When ``profile`` is ``None``,
+    kwargs are rebuilt from ingested ``metadata`` (mission-blind round-trip). Legacy
+    pages pass ``profile='tess'``, ``'cutout'``, or ``'asassn'`` for bespoke rules.
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
         table_format (str): Target format identifier (e.g. ``'votable_binary'``, ``'ascii.ecsv'``).
-        profile (str, optional): Export profile name (``'tess'``, ``'cutout'``, or ``'asassn'`` for VOTable).
+        profile (str, optional): Legacy export profile for VOTable. Omit for metadata-driven export.
 
     Returns:
         bytes: Serialised file content.

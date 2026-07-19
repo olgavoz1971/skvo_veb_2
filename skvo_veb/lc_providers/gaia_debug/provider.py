@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import logging
-import re
 
 import numpy as np
 from astropy import units as u
@@ -27,6 +26,10 @@ from skvo_veb.lc_providers.catalog_schema import (
     filter_catalog_table_by_time_bounds,
     validate_catalog_table,
 )
+from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
+    format_gaia_source_name,
+    parse_gaia_source_id,
+)
 from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.mission_config import gaia as gaia_config
@@ -41,36 +44,7 @@ from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
 
 logger = logging.getLogger(__name__)
 
-_GAIA_ID_PATTERN = re.compile(r"^\d{10,22}$")
-_GAIA_PREFIX_PATTERN = re.compile(
-    r"^\s*(?:Gaia\s*DR\s*3|GAIADR3)\s*([0-9]{10,22})\s*$",
-    re.IGNORECASE,
-)
-
 _SYNTHETIC_EPOCH_POINTS = 48
-
-
-def parse_gaia_source_id(text: str | None) -> int | None:
-    """Parses a Gaia DR3 ``source_id`` from a user or Simbad identifier string.
-
-    Args:
-        text (str, optional): Raw identifier such as ``Gaia DR3 123…`` or digits.
-
-    Returns:
-        int or None: Gaia source id when recognised.
-    """
-    if text is None:
-        return None
-    candidate = str(text).strip()
-    if not candidate:
-        return None
-    prefix_match = _GAIA_PREFIX_PATTERN.match(candidate)
-    if prefix_match:
-        return int(prefix_match.group(1))
-    compact = candidate.replace(" ", "")
-    if _GAIA_ID_PATTERN.match(compact):
-        return int(compact)
-    return None
 
 
 def _resolve_debug_source(
@@ -79,10 +53,6 @@ def _resolve_debug_source(
     object_name: str | None = None,
 ) -> GaiaDr3DebugSource | None:
     """Resolves a debug-catalogue entry from a Gaia ``source_id`` string only.
-
-    Gaia does not resolve common names or Simbad identifiers. Only numeric
-    Gaia DR3 ``source_id`` strings (optionally prefixed with ``Gaia DR3``)
-    are accepted.
 
     Args:
         archive_id (str, optional): Gaia ``source_id`` string.
@@ -100,7 +70,7 @@ def _resolve_debug_source(
     return None
 
 
-class GaiaDr3Provider(MissionLightcurveProvider):
+class GaiaDr3DebugProvider(MissionLightcurveProvider):
     """Gaia DR3 debug provider with a fixed three-source transparent catalogue."""
 
     mission_id = gaia_config.MISSION_ID
@@ -138,7 +108,7 @@ class GaiaDr3Provider(MissionLightcurveProvider):
                 continue
             if debug_source_by_id(source_id) is None:
                 continue
-            label = gaia_config.format_source_name(source_id)
+            label = format_gaia_source_name(source_id)
             return MissionArchiveMatch(
                 archive_id=str(source_id),
                 match_kind="gaia_source_id",
@@ -160,15 +130,11 @@ class GaiaDr3Provider(MissionLightcurveProvider):
     ) -> Table:
         """Returns debug Gaia DR3 SSA-style catalogue rows for cone or direct lookup.
 
-        Each row is one plottable lightcurve product (one Gaia passband for one
-        debug source). Unknown source ids or sky regions outside the three debug
-        objects return an empty table.
-
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): Gaia ``source_id`` string (``Gaia DR3 …`` or digits).
+            object_name (str, optional): Gaia ``source_id`` string.
             archive_id (str, optional): Gaia ``source_id`` for direct lookup.
             time_start_mjd (float, optional): Lower time limit in MJD.
             time_end_mjd (float, optional): Upper time limit in MJD.
@@ -440,3 +406,7 @@ def _build_synthetic_epoch_table(debug_source: GaiaDr3DebugSource, *, band: str)
     if band_model.period_days is not None:
         table.meta["period_days"] = band_model.period_days
     return table
+
+
+# Backward-compatible alias used in tests and docs.
+GaiaDr3Provider = GaiaDr3DebugProvider

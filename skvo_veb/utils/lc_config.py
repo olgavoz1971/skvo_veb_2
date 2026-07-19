@@ -99,6 +99,9 @@ PHOTCAL_KEY_ZP_MAG = "zp_mag"
 PHOTCAL_KEY_ZP_MAG_UNIT = "zp_mag_unit"
 PHOTCAL_KEY_MAG_SYS = "mag_sys"
 
+# Serialised TIMESYS / VOTable envelope restored at ingest for mission-blind export.
+METADATA_KEY_VO_ENVELOPE = "vo_envelope"
+
 # Supported user-facing lightcurve download formats (VOTable binary is the default).
 VOTABLE_FORMAT_BINARY = "votable_binary"
 VOTABLE_FORMAT_TEXT = "votable_text"

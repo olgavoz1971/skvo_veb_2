@@ -2,7 +2,8 @@
 
 import pytest
 
-from skvo_veb.lc_providers.gaia import GaiaDr3Provider, parse_gaia_source_id
+from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
+from skvo_veb.lc_providers.shared.gaia_dr3_source_id import parse_gaia_source_id
 from skvo_veb.lc_providers.registry import get_provider
 from skvo_veb.utils.coord import parse_coord_to_skycoord, skycoord_to_hms_dms
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds

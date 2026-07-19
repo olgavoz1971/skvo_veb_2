@@ -5,18 +5,31 @@ Styles: ``assets/lc_discovery.css``.
 """
 
 import logging
+import uuid
 
 import aladin_lite_react_component
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
 import plotly.express as px
-from dash import Input, Output, State, callback, clientside_callback, ctx, dcc, html, register_page, set_props
+from dash import Input, Output, State, callback, clientside_callback, ctx, dash, dcc, html, no_update, register_page, set_props
 from dash.dependencies import ClientsideFunction
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components import message
 from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.registry import list_missions
+from skvo_veb.utils.curve_dash import CurveDash
+from skvo_veb.utils.lc_bridge import apply_phot_domain_view, export_curvedash, export_file_extension
+from skvo_veb.utils.lc_config import (
+    DEFAULT_EPOCH_JD,
+    DEFAULT_EXPORT_FORMAT,
+    DOMAIN_FLUX,
+    DOMAIN_MAG,
+    EXPORT_FORMAT_OPTIONS,
+    TIME_AXIS_DATE,
+    TIME_AXIS_MJD,
+    display_epoch_offset,
+)
 from skvo_veb.utils.lc_discovery_aladin import (
     aladin_fov_degrees,
     aladin_marker_name,
@@ -27,13 +40,31 @@ from skvo_veb.utils.lc_discovery_aladin import (
     catalog_rows_to_aladin_stars,
     find_catalog_row_by_aladin_name,
 )
+from skvo_veb.utils.lc_discovery_load import (
+    catalog_row_for_lc_key,
+    curvedash_from_catalog_row,
+    discovery_export_basename,
+    mission_id_from_lc_key,
+)
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
     catalog_rows_for_aggrid,
     run_catalog_search_for_mission,
 )
 from skvo_veb.utils.lc_discovery_time_bounds import parse_discovery_time_bounds
-from skvo_veb.utils.my_tools import PipeException, positive_float_pattern
+from skvo_veb.utils.lc_figure import figure_from_serialized
+from skvo_veb.utils.lc_interaction import (
+    apply_plot_point_selection,
+    clear_plot_point_selection,
+    delete_selected_rows,
+)
+from skvo_veb.utils.lc_session_cache import (
+    generate_user_tab_id,
+    has_cached_lc,
+    read_serialized_lc,
+    write_serialized_lc,
+)
+from skvo_veb.utils.my_tools import PipeException, float_pattern, positive_float_pattern, safe_float
 from skvo_veb.utils.page_session import SESSION_STORE
 
 configure_logging()
@@ -51,6 +82,12 @@ register_page(
 
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 mission_label_style = {'display': 'block', 'padding': '2px'}
+label_font_size = '0.8em'
+switch_label_style_vert = {'display': 'block', 'padding': '2px', 'font-size': label_font_size}
+row_class_name = 'd-flex g-2 justify-content-end align-items-end'
+
+LC_DISCOVERY_PAGE_NAMESPACE = 'lc_discovery'
+DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
 
 LC_DISCOVERY_CATALOG_COLUMNS = [
     {
@@ -77,24 +114,6 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'suppressSizeToFit': True,
     },
     {
-        'field': 't_min',
-        'headerName': 't_min',
-        'type': 'numericColumn',
-        'sortable': True,
-        # 'width': 68,
-        'minWidth': 70,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 't_max',
-        'headerName': 't_max',
-        'type': 'numericColumn',
-        'sortable': True,
-        # 'width': 68,
-        'minWidth': 70,
-        'suppressSizeToFit': True,
-    },
-    {
         'field': 'ra_deg',
         'headerName': 'RA',
         'type': 'numericColumn',
@@ -112,6 +131,25 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'minWidth': 90,
         'suppressSizeToFit': True,
     },
+    {
+        'field': 't_min',
+        'headerName': 't_min',
+        'type': 'numericColumn',
+        'sortable': True,
+        # 'width': 68,
+        'minWidth': 70,
+        'suppressSizeToFit': True,
+    },
+    {
+        'field': 't_max',
+        'headerName': 't_max',
+        'type': 'numericColumn',
+        'sortable': True,
+        # 'width': 68,
+        'minWidth': 70,
+        'suppressSizeToFit': True,
+    },
+    
     {
         'field': 'n_points',
         'headerName': 'N',
@@ -488,13 +526,9 @@ def _search_tools_panel():
             time_min_help,
             time_max_help,
             _resolved_target_card(),
-            dbc.Spinner(
-                children=html.Div(
-                    id='lc_discovery_search_tools_alert',
-                    style={'display': 'none', 'marginTop': '8px'},
-                ),
-                size='sm',
-                spinner_style={'width': '2rem', 'height': '2rem'},
+            html.Div(
+                id='lc_discovery_search_tools_alert',
+                style={'display': 'none', 'marginTop': '8px'},
             ),
             html.Hr(className='my-2'),
             html.Details(
@@ -577,80 +611,118 @@ def _search_results_panel():
                                         ],
                                         className='lc-discovery-catalog-title-row',
                                     ),
-                                ],
-                                className='lc-discovery-catalog-header-row',
-                            ),
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        html.Div(
-                                            dag.AgGrid(
-                                                id='lc_discovery_catalog_table',
-                                                columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
-                                                rowData=[],
-                                                columnSize='autoSize',
-                                                defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
-                                                dashGridOptions={
-                                                    'theme': 'themeBalham',
-                                                    # 'rowHeight': 22,
-                                                    # 'headerHeight': 24,
-                                                    'rowSelection': {
-                                                        'mode': 'singleRow',
-                                                        'checkboxes': False,
-                                                        # 'enableClickSelection': True,
-                                                    },
-                                                    'animateRows': False,
-                                                    'pagination': False,
-                                                    # 'paginationPageSize': 10,
-                                                    'domLayout': 'normal',
-                                                    'suppressHorizontalScroll': False,
-                                                    # 'alwaysShowHorizontalScroll': True,
-                                                    'enableCellTextSelection': True,
-                                                    # 'ensureDomOrder': True,
-                                                    'getRowId': {
-                                                        'function': 'params.data.lc_key'
-                                                    },
-                                                },
-                                                className='lc-discovery-catalog-aggrid ag-theme-balham',
-                                                style={'height': '100%', 'width': '100%'},
-                                            ),
-                                            className='lc-discovery-catalog-grid',
-                                        ),
-                                        lg=7,
-                                        md=7,
-                                        sm=12,
-                                        xs=12,
-                                    ),
-                                    dbc.Col(
+                                    dbc.Stack(
                                         [
-                                            html.Div(
-                                                _lc_discovery_aladin_placeholder(
-                                                    'Submit a query to show sources on the sky map.'
-                                                ),
-                                                id='lc_discovery_aladin_container',
-                                                className='lc-discovery-aladin-wrap',
+                                            dbc.Button(
+                                                'Download',
+                                                id='lc_discovery_fetch_button',
+                                                size='sm',
+                                                className='me-2',
                                             ),
-                                            html.P(
-                                                'Click a table row to highlight the object on the map, '
-                                                'and vice versa.',
-                                                className='lc-discovery-aladin-hint text-muted mb-0',
+                                            dbc.Button(
+                                                'reDownload',
+                                                id='lc_discovery_refetch_button',
+                                                size='sm',
+                                                outline=True,
+                                                color='warning',
+                                                className='me-2',
+                                            ),
+                                            dbc.Button(
+                                                'Cancel',
+                                                id='lc_discovery_cancel_fetch_button',
+                                                size='sm',
+                                                disabled=True,
                                             ),
                                         ],
-                                        lg=5,
-                                        md=5,
-                                        sm=12,
-                                        xs=12,
-                                        className='lc-discovery-aladin-col',
+                                        direction='horizontal',
+                                        gap=2,
                                     ),
                                 ],
-                                className='g-2 lc-discovery-catalog-body-row',
+                                style={
+                                    'display': 'flex',
+                                    'justifyContent': 'space-between',
+                                    'alignItems': 'center',
+                                    'width': '100%',
+                                },
                             ),
                         ],
-                        id='lc_discovery_catalog_row',
+                        className='lc-discovery-catalog-header-row',
                     ),
-                    html.Div(id='lc_discovery_search_alert', style={'display': 'none'}),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                html.Div(
+                                    dag.AgGrid(
+                                        id='lc_discovery_catalog_table',
+                                        columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
+                                        rowData=[],
+                                        columnSize='autoSize',
+                                        defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
+                                        dashGridOptions={
+                                            'theme': 'themeBalham',
+                                            # 'rowHeight': 22,
+                                            # 'headerHeight': 24,
+                                            'rowSelection': {
+                                                'mode': 'singleRow',
+                                                'checkboxes': False,
+                                                # 'enableClickSelection': True,
+                                            },
+                                            'animateRows': False,
+                                            'pagination': False,
+                                            # 'paginationPageSize': 10,
+                                            'domLayout': 'normal',
+                                            'suppressHorizontalScroll': False,
+                                            # 'alwaysShowHorizontalScroll': True,
+                                            'enableCellTextSelection': True,
+                                            # 'ensureDomOrder': True,
+                                            'getRowId': {
+                                                'function': 'params.data.lc_key'
+                                            },
+                                        },
+                                        className='lc-discovery-catalog-aggrid ag-theme-balham',
+                                        style={'height': '100%', 'width': '100%'},
+                                    ),
+                                    className='lc-discovery-catalog-grid',
+                                ),
+                                lg=7,
+                                md=7,
+                                sm=12,
+                                xs=12,
+                            ),
+                            dbc.Col(
+                                [
+                                    html.Div(
+                                        _lc_discovery_aladin_placeholder(
+                                            'Submit a query to show sources on the sky map.'
+                                        ),
+                                        id='lc_discovery_aladin_container',
+                                        className='lc-discovery-aladin-wrap',
+                                    ),
+                                    html.P(
+                                        'Click a table row to highlight the object on the map, '
+                                        'and vice versa.',
+                                        className='lc-discovery-aladin-hint text-muted mb-0',
+                                    ),
+                                ],
+                                lg=5,
+                                md=5,
+                                sm=12,
+                                xs=12,
+                                className='lc-discovery-aladin-col',
+                            ),
+                        ],
+                        className='g-2 lc-discovery-catalog-body-row',
+                    ),
                 ],
+                id='lc_discovery_catalog_row',
             ),
+            html.Div(id='lc_discovery_search_alert', style={'display': 'none'}),
+            dbc.Label(
+                id='lc_discovery_fetch_status',
+                children='',
+                style={'color': 'green', 'text-align': 'center'},
+            ),
+            html.Div(id='lc_discovery_fetch_alert', style={'display': 'none'}),
             catalog_help_pop,
         ],
         lg=9,
@@ -660,8 +732,51 @@ def _search_results_panel():
     )
 
 
+def _discovery_empty_figure():
+    """Returns the initial empty lightcurve figure with lasso selection enabled.
+
+    Returns:
+        plotly.graph_objects.Figure: Empty scatter configured for Discovery plotting.
+    """
+    fig = px.scatter()
+    fig.update_traces(
+        selected={'marker': {'color': 'orange', 'size': 10}},
+        hoverinfo='none',
+        hovertemplate=None,
+    )
+    fig.update_layout(
+        xaxis={'title': 'time', 'tickformat': '.1f'},
+        yaxis_title='flux',
+        margin=dict(l=48, b=48, t=24, r=16),
+        dragmode='lasso',
+        autosize=True,
+    )
+    return fig
+
+
+def _display_epoch_value(lcd: CurveDash) -> float:
+    """Returns the epoch input value relative to the display epoch.
+
+    Args:
+        lcd (CurveDash): Loaded lightcurve.
+
+    Returns:
+        float: Epoch offset for the UI input (``0.0`` when no catalogue epoch).
+    """
+    return display_epoch_offset(lcd.epoch, DISPLAY_EPOCH_JD)
+
+
+def _bump_lc_revision() -> str:
+    """Returns a new revision token to trigger dependent plot callbacks.
+
+    Returns:
+        str: UUID string.
+    """
+    return str(uuid.uuid4())
+
+
 def _lightcurve_tools_panel():
-    """Builds the Light curve tab tools placeholder.
+    """Builds the Light curve tab tools panel (TESS-style left column, ASAS-SN controls).
 
     Returns:
         dash_bootstrap_components.Col: Responsive grey tools panel.
@@ -672,25 +787,135 @@ def _lightcurve_tools_panel():
                 'Light curve tools',
                 style={'display': 'flex', 'justify-content': 'center'},
             ),
-            html.P(
-                'Select a row in the Search tab, then load a lightcurve here.',
-                className='text-muted',
-                style={'marginTop': '8px'},
-            ),
-            dbc.Button(
-                'Load selected',
-                id='lc_discovery_load_button',
-                size='sm',
-                color='primary',
-                disabled=True,
-                style={'width': '100%', 'marginBottom': '5px'},
-            ),
             dbc.Button(
                 'rePlot curve',
                 id='lc_discovery_replot_button',
                 size='sm',
                 disabled=True,
                 style={'width': '100%', 'marginBottom': '5px'},
+            ),
+            dbc.Switch(
+                id='lc_discovery_mag_switch',
+                label='Magnitude',
+                value=False,
+                label_style=switch_label_style_vert,
+                persistence=False,
+                style={'marginBottom': '5px', 'width': '100%'},
+            ),
+            dcc.RadioItems(
+                id='lc_discovery_time_axis_switch',
+                options=[
+                    {'label': ' MJD', 'value': TIME_AXIS_MJD},
+                    {'label': ' Date', 'value': TIME_AXIS_DATE},
+                ],
+                value=TIME_AXIS_MJD,
+                persistence=True,
+                labelStyle={
+                    'display': 'inline-block',
+                    'marginRight': '12px',
+                    'font-size': label_font_size,
+                },
+                inputStyle={'marginRight': '4px'},
+                style={'marginBottom': '5px'},
+            ),
+            html.Details(
+                [
+                    html.Summary('Folding', style={'font-size': label_font_size}),
+                    dbc.Stack(
+                        [
+                            dbc.Label(
+                                'Period:',
+                                html_for='lc_discovery_period_input',
+                                style={'width': '7em', 'font-size': label_font_size},
+                            ),
+                            dcc.Input(
+                                id='lc_discovery_period_input',
+                                type='search',
+                                inputMode='numeric',
+                                persistence=False,
+                                value=None,
+                                pattern=positive_float_pattern,
+                                style={'width': '100%'},
+                            ),
+                        ],
+                        direction='horizontal',
+                        gap=2,
+                        style={'width': '100%', 'min-width': '5ch'},
+                    ),
+                    dbc.Stack(
+                        [
+                            dbc.Label(
+                                f'Epoch-{DISPLAY_EPOCH_JD}:',
+                                html_for='lc_discovery_epoch_input',
+                                style={'width': '7em', 'font-size': label_font_size},
+                            ),
+                            dcc.Input(
+                                id='lc_discovery_epoch_input',
+                                inputMode='numeric',
+                                persistence=False,
+                                value=0.0,
+                                type='search',
+                                pattern=float_pattern,
+                                style={'width': '100%'},
+                            ),
+                        ],
+                        direction='horizontal',
+                        gap=2,
+                        style={'width': '100%', 'min-width': '5ch'},
+                    ),
+                    dbc.Stack(
+                        [
+                            dbc.Switch(
+                                id='lc_discovery_fold_switch',
+                                label='Fold',
+                                value=False,
+                                label_style=switch_label_style_vert,
+                                persistence=False,
+                                style={'width': '40%'},
+                            ),
+                            dbc.Button(
+                                'Recalc Phase',
+                                id='lc_discovery_recalc_phase_button',
+                                size='sm',
+                                style={'width': '60%', 'marginBottom': '5px'},
+                            ),
+                        ],
+                        direction='horizontal',
+                        gap=2,
+                    ),
+                ],
+                open=True,
+                style={'marginBottom': '5px'},
+            ),
+            html.Div(
+                [
+                    dbc.Label(
+                        'Unable to fold; the period is unknown',
+                        id='lc_discovery_fold_warning_label',
+                        style={'display': 'none'},
+                    ),
+                ],
+                id='lc_discovery_fold_controls',
+                style={'min-height': '30px'},
+            ),
+            dbc.Stack(
+                [
+                    dbc.Select(
+                        options=EXPORT_FORMAT_OPTIONS,
+                        value=DEFAULT_EXPORT_FORMAT,
+                        id='lc_discovery_export_format_select',
+                        style={'width': '40%', 'font-size': label_font_size},
+                    ),
+                    dbc.Button(
+                        'Download',
+                        id='lc_discovery_download_button',
+                        size='sm',
+                        style={'width': '60%'},
+                    ),
+                ],
+                direction='horizontal',
+                gap=2,
+                style={'width': '100%', 'min-width': '5ch', 'marginBottom': '5px'},
             ),
         ],
         lg=2,
@@ -702,33 +927,68 @@ def _lightcurve_tools_panel():
 
 
 def _lightcurve_graph_panel():
-    """Builds the Light curve tab graph placeholder.
+    """Builds the Light curve tab graph and interaction row.
 
     Returns:
         dash_bootstrap_components.Col: Responsive Plotly graph container.
     """
-    empty_fig = px.scatter()
-    empty_fig.update_layout(
-        title='',
-        margin=dict(l=48, b=48, t=24, r=16),
-        xaxis_title='time',
-        yaxis_title='flux',
-        autosize=True,
-    )
     return dbc.Col(
         [
             html.Div(id='lc_discovery_plot_alert', style={'display': 'none'}),
-            dcc.Graph(
-                id='lc_discovery_graph',
-                figure=empty_fig,
-                config={
-                    'displaylogo': False,
-                    'scrollZoom': True,
-                    'responsive': True,
-                    'modeBarButtonsToRemove': ['lasso2d'],
-                },
-                className='lc-discovery-graph-wrap',
-                style={'width': '100%'},
+            dbc.Row(
+                [
+                    dcc.Graph(
+                        id='lc_discovery_graph',
+                        figure=_discovery_empty_figure(),
+                        config={
+                            'displaylogo': False,
+                            'scrollZoom': True,
+                            'responsive': True,
+                        },
+                        className='lc-discovery-graph-wrap',
+                        style={'width': '100%'},
+                    ),
+                ],
+                class_name='g-0',
+            ),
+            dbc.Row(
+                [
+                    dcc.Markdown(
+                        '_**Click on a point to select it, or use Lasso or Box selector**_',
+                        style={
+                            'font-size': 14,
+                            'font-family': 'courier',
+                            'marginTop': -10,
+                            'marginBottom': 10,
+                        },
+                    ),
+                ],
+                class_name=row_class_name,
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Stack(
+                                [
+                                    dbc.Button(
+                                        'Delete selected',
+                                        id='lc_discovery_delete_button',
+                                    ),
+                                    dbc.Button(
+                                        'Unselect',
+                                        id='lc_discovery_unselect_button',
+                                    ),
+                                ],
+                                direction='horizontal',
+                                gap=2,
+                            ),
+                        ],
+                        md=6,
+                        sm=12,
+                    ),
+                ],
+                class_name=row_class_name,
             ),
         ],
         lg=10,
@@ -776,6 +1036,7 @@ def layout():
                     dbc.Tab(
                         label='Light curve',
                         tab_id='lc_discovery_plot_tab',
+                        id='lc_discovery_plot_tab',
                         disabled=True,
                         children=[
                             dbc.Row(
@@ -790,10 +1051,12 @@ def layout():
                 className='lc-discovery-tabs mb-2',
             ),
             dcc.Store(id='store_lc_discovery_user_tab_id', **SESSION_STORE),
+            dcc.Store(id='store_lc_discovery_lc_revision', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_catalog', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_selected_key', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_highlight_name', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_resolved_target', **SESSION_STORE),
+            dcc.Download(id='lc_discovery_download'),
         ],
         className='g-10 lc-discovery-page',
         fluid=True,
@@ -1129,3 +1392,628 @@ clientside_callback(
     Input('store_lc_discovery_highlight_name', 'data'),
     prevent_initial_call=True,
 )
+
+
+@callback(
+    Output('lc_discovery_plot_tab', 'disabled'),
+    Input('lc_discovery_catalog_table', 'rowData'),
+)
+def toggle_lc_discovery_plot_tab(row_data):
+    """Enables the Light curve tab once a search returns catalogue rows.
+
+    Args:
+        row_data (list[dict]): Current AgGrid catalogue rows.
+
+    Returns:
+        bool: ``True`` to keep the tab disabled when the catalogue is empty.
+    """
+    return not row_data
+
+
+@callback(
+    Output('lc_discovery_fetch_button', 'disabled'),
+    Output('lc_discovery_refetch_button', 'disabled'),
+    Input('store_lc_discovery_selected_key', 'data'),
+)
+def toggle_lc_discovery_fetch_buttons(lc_key):
+    """Enables catalogue fetch buttons when a row is highlighted.
+
+    Args:
+        lc_key (str, optional): Serialised fetch handle for the selected row.
+
+    Returns:
+        tuple: ``(download_disabled, redownload_disabled)`` flags.
+    """
+    disabled = not lc_key
+    return disabled, disabled
+
+
+@callback(
+    Output('lc_discovery_replot_button', 'disabled'),
+    Input('store_lc_discovery_lc_revision', 'data'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+)
+def toggle_lc_discovery_replot_button(_revision, user_tab_id):
+    """Enables rePlot once a lightcurve is cached for this session.
+
+    Args:
+        _revision (str, optional): Plot revision token (dependency only).
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        bool: ``True`` while no cached lightcurve exists.
+    """
+    if not user_tab_id or not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        return True
+    return False
+
+
+@callback(
+    output=dict(
+        plot_alert_style=Output('lc_discovery_plot_alert', 'style', allow_duplicate=True),
+        plot_alert_message=Output('lc_discovery_plot_alert', 'children', allow_duplicate=True),
+        fold_controls_style=Output('lc_discovery_fold_controls', 'style', allow_duplicate=True),
+        fold_warning_style=Output('lc_discovery_fold_warning_label', 'style', allow_duplicate=True),
+        user_tab_id=Output('store_lc_discovery_user_tab_id', 'data', allow_duplicate=True),
+        revision=Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+        period_val=Output('lc_discovery_period_input', 'value', allow_duplicate=True),
+        epoch_val=Output('lc_discovery_epoch_input', 'value', allow_duplicate=True),
+        mag_switch=Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
+        fold_switch=Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
+        fetch_status=Output('lc_discovery_fetch_status', 'children', allow_duplicate=True),
+        fetch_alert_message=Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
+        fetch_alert_style=Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
+        plot_tab_disabled=Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
+        active_tab=Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
+    ),
+    inputs=dict(
+        download_clicks=Input('lc_discovery_fetch_button', 'n_clicks'),
+        redownload_clicks=Input('lc_discovery_refetch_button', 'n_clicks'),
+    ),
+    state=dict(
+        mission_id=State('lc_discovery_mission_switch', 'value'),
+        lc_key=State('store_lc_discovery_selected_key', 'data'),
+        row_data=State('lc_discovery_catalog_table', 'rowData'),
+        phase_view=State('lc_discovery_fold_switch', 'value'),
+        user_tab_id=State('store_lc_discovery_user_tab_id', 'data'),
+    ),
+    running=[
+        (Output('lc_discovery_fetch_button', 'disabled'), True, False),
+        (Output('lc_discovery_refetch_button', 'disabled'), True, False),
+        (Output('lc_discovery_cancel_fetch_button', 'disabled'), False, True),
+    ],
+    cancel=[Input('lc_discovery_cancel_fetch_button', 'n_clicks')],
+    background=True,
+    prevent_initial_call=True,
+)
+def fetch_lc_discovery_lightcurve(
+    download_clicks,
+    redownload_clicks,
+    mission_id,
+    lc_key,
+    row_data,
+    phase_view,
+    user_tab_id,
+):
+    """Fetches the highlighted catalogue row via the mission provider (background job).
+
+    Uses ``provider.fetch_lightcurve`` → ``volc_to_curvedash`` with no shared
+    archive fetch cache (deferred). The resulting ``CurveDash`` is held in the
+    existing per-session plot store for interactive tools.
+
+    Args:
+        download_clicks (int): Download button click count.
+        redownload_clicks (int): reDownload button click count.
+        mission_id (str): Selected mission slug from the UI.
+        lc_key (str): Serialised fetch handle for the selected row.
+        row_data (list[dict]): Current AgGrid catalogue rows.
+        phase_view (bool): Current fold switch state.
+        user_tab_id (str, optional): Session plot-store key.
+
+    Returns:
+        dict: Updated stores, fold controls, tab state, and status messages.
+    """
+    if not ctx.triggered_id or not lc_key:
+        raise PreventUpdate
+
+    force_refresh = ctx.triggered_id == 'lc_discovery_refetch_button'
+    catalog_row = catalog_row_for_lc_key(row_data, lc_key)
+    if catalog_row is None:
+        return dict(
+            plot_alert_style={'display': 'none'},
+            plot_alert_message='',
+            fold_controls_style={'display': 'none', 'min-height': '30px'},
+            fold_warning_style={'display': 'none'},
+            user_tab_id=no_update,
+            revision=no_update,
+            period_val=no_update,
+            epoch_val=no_update,
+            mag_switch=no_update,
+            fold_switch=no_update,
+            fetch_status='',
+            fetch_alert_message=message.warning_alert(
+                'Selected row is no longer in the catalogue table.'
+            ),
+            fetch_alert_style={'display': 'block'},
+            plot_tab_disabled=no_update,
+            active_tab=no_update,
+        )
+
+    if mission_id and mission_id_from_lc_key(lc_key) != mission_id:
+        return dict(
+            plot_alert_style={'display': 'none'},
+            plot_alert_message='',
+            fold_controls_style={'display': 'none', 'min-height': '30px'},
+            fold_warning_style={'display': 'none'},
+            user_tab_id=no_update,
+            revision=no_update,
+            period_val=no_update,
+            epoch_val=no_update,
+            mag_switch=no_update,
+            fold_switch=no_update,
+            fetch_status='',
+            fetch_alert_message=message.warning_alert(
+                'Selected row does not match the current mission.'
+            ),
+            fetch_alert_style={'display': 'block'},
+            plot_tab_disabled=no_update,
+            active_tab=no_update,
+        )
+
+    fold_controls_style = {'display': 'block', 'min-height': '30px'}
+    fold_warning_style = {'display': 'none'}
+
+    try:
+        lcd = curvedash_from_catalog_row(catalog_row, force_refresh=force_refresh)
+        if lcd.lightcurve is not None:
+            lcd.lightcurve.dropna(subset=['flux'], inplace=True)
+        lcd.folded_view = bool(phase_view)
+
+        period = lcd.period
+        period = None if not period else round(period, 5)
+        if period is None:
+            fold_controls_style = {'display': 'none', 'min-height': '30px'}
+            fold_warning_style = {'display': 'block'}
+            lcd.folded_view = False
+
+        if user_tab_id is None:
+            user_tab_id = generate_user_tab_id()
+
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+
+        object_label = catalog_row.get('object_name') or 'object'
+        filter_label = catalog_row.get('filter_name') or ''
+        status_line = f'Loaded {object_label}'
+        if filter_label:
+            status_line = f'{status_line} ({filter_label})'
+        if force_refresh:
+            status_line = f'reDownload complete — {status_line}'
+
+        return dict(
+            plot_alert_style={'display': 'none'},
+            plot_alert_message='',
+            fold_controls_style=fold_controls_style,
+            fold_warning_style=fold_warning_style,
+            user_tab_id=user_tab_id,
+            revision=_bump_lc_revision(),
+            period_val=period,
+            epoch_val=_display_epoch_value(lcd),
+            mag_switch=lcd.active_domain == DOMAIN_MAG,
+            fold_switch=lcd.folded_view,
+            fetch_status=status_line,
+            fetch_alert_message=message.info_alert(f'{status_line}. Switch to the Light curve tab.'),
+            fetch_alert_style={'display': 'block'},
+            plot_tab_disabled=False,
+            active_tab='lc_discovery_plot_tab',
+        )
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.fetch_lc_discovery_lightcurve: %s', exc)
+        return dict(
+            plot_alert_style={'display': 'none'},
+            plot_alert_message='',
+            fold_controls_style={'display': 'none', 'min-height': '30px'},
+            fold_warning_style={'display': 'none'},
+            user_tab_id=no_update,
+            revision=no_update,
+            period_val=no_update,
+            epoch_val=no_update,
+            mag_switch=no_update,
+            fold_switch=no_update,
+            fetch_status='',
+            fetch_alert_message=message.warning_alert(exc),
+            fetch_alert_style={'display': 'block'},
+            plot_tab_disabled=no_update,
+            active_tab=no_update,
+        )
+
+
+@callback(
+    output=dict(
+        revision=Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    ),
+    inputs=dict(replot_clicks=Input('lc_discovery_replot_button', 'n_clicks')),
+    state=dict(user_tab_id=State('store_lc_discovery_user_tab_id', 'data')),
+    prevent_initial_call=True,
+)
+def replot_lc_discovery_lightcurve(replot_clicks, user_tab_id):
+    """Refreshes the plot from the in-session ``CurveDash`` without re-fetching.
+
+    Args:
+        replot_clicks (int): rePlot button click count.
+        user_tab_id (str, optional): Session plot-store key.
+
+    Returns:
+        dict: New plot revision token.
+
+    Raises:
+        PreventUpdate: When no cached lightcurve exists.
+    """
+    if not replot_clicks or not user_tab_id:
+        raise PreventUpdate
+    if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+    return dict(revision=_bump_lc_revision())
+
+
+@callback(
+    Output('lc_discovery_graph', 'figure', allow_duplicate=True),
+    Input('store_lc_discovery_lc_revision', 'data'),
+    Input('lc_discovery_time_axis_switch', 'value'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    State('lc_discovery_fold_switch', 'value'),
+    prevent_initial_call='initial_duplicate',
+)
+def plot_lc_discovery_curve(_revision, time_axis_mode, user_tab_id, phase_view):
+    """Builds the Discovery lightcurve figure from the session cache.
+
+    Args:
+        _revision (str, optional): Plot revision token.
+        time_axis_mode (str): MJD or calendar date axis mode.
+        user_tab_id (str, optional): Session cache key.
+        phase_view (bool): Whether to show folded phases.
+
+    Returns:
+        dict: Plotly figure dictionary.
+
+    Raises:
+        PreventUpdate: When no cached lightcurve is available.
+    """
+    if not user_tab_id or not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        fig = figure_from_serialized(
+            js_lightcurve,
+            phase_view=bool(phase_view),
+            display_epoch=DISPLAY_EPOCH_JD,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
+            color_by_label=False,
+            dragmode='lasso',
+        )
+        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        return fig
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.plot_lc_discovery_curve: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        return no_update
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
+    Input('lc_discovery_recalc_phase_button', 'n_clicks'),
+    Input('lc_discovery_fold_switch', 'value'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    State('lc_discovery_period_input', 'value'),
+    State('lc_discovery_epoch_input', 'value'),
+    prevent_initial_call=True,
+)
+def fold_or_recalculate_lc_discovery_phase(n_clicks, phase_view, user_tab_id, period, epoch):
+    """Folds or recalculates phase for the cached Discovery lightcurve.
+
+    Args:
+        n_clicks (int): Recalc Phase button click count.
+        phase_view (bool): Fold switch state.
+        user_tab_id (str, optional): Session cache key.
+        period (str, optional): Period input value.
+        epoch (str, optional): Epoch input value relative to ``DISPLAY_EPOCH_JD``.
+
+    Returns:
+        tuple: New revision token and optional updated fold switch value.
+
+    Raises:
+        PreventUpdate: When inputs are invalid or unchanged.
+    """
+    if ctx.triggered_id == 'lc_discovery_recalc_phase_button' and n_clicks is None:
+        raise PreventUpdate
+    try:
+        epoch_value = safe_float(epoch, 0)
+        period_value = safe_float(period)
+        if phase_view and not period_value:
+            raise PipeException('Set the period and try again')
+
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        if lcd.lightcurve is None:
+            raise PipeException('recalculate_phase: Please, load a lightcurve first')
+
+        if period_value:
+            lcd.period = period_value
+            lcd.period_unit = 'd'
+        if epoch_value is not None:
+            lcd.epoch = epoch_value + DISPLAY_EPOCH_JD
+
+        lcd.folded_view = bool(phase_view)
+        lcd.recalc_phase()
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        return _bump_lc_revision(), no_update
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.fold_or_recalculate_lc_discovery_phase: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        return no_update, False
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
+    Input('lc_discovery_mag_switch', 'value'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
+    """Switches the cached lightcurve between flux and magnitude domains.
+
+    Args:
+        show_magnitude (bool): Mag switch state.
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        tuple: New revision token and optional corrected switch value.
+
+    Raises:
+        PreventUpdate: When no domain change is required.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+
+        desired_domain = DOMAIN_MAG if show_magnitude else DOMAIN_FLUX
+        if lcd.active_domain == desired_domain:
+            raise PreventUpdate
+
+        apply_phot_domain_view(lcd, show_magnitude)
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        set_props('lc_discovery_plot_alert', {'children': '', 'style': {'display': 'none'}})
+        return _bump_lc_revision(), no_update
+    except PreventUpdate:
+        raise
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.toggle_lc_discovery_mag_view: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        try:
+            js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+            lcd = CurveDash.from_serialized(js_lightcurve)
+            return no_update, lcd.active_domain == DOMAIN_MAG
+        except Exception:
+            return no_update, False
+
+
+@callback(
+    Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
+    Input('store_lc_discovery_lc_revision', 'data'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def sync_lc_discovery_mag_switch(_, user_tab_id):
+    """Keeps the magnitude switch aligned with the cached active domain.
+
+    Args:
+        _ (str, optional): Plot revision token (dependency only).
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        bool: Whether magnitude view is active.
+
+    Raises:
+        PreventUpdate: When no cache entry exists.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        return lcd.active_domain == DOMAIN_MAG
+    except Exception:
+        raise PreventUpdate
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Input('lc_discovery_graph', 'selectedData'),
+    Input('lc_discovery_graph', 'clickData'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def merge_lc_discovery_plot_selection(selected_data, click_data, user_tab_id):
+    """Marks clicked or lasso-selected points in the server cache and replots.
+
+    Args:
+        selected_data (dict, optional): Plotly lasso/box selection payload.
+        click_data (dict, optional): Plotly click payload.
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        str: New revision token.
+
+    Raises:
+        PreventUpdate: When the event carries no usable points.
+    """
+    if not ctx.triggered or not user_tab_id:
+        raise PreventUpdate
+    trigger_prop = ctx.triggered[0]['prop_id'].rsplit('.', 1)[-1]
+    event_data = selected_data if trigger_prop == 'selectedData' else click_data
+    if not event_data or not event_data.get('points'):
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        apply_plot_point_selection(lcd, event_data)
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        return _bump_lc_revision()
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.merge_lc_discovery_plot_selection: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        raise PreventUpdate
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Input('lc_discovery_unselect_button', 'n_clicks'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def unselect_lc_discovery_points(n_clicks, user_tab_id):
+    """Clears all ``selected`` markers in the cached lightcurve and replots.
+
+    Args:
+        n_clicks (int): Unselect button click count.
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        str: New revision token.
+
+    Raises:
+        PreventUpdate: When the button was not clicked or no cache exists.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        clear_plot_point_selection(lcd)
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        return _bump_lc_revision()
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.unselect_lc_discovery_points: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        raise PreventUpdate
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Input('lc_discovery_delete_button', 'n_clicks'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def delete_lc_discovery_selected_points(n_clicks, user_tab_id):
+    """Removes rows marked ``selected=1`` from the cached lightcurve.
+
+    Args:
+        n_clicks (int): Delete button click count.
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        str: New revision token.
+
+    Raises:
+        PreventUpdate: When nothing is selected or deletion would empty the curve.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        if lcd.lightcurve is None or 'selected' not in lcd.lightcurve.columns:
+            raise PipeException('Select points to delete first.')
+        if not (lcd.lightcurve['selected'] == 1).any():
+            set_props(
+                'lc_discovery_plot_alert',
+                {
+                    'children': message.warning_alert('Select points to delete first.'),
+                    'style': {'display': 'block'},
+                },
+            )
+            raise PreventUpdate
+        delete_selected_rows(lcd)
+        if lcd.lightcurve is None or lcd.lightcurve.empty:
+            raise PipeException('Cannot delete all points from the lightcurve')
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        return _bump_lc_revision()
+    except PreventUpdate:
+        raise
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.delete_lc_discovery_selected_points: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        raise PreventUpdate
+
+
+@callback(
+    Output('lc_discovery_download', 'data'),
+    Input('lc_discovery_download_button', 'n_clicks'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    State('lc_discovery_export_format_select', 'value'),
+    prevent_initial_call=True,
+)
+def download_lc_discovery_lightcurve(n_clicks, user_tab_id, table_format):
+    """Exports the cached Discovery lightcurve via mission-blind bridge export.
+
+    VOTable kwargs are rebuilt from ``CurveDash`` metadata ingested at fetch time.
+    Legacy mission export profiles are not used on this page.
+
+    Args:
+        n_clicks (int): Download button click count.
+        user_tab_id (str, optional): Session plot-store key.
+        table_format (str): Selected export format.
+
+    Returns:
+        dict | dash.no_update: Dash download payload.
+
+    Raises:
+        PreventUpdate: When the button was not clicked or no cache exists.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+
+    try:
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        file_bstring = export_curvedash(lcd, table_format)
+
+        outfile_base = discovery_export_basename(lcd)
+        ext = export_file_extension(table_format)
+        outfile = f'{outfile_base}.{ext}'
+
+        set_props('lc_discovery_plot_alert', {'children': '', 'style': {'display': 'none'}})
+        return dcc.send_bytes(file_bstring, outfile)
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.download_lc_discovery_lightcurve: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+        )
+        return no_update
+

@@ -5,7 +5,7 @@ import pytest
 from astropy import units as u
 from astropy.coordinates import SkyCoord
 
-from skvo_veb.lc_providers.gaia import GaiaDr3Provider
+from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
 from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.lc_providers.registry import get_provider, list_missions
 from skvo_veb.utils.mission_config.gaia import GAIA_G_FILTER_IDENTIFIER
@@ -18,13 +18,17 @@ from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 
 
-def test_registry_lists_gaia_debug_mission():
-    """Gaia debug provider is registered for UI discovery."""
+def test_registry_lists_gaia_providers():
+    """Gaia debug and VEB providers are registered for UI discovery."""
     missions = list_missions()
-    assert len(missions) == 1
-    assert missions[0].mission_id == "gaia"
-    assert missions[0].is_mock is True
-    assert missions[0].display_name == "Gaia DR3 (debug)"
+    mission_ids = {item.mission_id for item in missions}
+    assert mission_ids == {"gaia", "gaia_dr3_veb"}
+
+    by_id = {item.mission_id: item for item in missions}
+    assert by_id["gaia"].is_mock is True
+    assert by_id["gaia"].display_name == "Gaia DR3 (debug)"
+    assert by_id["gaia_dr3_veb"].is_mock is False
+    assert by_id["gaia_dr3_veb"].display_name == "Gaia DR3 VEB"
 
 
 def test_gaia_search_catalog_respects_time_bounds():

@@ -15,4 +15,6 @@ skvo_veb/
     ├── test_asassn_export.py
     └── volightcurve/
 
-**Architecture docs:** see `docs/mission_lightcurve_providers.md` for the multi-mission LC page, search orchestration (§9), and provider API.
+**Architecture docs:**
+- `docs/adding_a_lightcurve_provider.md` — step-by-step guide to plug in a new provider (includes TAP section)
+- `docs/mission_lightcurve_providers.md` — full multi-mission LC architecture, search orchestration (§9), and provider API

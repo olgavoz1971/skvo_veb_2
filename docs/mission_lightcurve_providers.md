@@ -2,6 +2,8 @@
 
 **Audience:** AI coding agents and maintainers implementing a scalable, mission-agnostic lightcurve page.
 
+**Human-readable how-to:** [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md) — shorter checklist for plugging in a new provider (including TAP).
+
 **Status:** Partially implemented (2026-07-17). `lc_providers/` package, Gaia mock provider, search orchestration (`utils/lc_discovery_search.py`), and Discovery Submit background callback are in place. ASAS-SN adapter and Load/fetch wiring are next.
 
 **Related docs:**
