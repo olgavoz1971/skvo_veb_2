@@ -17,7 +17,8 @@
     --lc-discovery-text-xs: 0.75rem;
     --lc-discovery-text-sm: 0.85rem;
     --lc-discovery-radius-sm: 0.25rem;
-    --lc-discovery-panel-height: clamp(15rem, 45vh, 30rem);
+    /* --lc-discovery-panel-height: clamp(20rem, 45vh, 30rem); */
+    --lc-discovery-panel-height: clamp(20rem, 400px, 30rem);    /* 400px as Aladin applet */
     --lc-discovery-panel-height-compact: clamp(13.75rem, 38vh, 22.5rem);
     --lc-discovery-graph-height: clamp(17.5rem, 55vh, 35rem);
     --lc-discovery-card-max-height: clamp(5rem, 22vh, 10rem);

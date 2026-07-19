@@ -166,8 +166,10 @@ def layout():
                                         "animateRows": True,
                                         "pagination": True,
                                         "paginationPageSize": 10,
+                                        'enableCellTextSelection': True,
                                     },
                                     style={"height": "250px", "width": "100%"}
+
                                 )
                             ], id="search_results_row", style={"display": "none"}),  # Search results
                             html.Div(id='div_tess_search_alert', style={"display": "none"}),  # Alert

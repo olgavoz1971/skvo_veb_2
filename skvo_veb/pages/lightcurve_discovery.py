@@ -150,7 +150,7 @@ LC_DISCOVERY_TIME_FORMAT_OPTIONS = [
 LC_DISCOVERY_TIME_MIN_PLACEHOLDER_MJD = 'Earliest MJD (optional)'
 LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD = 'Latest MJD (optional)'
 
-_LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves.'
+_LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves'
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN = {'display': 'none'}
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE = {'display': 'block'}
 _LC_DISCOVERY_ALADIN_WIDTH = 400
@@ -592,21 +592,21 @@ def _search_results_panel():
                                                 defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
                                                 dashGridOptions={
                                                     'theme': 'themeBalham',
-                                                    'rowHeight': 22,
-                                                    'headerHeight': 24,
+                                                    # 'rowHeight': 22,
+                                                    # 'headerHeight': 24,
                                                     'rowSelection': {
                                                         'mode': 'singleRow',
                                                         'checkboxes': False,
-                                                        'enableClickSelection': True,
+                                                        # 'enableClickSelection': True,
                                                     },
                                                     'animateRows': False,
-                                                    'pagination': True,
-                                                    'paginationPageSize': 10,
+                                                    'pagination': False,
+                                                    # 'paginationPageSize': 10,
                                                     'domLayout': 'normal',
                                                     'suppressHorizontalScroll': False,
-                                                    'alwaysShowHorizontalScroll': True,
+                                                    # 'alwaysShowHorizontalScroll': True,
                                                     'enableCellTextSelection': True,
-                                                    'ensureDomOrder': True,
+                                                    # 'ensureDomOrder': True,
                                                     'getRowId': {
                                                         'function': 'params.data.lc_key'
                                                     },
