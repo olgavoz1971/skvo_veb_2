@@ -50,7 +50,7 @@ from skvo_veb.utils.lc_bridge import (
 from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.lc_discovery_load import drop_invalid_photometry_rows
 from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import extract_photdm, extract_photdm_from_astropy
+from skvo_veb.volightcurve.lightcurve import extract_photdm
 
 DEFAULT_OGLE_ACCREF = (
     "https://skvo.science.upjs.sk/ogle/q/sdl/dlget?"
@@ -182,25 +182,21 @@ def _describe_raw_votable_photcal(payload: bytes) -> None:
                 ref = getattr(entry, "ref", None)
                 utype = getattr(entry, "utype", None)
                 value = getattr(entry, "value", None)
-                handled = cls in {"Param", "FieldRef"}
-                note = "" if handled else "  <-- NOT handled by extract_photdm_from_astropy()"
+                note = "  <-- PARAMref resolved by GAVO extract_photdm()" if cls == "ParamRef" else ""
                 print(
                     f"  {cls}: ref={ref!r} utype={utype!r} value={value!r}{note}"
                 )
 
 
-def _compare_photdm_extractors(payload: bytes) -> None:
-    """Compares astropy-only vs GAVO PARAMref-aware PhotDM extraction.
+def _describe_gavo_photdm(payload: bytes) -> None:
+    """Prints PhotDM extracted by the GAVO walker (VOLightCurve authority).
 
     Args:
         payload (bytes): Raw VOTable bytes.
     """
-    astro_tree = vot.parse(io.BytesIO(payload))
     gavo_tree = votparse.readRaw(io.BytesIO(payload))
-    astro_map = extract_photdm_from_astropy(astro_tree)
     gavo_map = extract_photdm(gavo_tree)
-    _describe_photdm_map("extract_photdm_from_astropy()  [VOLightCurve primary path]", astro_map)
-    _describe_photdm_map("extract_photdm() GAVO walker       [fallback path only]", gavo_map)
+    _describe_photdm_map("extract_photdm() GAVO walker [VOLightCurve PhotDM path]", gavo_map)
 
 
 def _describe_volightcurve(volc: VOLightCurve, *, head: int) -> None:
@@ -297,12 +293,11 @@ def _summary_diagnosis(volc: VOLightCurve, payload: bytes) -> None:
         volc (VOLightCurve): Parsed archive product.
         payload (bytes): Raw VOTable bytes.
     """
-    astro_tree = vot.parse(io.BytesIO(payload))
     gavo_tree = votparse.readRaw(io.BytesIO(payload))
-    astro_map = extract_photdm_from_astropy(astro_tree)
     gavo_map = extract_photdm(gavo_tree)
 
     has_paramref = False
+    astro_tree = vot.parse(io.BytesIO(payload))
     for resource in astro_tree.resources:
         for group in resource.groups:
             if group.name != "photcal":
@@ -317,24 +312,17 @@ def _summary_diagnosis(volc: VOLightCurve, payload: bytes) -> None:
         Quick diagnosis
         ---------------
         - Source uses PARAMref in photcal GROUP: {has_paramref}
-        - VOLightCurve primary extractor: extract_photdm_from_astropy()
-        - GAVO fallback (PARAMref-aware): extract_photdm() — only if astropy metadata parse fails
+        - VOLightCurve PhotDM extractor: extract_photdm() (GAVO walker)
         - Ingested phot.filter_id: {getattr(getattr(ingested, 'filter', None), 'filter_id', None)!r}
-        - GAVO would yield filter_id: {getattr(getattr(gavo, 'filter', None), 'filter_id', None)!r}
+        - GAVO extract_photdm filter_id: {getattr(getattr(gavo, 'filter', None), 'filter_id', None)!r}
         - Table meta fps_filter_id: {(volc.table.meta or {}).get('fps_filter_id')!r}
         - Table meta zeropoint: {(volc.table.meta or {}).get('zeropoint')!r}
         - Table meta ssa_specmid: {(volc.table.meta or {}).get('ssa_specmid')!r}
         """
     ).strip())
 
-    if has_paramref and ingested is not None and gavo is not None:
-        ingested_zp = ingested.photcal.zp_flux if ingested.photcal else None
-        gavo_zp = gavo.photcal.zp_flux if gavo.photcal else None
-        if ingested_zp != gavo_zp:
-            print(
-                "\nNOTE: ingested zp_flux differs from GAVO-resolved zp_flux. "
-                "PARAMref values may not be reaching volc.photdms."
-            )
+    if ingested is not None and gavo is not None and ingested != gavo:
+        print("\nNOTE: ingested PhotDM differs from a fresh GAVO extract_photdm() call.")
 
 
 def run_trace(*, accref: str, head: int) -> int:
@@ -359,8 +347,8 @@ def run_trace(*, accref: str, head: int) -> int:
     _banner("Stage 1 — Raw VOTable photcal GROUP (PARAM / PARAMref)")
     _describe_raw_votable_photcal(payload)
 
-    _banner("Stage 2 — Side-by-side PhotDM extractors (astropy vs GAVO)")
-    _compare_photdm_extractors(payload)
+    _banner("Stage 2 — GAVO PhotDM extraction (VOLightCurve authority)")
+    _describe_gavo_photdm(payload)
 
     _banner("Stage 3 — VOLightCurve ingestion (provider fetch_accref path)")
     volc = fetch_volightcurve_from_accref(accref)
@@ -400,8 +388,8 @@ def run_trace(*, accref: str, head: int) -> int:
 
     _banner("Done")
     print(
-        "If Stage 2 GAVO map differs from Stage 3 volc.photdms, "
-        "PARAMref resolution did not run during VOLightCurve ingestion."
+        "PhotDM ingestion uses the GAVO walker. Compare Stage 2 and Stage 3 "
+        "volc.photdms for consistency."
     )
     return 0
 

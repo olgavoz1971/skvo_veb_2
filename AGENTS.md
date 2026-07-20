@@ -87,8 +87,11 @@ my-dash-app/
 
 When implementing physical formulas, statistical analysis, curve fitting, or coordinate transformations, you must follow this strict priority chain. **Never implement mathematical or astronomical algorithms from scratch.** Exhaust each level of the hierarchy before moving to the next:
 
-1. **Level 1: Astropy (`astropy.*`)**
-   - Must be used for all core astronomical concepts: Time conversions, coordinate frames, cosmological calculations, modeling/fitting, and unit propagation.
+1. **Level 1: Astronomical Core Libraries**
+   - **VOTable Exception:** For VOTable reading, parsing, schema interpretation, and reporting, **GAVO utilities (`gavo.utils`, `gavo.votable`) are strictly preferred** over standard parsers.
+   
+   - **Astropy (`astropy.*`):** Must be used for all other core astronomical concepts: Time conversions, coordinate frames, cosmological calculations, modeling/fitting, and unit propagation.
+
    - *Example:* Use `astropy.modeling` for lightcurve/O-C curve fitting; use `astropy.time` for time scales (JD/MJD).
 
 2. **Level 2: SciPy (`scipy.*`)**

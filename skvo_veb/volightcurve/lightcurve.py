@@ -447,71 +447,13 @@ def extract_coosys_from_astropy(vot_file):
     return None
 
 
-def extract_photdm_from_astropy(vot_file):
-    """Extracts PhotDM metadata from astropy VOTableFile tree.
-
-    Args:
-        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
-
-    Returns:
-        dict: A mapping of target column references (strings) to PhotDM instances.
-    """
-    from astropy.io.votable.tree import Param, FieldRef
-    
-    UT_FLUX = "photDM:PhotCal.zeroPoint.flux.value"
-    UT_MAG = "photDM:PhotCal.zeroPoint.referenceMagnitude.value"
-    UT_MAG_SYS = "photDM:PhotCal.magnitudeSystem.type"
-    UT_FILTER = "photDM:PhotometryFilter.identifier"
-    UT_FILTER_SPEC = "photDM:PhotometryFilter.spectralLocation.value"
-
-    dm_map = {}
-    
-    for res in vot_file.resources:
-        for g in res.groups:
-            if g.name == 'photcal':
-                cal_params = {'zp_flux': 1.0, 'zp_mag': 0.0, 'zp_mag_unit': 'mag', 'zp_flux_unit': None}
-                filter_params = {'filter_id': '', 'spectral_location': 0.0, 'spectral_location_unit': None}
-                target_col = None
-                
-                for entry in g.entries:
-                    role_utype = getattr(entry, "utype", "") or ""
-                    role_utype = role_utype.lower()
-                    
-                    if isinstance(entry, Param):
-                        ut = role_utype or getattr(entry, "utype", "") or ""
-                        ut = ut.lower()
-                        
-                        if ut == UT_FLUX.lower():
-                            cal_params['zp_flux'] = float(entry.value) if entry.value is not None else 1.0
-                            cal_params['zp_flux_unit'] = getattr(entry, "unit", None)
-                        elif ut == UT_MAG.lower():
-                            cal_params['zp_mag'] = float(entry.value) if entry.value is not None else 0.0
-                            cal_params['zp_mag_unit'] = entry.unit
-                        elif ut == UT_MAG_SYS.lower():
-                            cal_params['mag_sys'] = entry.value
-                        elif ut == UT_FILTER.lower():
-                            filter_params['filter_id'] = entry.value
-                        elif ut == UT_FILTER_SPEC.lower():
-                            filter_params['spectral_location'] = float(entry.value) if entry.value is not None else 0.0
-                            filter_params['spectral_location_unit'] = getattr(entry, "unit", None)
-                            
-                    elif isinstance(entry, FieldRef):
-                        target_col = getattr(entry, "ref", None)
-                        
-                if target_col:
-                    phot_filter = PhotometryFilter(**filter_params)
-                    photcal = PhotCal(**cal_params)
-                    dm_map[target_col] = PhotDM(photcal=photcal, photometry_filter=phot_filter)
-                    
-    return dm_map
-
-
 def extract_photdm(tree):
-    """GAVO tree walker for PhotCal groups.
+    """GAVO tree walker for IVOA PhotDM ``photcal`` GROUP metadata.
 
-    Traverses the VOTable tree parsed by GAVO to find and extract photometric
-    calibration groups and filters associated with specific columns.
-    Note: This is DACHS phot-0 specific (with custom extensions).
+    Traverses a GAVO-parsed VOTable tree and resolves photometric calibration
+    groups linked to photometry columns. Handles inline ``PARAM`` entries and
+    ``PARAMref`` indirection (the pattern used by modern VO publishers such as
+    DaCHS/UPJS TAP services).
 
     Args:
         tree: The GAVO VOTable tree node/element to parse.
@@ -554,7 +496,7 @@ def extract_photdm(tree):
                 target_param = None
                 # Note: we should always look for the utype on the child (the reference) first!
                 # The referenced parameter may have another utype
-                role_utype = getattr(child, "utype", "").lower()
+                role_utype = (getattr(child, "utype", None) or "").lower()
 
                 if child.name_ == 'PARAM':
                     target_param = child
@@ -566,7 +508,7 @@ def extract_photdm(tree):
                 if target_param is not None:
                     # If the reference (child) didn't have utype,
                     # use the parameter's own utype (so, I do not like this case)
-                    ut = role_utype or getattr(target_param, "utype", "").lower()
+                    ut = role_utype or (getattr(target_param, "utype", None) or "").lower()
 
                     if ut == UT_FLUX.lower():
                         cal_params['zp_flux'] = float(target_param.value)
@@ -596,6 +538,22 @@ def extract_photdm(tree):
 
     tree.apply(process_group)
     return dm_map
+
+
+def _gavo_votable_tree_from_source(file_path):
+    """Parses a VOTable byte stream into a GAVO stanxml tree.
+
+    Args:
+        file_path (str or file-like): Path or stream containing VOTable bytes.
+
+    Returns:
+        GAVO stanxml tree root for metadata walkers.
+    """
+    if hasattr(file_path, "seek"):
+        file_path.seek(0)
+        return votparse.readRaw(file_path)
+    with open(file_path, "rb") as handle:
+        return votparse.readRaw(handle)
 
 
 def extract_timesys(tree):
@@ -1034,10 +992,11 @@ class VOLightCurve:
     def _ingest(self, file_path):
         """Main ingestion flow that loads and processes the input file.
 
-        Attempts to load the file as a standard VOTable first. If that succeeds, parses TimeSys
-        and PhotDM metadata using GAVO tree walkers. If the file is not a valid VOTable, it
-        attempts to read it as a standard tabular file, falling back to ASCII parsing and
-        heuristic column recovery based on comments/position.
+        Attempts to load the file as a standard VOTable first. Table data and TIMESYS
+        cross-references are parsed with astropy; PhotDM ``photcal`` metadata uses
+        GAVO tree walkers (PARAMref-aware). If the file is not a valid VOTable, it
+        attempts to read it as a standard tabular file, falling back to ASCII parsing
+        and heuristic column recovery based on comments/position.
 
         Args:
             file_path (str or file-like object): Path to the input file or an active file-like stream.
@@ -1078,7 +1037,7 @@ class VOLightCurve:
                     self.param_timesys_ref = extract_param_timesys_refs_from_astropy(tree)
                     self.timesys = extract_timesys_from_astropy(tree)
                     self.coosys = extract_coosys_from_astropy(tree)
-                    self.photdms = extract_photdm_from_astropy(tree)
+                    self.photdms = extract_photdm(_gavo_votable_tree_from_source(file_path))
                     self.table = _promote_to_vo_standards(self.table)
                     astropy_success = True
                 except Exception as e:
@@ -1087,16 +1046,11 @@ class VOLightCurve:
                 if astropy_success:
                     return
 
-                # Fallback to GAVO walker if astropy metadata extraction failed
+                # Fallback to GAVO walkers if astropy metadata extraction failed
                 if hasattr(file_path, 'seek'):
                     file_path.seek(0)
                 try:
-                    if hasattr(file_path, 'seek'):
-                        file_path.seek(0)
-                        votable_tree = votparse.readRaw(file_path)
-                    else:
-                        with open(file_path, "rb") as f:
-                            votable_tree = votparse.readRaw(f)
+                    votable_tree = _gavo_votable_tree_from_source(file_path)
 
                     self.table = _promote_to_vo_standards(self.table)
                     self.timesys = extract_timesys(votable_tree)
