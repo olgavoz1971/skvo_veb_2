@@ -41,6 +41,33 @@ MINIMAL_VOT_WITH_COOSYS = b"""<?xml version="1.0" encoding="utf-8"?>
 </VOTABLE>
 """
 
+MINIMAL_VOT_COOSYS_NO_EPOCH = b"""<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" version="1.5">
+  <RESOURCE>
+    <COOSYS ID="system" system="ICRS"/>
+    <TIMESYS ID="ts" refposition="HELIOCENTER" timeorigin="2400000.5" timescale="UTC"/>
+    <GROUP ID="phot_def" name="photcal">
+      <PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="Generic/Bessell.V"/>
+      <PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="3630.0" unit="Jy"/>
+      <PARAM name="zeroPointReferenceMagnitude" datatype="double" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="0.0" unit="mag"/>
+      <PARAM name="magnitudeSystem" datatype="char" arraysize="*" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+      <FIELDref ref="phot"/>
+    </GROUP>
+    <TABLE name="OGLE-SMC-ECL-05425">
+      <DESCRIPTION>COOSYS without epoch attribute.</DESCRIPTION>
+      <FIELD name="obs_time" datatype="double" ucd="time.epoch" unit="d" ref="ts"/>
+      <FIELD name="phot" datatype="double" ucd="phot.mag;em.opt" unit="mag" ref="phot_def"/>
+      <FIELD name="mag_err" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>
+      <DATA>
+        <TABLEDATA>
+          <TR><TD>57000.0</TD><TD>18.63</TD><TD>0.01</TD></TR>
+        </TABLEDATA>
+      </DATA>
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>
+"""
+
 
 def test_volightcurve_ingest_extracts_coosys():
     """Ingest reads COOSYS from a VOTable into VOLightCurve.coosys."""
@@ -100,3 +127,28 @@ def test_coosys_survives_curvedash_export_roundtrip():
     assert roundtrip.coosys.system == "ICRS"
     assert roundtrip.coosys.coosys_id == "system"
     assert float(roundtrip.coosys.epoch) == 2016.0
+
+
+def test_volightcurve_ingest_preserves_coosys_without_epoch():
+    """COOSYS without @epoch must not receive an invented proper-motion epoch."""
+    volc = VOLightCurve(io.BytesIO(MINIMAL_VOT_COOSYS_NO_EPOCH))
+    assert volc.coosys is not None
+    assert volc.coosys.system == "ICRS"
+    assert volc.coosys.epoch is None
+
+
+def test_coosys_without_epoch_survives_export_roundtrip():
+    """Export must not add COOSYS/@epoch when the source omitted it."""
+    volc = VOLightCurve(io.BytesIO(MINIMAL_VOT_COOSYS_NO_EPOCH))
+    lcd = volc_to_curvedash(volc, "ogle_test.vot")
+    envelope = lcd.metadata.get(METADATA_KEY_VO_ENVELOPE) or {}
+    assert envelope.get("coosys_system") == "ICRS"
+    assert "coosys_epoch" not in envelope
+
+    exported = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    xml = exported.decode("utf-8", errors="replace")
+    assert 'system="ICRS"' in xml
+    assert 'epoch="' not in xml
+    roundtrip = VOLightCurve(io.BytesIO(exported))
+    assert roundtrip.coosys is not None
+    assert roundtrip.coosys.epoch is None

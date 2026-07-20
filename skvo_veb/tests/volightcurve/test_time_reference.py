@@ -12,9 +12,12 @@ from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 from skvo_veb.volightcurve.time_reference import (
     absolute_jd_to_time_offset,
+    extract_timesys_metadata_from_gavo,
+    extract_timesys_registry_from_gavo,
     normalise_table_epoch_to_absolute_jd,
     time_offset_to_absolute_jd,
 )
+from skvo_veb.volightcurve.lightcurve import _gavo_votable_tree_from_source
 
 
 def _gaia_style_votable(*, include_epoch: bool = True, second_time_col: bool = False) -> bytes:
@@ -61,6 +64,33 @@ def _gaia_style_votable(*, include_epoch: bool = True, second_time_col: bool = F
   </RESOURCE>
 </VOTABLE>
 """.encode()
+
+
+def test_gavo_timesys_registry_extracts_multiple_systems():
+    """GAVO TIMESYS walker builds a registry keyed by ``TIMESYS/@ID``."""
+    tree = _gavo_votable_tree_from_source(io.BytesIO(_gaia_style_votable()))
+    registry = extract_timesys_registry_from_gavo(tree)
+    assert set(registry) == {"ts", "ts2"}
+    assert registry["ts"].timeorigin == pytest.approx(2455197.5)
+    assert registry["ts2"].timeorigin == pytest.approx(2400000.5)
+    assert registry["ts"].timescale == "TCB"
+
+
+def test_gavo_timesys_metadata_maps_table_field_and_param_refs():
+    """GAVO walker resolves TABLE FIELD/PARAM ``ref`` attributes."""
+    tree = _gavo_votable_tree_from_source(io.BytesIO(_gaia_style_votable()))
+    metadata = extract_timesys_metadata_from_gavo(tree)
+    assert metadata.field_refs["obs_time"] == "ts"
+    assert metadata.param_refs["epoch"] is None
+    assert metadata.default_timesys.timeorigin == pytest.approx(2455197.5)
+
+
+def test_volightcurve_ingest_uses_gavo_timesys_registry():
+    """VOLightCurve ingest populates TIMESYS registry via GAVO walkers."""
+    volc = VOLightCurve(io.BytesIO(_gaia_style_votable()))
+    assert set(volc.timesys_by_id) == {"ts", "ts2"}
+    assert volc.field_timesys_ref["obs_time"] == "ts"
+    assert volc.timesys.timeorigin == pytest.approx(2455197.5)
 
 
 def test_time_offset_roundtrip_helpers():

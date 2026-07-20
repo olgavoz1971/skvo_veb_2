@@ -345,12 +345,13 @@ class CooSys:
     Used to model VOTable ``<COOSYS>`` metadata (reference frame and epoch).
     """
 
-    def __init__(self, *, epoch=2016, system='ICRS', coosys_id='system'):
+    def __init__(self, *, epoch=None, system='ICRS', coosys_id='system'):
         """Initialises a CooSys instance.
 
         Args:
             epoch (float, int, or str, optional): Reference epoch of the coordinates
-                (e.g. proper-motion epoch for Gaia). Defaults to 2016.
+                (e.g. proper-motion epoch for Gaia). ``None`` when the source VOTable
+                omits ``COOSYS/@epoch``.
             system (str, optional): Reference coordinate system/frame. Defaults to ``ICRS``.
             coosys_id (str, optional): VOTable ``COOSYS/@ID`` value. Defaults to ``system``.
         """
@@ -396,55 +397,22 @@ class TimeSys:
         return f"<TimeSys: timescale={self.timescale} refposition={self.refposition} timeorigin={self.timeorigin}>"
 
 
-def extract_timesys_from_astropy(vot_file):
-    """Extracts TimeSys metadata from astropy VOTableFile tree.
+def _apply_gavo_votable_metadata(volc_instance, gavo_tree) -> None:
+    """Populates TIMESYS, COOSYS, and PhotDM metadata from a GAVO VOTable tree.
 
     Args:
-        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
-
-    Returns:
-        TimeSys: The populated TimeSys metadata container instance.
+        volc_instance (VOLightCurve): Target instance to mutate in place.
+        gavo_tree: GAVO stanxml root returned by ``votparse.readRaw``.
     """
-    for res in vot_file.resources:
-        if res.time_systems:
-            ts = res.time_systems[0]
-            try:
-                timeorigin = float(ts.timeorigin) if ts.timeorigin is not None else 0.0
-            except (ValueError, TypeError):
-                timeorigin = 0.0
-            return TimeSys(
-                refposition=ts.refposition or 'HELIOCENTER',
-                timeorigin=timeorigin,
-                timescale=ts.timescale or 'UTC'
-            )
-    return TimeSys()
+    from skvo_veb.volightcurve.time_reference import extract_timesys_metadata_from_gavo
 
-
-def extract_coosys_from_astropy(vot_file):
-    """Extracts CooSys metadata from astropy VOTableFile tree.
-
-    Args:
-        vot_file (astropy.io.votable.tree.VOTableFile): The parsed VOTable file.
-
-    Returns:
-        CooSys or None: Populated coordinate-system metadata when present.
-    """
-    for res in vot_file.resources:
-        if not res.coordinate_systems:
-            continue
-        cs = res.coordinate_systems[0]
-        epoch = cs.epoch
-        if epoch is not None:
-            try:
-                epoch = float(epoch)
-            except (TypeError, ValueError):
-                pass
-        return CooSys(
-            coosys_id=cs.ID or "system",
-            system=cs.system or "ICRS",
-            epoch=epoch if epoch is not None else 2016,
-        )
-    return None
+    ts_meta = extract_timesys_metadata_from_gavo(gavo_tree)
+    volc_instance.timesys_by_id = ts_meta.registry
+    volc_instance.field_timesys_ref = ts_meta.field_refs
+    volc_instance.param_timesys_ref = ts_meta.param_refs
+    volc_instance.timesys = ts_meta.default_timesys
+    volc_instance.coosys = extract_coosys(gavo_tree)
+    volc_instance.photdms = extract_photdm(gavo_tree)
 
 
 def extract_photdm(tree):
@@ -557,33 +525,24 @@ def _gavo_votable_tree_from_source(file_path):
 
 
 def extract_timesys(tree):
-    """GAVO tree walker for TIMESYS metadata.
-
-    Traverses the GAVO VOTable tree to locate the TIMESYS element and extract
-    time coordinate standard metadata, such as time origin, timescale, and reference position.
+    """GAVO tree walker for the default ``TIMESYS`` metadata block.
 
     Args:
         tree: The GAVO VOTable tree node/element to parse.
 
     Returns:
-        TimeSys: The populated TimeSys metadata container instance.
+        TimeSys: The first ``TIMESYS`` element in document order, or an empty default.
     """
-    data = {'timeorigin': 0.0, 'timescale': 'UTC', 'refposition': 'HELIOCENTER'}
+    from skvo_veb.volightcurve.time_reference import extract_timesys_metadata_from_gavo
 
-    def find_ts(node, text, attrs, childIter):
-        if node.name_ == 'TIMESYS':
-            data['timeorigin'] = float(attrs.get('timeorigin', 0.0))
-            data['timescale'] = attrs.get('timescale', 'UTC')
-            data['refposition'] = attrs.get('refposition', 'UNKNOWN')
-        for child in childIter:
-            if hasattr(child, 'apply'): child.apply(find_ts)
-
-    tree.apply(find_ts)
-    return TimeSys(**data)
+    return extract_timesys_metadata_from_gavo(tree).default_timesys
 
 
 def extract_coosys(tree):
-    """GAVO tree walker for COOSYS metadata.
+    """GAVO tree walker for IVOA ``COOSYS`` metadata.
+
+    Preserves absent ``@epoch`` attributes as ``None`` rather than inventing a
+    default proper-motion epoch.
 
     Args:
         tree: The GAVO VOTable tree node/element to parse.
@@ -613,7 +572,7 @@ def extract_coosys(tree):
     return CooSys(
         coosys_id=data["coosys_id"],
         system=data["system"],
-        epoch=data["epoch"] if data["epoch"] is not None else 2016,
+        epoch=data["epoch"],
     )
 
 
@@ -992,9 +951,9 @@ class VOLightCurve:
     def _ingest(self, file_path):
         """Main ingestion flow that loads and processes the input file.
 
-        Attempts to load the file as a standard VOTable first. Table data and TIMESYS
-        cross-references are parsed with astropy; PhotDM ``photcal`` metadata uses
-        GAVO tree walkers (PARAMref-aware). If the file is not a valid VOTable, it
+        Attempts to load the file as a standard VOTable first. Table data and TABLE
+        PARAM values are copied with astropy; ``TIMESYS``, ``COOSYS``, and PhotDM
+        metadata use GAVO tree walkers. If the file is not a valid VOTable, it
         attempts to read it as a standard tabular file, falling back to ASCII parsing
         and heuristic column recovery based on comments/position.
 
@@ -1014,17 +973,12 @@ class VOLightCurve:
                 # The best track:
                 self.table = Table.read(file_path, format='votable')
                 
-                # Try to parse with astropy.io.votable as the primary metadata extractor
+                # Copy TABLE PARAM values with astropy; VO metadata via GAVO walkers.
                 astropy_success = False
                 try:
                     if hasattr(file_path, 'seek'):
                         file_path.seek(0)
                     import astropy.io.votable as vot
-                    from skvo_veb.volightcurve.time_reference import (
-                        extract_field_timesys_refs_from_astropy,
-                        extract_param_timesys_refs_from_astropy,
-                        extract_timesys_registry_from_astropy,
-                    )
 
                     tree = vot.parse(file_path)
                     first_table = tree.get_first_table()
@@ -1032,34 +986,25 @@ class VOLightCurve:
                         if param.name:
                             self.table.meta[param.name] = param.value
 
-                    self.timesys_by_id = extract_timesys_registry_from_astropy(tree)
-                    self.field_timesys_ref = extract_field_timesys_refs_from_astropy(tree)
-                    self.param_timesys_ref = extract_param_timesys_refs_from_astropy(tree)
-                    self.timesys = extract_timesys_from_astropy(tree)
-                    self.coosys = extract_coosys_from_astropy(tree)
-                    self.photdms = extract_photdm(_gavo_votable_tree_from_source(file_path))
+                    gavo_tree = _gavo_votable_tree_from_source(file_path)
+                    _apply_gavo_votable_metadata(self, gavo_tree)
                     self.table = _promote_to_vo_standards(self.table)
                     astropy_success = True
                 except Exception as e:
-                    logger.warning(f"Failed to parse VOTable params and metadata using astropy: {e}")
+                    logger.warning(f"Failed to parse VOTable params and metadata: {e}")
 
                 if astropy_success:
                     return
 
-                # Fallback to GAVO walkers if astropy metadata extraction failed
-                if hasattr(file_path, 'seek'):
-                    file_path.seek(0)
+                # Fallback when TABLE PARAM copy failed but the file is still a VOTable
                 try:
                     votable_tree = _gavo_votable_tree_from_source(file_path)
 
                     self.table = _promote_to_vo_standards(self.table)
-                    self.timesys = extract_timesys(votable_tree)
-                    self.coosys = extract_coosys(votable_tree)
-                    self.photdms = extract_photdm(votable_tree)
+                    _apply_gavo_votable_metadata(self, votable_tree)
                     return
                 except Exception as e_gavo:
-                    logger.warning(f"GAVO fallback parsing also failed: {e_gavo}")
-                    # If both failed, let's raise the original astropy exception or proceed to general fallbacks
+                    logger.warning(f"GAVO metadata parsing also failed: {e_gavo}")
                     raise
 
             # Try to fix things ...

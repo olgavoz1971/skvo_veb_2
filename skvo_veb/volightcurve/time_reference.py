@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from skvo_veb.utils.lc_config import JD_TO_MJD, TIME_OFFSET_ABSOLUTE_JD_THRESHOLD
@@ -10,73 +11,159 @@ if TYPE_CHECKING:
     from skvo_veb.volightcurve.lightcurve import TimeSys, VOLightCurve
 
 
-def extract_timesys_registry_from_astropy(vot_file) -> dict[str, TimeSys]:
-    """Builds a ``TIMESYS/@ID`` registry from an astropy VOTable tree.
+@dataclass(frozen=True)
+class TimesysMetadata:
+    """TIMESYS metadata extracted from a GAVO-parsed VOTable tree.
+
+    Attributes:
+        registry (dict[str, TimeSys]): ``TIMESYS/@ID`` to parsed metadata.
+        field_refs (dict[str, str]): TABLE ``FIELD/@name`` to ``TIMESYS/@ID``.
+        param_refs (dict[str, str | None]): TABLE ``PARAM/@name`` to optional ref.
+        default_timesys (TimeSys): First ``TIMESYS`` element in document order.
+    """
+
+    registry: dict[str, "TimeSys"]
+    field_refs: dict[str, str]
+    param_refs: dict[str, str | None]
+    default_timesys: "TimeSys"
+
+
+def _timesys_from_gavo_attrs(attrs: dict) -> "TimeSys":
+    """Builds a ``TimeSys`` instance from GAVO ``TIMESYS`` element attributes.
 
     Args:
-        vot_file: Parsed ``astropy.io.votable.tree.VOTableFile``.
+        attrs (dict): Attribute mapping from a GAVO stanxml node.
+
+    Returns:
+        TimeSys: Parsed time-system metadata.
+    """
+    from skvo_veb.volightcurve.lightcurve import TimeSys
+
+    try:
+        timeorigin = float(attrs.get("timeorigin", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        timeorigin = 0.0
+    return TimeSys(
+        refposition=attrs.get("refposition") or "HELIOCENTER",
+        timeorigin=timeorigin,
+        timescale=attrs.get("timescale") or "UTC",
+    )
+
+
+def extract_timesys_registry_from_gavo(tree) -> dict[str, "TimeSys"]:
+    """Builds a ``TIMESYS/@ID`` registry from a GAVO VOTable tree.
+
+    Args:
+        tree: GAVO stanxml root returned by ``votparse.readRaw``.
 
     Returns:
         dict[str, TimeSys]: Mapping of TIMESYS identifier to parsed metadata.
     """
-    from skvo_veb.volightcurve.lightcurve import TimeSys
-
     registry: dict[str, TimeSys] = {}
-    for res in vot_file.resources:
-        for ts in res.time_systems or []:
-            ts_id = ts.ID or "ts"
-            try:
-                timeorigin = float(ts.timeorigin) if ts.timeorigin is not None else 0.0
-            except (TypeError, ValueError):
-                timeorigin = 0.0
-            registry[ts_id] = TimeSys(
-                refposition=ts.refposition or "HELIOCENTER",
-                timeorigin=timeorigin,
-                timescale=ts.timescale or "UTC",
-            )
+
+    def find_ts(node, text, attrs, childIter):
+        if node.name_ == "TIMESYS":
+            ts_id = attrs.get("ID") or attrs.get("id") or "ts"
+            registry[str(ts_id)] = _timesys_from_gavo_attrs(attrs)
+        for child in childIter:
+            if hasattr(child, "apply"):
+                child.apply(find_ts)
+
+    tree.apply(find_ts)
     return registry
 
 
-def extract_field_timesys_refs_from_astropy(vot_file) -> dict[str, str]:
+def extract_field_timesys_refs_from_gavo(tree) -> dict[str, str]:
     """Maps TABLE field names to their ``TIMESYS`` reference identifiers.
 
+    Only direct ``FIELD`` children of ``TABLE`` are considered so photcal GROUP
+    parameters are excluded.
+
     Args:
-        vot_file: Parsed ``astropy.io.votable.tree.VOTableFile``.
+        tree: GAVO stanxml root returned by ``votparse.readRaw``.
 
     Returns:
         dict[str, str]: Field name to TIMESYS ``ID`` (from ``FIELD/@ref``).
     """
     refs: dict[str, str] = {}
-    table = vot_file.get_first_table()
-    if table is None:
-        return refs
-    for field in table.fields:
-        if field.name and field.ref:
-            refs[field.name] = str(field.ref)
+
+    def walk(node, text, attrs, childIter):
+        if node.name_ == "TABLE":
+            for child in childIter:
+                if child.name_ != "FIELD":
+                    continue
+                name = getattr(child, "name", None)
+                ref = getattr(child, "ref", None)
+                if name and ref:
+                    refs[str(name)] = str(ref)
+            return
+        for child in childIter:
+            if hasattr(child, "apply"):
+                child.apply(walk)
+
+    tree.apply(walk)
     return refs
 
 
-def extract_param_timesys_refs_from_astropy(vot_file) -> dict[str, str | None]:
+def extract_param_timesys_refs_from_gavo(tree) -> dict[str, str | None]:
     """Maps TABLE PARAM names to optional ``TIMESYS`` reference identifiers.
 
+    Only direct ``PARAM`` children of ``TABLE`` are considered.
+
     Args:
-        vot_file: Parsed ``astropy.io.votable.tree.VOTableFile``.
+        tree: GAVO stanxml root returned by ``votparse.readRaw``.
 
     Returns:
         dict[str, str or None]: Param name to TIMESYS ``ID`` when ``PARAM/@ref`` is set.
     """
     refs: dict[str, str | None] = {}
-    table = vot_file.get_first_table()
-    if table is None:
-        return refs
-    for param in table.params or []:
-        if param.name:
-            ref = getattr(param, "ref", None)
-            refs[param.name] = str(ref) if ref else None
+
+    def walk(node, text, attrs, childIter):
+        if node.name_ == "TABLE":
+            for child in childIter:
+                if child.name_ != "PARAM":
+                    continue
+                name = getattr(child, "name", None)
+                if not name:
+                    continue
+                ref = getattr(child, "ref", None)
+                refs[str(name)] = str(ref) if ref else None
+            return
+        for child in childIter:
+            if hasattr(child, "apply"):
+                child.apply(walk)
+
+    tree.apply(walk)
     return refs
 
 
-def resolve_observation_timesys(volc: VOLightCurve) -> TimeSys:
+def extract_timesys_metadata_from_gavo(tree) -> TimesysMetadata:
+    """Extracts TIMESYS registry and TABLE cross-references from a GAVO tree.
+
+    Args:
+        tree: GAVO stanxml root returned by ``votparse.readRaw``.
+
+    Returns:
+        TimesysMetadata: Registry, field/param refs, and the first TIMESYS block.
+    """
+    from skvo_veb.volightcurve.lightcurve import TimeSys
+
+    registry = extract_timesys_registry_from_gavo(tree)
+    field_refs = extract_field_timesys_refs_from_gavo(tree)
+    param_refs = extract_param_timesys_refs_from_gavo(tree)
+    if registry:
+        default_timesys = next(iter(registry.values()))
+    else:
+        default_timesys = TimeSys()
+    return TimesysMetadata(
+        registry=registry,
+        field_refs=field_refs,
+        param_refs=param_refs,
+        default_timesys=default_timesys,
+    )
+
+
+def resolve_observation_timesys(volc: VOLightCurve) -> "TimeSys":
     """Resolves the TIMESYS shared by observation-time columns (``ucd=time.epoch``).
 
     When a single time column references a TIMESYS, that system is returned. When
@@ -127,7 +214,7 @@ def resolve_observation_timesys(volc: VOLightCurve) -> TimeSys:
     return resolved[0]
 
 
-def resolve_timesys_for_table_param(volc: VOLightCurve, param_name: str) -> TimeSys:
+def resolve_timesys_for_table_param(volc: VOLightCurve, param_name: str) -> "TimeSys":
     """Resolves TIMESYS metadata for a TABLE PARAM holding a time epoch.
 
     Uses an explicit ``PARAM/@ref`` when present; otherwise assumes the same TIMESYS
