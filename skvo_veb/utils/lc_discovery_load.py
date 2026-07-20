@@ -17,8 +17,10 @@ from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.registry import get_provider
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import volc_to_curvedash
+from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import VOLightCurve
+from skvo_veb.volightcurve.time_reference import time_offset_to_absolute_jd
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,28 @@ def _volc_filename_from_catalog_row(catalog_row: dict) -> str:
     return sanitize_filename('_'.join(name_parts)) + '.vot'
 
 
+def drop_invalid_photometry_rows(lcd: CurveDash) -> None:
+    """Removes rows with missing photometry in the lightcurve's active domain.
+
+    Flux-native curves drop rows with non-finite ``flux``; magnitude-native curves
+    drop rows with non-finite ``mag``. Matches the post-ingest cleanup previously
+    hard-coded for flux-only missions in Discovery.
+
+    Args:
+        lcd (CurveDash): Loaded lightcurve instance to mutate in place.
+    """
+    if lcd.lightcurve is None:
+        return
+
+    phot_col = "mag" if lcd.active_domain == DOMAIN_MAG else "flux"
+    if phot_col not in lcd.lightcurve.columns:
+        raise PipeException(
+            f"Discovery lightcurve active domain {lcd.active_domain!r} "
+            f"is missing expected column {phot_col!r}."
+        )
+    lcd.lightcurve.dropna(subset=[phot_col], inplace=True)
+
+
 def apply_catalog_folding_hints(lcd: CurveDash, catalog_row: dict) -> None:
     """Applies optional standard catalogue folding hints onto ``CurveDash``.
 
@@ -129,7 +153,7 @@ def apply_catalog_folding_hints(lcd: CurveDash, catalog_row: dict) -> None:
         lcd.period = float(period)
         lcd.period_unit = 'd'
     if epoch is not None:
-        lcd.epoch = float(epoch)
+        lcd.epoch = time_offset_to_absolute_jd(float(epoch), JD_TO_MJD)
 
 
 def curvedash_from_catalog_row(catalog_row: dict, *, force_refresh: bool = False) -> CurveDash:
@@ -156,6 +180,7 @@ def curvedash_from_catalog_row(catalog_row: dict, *, force_refresh: bool = False
         preserve_photcal=True,
     )
     apply_catalog_folding_hints(lcd, catalog_row)
+    drop_invalid_photometry_rows(lcd)
     return lcd
 
 

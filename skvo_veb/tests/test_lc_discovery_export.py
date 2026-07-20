@@ -10,7 +10,7 @@ from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import METADATA_KEY_VO_ENVELOPE, VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.lc_discovery_load import curvedash_from_catalog_row
 from skvo_veb.utils.lc_discovery_search import run_catalog_search
-from skvo_veb.utils.mission_config.gaia_debug_catalog import AA_AND
+from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.volightcurve import VOLightCurve
 
 
@@ -72,6 +72,7 @@ def test_export_rewrites_timeorigin_for_mjd_obs_time():
       <FIELDref ref="phot"/>
     </GROUP>
     <TABLE name="Gaia epoch test">
+      <DESCRIPTION>Synthetic epoch photometry for timeorigin export test.</DESCRIPTION>
       <FIELD name="obs_time" ID="obs_time" datatype="double" ucd="time.epoch" unit="d" ref="ts"/>
       <FIELD name="phot" ID="phot" datatype="double" ucd="phot.mag;em.opt" unit="mag" ref="phot_def"/>
       <FIELD name="flux_error" ID="flux_error" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>

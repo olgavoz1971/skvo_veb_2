@@ -1,8 +1,8 @@
 """Fixed Gaia DR3 debug catalogue for Lightcurve Discovery development.
 
-This module defines exactly three real Gaia DR3 sources used by the debug
-provider. Coordinates, source identifiers, and mean magnitudes come from
-Gaia DR3 (queried once and frozen here). Epoch photometry is synthetic.
+Defines exactly three real Gaia DR3 sources used by the debug provider.
+Coordinates, source identifiers, and mean magnitudes come from Gaia DR3
+(queried once and frozen here). Epoch photometry is synthetic.
 
 The debug provider exposes only Gaia ``source_id`` values in catalogue
 ``object_name`` fields — Gaia does not know Simbad or common-name labels.
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from skvo_veb.utils.mission_config import gaia as gaia_config
+import skvo_veb.lc_providers.gaia_debug.debug_config as gaia_config
 
 # Literature / catalogue periods (days) for the And eclipsing binaries.
 AA_AND_PERIOD_DAYS = 0.462436

@@ -23,7 +23,7 @@ from skvo_veb.utils.lc_discovery_search import (
     run_catalog_search,
     run_catalog_search_for_mission,
 )
-from skvo_veb.utils.mission_config.gaia_debug_catalog import AA_AND, AB_AND
+from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND, AB_AND
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 

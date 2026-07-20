@@ -7,6 +7,7 @@ time systems (TimeSys), and photometric calibrations (PhotDM, PhotCal, Photometr
 and facilitates unit-safe conversions between astronomical magnitudes and fluxes.
 """
 
+import io
 import re
 import numpy as np
 import astropy.units as u
@@ -1022,6 +1023,9 @@ class VOLightCurve:
         self.file_path = file_path
         self.table = None
         self.timesys = TimeSys()
+        self.timesys_by_id: dict[str, TimeSys] = {}
+        self.field_timesys_ref: dict[str, str] = {}
+        self.param_timesys_ref: dict[str, str | None] = {}
         self.coosys = None
         self.photdms = {}  # maps column_name -> PhotDM instance
 
@@ -1057,12 +1061,21 @@ class VOLightCurve:
                     if hasattr(file_path, 'seek'):
                         file_path.seek(0)
                     import astropy.io.votable as vot
+                    from skvo_veb.volightcurve.time_reference import (
+                        extract_field_timesys_refs_from_astropy,
+                        extract_param_timesys_refs_from_astropy,
+                        extract_timesys_registry_from_astropy,
+                    )
+
                     tree = vot.parse(file_path)
                     first_table = tree.get_first_table()
                     for param in first_table.params:
                         if param.name:
                             self.table.meta[param.name] = param.value
-                    
+
+                    self.timesys_by_id = extract_timesys_registry_from_astropy(tree)
+                    self.field_timesys_ref = extract_field_timesys_refs_from_astropy(tree)
+                    self.param_timesys_ref = extract_param_timesys_refs_from_astropy(tree)
                     self.timesys = extract_timesys_from_astropy(tree)
                     self.coosys = extract_coosys_from_astropy(tree)
                     self.photdms = extract_photdm_from_astropy(tree)
@@ -1361,6 +1374,7 @@ class VOLightCurve:
         coosys_id: str = "system",
         coosys_system: str | None = None,
         coosys_epoch: float | str | None = None,
+        publication_id: str | None = None,
     ):
         """Writes this lightcurve to a compliant IVOA VOTable XML file.
 
@@ -1403,8 +1417,26 @@ class VOLightCurve:
                 coosys_system=coosys_system,
                 coosys_epoch=coosys_epoch,
             )
+        if publication_id is not None:
+            write_kwargs["publication_id"] = publication_id
         return write_vo_lightcurve(**write_kwargs)
 
+
+
+def _repair_votable_xml_char_param_ampersands(payload: bytes) -> bytes:
+    """Corrects double-escaped ampersands in astropy VOTable XML char PARAM values.
+
+    Astropy 6.x may serialise ``&`` in char PARAM ``value`` attributes as
+    ``&amp;amp;`` instead of ``&amp;``. Archives and VO clients expect a single
+    XML escape (e.g. bibcodes containing ``A&A``).
+
+    Args:
+        payload (bytes): Raw VOTable XML document bytes.
+
+    Returns:
+        bytes: XML with ``&amp;amp;`` normalised to ``&amp;``.
+    """
+    return payload.replace(b"&amp;amp;", b"&amp;")
 
 
 def print_col_ucd(lc: VOLightCurve):
@@ -1449,6 +1481,7 @@ def write_vo_lightcurve(
     coosys_id: str = "system",
     coosys_system: str | None = None,
     coosys_epoch: float | str | None = None,
+    publication_id: str | None = None,
 ):
     """Writes a lightcurve to a compliant IVOA VOTable (v1.4) XML file/stream.
 
@@ -1491,6 +1524,7 @@ def write_vo_lightcurve(
         coosys_system (str, optional): ``COOSYS/@system`` (e.g. ``ICRS``). When omitted,
             no ``<COOSYS>`` element is written unless supplied via a ``VOLightCurve``.
         coosys_epoch (float or str, optional): ``COOSYS/@epoch`` (proper-motion epoch).
+        publication_id (str, optional): Publication bibcode written as TABLE ``bibcode`` PARAM.
     """
     import astropy.io.votable as vot
     from astropy.io.votable.tree import Group, Param, Info, FieldRef, TimeSys, CooSys as VOTableCooSys
@@ -1694,8 +1728,22 @@ def write_vo_lightcurve(
     if epoch is not None:
         p_ep = Param(vot_file, name='epoch', value=float(epoch), datatype='double', unit='d')
         p_ep.ucd = 'time.epoch'
+        p_ep.ref = 'ts'
         p_ep.description = 'Reference time'
         tab.params.append(p_ep)
+
+    if publication_id:
+        p_bib = Param(
+            vot_file,
+            name='bibcode',
+            value=str(publication_id),
+            datatype='char',
+            arraysize='*',
+        )
+        p_bib.ucd = 'meta.bib.bibcode'
+        p_bib.utype = 'ssa:Curation.Reference'
+        p_bib.description = 'URL or bibcode of a publication describing this data.'
+        tab.params.append(p_bib)
 
     meta_src = getattr(t, 'meta', None) or {}
     optional_char_params = (
@@ -1724,7 +1772,18 @@ def write_vo_lightcurve(
 
     # Write to target path or stream
     tabledata_format = 'binary' if binary else 'tabledata'
-    vot_file.to_xml(output_stream_or_path, tabledata_format=tabledata_format)
+    needs_ampersand_repair = bool(publication_id and "&" in str(publication_id))
+    if needs_ampersand_repair:
+        buffer = io.BytesIO()
+        vot_file.to_xml(buffer, tabledata_format=tabledata_format)
+        payload = _repair_votable_xml_char_param_ampersands(buffer.getvalue())
+        if hasattr(output_stream_or_path, "write"):
+            output_stream_or_path.write(payload)
+        else:
+            with open(output_stream_or_path, "wb") as handle:
+                handle.write(payload)
+    else:
+        vot_file.to_xml(output_stream_or_path, tabledata_format=tabledata_format)
 
 
 

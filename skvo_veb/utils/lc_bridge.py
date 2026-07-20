@@ -23,6 +23,11 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_FLUX_UNIT,
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
+    VO_ENVELOPE_KEY_LIGHTCURVE_TITLE,
+    VO_ENVELOPE_KEY_PUBLICATION_ID,
+    VO_ENVELOPE_KEY_TABLE_DESCRIPTION,
+    VO_ENVELOPE_KEY_TABLE_NAME,
+    VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION,
     is_votable_export_format,
     votable_binary_encoding,
 )
@@ -38,6 +43,10 @@ from skvo_veb.volightcurve import (
     is_mag_column,
     is_magnitude_phot_column,
     write_vo_lightcurve,
+)
+from skvo_veb.volightcurve.time_reference import (
+    export_absolute_jd_as_time_offset,
+    normalise_table_epoch_to_absolute_jd,
 )
 
 logger = logging.getLogger(__name__)
@@ -1027,6 +1036,13 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     if target_name.startswith("TESS_"):
         target_name = target_name[5:]
 
+    absolute_epoch = None
+    if meta.get("epoch") is not None:
+        try:
+            absolute_epoch = normalise_table_epoch_to_absolute_jd(volc, meta.get("epoch"))
+        except ValueError as exc:
+            raise PipeException(str(exc)) from exc
+
     common_kwargs = dict(
         name=target_name,
         lookup_name=target_name,
@@ -1036,7 +1052,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         timescale=volc.timesys.timescale.lower(),
         photcal=photcal_meta,
         period=meta.get('period'),
-        epoch=meta.get('epoch'),
+        epoch=absolute_epoch,
         period_unit="d",
     )
 
@@ -1078,7 +1094,8 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         tess_mission.apply_upload_cutout_metadata(lcd)
         title = tess_mission.build_cutout_title(lcd)
     else:
-        title = build_curvedash_title(lcd)
+        envelope = lcd.metadata.get(METADATA_KEY_VO_ENVELOPE) or {}
+        title = envelope.get(VO_ENVELOPE_KEY_LIGHTCURVE_TITLE) or build_curvedash_title(lcd)
     lcd.title = title
     lcd.metadata['title'] = title
 
@@ -1125,11 +1142,17 @@ def curvedash_to_table(lcd) -> Table:
     meta_export = {}
     if lcd.metadata:
         for key in (
-            'ra', 'dec', 'period', 'epoch', 'sectors', 'flux_origins', 'authors', 'name',
+            'ra', 'dec', 'period', 'sectors', 'flux_origins', 'authors', 'name',
             'cutout_source', 'mask_mode', 'flux_correction',
         ):
             if lcd.metadata.get(key) is not None:
                 meta_export[key] = lcd.metadata[key]
+        exported_epoch = export_absolute_jd_as_time_offset(
+            lcd.metadata.get("epoch"),
+            timeorigin=JD_TO_MJD,
+        )
+        if exported_epoch is not None:
+            meta_export["epoch"] = exported_epoch
         if lcd.metadata.get('stitched'):
             meta_export['stitched'] = 'true'
     if lcd.title:
@@ -1287,17 +1310,23 @@ def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
         if timesys.timeorigin is not None:
             envelope["source_timeorigin"] = float(timesys.timeorigin)
 
-    table_name = table_meta.get("name") or table_meta.get("ID")
-    if table_name:
-        envelope["table_name"] = str(table_name)
+    table_name = table_meta.get("lightcurve_title") or table_meta.get("name") or table_meta.get("ID")
+    if table_name and str(table_name).strip():
+        title_text = str(table_name).strip()
     else:
-        envelope["table_name"] = sanitize_filename(Path(filename).stem)
+        title_text = sanitize_filename(Path(filename).stem)
+    envelope[VO_ENVELOPE_KEY_TABLE_NAME] = title_text
+    envelope[VO_ENVELOPE_KEY_LIGHTCURVE_TITLE] = title_text
 
     description = table_meta.get("description")
-    if description:
-        text = str(description)
-        envelope["table_description"] = text
-        envelope["votable_description"] = text
+    if description and str(description).strip():
+        text = str(description).strip()
+        envelope[VO_ENVELOPE_KEY_TABLE_DESCRIPTION] = text
+        envelope[VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION] = text
+
+    publication_id = table_meta.get("bibcode") or table_meta.get("publication_id")
+    if publication_id and str(publication_id).strip():
+        envelope[VO_ENVELOPE_KEY_PUBLICATION_ID] = str(publication_id).strip()
 
     creator = table_meta.get("creator")
     if creator:
@@ -1356,10 +1385,19 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         include_zero_points=include_zero_points,
     )
 
-    table_name = envelope.get("table_name") or sanitize_filename(lcd.title or lcd.name or "lightcurve")
-    description = envelope.get("table_description") or envelope.get("votable_description")
-    if not description and lcd.title:
-        description = f"Lightcurve export for {lcd.title}."
+    table_name = envelope.get(VO_ENVELOPE_KEY_TABLE_NAME) or envelope.get(VO_ENVELOPE_KEY_LIGHTCURVE_TITLE)
+    if not table_name:
+        table_name = sanitize_filename(lcd.title or lcd.name or "lightcurve")
+
+    description = (
+        envelope.get(VO_ENVELOPE_KEY_TABLE_DESCRIPTION)
+        or envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION)
+    )
+    if not description or not str(description).strip():
+        raise PipeException(
+            "Cannot export VOTable: missing lightcurve table description in metadata. "
+            "Re-load the lightcurve from the archive provider."
+        )
 
     kwargs = {
         "table_name": str(table_name),
@@ -1367,16 +1405,23 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         "refposition": envelope.get("refposition") or "BARYCENTER",
         "timescale": envelope.get("timescale") or str(meta.get("timescale") or "TCB").upper(),
         "timeorigin": JD_TO_MJD,
+        "table_description": str(description).strip(),
+        "votable_description": str(
+            envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION) or description
+        ).strip(),
         "ra": meta.get("ra"),
         "dec": meta.get("dec"),
         "period": meta.get("period"),
-        "epoch": meta.get("epoch"),
+        "epoch": export_absolute_jd_as_time_offset(
+            meta.get("epoch"),
+            timeorigin=JD_TO_MJD,
+        ),
         **photcal_fields,
     }
 
-    if description:
-        kwargs["table_description"] = description
-        kwargs["votable_description"] = envelope.get("votable_description") or description
+    publication_id = envelope.get(VO_ENVELOPE_KEY_PUBLICATION_ID)
+    if publication_id:
+        kwargs["publication_id"] = str(publication_id)
 
     creator = envelope.get("creator")
     if creator:

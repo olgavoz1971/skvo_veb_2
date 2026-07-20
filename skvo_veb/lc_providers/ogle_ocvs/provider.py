@@ -1,4 +1,4 @@
-"""Gaia DR3 VEB TAP lightcurve provider (UPJS SSA + accref fetch)."""
+"""OGLE OCVS TAP lightcurve provider (UPJS SSA + accref fetch)."""
 
 from __future__ import annotations
 
@@ -12,15 +12,15 @@ from skvo_veb.lc_providers.base import (
     MissionLightcurveProvider,
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
-from skvo_veb.lc_providers.gaia_dr3_veb import config
-from skvo_veb.lc_providers.gaia_dr3_veb.fetch_accref import fetch_volightcurve_from_accref
-from skvo_veb.lc_providers.gaia_dr3_veb.fetch_metadata import enrich_fetched_volightcurve
-from skvo_veb.lc_providers.gaia_dr3_veb.ssa_catalog import map_ssa_table_to_catalog
-from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
-    parse_gaia_source_id,
-    pick_gaia_archive_id_from_simbad,
-)
 from skvo_veb.lc_providers.lc_key import decode_lc_key
+from skvo_veb.lc_providers.ogle_ocvs import config
+from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_volightcurve_from_accref
+from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.ogle_ocvs.object_id import (
+    normalize_ogle_object_id,
+    pick_ogle_archive_id_from_simbad,
+)
+from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
@@ -29,8 +29,8 @@ from skvo_veb.volightcurve import VOLightCurve
 logger = logging.getLogger(__name__)
 
 
-class GaiaDr3VebProvider(MissionLightcurveProvider):
-    """Gaia DR3 epoch photometry via the UPJS VEB TAP SSA table"""
+class OgleOcvsProvider(MissionLightcurveProvider):
+    """OGLE eclipsing variables via the UPJS ``ogle.ts_ssa`` TAP table."""
 
     mission_id = config.PROVIDER_ID
     display_name = config.DISPLAY_NAME
@@ -48,21 +48,21 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
         Returns:
             float: Default search radius in arcseconds.
         """
-        return 2.0
+        return 15.0
 
     def pick_archive_id_from_simbad(
         self,
         simbad_result: SimbadResolveResult,
     ) -> MissionArchiveMatch | None:
-        """Selects a Gaia DR3 source id from Simbad cross-identifiers.
+        """Selects an OGLE ``object_id`` from Simbad cross-identifiers.
 
         Args:
             simbad_result (SimbadResolveResult): Shared Simbad resolve payload.
 
         Returns:
-            MissionArchiveMatch or None: Gaia archive match when recognised.
+            MissionArchiveMatch or None: OGLE archive match when recognised.
         """
-        return pick_gaia_archive_id_from_simbad(simbad_result)
+        return pick_ogle_archive_id_from_simbad(simbad_result)
 
     def search_catalog(
         self,
@@ -76,14 +76,14 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
         time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Queries the VEB TAP SSA table for plottable Gaia DR3 products.
+        """Queries ``ogle.ts_ssa`` for plottable OGLE lightcurve products.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): Gaia ``source_id`` string from the UI.
-            archive_id (str, optional): Gaia ``source_id`` for direct lookup.
+            object_name (str, optional): OGLE ``object_id`` or loose Simbad spelling.
+            archive_id (str, optional): OGLE ``object_id`` for direct lookup.
             time_start_mjd (float, optional): Lower time limit in MJD.
             time_end_mjd (float, optional): Upper time limit in MJD.
             **mission_options: Reserved for future provider options.
@@ -91,14 +91,14 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
         Returns:
             astropy.table.Table: Standardised catalog table (possibly empty).
         """
-        source_id = self._resolve_source_id(
+        object_id = self._resolve_object_id(
             archive_id=archive_id,
             object_name=object_name,
         )
 
-        if source_id is not None:
-            adql = config.adql_catalog_by_source_id(
-                source_id,
+        if object_id is not None:
+            adql = config.adql_catalog_by_object_id(
+                object_id,
                 time_start_mjd=time_start_mjd,
                 time_end_mjd=time_end_mjd,
             )
@@ -160,36 +160,41 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
         if not accref:
             raise PipeException(f"{self.display_name}: lc_key payload missing accref.")
 
+        filter_name = payload.get("filter_name")
+        if not filter_name:
+            raise PipeException(f"{self.display_name}: lc_key payload missing filter_name.")
+
         logger.info(
-            "Gaia DR3 VEB fetch accref=%s force_refresh=%s",
+            "OGLE OCVS fetch accref=%s force_refresh=%s",
             str(accref)[:64],
             force_refresh,
         )
         volc = fetch_volightcurve_from_accref(str(accref))
-        filter_name = payload.get("filter_name")
-        if not filter_name:
-            raise PipeException(f"{self.display_name}: lc_key payload missing filter_name.")
-        return enrich_fetched_volightcurve(volc, filter_name=str(filter_name))
+        return enrich_fetched_volightcurve(
+            volc,
+            filter_name=str(filter_name),
+            object_id=payload.get("object_id"),
+        )
 
     @staticmethod
-    def _resolve_source_id(
+    def _resolve_object_id(
         *,
         archive_id: str | None,
         object_name: str | None,
-    ) -> int | None:
-        """Casts archive or UI text to a Gaia ``source_id`` when possible.
+    ) -> str | None:
+        """Normalises archive or UI text to an OGLE ``object_id`` when possible.
 
         Args:
             archive_id (str, optional): Mission-native archive id string.
             object_name (str, optional): Target field text.
 
         Returns:
-            int or None: Parsed Gaia source id.
+            str or None: Canonical OGLE object id.
         """
         for candidate in (archive_id, object_name):
             if candidate is None:
                 continue
-            source_id = parse_gaia_source_id(str(candidate))
-            if source_id is not None:
-                return source_id
+            object_id = normalize_ogle_object_id(str(candidate))
+            if object_id is not None:
+                return object_id
         return None

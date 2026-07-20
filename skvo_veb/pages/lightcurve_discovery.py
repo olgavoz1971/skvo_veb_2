@@ -103,7 +103,8 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'field': 'object_name',
         'headerName': 'Object',
         'sortable': True,
-        'minWidth': 200,
+        'minWidth': 100,
+        'width': 200,
     },
     {
         'field': 'filter_name',
@@ -136,8 +137,8 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'headerName': 't_min',
         'type': 'numericColumn',
         'sortable': True,
-        # 'width': 68,
-        'minWidth': 70,
+        'width': 68,
+        'minWidth': 68,
         'suppressSizeToFit': True,
     },
     {
@@ -145,11 +146,19 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'headerName': 't_max',
         'type': 'numericColumn',
         'sortable': True,
-        # 'width': 68,
-        'minWidth': 70,
+        'width': 68,
+        'minWidth': 68,
         'suppressSizeToFit': True,
     },
-    
+    {
+        'field': 'mag',
+        'headerName': '⟨mag⟩',
+        'type': 'numericColumn',
+        'sortable': True,
+        'minWidth': 64,
+        'maxWidth': 80,
+        'suppressSizeToFit': True,
+    },
     {
         'field': 'n_points',
         'headerName': 'N',
@@ -159,6 +168,7 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'maxWidth': 60,
         'suppressSizeToFit': True,
     },
+    
 ]
 
 LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF = {
@@ -1565,8 +1575,6 @@ def fetch_lc_discovery_lightcurve(
 
     try:
         lcd = curvedash_from_catalog_row(catalog_row, force_refresh=force_refresh)
-        if lcd.lightcurve is not None:
-            lcd.lightcurve.dropna(subset=['flux'], inplace=True)
         lcd.folded_view = bool(phase_view)
 
         period = lcd.period

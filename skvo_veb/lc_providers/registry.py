@@ -7,6 +7,7 @@ import logging
 from skvo_veb.lc_providers.base import MissionDescriptor, MissionLightcurveProvider
 from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
 from skvo_veb.lc_providers.gaia_dr3_veb import GaiaDr3VebProvider
+from skvo_veb.lc_providers.ogle_ocvs import OgleOcvsProvider
 from skvo_veb.utils.my_tools import PipeException
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 PROVIDERS: dict[str, MissionLightcurveProvider] = {
     GaiaDr3Provider.mission_id: GaiaDr3Provider(),
     GaiaDr3VebProvider.mission_id: GaiaDr3VebProvider(),
+    OgleOcvsProvider.mission_id: OgleOcvsProvider(),
 }
 
 

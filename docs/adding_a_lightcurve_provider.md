@@ -160,10 +160,58 @@ Discuss with maintainers before changing shared orchestration or the base provid
 4. Implement `fetch_lightcurve`:
    - Validate `lc_key` (use inherited `validate_lc_key`).
    - Decode payload, call archive, return `VOLightCurve`.
+   - **Enrich metadata in provider-specific code** (see [Lightcurve metadata](#lightcurve-metadata) below).
 5. Optionally implement `pick_archive_id_from_simbad`.
 6. Register in `registry.py`.
 7. Add tests; run `pytest skvo_veb/tests/test_lc_providers_*.py`.
 8. Manual smoke test on `/lc_discovery`: search → select row → Download.
+
+---
+
+## Lightcurve metadata
+
+Discovery export is **mission-blind**: it rebuilds a VOTable from `CurveDash.metadata['vo_envelope']` and `photcal`, not from a legacy `mission_config` profile. Providers are responsible for filling metadata on the fetched `VOLightCurve` before it enters the shared bridge.
+
+### Obligatory (provider must supply)
+
+| Field | Source (typical) | Stored as |
+|-------|------------------|-----------|
+| **Table description** | VOTable `TABLE/DESCRIPTION` | `vo_envelope.table_description` |
+| **Lightcurve title** | VOTable `TABLE/@name`, corrected by provider if needed | `vo_envelope.lightcurve_title` (also `CurveDash.title` for plot captions) |
+
+Export fails with a clear error if `table_description` is missing after ingest.
+
+### Optional but recommended
+
+| Field | Source (typical) | Stored as |
+|-------|------------------|-----------|
+| **Publication bibcode** | VOTable `PARAM name="bibcode"` | `vo_envelope.publication_id` → exported as `bibcode` PARAM |
+
+Other envelope fields (TIMESYS, COOSYS, creator) are captured automatically by the generic bridge when present on the archive product.
+
+### Layer separation
+
+```text
+Provider fetch (e.g. gaia_dr3_veb/fetch_metadata.py)
+  → enrich VOLightCurve.table.meta (title, description, optional bibcode)
+Bridge ingest (utils/lc_bridge.py)
+  → _extract_vo_envelope_meta → metadata['vo_envelope']
+  → volc_to_curvedash sets CurveDash.title from lightcurve_title
+Discovery export (utils/lc_bridge.py)
+  → build_votable_kwargs_from_metadata → write_vo_lightcurve
+```
+
+**Do not** put provider-specific title/description logic in `pages/` or `lc_bridge.py`. Gaia DR3 VEB example: archive `TABLE/@name` omits the passband, so `enrich_fetched_volightcurve` appends `" in {filter_name} filter"` using the catalogue row’s `filter_name`.
+
+Reference: `skvo_veb/lc_providers/gaia_dr3_veb/fetch_metadata.py`, keys in `utils/lc_config.py` (`VO_ENVELOPE_KEY_*`).
+
+### Folding epoch and TIMESYS
+
+When a VOTable stores `PARAM name="epoch"` without `ref="ts"`, the generic ingest assumes it shares the same `TIMESYS/@timeorigin` as the sole observation-time column (identified by `ucd=time.epoch` via `get_time_colnames`). If several time columns reference **different** timeorigins, ingest fails with a clear error.
+
+Internally, CurveDash always stores **absolute Julian Date** for folding. On export, both `obs_time` and `epoch` are rewritten consistently for the standard MJD `TIMESYS` (`timeorigin = 2400000.5`), preserving `JD = obs_time + timeorigin`.
+
+Implementation: `skvo_veb/volightcurve/time_reference.py`, wired through `volc_to_curvedash` and `build_votable_kwargs_from_metadata`.
 
 ---
 

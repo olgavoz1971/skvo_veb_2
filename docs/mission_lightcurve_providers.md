@@ -153,7 +153,7 @@ The generic layer **must not** parse `Gaia DR3 …`, `TIC …`, or other mission
 
 **ASAS-SN note:** No true cone search — lookup is by source name or Gaia ID. Returns a **degenerate catalog** (0–2 rows, one per filter band).
 
-**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside `gaia.py`).
+**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside `lc_providers/gaia_debug/` or `lc_providers/gaia_dr3_veb/`).
 
 #### `fetch_lightcurve(lc_key: str, *, force_refresh: bool = False) -> VOLightCurve`
 
@@ -427,7 +427,7 @@ Submit(target, mission, radius)
 | User input | Mission | Expected path |
 |------------|---------|---------------|
 | `313.525 37.021` | Gaia | A: cone |
-| `Gaia DR3 1791119426789765632` | Gaia | B: `gaia.py` parses source_id → direct lookup |
+| `Gaia DR3 1791119426789765632` | Gaia | B: `gaia_debug` / `gaia_dr3_veb` parses source_id → direct lookup |
 | `AA And` | Gaia | 1 fail → Simbad → `pick_archive_id_from_simbad` → Gaia id → direct lookup; else cone |
 | `V* DP Peg` | ASAS-SN *(future)* | B or 1 → Simbad → retry with Simbad main name |
 
@@ -545,8 +545,8 @@ Existing tests: `tests/test_asassn_export.py` — fetch output should match the 
 
 **Done:**
 1. `lc_providers/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
-2. `lc_providers/gaia.py` (mock: cone, direct source_id, Simbad id pick)
-3. `utils/mission_config/gaia.py`, `utils/simbad_resolver.py`, `utils/lc_discovery_search.py`
+2. `lc_providers/gaia_debug/` (mock: cone, direct source_id, Simbad id pick)
+3. `utils/simbad_resolver.py`, `utils/lc_discovery_search.py` (Discovery orchestration)
 4. Discovery UI + Submit/Cancel background callback + mission-change clear
 5. Tests: `test_lc_providers_*`, `test_lc_discovery_search.py`
 
@@ -591,7 +591,7 @@ Existing tests: `tests/test_asassn_export.py` — fetch output should match the 
 | Where do missions live? | `lc_providers/` |
 | Where is search logic orchestrated? | `utils/lc_discovery_search.py` (§9) |
 | Three search strategies? | Cone (coords), direct (mission ID/name in provider), Simbad-assisted (§9.1) |
-| Gaia ID lookup | Direct archive query in `gaia.py` — **not** ID → coords → cone |
+| Gaia ID lookup | Direct archive query in the provider — **not** ID → coords → cone |
 | Simbad + `AA And` + Gaia | `pick_archive_id_from_simbad` → `MissionArchiveMatch` → direct lookup |
 | What does search return? | Standard catalog table (§5) |
 | What does fetch return? | **`VOLightCurve`**, not `CurveDash` |

@@ -12,6 +12,9 @@ import math
 # Julian Date offset for Modified Julian Date: MJD = JD - JD_TO_MJD.
 JD_TO_MJD = 2400000.5
 
+# Values below this threshold are treated as TIMESYS-relative offsets on ingest.
+TIME_OFFSET_ABSOLUTE_JD_THRESHOLD = JD_TO_MJD
+
 # Display epoch for relative JD axes (jd - DEFAULT_EPOCH_JD).
 DEFAULT_EPOCH_JD = JD_TO_MJD
 
@@ -101,6 +104,13 @@ PHOTCAL_KEY_MAG_SYS = "mag_sys"
 
 # Serialised TIMESYS / VOTable envelope restored at ingest for mission-blind export.
 METADATA_KEY_VO_ENVELOPE = "vo_envelope"
+
+# Keys inside ``metadata['vo_envelope']`` (mission-blind round-trip).
+VO_ENVELOPE_KEY_LIGHTCURVE_TITLE = "lightcurve_title"
+VO_ENVELOPE_KEY_TABLE_DESCRIPTION = "table_description"
+VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION = "votable_description"
+VO_ENVELOPE_KEY_PUBLICATION_ID = "publication_id"
+VO_ENVELOPE_KEY_TABLE_NAME = "table_name"
 
 # Supported user-facing lightcurve download formats (VOTable binary is the default).
 VOTABLE_FORMAT_BINARY = "votable_binary"

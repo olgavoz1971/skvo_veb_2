@@ -32,15 +32,16 @@ from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
 )
 from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.utils.lc_config import JD_TO_MJD
-from skvo_veb.utils.mission_config import gaia as gaia_config
-from skvo_veb.utils.mission_config.gaia_debug_catalog import (
+from skvo_veb.utils.my_tools import PipeException
+from skvo_veb.utils.simbad_resolver import SimbadResolveResult
+from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
+
+from . import debug_config as gaia_config
+from .debug_catalog import (
     GaiaDr3DebugSource,
     all_debug_sources,
     debug_source_by_id,
 )
-from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
 
 logger = logging.getLogger(__name__)
 
@@ -296,7 +297,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             "mag": band_model.mean_mag,
             "survey": gaia_config.GAIA_SURVEY,
             "provider_note": debug_source.provider_note,
-            "epoch": band_model.epoch_mjd,
+            "epoch": band_model.epoch_mjd + JD_TO_MJD,
         }
         if band_model.period_days is not None:
             row["period"] = band_model.period_days
@@ -334,6 +335,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             )
 
         table = _build_synthetic_epoch_table(debug_source, band=str(band))
+        band_model = debug_source.band_models[gaia_config.normalise_band(band)]
         buffer = io.BytesIO()
         write_vo_lightcurve(
             buffer,
@@ -343,6 +345,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
                 ra_deg=ra_deg,
                 dec_deg=dec_deg,
                 band=band,
+                epoch=band_model.epoch_mjd,
             ),
         )
         buffer.seek(0)

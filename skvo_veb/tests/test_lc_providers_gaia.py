@@ -8,8 +8,8 @@ from astropy.coordinates import SkyCoord
 from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
 from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.lc_providers.registry import get_provider, list_missions
-from skvo_veb.utils.mission_config.gaia import GAIA_G_FILTER_IDENTIFIER
-from skvo_veb.utils.mission_config.gaia_debug_catalog import (
+from skvo_veb.lc_providers.gaia_debug.debug_config import GAIA_G_FILTER_IDENTIFIER
+from skvo_veb.lc_providers.gaia_debug.debug_catalog import (
     AA_AND,
     AB_AND,
     V433_AQL,
@@ -19,16 +19,18 @@ from skvo_veb.volightcurve import VOLightCurve
 
 
 def test_registry_lists_gaia_providers():
-    """Gaia debug and VEB providers are registered for UI discovery."""
+    """Gaia debug, VEB, and OGLE providers are registered for UI discovery."""
     missions = list_missions()
     mission_ids = {item.mission_id for item in missions}
-    assert mission_ids == {"gaia", "gaia_dr3_veb"}
+    assert mission_ids == {"gaia", "gaia_dr3_veb", "ogle_ocvs"}
 
     by_id = {item.mission_id: item for item in missions}
     assert by_id["gaia"].is_mock is True
     assert by_id["gaia"].display_name == "Gaia DR3 (debug)"
     assert by_id["gaia_dr3_veb"].is_mock is False
     assert by_id["gaia_dr3_veb"].display_name == "Gaia DR3 VEB"
+    assert by_id["ogle_ocvs"].is_mock is False
+    assert by_id["ogle_ocvs"].display_name == "OGLE OCVS"
 
 
 def test_gaia_search_catalog_respects_time_bounds():

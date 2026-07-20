@@ -9,3 +9,26 @@ item 1)
 
 359.5350045273501
 55.046286677779946
+
+
+
+Strange error occured when I try to extract lightcurve for
+118.77323943618005
++21.9942178604045
+
+TESS Sector 1751
+"Python integer 1751 out of bounds for uint8"
+AAAAA this is the Sector Number > uint8 !!!
+
+More: TESS CutOut Tool:
+Object --> Resolve --> not found in Simbad or Sesame
+RA, DEC --> ok, found, but the error message persists
+
+TESS cutouts:
+More!!!:
+No tolerance (I have almost the same in the cache) whan downloading by coordinates
+
+More:
+TESS CutOuts:
+I enter some RA/DEC but then see them with more signd (another ra/dec???)
+

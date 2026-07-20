@@ -7,7 +7,7 @@ from skvo_veb.lc_providers.gaia_dr3_veb.provider import GaiaDr3VebProvider
 from skvo_veb.lc_providers.gaia_dr3_veb.ssa_catalog import map_ssa_table_to_catalog, parse_ssa_location
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
-from skvo_veb.utils.mission_config.gaia_debug_catalog import AA_AND
+from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 
 
 def _sample_ssa_table() -> Table:
@@ -135,6 +135,7 @@ def test_veb_fetch_lightcurve_from_accref(monkeypatch):
     class _FakeVolc:
         def __init__(self, payload: bytes):
             self.payload = payload
+            self.table = type("T", (), {"meta": {"name": "Gaia DR3 test", "description": "Test"}})()
 
         def __len__(self):
             return 3

@@ -22,6 +22,7 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
 )
+from skvo_veb.volightcurve.time_reference import export_absolute_jd_as_time_offset
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,10 @@ def build_archive_votable_kwargs(lcd) -> dict:
         "ra": lcd.metadata.get("ra"),
         "dec": lcd.metadata.get("dec"),
         "period": lcd.metadata.get("period"),
-        "epoch": lcd.metadata.get("epoch"),
+        "epoch": export_absolute_jd_as_time_offset(
+            lcd.metadata.get("epoch"),
+            timeorigin=JD_TO_MJD,
+        ),
         "binary": True,
         **photcal_fields,
     }
@@ -333,7 +337,10 @@ def build_cutout_votable_kwargs(lcd) -> dict:
         "ra": meta.get("ra"),
         "dec": meta.get("dec"),
         "period": meta.get("period"),
-        "epoch": meta.get("epoch"),
+        "epoch": export_absolute_jd_as_time_offset(
+            meta.get("epoch"),
+            timeorigin=JD_TO_MJD,
+        ),
         "binary": True,
         **photcal_fields,
     }

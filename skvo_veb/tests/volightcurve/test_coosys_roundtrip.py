@@ -24,6 +24,7 @@ MINIMAL_VOT_WITH_COOSYS = b"""<?xml version="1.0" encoding="utf-8"?>
       <FIELDref ref="phot"/>
     </GROUP>
     <TABLE name="Gaia DR3 test">
+      <DESCRIPTION>Synthetic Gaia DR3 test lightcurve for COOSYS round-trip.</DESCRIPTION>
       <FIELD name="obs_time" ID="obs_time" datatype="double" ucd="time.epoch" unit="d" ref="ts"/>
       <FIELD name="phot" ID="phot" datatype="double" ucd="phot.mag;em.opt" unit="mag" ref="phot_def"/>
       <FIELD name="flux_error" ID="flux_error" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>

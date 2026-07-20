@@ -36,7 +36,7 @@ def test_tess_upload_integration():
         timescale="tdb",
         flux_unit="e-/s",
         period=4.39327,
-        epoch=2184.403,
+        epoch=2184.403 + 2400000.5,
     )
     lcd.metadata['ra'] = 256.698
     lcd.metadata['dec'] = -54.050
@@ -59,7 +59,7 @@ def test_tess_upload_integration():
     assert volc.timesys.jd0 == 2400000.5
     np.testing.assert_allclose(volc['obs_time'], jd - 2400000.5)
     assert volc.table.meta['period'] == 4.39327
-    assert volc.table.meta['epoch'] == 2184.403
+    assert volc.table.meta['epoch'] == pytest.approx(2184.403)
     assert volc.table.meta['ra'] == 256.698
     assert volc.table.meta['dec'] == -54.050
 
@@ -67,7 +67,7 @@ def test_tess_upload_integration():
     assert lcd_uploaded.title
     assert 'sector' in lcd_uploaded.title.lower() or 'TIC' in lcd_uploaded.title
     assert lcd_uploaded.period == 4.39327
-    assert lcd_uploaded.epoch == 2184.403
+    assert lcd_uploaded.epoch == pytest.approx(2184.403 + 2400000.5)
     assert lcd_uploaded.active_domain == DOMAIN_FLUX
     np.testing.assert_allclose(lcd_uploaded.jd, jd)
     np.testing.assert_allclose(lcd_uploaded.flux, flux)
