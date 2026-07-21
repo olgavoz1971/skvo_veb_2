@@ -17,6 +17,7 @@ from skvo_veb.lc_providers.gaia_dr3_veb.fetch_accref import fetch_volightcurve_f
 from skvo_veb.lc_providers.gaia_dr3_veb.fetch_metadata import enrich_fetched_volightcurve
 from skvo_veb.lc_providers.gaia_dr3_veb.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
+    format_gaia_source_name,
     parse_gaia_source_id,
     pick_gaia_archive_id_from_simbad,
 )
@@ -37,6 +38,7 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
     export_profile = config.PROVIDER_ID
     capabilities = MissionCapabilities(
         supports_cone_search=True,
+        supports_name_resolve=True,
         supports_id_lookup=True,
         supports_force_refresh=True,
     )
@@ -63,6 +65,25 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
             MissionArchiveMatch or None: Gaia archive match when recognised.
         """
         return pick_gaia_archive_id_from_simbad(simbad_result)
+
+    def resolve_target_name(self, name: str) -> MissionArchiveMatch | None:
+        """Parses Gaia DR3 ``source_id`` strings before Simbad name resolution.
+
+        Args:
+            name (str): Raw Target field text from the UI.
+
+        Returns:
+            MissionArchiveMatch or None: Gaia archive match when recognised.
+        """
+        source_id = parse_gaia_source_id(name)
+        if source_id is None:
+            return None
+        label = format_gaia_source_name(source_id)
+        return MissionArchiveMatch(
+            archive_id=str(source_id),
+            match_kind="gaia_source_id",
+            matched_label=label,
+        )
 
     def search_catalog(
         self,
@@ -161,7 +182,8 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
             raise PipeException(f"{self.display_name}: lc_key payload missing accref.")
 
         logger.info(
-            "Gaia DR3 VEB fetch accref=%s force_refresh=%s",
+            "%s fetch accref=%s force_refresh=%s",
+            self.display_name,
             str(accref)[:64],
             force_refresh,
         )

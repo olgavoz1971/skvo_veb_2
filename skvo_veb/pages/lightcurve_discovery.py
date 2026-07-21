@@ -115,6 +115,14 @@ LC_DISCOVERY_CATALOG_COLUMNS = [
         'suppressSizeToFit': True,
     },
     {
+        'field': 'object_class',
+        'headerName': 'Type',
+        'sortable': True,
+        'minWidth': 64,
+        'maxWidth': 96,
+        'suppressSizeToFit': True,
+    },
+    {
         'field': 'ra_deg',
         'headerName': 'RA',
         'type': 'numericColumn',

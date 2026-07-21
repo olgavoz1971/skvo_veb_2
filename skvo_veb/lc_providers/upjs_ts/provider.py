@@ -1,4 +1,4 @@
-"""OGLE OCVS TAP lightcurve provider (UPJS SSA + accref fetch)."""
+"""UPJŠ time-series TAP lightcurve provider."""
 
 from __future__ import annotations
 
@@ -13,16 +13,17 @@ from skvo_veb.lc_providers.base import (
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.ogle_ocvs import config
 from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_volightcurve_from_accref
-from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
-from skvo_veb.lc_providers.ogle_ocvs.object_id import (
-    normalize_ogle_object_id,
-    pick_ogle_archive_id_from_simbad,
+from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
+    format_gaia_source_name,
+    parse_gaia_source_id,
+    pick_gaia_archive_id_from_simbad,
 )
-from skvo_veb.lc_providers.ogle_ocvs.resolve_target import resolve_ogle_target_name
-from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
+from skvo_veb.lc_providers.upjs_ts import config
+from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.upjs_ts.resolve_target import resolve_upjs_target_name
+from skvo_veb.lc_providers.upjs_ts.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 from skvo_veb.volightcurve import VOLightCurve
@@ -30,8 +31,8 @@ from skvo_veb.volightcurve import VOLightCurve
 logger = logging.getLogger(__name__)
 
 
-class OgleOcvsProvider(MissionLightcurveProvider):
-    """OGLE eclipsing variables via the UPJS ``ogle.ts_ssa`` TAP table."""
+class UpjsTsProvider(MissionLightcurveProvider):
+    """UPJŠ time series via the ``upjs_ts.ts_ssa`` TAP table."""
 
     mission_id = config.PROVIDER_ID
     display_name = config.DISPLAY_NAME
@@ -56,26 +57,33 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         self,
         simbad_result: SimbadResolveResult,
     ) -> MissionArchiveMatch | None:
-        """Selects an OGLE ``object_id`` from Simbad cross-identifiers.
+        """Selects a Gaia DR3 ``ssa_targname`` label from Simbad cross-identifiers.
 
         Args:
             simbad_result (SimbadResolveResult): Shared Simbad resolve payload.
 
         Returns:
-            MissionArchiveMatch or None: OGLE archive match when recognised.
+            MissionArchiveMatch or None: Gaia SSA target label when recognised.
         """
-        return pick_ogle_archive_id_from_simbad(simbad_result)
+        match = pick_gaia_archive_id_from_simbad(simbad_result)
+        if match is None:
+            return None
+        return MissionArchiveMatch(
+            archive_id=match.archive_id,
+            match_kind="gaia_ssa_targname",
+            matched_label=match.matched_label,
+        )
 
     def resolve_target_name(self, name: str) -> MissionArchiveMatch | None:
-        """Normalises loose OGLE spellings to ``object_id`` before Simbad.
+        """Resolves Simbad or VSX names via ``upjs_ts.objects`` before Simbad.
 
         Args:
             name (str): Raw Target field text from the UI.
 
         Returns:
-            MissionArchiveMatch or None: OGLE archive match when recognised.
+            MissionArchiveMatch or None: UPJŠ archive match when recognised.
         """
-        return resolve_ogle_target_name(name)
+        return resolve_upjs_target_name(name)
 
     def search_catalog(
         self,
@@ -89,14 +97,18 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Queries ``ogle.ts_ssa`` for plottable OGLE lightcurve products.
+        """Queries ``upjs_ts.ts_ssa`` for plottable lightcurve products.
+
+        Direct name lookup tries Gaia DR3 ``ssa_targname`` labels first. Archive
+        id lookup accepts either a Gaia ``source_id`` (resolved to ``ssa_targname``)
+        or a UPJŠ ``object_id`` string.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): OGLE ``object_id`` or loose Simbad spelling.
-            archive_id (str, optional): OGLE ``object_id`` for direct lookup.
+            object_name (str, optional): Gaia DR3 label or target text from the UI.
+            archive_id (str, optional): Gaia ``source_id`` or UPJŠ ``object_id``.
             time_start_mjd (float, optional): Lower time limit in MJD.
             time_end_mjd (float, optional): Upper time limit in MJD.
             **mission_options: Reserved for future provider options.
@@ -104,25 +116,23 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         Returns:
             astropy.table.Table: Standardised catalog table (possibly empty).
         """
-        object_id = self._resolve_object_id(
+        ssa_targname = self._resolve_ssa_targname(
             archive_id=archive_id,
             object_name=object_name,
         )
-
-        if object_id is not None:
-            adql = config.adql_catalog_by_object_id(
-                object_id,
+        if ssa_targname is not None:
+            return self._catalog_by_ssa_targname(
+                ssa_targname,
                 time_start_mjd=time_start_mjd,
                 time_end_mjd=time_end_mjd,
             )
-            tap_table = run_tap_sync_query(
-                config.TAP_URL,
-                adql,
-                dialect=config.TAP_QUERY_DIALECT,
-            )
-            return map_ssa_table_to_catalog(
-                tap_table,
-                provider_id=self.mission_id,
+
+        object_id = self._resolve_object_id(archive_id=archive_id)
+        if object_id is not None:
+            return self._catalog_by_object_id(
+                object_id,
+                time_start_mjd=time_start_mjd,
+                time_end_mjd=time_end_mjd,
             )
 
         if ra_deg is not None and dec_deg is not None and radius_arcsec is not None:
@@ -193,25 +203,109 @@ class OgleOcvsProvider(MissionLightcurveProvider):
             object_id=payload.get("object_id"),
         )
 
+    def _catalog_by_ssa_targname(
+        self,
+        ssa_targname: str,
+        *,
+        time_start_mjd: float | None,
+        time_end_mjd: float | None,
+    ) -> Table:
+        """Runs a TAP SSA query on ``ssa_targname``.
+
+        Args:
+            ssa_targname (str): Indexed SSA target label.
+            time_start_mjd (float, optional): Lower time limit in MJD.
+            time_end_mjd (float, optional): Upper time limit in MJD.
+
+        Returns:
+            astropy.table.Table: Standardised catalog table (possibly empty).
+        """
+        adql = config.adql_catalog_by_ssa_targname(
+            ssa_targname,
+            time_start_mjd=time_start_mjd,
+            time_end_mjd=time_end_mjd,
+        )
+        tap_table = run_tap_sync_query(
+            config.TAP_URL,
+            adql,
+            dialect=config.TAP_QUERY_DIALECT,
+        )
+        return map_ssa_table_to_catalog(
+            tap_table,
+            provider_id=self.mission_id,
+        )
+
+    def _catalog_by_object_id(
+        self,
+        object_id: str,
+        *,
+        time_start_mjd: float | None,
+        time_end_mjd: float | None,
+    ) -> Table:
+        """Runs a TAP SSA query on ``object_id``.
+
+        Args:
+            object_id (str): UPJŠ archive object identifier.
+            time_start_mjd (float, optional): Lower time limit in MJD.
+            time_end_mjd (float, optional): Upper time limit in MJD.
+
+        Returns:
+            astropy.table.Table: Standardised catalog table (possibly empty).
+        """
+        adql = config.adql_catalog_by_object_id(
+            object_id,
+            time_start_mjd=time_start_mjd,
+            time_end_mjd=time_end_mjd,
+        )
+        tap_table = run_tap_sync_query(
+            config.TAP_URL,
+            adql,
+            dialect=config.TAP_QUERY_DIALECT,
+        )
+        return map_ssa_table_to_catalog(
+            tap_table,
+            provider_id=self.mission_id,
+        )
+
     @staticmethod
-    def _resolve_object_id(
+    def _resolve_ssa_targname(
         *,
         archive_id: str | None,
         object_name: str | None,
     ) -> str | None:
-        """Normalises archive or UI text to an OGLE ``object_id`` when possible.
+        """Casts archive or UI text to an SSA ``ssa_targname`` Gaia label when possible.
 
         Args:
-            archive_id (str, optional): Mission-native archive id string.
-            object_name (str, optional): Target field text.
+            archive_id (str, optional): Gaia ``source_id`` from Simbad cross-match.
+            object_name (str, optional): Gaia label or UI target text.
 
         Returns:
-            str or None: Canonical OGLE object id.
+            str or None: Canonical ``Gaia DR3 …`` SSA target label.
         """
-        for candidate in (archive_id, object_name):
+        for candidate in (object_name, archive_id):
             if candidate is None:
                 continue
-            object_id = normalize_ogle_object_id(str(candidate))
-            if object_id is not None:
-                return object_id
+            source_id = parse_gaia_source_id(str(candidate))
+            if source_id is not None:
+                return format_gaia_source_name(source_id)
+            text = str(candidate).strip()
+            if text.lower().startswith("gaia dr3"):
+                return text
         return None
+
+    @staticmethod
+    def _resolve_object_id(*, archive_id: str | None) -> str | None:
+        """Returns a UPJŠ ``object_id`` when ``archive_id`` is not a Gaia label.
+
+        Args:
+            archive_id (str, optional): Provider-resolved archive identifier.
+
+        Returns:
+            str or None: UPJŠ object id string.
+        """
+        if archive_id is None:
+            return None
+        if parse_gaia_source_id(str(archive_id)) is not None:
+            return None
+        text = str(archive_id).strip()
+        return text or None

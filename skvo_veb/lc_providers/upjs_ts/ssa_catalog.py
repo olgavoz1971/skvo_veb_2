@@ -1,8 +1,7 @@
-"""Map OGLE OCVS SSA TAP rows onto the shared discovery catalogue schema."""
+"""Map UPJŠ SSA TAP rows onto the shared discovery catalogue schema."""
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from astropy import units as u
@@ -17,25 +16,6 @@ from skvo_veb.lc_providers.shared.tap_ssa_row import (
     row_value,
 )
 
-logger = logging.getLogger(__name__)
-
-
-def _format_filter_name(bandpass: str | None) -> str:
-    """Builds a display filter label from SSA ``ssa_bandpass``.
-
-    Args:
-        bandpass (str, optional): Raw passband code (e.g. ``I``, ``V``).
-
-    Returns:
-        str: Human-readable filter label for the catalogue table.
-    """
-    code = str(bandpass or "").strip()
-    if not code:
-        return "unknown"
-    if code.upper().startswith("OGLE"):
-        return code
-    return f"OGLE {code}"
-
 
 def map_ssa_row_to_catalog_dict(
     row,
@@ -43,7 +23,7 @@ def map_ssa_row_to_catalog_dict(
     provider_id: str,
     distance_arcsec: float,
 ) -> dict[str, Any] | None:
-    """Converts one OGLE SSA TAP row to a standard discovery catalogue row dict.
+    """Converts one UPJŠ SSA TAP row to a standard discovery catalogue row dict.
 
     Args:
         row: TAP result row with SSA columns.
@@ -62,9 +42,9 @@ def map_ssa_row_to_catalog_dict(
         return None
     ra_deg, dec_deg = location
 
-    object_id = str(row_value(row, "object_id") or row_value(row, "ssa_targname") or "unknown")
-    filter_name = _format_filter_name(row_value(row, "ssa_bandpass"))
-    dstitle = row_value(row, "ssa_dstitle")
+    archive_object_id = str(row_value(row, "object_id") or "unknown")
+    object_name = str(row_value(row, "ssa_targname") or archive_object_id)
+    filter_name = str(row_value(row, "ssa_bandpass") or "unknown")
     collection = row_value(row, "ssa_collection")
     n_points = row_value(row, "ssa_length")
     mean_mag = row_value(row, "mean_mag")
@@ -75,7 +55,7 @@ def map_ssa_row_to_catalog_dict(
         {
             "accref": str(accref),
             "filter_name": filter_name,
-            "object_id": object_id,
+            "object_id": archive_object_id,
         },
     )
 
@@ -83,13 +63,12 @@ def map_ssa_row_to_catalog_dict(
         "distance_arcsec": float(distance_arcsec),
         "ra_deg": ra_deg,
         "dec_deg": dec_deg,
-        "object_name": object_id,
+        "object_name": object_name,
         "filter_name": filter_name,
         "lc_key": lc_key,
         "t_min": row_value(row, "t_min"),
         "t_max": row_value(row, "t_max"),
-        "survey": str(collection) if collection else "OGLE",
-        "provider_note": str(dstitle) if dstitle else None,
+        "survey": str(collection) if collection else "UPJŠ",
     }
     if object_class is not None:
         catalog_row["object_class"] = object_class

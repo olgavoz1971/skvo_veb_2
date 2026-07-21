@@ -110,6 +110,23 @@ class MissionLightcurveProvider(ABC):
         """
         return None
 
+    def resolve_target_name(self, name: str) -> MissionArchiveMatch | None:
+        """Resolves a user target string to a mission archive id before Simbad.
+
+        Providers may normalise spelling, parse mission-native identifiers, or
+        query a local cross-identification table. The Discovery orchestration
+        layer calls this after a direct ``object_name`` catalogue search returns
+        no rows and before falling back to Simbad.
+
+        Args:
+            name (str): Raw Target field text from the UI.
+
+        Returns:
+            MissionArchiveMatch or None: Mission-native archive match when
+            recognised by provider-specific rules.
+        """
+        return None
+
     def pick_archive_id_from_simbad(self, simbad_result) -> MissionArchiveMatch | None:
         """Picks this mission's archive identifier from a Simbad resolve result.
 

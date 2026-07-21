@@ -32,3 +32,15 @@ More:
 TESS CutOuts:
 I enter some RA/DEC but then see them with more signd (another ra/dec???)
 
+
+## Crossidentification
+- store simbad resolved project specific names? Or coordinates ? Or all ?
+In the sqlite table? NOT IN THE MAIN Postgresq Database
+
+# Add VSX search
+
+## Publishing
+# periods with ref=ts -- timeorigin!!!
+# Gaia -- dual mag/flux phot, disentangle zeropoints
+# Publish Gaia cross-ident table
+# Publisj Gaia lite table

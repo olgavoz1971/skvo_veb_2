@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from astropy import units as u
@@ -12,66 +11,13 @@ from astropy.table import Table
 
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table, validate_catalog_table
 from skvo_veb.lc_providers.lc_key import encode_lc_key
-
-logger = logging.getLogger(__name__)
-
-_SSA_LOCATION_PATTERN = re.compile(
-    r"^[\[\(]\s*"
-    r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*[, ]\s*"
-    r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*"
-    r"[\]\)]$"
+from skvo_veb.lc_providers.shared.tap_ssa_row import (
+    object_class_from_ssa_row,
+    parse_ssa_location,
+    row_value,
 )
 
-
-def parse_ssa_location(value: Any) -> tuple[float, float] | None:
-    """Parses ``ssa_location`` text ``(RA_DEG, DEC_DEG)`` into degrees.
-
-    Args:
-        value: SSA location field from a TAP row.
-
-    Returns:
-        tuple[float, float] | None: ``(ra_deg, dec_deg)`` when parseable.
-    """
-    if value is None:
-        return None
-    text = str(value).strip()
-    match = _SSA_LOCATION_PATTERN.match(text)
-    if not match:
-        logger.warning("Unrecognised ssa_location format: %r", text)
-        return None
-    return float(match.group(1)), float(match.group(2))
-
-
-def _row_value(row, key: str) -> Any:
-    """Returns a catalogue field from an Astropy row or dict.
-
-    Args:
-        row: TAP result row.
-        key (str): Column name.
-
-    Returns:
-        Any: Cell value or ``None``.
-    """
-    if hasattr(row, "colnames"):
-        if key not in row.colnames:
-            return None
-        value = row[key]
-    else:
-        value = row.get(key)
-    if value is None:
-        return None
-    try:
-        import numpy as np
-
-        if isinstance(value, np.generic):
-            value = value.item()
-        if value is np.ma.masked:
-            return None
-    except Exception:
-        pass
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return value
+logger = logging.getLogger(__name__)
 
 
 def map_ssa_row_to_catalog_dict(
@@ -90,24 +36,24 @@ def map_ssa_row_to_catalog_dict(
     Returns:
         dict | None: Standard catalogue row, or ``None`` when ``accref`` is missing.
     """
-    accref = _row_value(row, "accref")
+    accref = row_value(row, "accref")
     if not accref:
         return None
 
-    location = parse_ssa_location(_row_value(row, "ssa_location"))
+    location = parse_ssa_location(row_value(row, "ssa_location"))
     if location is None:
         return None
     ra_deg, dec_deg = location
 
-    filter_name = str(_row_value(row, "ssa_bandpass") or "unknown")
-    object_name = str(_row_value(row, "ssa_targname") or "unknown")
-    dstitle = _row_value(row, "ssa_dstitle")
-    targclass = _row_value(row, "ssa_targclass")
-    creator = _row_value(row, "ssa_creator")
-    collection = _row_value(row, "ssa_collection")
-    n_points = _row_value(row, "ssa_length")
+    filter_name = str(row_value(row, "ssa_bandpass") or "unknown")
+    object_name = str(row_value(row, "ssa_targname") or "unknown")
+    dstitle = row_value(row, "ssa_dstitle")
+    creator = row_value(row, "ssa_creator")
+    collection = row_value(row, "ssa_collection")
+    n_points = row_value(row, "ssa_length")
+    object_class = object_class_from_ssa_row(row)
 
-    note_parts = [part for part in (dstitle, targclass, creator) if part]
+    note_parts = [part for part in (dstitle, creator) if part]
     provider_note = " — ".join(str(part) for part in note_parts) if note_parts else None
 
     lc_key = encode_lc_key(
@@ -126,11 +72,13 @@ def map_ssa_row_to_catalog_dict(
         "object_name": object_name,
         "filter_name": filter_name,
         "lc_key": lc_key,
-        "t_min": _row_value(row, "t_min"),
-        "t_max": _row_value(row, "t_max"),
+        "t_min": row_value(row, "t_min"),
+        "t_max": row_value(row, "t_max"),
         "survey": str(collection) if collection else None,
         "provider_note": provider_note,
     }
+    if object_class is not None:
+        catalog_row["object_class"] = object_class
     if n_points is not None:
         try:
             catalog_row["n_points"] = int(n_points)
@@ -170,7 +118,7 @@ def map_ssa_table_to_catalog(
 
     rows: list[dict[str, Any]] = []
     for row in tap_table:
-        location = parse_ssa_location(_row_value(row, "ssa_location"))
+        location = parse_ssa_location(row_value(row, "ssa_location"))
         if location is None:
             continue
         ra_deg, dec_deg = location

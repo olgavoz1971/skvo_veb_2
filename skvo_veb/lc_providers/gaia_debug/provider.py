@@ -79,6 +79,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
     export_profile = gaia_config.MISSION_ID
     capabilities = MissionCapabilities(
         supports_cone_search=True,
+        supports_name_resolve=True,
         supports_id_lookup=True,
         supports_force_refresh=True,
     )
@@ -116,6 +117,25 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
                 matched_label=label,
             )
         return None
+
+    def resolve_target_name(self, name: str) -> MissionArchiveMatch | None:
+        """Parses Gaia DR3 ``source_id`` strings before Simbad name resolution.
+
+        Args:
+            name (str): Raw Target field text from the UI.
+
+        Returns:
+            MissionArchiveMatch or None: Gaia archive match when recognised.
+        """
+        source_id = parse_gaia_source_id(name)
+        if source_id is None or debug_source_by_id(source_id) is None:
+            return None
+        label = format_gaia_source_name(source_id)
+        return MissionArchiveMatch(
+            archive_id=str(source_id),
+            match_kind="gaia_source_id",
+            matched_label=label,
+        )
 
     def search_catalog(
         self,
@@ -351,7 +371,8 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
         buffer.seek(0)
         volc = VOLightCurve(buffer)
         logger.info(
-            "Gaia debug fetch source_id=%s band=%s n_points=%s force_refresh=%s",
+            "%s fetch source_id=%s band=%s n_points=%s force_refresh=%s",
+            self.display_name,
             source_id,
             band,
             len(volc),

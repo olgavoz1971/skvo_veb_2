@@ -22,7 +22,7 @@ def test_registry_lists_gaia_providers():
     """Gaia debug, VEB, and OGLE providers are registered for UI discovery."""
     missions = list_missions()
     mission_ids = {item.mission_id for item in missions}
-    assert mission_ids == {"gaia", "gaia_dr3_veb", "ogle_ocvs"}
+    assert mission_ids == {"gaia", "gaia_dr3_veb", "ogle_ocvs", "personal_ts", "upjs_ts"}
 
     by_id = {item.mission_id: item for item in missions}
     assert by_id["gaia"].is_mock is True

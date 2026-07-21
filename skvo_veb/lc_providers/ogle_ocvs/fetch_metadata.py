@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from skvo_veb.lc_providers.ogle_ocvs import config
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 
@@ -31,7 +32,9 @@ def enrich_fetched_volightcurve(
     """
     filter_label = str(filter_name or "").strip()
     if not filter_label:
-        raise PipeException("OGLE OCVS: filter name is required for lightcurve metadata.")
+        raise PipeException(
+            f"{config.DISPLAY_NAME}: filter name is required for lightcurve metadata."
+        )
 
     meta = volc.table.meta
     if meta is None:
@@ -41,13 +44,13 @@ def enrich_fetched_volightcurve(
     description = meta.get("description")
     if not description or not str(description).strip():
         raise PipeException(
-            "OGLE OCVS: retrieved lightcurve is missing TABLE description metadata."
+            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE description metadata."
         )
 
     base_name = meta.get("name") or meta.get("ID") or object_id
     if not base_name or not str(base_name).strip():
         raise PipeException(
-            "OGLE OCVS: retrieved lightcurve is missing TABLE name metadata."
+            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE name metadata."
         )
 
     title = f"{str(base_name).strip()} in {filter_label} filter"
@@ -55,7 +58,8 @@ def enrich_fetched_volightcurve(
     meta["lightcurve_title"] = title
 
     logger.debug(
-        "OGLE OCVS metadata enriched title=%s publication_id=%s",
+        "%s metadata enriched title=%s publication_id=%s",
+        config.DISPLAY_NAME,
         title,
         meta.get("bibcode") or meta.get("publication_id"),
     )

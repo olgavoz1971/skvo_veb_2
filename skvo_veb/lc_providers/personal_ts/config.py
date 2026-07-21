@@ -1,19 +1,19 @@
-"""Configuration and ADQL 2.1 templates for the OGLE OCVS TAP provider."""
+"""Configuration and ADQL 2.1 templates for the UPJS personal time-series TAP provider."""
 
 from __future__ import annotations
 
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 
-PROVIDER_ID = "ogle_ocvs"
-DISPLAY_NAME = "OGLE OCVS"
+PROVIDER_ID = "personal_ts"
+DISPLAY_NAME = "Personal collections"
 TAP_URL = "https://skvo.science.upjs.sk/tap"
 TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_1
-SSA_TABLE = "ogle.ts_ssa"
+SSA_TABLE = "personal.ts_ssa"
+OBJECTS_TABLE = "personal.objects"
 
 SSA_SELECT_COLUMNS = (
     "object_id",
     "accref",
-    "ssa_dstitle",
     "ssa_bandpass",
     "ssa_targname",
     "ssa_targclass",
@@ -78,7 +78,7 @@ def adql_catalog_by_object_id(
     """Builds ADQL 2.1 for direct ``object_id`` SSA catalogue lookup.
 
     Args:
-        object_id (str): OGLE archive object identifier.
+        object_id (str): Personal archive object identifier.
         time_start_mjd (float, optional): Lower time bound in MJD.
         time_end_mjd (float, optional): Upper time bound in MJD.
 
@@ -128,3 +128,36 @@ def adql_catalog_cone(
     ]
     where = " AND ".join(predicates)
     return f"SELECT {_select_clause()} FROM {SSA_TABLE} WHERE {where}"
+
+
+def adql_objects_by_object_id(object_id: str) -> str:
+    """Builds ADQL 2.1 for a direct ``personal.objects`` row lookup.
+
+    Args:
+        object_id (str): Personal archive object identifier.
+
+    Returns:
+        str: Complete ADQL query string.
+    """
+    return (
+        "SELECT object_id, identifiers "
+        f"FROM {OBJECTS_TABLE} "
+        f"WHERE object_id = {_adql_string_literal(object_id)}"
+    )
+
+
+def adql_objects_by_identifier_substring(fragment: str) -> str:
+    """Builds ADQL 2.1 to pre-filter ``personal.objects`` by identifier text.
+
+    Args:
+        fragment (str): Alias substring to search for inside ``identifiers``.
+
+    Returns:
+        str: Complete ADQL query string.
+    """
+    escaped = str(fragment).replace("'", "''")
+    return (
+        "SELECT object_id, identifiers "
+        f"FROM {OBJECTS_TABLE} "
+        f"WHERE identifiers LIKE '%{escaped}%'"
+    )

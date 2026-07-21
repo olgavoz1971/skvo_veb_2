@@ -1,4 +1,4 @@
-"""OGLE OCVS TAP lightcurve provider (UPJS SSA + accref fetch)."""
+"""UPJS personal time-series TAP lightcurve provider."""
 
 from __future__ import annotations
 
@@ -13,15 +13,15 @@ from skvo_veb.lc_providers.base import (
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.ogle_ocvs import config
 from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_volightcurve_from_accref
-from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
-from skvo_veb.lc_providers.ogle_ocvs.object_id import (
-    normalize_ogle_object_id,
-    pick_ogle_archive_id_from_simbad,
+from skvo_veb.lc_providers.personal_ts import config
+from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.personal_ts.object_id import (
+    normalize_personal_object_id,
+    pick_personal_archive_id_from_simbad,
 )
-from skvo_veb.lc_providers.ogle_ocvs.resolve_target import resolve_ogle_target_name
-from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
+from skvo_veb.lc_providers.personal_ts.resolve_target import resolve_personal_target_name
+from skvo_veb.lc_providers.personal_ts.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
@@ -30,8 +30,8 @@ from skvo_veb.volightcurve import VOLightCurve
 logger = logging.getLogger(__name__)
 
 
-class OgleOcvsProvider(MissionLightcurveProvider):
-    """OGLE eclipsing variables via the UPJS ``ogle.ts_ssa`` TAP table."""
+class PersonalTsProvider(MissionLightcurveProvider):
+    """Personal UPJS time series via the ``personal.ts_ssa`` TAP table."""
 
     mission_id = config.PROVIDER_ID
     display_name = config.DISPLAY_NAME
@@ -56,26 +56,26 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         self,
         simbad_result: SimbadResolveResult,
     ) -> MissionArchiveMatch | None:
-        """Selects an OGLE ``object_id`` from Simbad cross-identifiers.
+        """Selects a personal ``object_id`` from Simbad cross-identifiers.
 
         Args:
             simbad_result (SimbadResolveResult): Shared Simbad resolve payload.
 
         Returns:
-            MissionArchiveMatch or None: OGLE archive match when recognised.
+            MissionArchiveMatch or None: Personal archive match when recognised.
         """
-        return pick_ogle_archive_id_from_simbad(simbad_result)
+        return pick_personal_archive_id_from_simbad(simbad_result)
 
     def resolve_target_name(self, name: str) -> MissionArchiveMatch | None:
-        """Normalises loose OGLE spellings to ``object_id`` before Simbad.
+        """Resolves messy target text or cross-id aliases to ``object_id``.
 
         Args:
             name (str): Raw Target field text from the UI.
 
         Returns:
-            MissionArchiveMatch or None: OGLE archive match when recognised.
+            MissionArchiveMatch or None: Personal archive match when recognised.
         """
-        return resolve_ogle_target_name(name)
+        return resolve_personal_target_name(name)
 
     def search_catalog(
         self,
@@ -89,14 +89,14 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Queries ``ogle.ts_ssa`` for plottable OGLE lightcurve products.
+        """Queries ``personal.ts_ssa`` for plottable lightcurve products.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): OGLE ``object_id`` or loose Simbad spelling.
-            archive_id (str, optional): OGLE ``object_id`` for direct lookup.
+            object_name (str, optional): Personal ``object_id`` or loose Simbad spelling.
+            archive_id (str, optional): Personal ``object_id`` for direct lookup.
             time_start_mjd (float, optional): Lower time limit in MJD.
             time_end_mjd (float, optional): Upper time limit in MJD.
             **mission_options: Reserved for future provider options.
@@ -199,19 +199,19 @@ class OgleOcvsProvider(MissionLightcurveProvider):
         archive_id: str | None,
         object_name: str | None,
     ) -> str | None:
-        """Normalises archive or UI text to an OGLE ``object_id`` when possible.
+        """Normalises archive or UI text to a personal ``object_id`` when possible.
 
         Args:
             archive_id (str, optional): Mission-native archive id string.
             object_name (str, optional): Target field text.
 
         Returns:
-            str or None: Canonical OGLE object id.
+            str or None: Canonical personal object id.
         """
         for candidate in (archive_id, object_name):
             if candidate is None:
                 continue
-            object_id = normalize_ogle_object_id(str(candidate))
+            object_id = normalize_personal_object_id(str(candidate))
             if object_id is not None:
                 return object_id
         return None

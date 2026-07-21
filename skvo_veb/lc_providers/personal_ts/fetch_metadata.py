@@ -1,10 +1,10 @@
-"""Provider-specific metadata enrichment for Gaia DR3 VEB fetched lightcurves."""
+"""Provider-specific metadata enrichment for personal time-series lightcurves."""
 
 from __future__ import annotations
 
 import logging
 
-from skvo_veb.lc_providers.gaia_dr3_veb import config
+from skvo_veb.lc_providers.personal_ts import config
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 
@@ -15,16 +15,14 @@ def enrich_fetched_volightcurve(
     volc: VOLightCurve,
     *,
     filter_name: str,
+    object_id: str | None = None,
 ) -> VOLightCurve:
-    """Normalises title and description on a VEB ``accref`` lightcurve product.
-
-    The archive TABLE ``name`` often omits the passband; this helper appends the
-    filter label for plot captions and export. Description must already be present
-    on the downloaded VOTable (``TABLE/DESCRIPTION``).
+    """Normalises title and description on a personal ``accref`` lightcurve product.
 
     Args:
         volc (VOLightCurve): Parsed product from ``fetch_volightcurve_from_accref``.
-        filter_name (str): Human-readable filter label from the catalogue row.
+        filter_name (str): Passband label from the catalogue row (``ssa_bandpass``).
+        object_id (str, optional): Personal archive object identifier for titling.
 
     Returns:
         VOLightCurve: The same instance with updated ``table.meta``.
@@ -49,7 +47,7 @@ def enrich_fetched_volightcurve(
             f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE description metadata."
         )
 
-    base_name = meta.get("name") or meta.get("ID")
+    base_name = meta.get("name") or meta.get("ID") or object_id
     if not base_name or not str(base_name).strip():
         raise PipeException(
             f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE name metadata."
@@ -59,10 +57,5 @@ def enrich_fetched_volightcurve(
     meta["name"] = title
     meta["lightcurve_title"] = title
 
-    logger.debug(
-        "%s metadata enriched title=%s publication_id=%s",
-        config.DISPLAY_NAME,
-        title,
-        meta.get("bibcode") or meta.get("publication_id"),
-    )
+    logger.debug("%s metadata enriched title=%s", config.DISPLAY_NAME, title)
     return volc

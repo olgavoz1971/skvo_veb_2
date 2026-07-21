@@ -9,7 +9,8 @@ from skvo_veb.lc_providers.ogle_ocvs.object_id import (
     pick_ogle_archive_id_from_simbad,
 )
 from skvo_veb.lc_providers.ogle_ocvs.provider import OgleOcvsProvider
-from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog, parse_ssa_location
+from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
+from skvo_veb.lc_providers.shared.tap_ssa_row import parse_ssa_location
 from skvo_veb.lc_providers.registry import get_provider, list_missions
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult

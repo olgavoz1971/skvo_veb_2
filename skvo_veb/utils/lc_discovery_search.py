@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 SEARCH_MODE_CONE = "cone"
 SEARCH_MODE_DIRECT_NAME = "direct_name"
+SEARCH_MODE_PROVIDER_RESOLVED_ID = "provider_resolved_id"
 SEARCH_MODE_DIRECT_ARCHIVE_ID = "direct_archive_id"
 SEARCH_MODE_SIMBAD_ARCHIVE_ID = "simbad_archive_id"
 SEARCH_MODE_SIMBAD_CONE = "simbad_cone"
@@ -308,6 +309,32 @@ def status_querying_cone(
     return f"Querying {provider_name} with a cone search (radius {radius_text})…"
 
 
+def status_resolving_provider_name(provider_name: str, query_label: str) -> str:
+    """Builds a status-bar message for provider-native name resolution.
+
+    Args:
+        provider_name (str): Mission provider display name.
+        query_label (str): User target or alias being resolved.
+
+    Returns:
+        str: Concise status text.
+    """
+    return f"Resolving {query_label!r} with {provider_name}…"
+
+
+def status_querying_provider_archive_id(provider_name: str, archive_id: str) -> str:
+    """Builds a status-bar message after provider name resolution succeeds.
+
+    Args:
+        provider_name (str): Mission provider display name.
+        archive_id (str): Mission archive identifier selected by the provider.
+
+    Returns:
+        str: Concise status text.
+    """
+    return f"{provider_name} matched archive id {archive_id}; querying catalogue…"
+
+
 def status_no_match_asking_simbad() -> str:
     """Builds a status-bar message when falling back to Simbad name resolution.
 
@@ -554,6 +581,61 @@ def run_catalog_search(
             resolved_markdown=_catalog_object_markdown(user_target, catalog),
             time_bounds=bounds,
         )
+
+    _publish_discovery_status(
+        status_update,
+        status_resolving_provider_name(provider_name, user_target),
+    )
+    logger.info(
+        "Trying provider-native target resolution for %r.",
+        user_target,
+    )
+    provider_match = provider.resolve_target_name(user_target)
+    if provider_match is not None and provider.capabilities.supports_id_lookup:
+        logger.info(
+            "Provider resolved %r to archive id %r (%s).",
+            user_target,
+            provider_match.archive_id,
+            provider_match.match_kind,
+        )
+        _publish_discovery_status(
+            status_update,
+            status_querying_provider_archive_id(
+                provider_name,
+                provider_match.archive_id,
+            ),
+        )
+        catalog = provider.search_catalog(
+            archive_id=provider_match.archive_id,
+            **time_kwargs,
+        )
+        if len(catalog) > 0:
+            logger.info(
+                "Provider-resolved archive id lookup matched %s row(s) for %r.",
+                len(catalog),
+                user_target,
+            )
+            return _finish_outcome(
+                user_target=user_target,
+                search_mode=SEARCH_MODE_PROVIDER_RESOLVED_ID,
+                catalog=catalog,
+                resolved_markdown=_catalog_object_markdown(user_target, catalog),
+                archive_match=provider_match,
+                time_bounds=bounds,
+            )
+        logger.info(
+            "Provider-resolved archive id %r returned no catalogue rows for %r.",
+            provider_match.archive_id,
+            user_target,
+        )
+    elif provider_match is not None:
+        logger.info(
+            "Provider resolved %r to %r but id lookup is unsupported.",
+            user_target,
+            provider_match.archive_id,
+        )
+    else:
+        logger.info("No provider-native match for %r.", user_target)
 
     _publish_discovery_status(status_update, status_no_match_asking_simbad())
     logger.info("No direct provider match for %r; resolving via Simbad.", user_target)
