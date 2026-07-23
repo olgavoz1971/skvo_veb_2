@@ -1122,6 +1122,47 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     return lcd
 
 
+def valid_photometry_row_mask(lcd) -> np.ndarray:
+    """Returns rows with meaningful photometry in the lightcurve's active domain.
+
+    Only the primary photometry column (``flux`` or ``mag``) is evaluated. Rows
+    with masked, null, or non-finite photometry are excluded. Missing or invalid
+    uncertainty values do not affect retention.
+
+    Args:
+        lcd (CurveDash): Application lightcurve instance.
+
+    Returns:
+        numpy.ndarray: Boolean mask — ``True`` where the row should be kept.
+
+    Raises:
+        PipeException: When the lightcurve is empty or the photometry column is missing.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not isinstance(lcd, CurveDash) or lcd.lightcurve is None:
+        raise PipeException("Cannot evaluate photometry rows on an empty CurveDash instance.")
+
+    phot_col = "mag" if lcd.active_domain == DOMAIN_MAG else "flux"
+    if phot_col not in lcd.lightcurve.columns:
+        raise PipeException(
+            f"Active domain {lcd.active_domain!r} is missing expected column {phot_col!r}."
+        )
+
+    series = lcd.lightcurve[phot_col]
+    if len(series) == 0:
+        return np.array([], dtype=bool)
+
+    raw = series.to_numpy()
+    array_mask = (
+        np.ma.getmaskarray(raw)
+        if isinstance(raw, np.ma.MaskedArray)
+        else np.zeros(len(raw), dtype=bool)
+    )
+    numeric = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+    return (~array_mask) & np.isfinite(numeric)
+
+
 def curvedash_to_table(lcd) -> Table:
     """Extracts a standards-oriented Astropy Table from a CurveDash instance.
 
@@ -1141,14 +1182,20 @@ def curvedash_to_table(lcd) -> Table:
     if not isinstance(lcd, CurveDash) or lcd.lightcurve is None:
         raise PipeException('Cannot export an empty CurveDash instance.')
 
+    keep = valid_photometry_row_mask(lcd)
+    if not keep.any():
+        raise PipeException(
+            "Cannot export: no rows with valid photometry in the active domain."
+        )
+
     t_out = Table()
-    t_out['obs_time'] = lcd.jd.values - JD_TO_MJD
-    t_out['phot'] = lcd.phot.values
+    t_out['obs_time'] = lcd.jd.values[keep] - JD_TO_MJD
+    t_out['phot'] = lcd.phot.values[keep]
     if lcd.phot_err is not None:
-        t_out['flux_error'] = lcd.phot_err.values
+        t_out['flux_error'] = lcd.phot_err.values[keep]
 
     if lcd.label is not None and 'label' in lcd.lightcurve.columns:
-        t_out['label'] = lcd.lightcurve['label'].values
+        t_out['label'] = lcd.lightcurve['label'].values[keep]
 
     phot_unit = lcd.phot_unit
     if phot_unit:
@@ -1218,11 +1265,17 @@ def curvedash_to_tabular_table(lcd) -> Table:
     if not isinstance(lcd, CurveDash) or lcd.lightcurve is None:
         raise PipeException('Cannot export an empty CurveDash instance.')
 
+    keep = valid_photometry_row_mask(lcd)
+    if not keep.any():
+        raise PipeException(
+            "Cannot export: no rows with valid photometry in the active domain."
+        )
+
     tab = Table()
-    tab['jd'] = lcd.jd.values
-    tab['phot'] = lcd.phot.values
+    tab['jd'] = lcd.jd.values[keep]
+    tab['phot'] = lcd.phot.values[keep]
     if lcd.phot_err is not None:
-        tab['flux_error'] = lcd.phot_err.values
+        tab['flux_error'] = lcd.phot_err.values[keep]
 
     phot_unit = lcd.phot_unit
     if phot_unit:
@@ -1235,7 +1288,7 @@ def curvedash_to_tabular_table(lcd) -> Table:
             logger.warning('Could not assign photometric units during tabular export.')
 
     if lcd.label is not None and 'label' in lcd.lightcurve.columns:
-        tab['label'] = lcd.lightcurve['label'].values
+        tab['label'] = lcd.lightcurve['label'].values[keep]
 
     assign_photometry_column_semantics(
         tab,

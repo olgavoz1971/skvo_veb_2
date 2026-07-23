@@ -16,8 +16,8 @@ import logging
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.registry import get_provider
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import volc_to_curvedash
-from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, JD_TO_MJD
+from skvo_veb.utils.lc_bridge import valid_photometry_row_mask, volc_to_curvedash
+from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import VOLightCurve
 from skvo_veb.volightcurve.time_reference import time_offset_to_absolute_jd
@@ -118,9 +118,9 @@ def _volc_filename_from_catalog_row(catalog_row: dict) -> str:
 def drop_invalid_photometry_rows(lcd: CurveDash) -> None:
     """Removes rows with missing photometry in the lightcurve's active domain.
 
-    Flux-native curves drop rows with non-finite ``flux``; magnitude-native curves
-    drop rows with non-finite ``mag``. Matches the post-ingest cleanup previously
-    hard-coded for flux-only missions in Discovery.
+    Flux-native curves drop rows with non-finite or masked ``flux``; magnitude-native
+    curves drop rows with non-finite or masked ``mag``. Uncertainty columns are not
+    used for this decision. Uses the same rule as export via ``valid_photometry_row_mask``.
 
     Args:
         lcd (CurveDash): Loaded lightcurve instance to mutate in place.
@@ -128,13 +128,8 @@ def drop_invalid_photometry_rows(lcd: CurveDash) -> None:
     if lcd.lightcurve is None:
         return
 
-    phot_col = "mag" if lcd.active_domain == DOMAIN_MAG else "flux"
-    if phot_col not in lcd.lightcurve.columns:
-        raise PipeException(
-            f"Discovery lightcurve active domain {lcd.active_domain!r} "
-            f"is missing expected column {phot_col!r}."
-        )
-    lcd.lightcurve.dropna(subset=[phot_col], inplace=True)
+    keep = valid_photometry_row_mask(lcd)
+    lcd.lightcurve = lcd.lightcurve.loc[keep].reset_index(drop=True)
 
 
 def apply_catalog_folding_hints(lcd: CurveDash, catalog_row: dict) -> None:

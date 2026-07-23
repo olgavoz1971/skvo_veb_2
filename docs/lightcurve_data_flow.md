@@ -229,11 +229,12 @@ The phase column is useful interactively but **must never** appear in standards-
 `write_vo_lightcurve` (volightcurve layer) accepts only `Table`, `DataFrame`, or `VOLightCurve` — not `CurveDash`. The bridge calls `curvedash_to_table()` first, which:
 
 1. Maps absolute `jd` → MJD in `obs_time` (`jd - JD_TO_MJD`), active photometry → `phot`, active error → `flux_error`
-2. Sets VOTable `TIMESYS/@timeorigin` to `JD_TO_MJD` so `JD = obs_time + timeorigin`
-3. Includes optional `label` column (UCD `meta.id;meta.dataset`) for sector colour-coding
-4. Omits `selected`, `perm_index`, `phase`, and other UI columns
-5. Embeds `sectors`, `flux_origins`, `authors`, and `title` in table metadata for VOTable `<PARAM>` export
-6. Passes `period` and `epoch` as table `<PARAM>` elements via export profile kwargs
+2. **Omits rows** where the active-domain photometry (`flux` or `mag`) is masked, null, or non-finite; invalid uncertainties do **not** exclude a row (`valid_photometry_row_mask`)
+3. Sets VOTable `TIMESYS/@timeorigin` to `JD_TO_MJD` so `JD = obs_time + timeorigin`
+4. Includes optional `label` column (UCD `meta.id;meta.dataset`) for sector colour-coding
+5. Omits `selected`, `perm_index`, `phase`, and other UI columns
+6. Embeds `sectors`, `flux_origins`, `authors`, and `title` in table metadata for VOTable `<PARAM>` export
+7. Passes `period` and `epoch` as table `<PARAM>` elements via export profile kwargs
 
 TESS photometry method (e.g. `pdcsap`, `sap`) appears in the `<TABLE>` description and in `flux_origins` metadata.
 
