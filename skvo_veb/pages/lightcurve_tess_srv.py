@@ -188,7 +188,7 @@ def layout():
                                             "checkboxSelection": True if col == "#" else False,
                                             "headerCheckboxSelection": True if col == "#" else False,
                                         }
-                                        for col in ["#", "mission", "year", "author", "exptime", "target"]
+                                        for col in ["#", "sector", "year", "author", "exptime", "target"]
                                     ],
                                     rowData=[],
                                     columnSize="responsiveSizeToFit",
@@ -198,8 +198,8 @@ def layout():
                                         "rowSelection": "multiple",
                                         "suppressRowClickSelection": True,
                                         "animateRows": True,
-                                        "pagination": True,
-                                        "paginationPageSize": 10,
+                                        # "pagination": True,
+                                        # "paginationPageSize": 10,
                                     },
                                     style={"height": "350px", "width": "100%"}
                                 ),

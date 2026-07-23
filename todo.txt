@@ -9,7 +9,7 @@ item 1)
 
 359.5350045273501
 55.046286677779946
-
+TCP J23580961+5502508
 
 
 Strange error occured when I try to extract lightcurve for

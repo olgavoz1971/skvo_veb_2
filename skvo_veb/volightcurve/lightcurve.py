@@ -16,7 +16,8 @@ from astropy.table import MaskedColumn
 from astropy.io.votable import is_votable
 from astropy.io import ascii
 
-from gavo.votable import votparse
+from gavo.votable import tableparser, votparse
+from gavo.votable.model import VOTable as V
 
 import logging
 
@@ -402,7 +403,7 @@ def _apply_gavo_votable_metadata(volc_instance, gavo_tree) -> None:
 
     Args:
         volc_instance (VOLightCurve): Target instance to mutate in place.
-        gavo_tree: GAVO stanxml root returned by ``votparse.readRaw``.
+        gavo_tree: GAVO stanxml root from ``_gavo_votable_metadata_tree``.
     """
     from skvo_veb.volightcurve.time_reference import extract_timesys_metadata_from_gavo
 
@@ -508,8 +509,52 @@ def extract_photdm(tree):
     return dm_map
 
 
+def _read_votable_payload(file_path) -> bytes:
+    """Reads a VOTable path or stream into bytes for a single-pass ingest.
+
+    Args:
+        file_path (str or file-like): Path or binary stream.
+
+    Returns:
+        bytes: Raw VOTable content.
+    """
+    if hasattr(file_path, "read"):
+        if hasattr(file_path, "seek"):
+            file_path.seek(0)
+        return file_path.read()
+    with open(file_path, "rb") as handle:
+        return handle.read()
+
+
+def _gavo_votable_metadata_tree(payload: bytes):
+    """Builds a GAVO ``VOTABLE`` tree for metadata walkers without row decode.
+
+    ``votparse.parse`` always yields ``tableparser.Rows`` at ``<DATA>``; that
+    iterator must not be consumed (no ``list(rows)``), which avoids BINARY decode
+    failures while preserving PARAMref resolution in photcal GROUPs.
+
+    Args:
+        payload (bytes): Raw VOTable bytes.
+
+    Returns:
+        GAVO ``V.VOTABLE`` root for ``extract_photdm`` / TIMESYS walkers.
+
+    Raises:
+        ValueError: When parsing completes without a ``VOTABLE`` root node.
+    """
+    votable_node = None
+    for element in votparse.parse(io.BytesIO(payload), {V.VOTABLE}):
+        if isinstance(element, tableparser.Rows):
+            continue
+        if type(element).__name__ == "VOTABLE":
+            votable_node = element
+    if votable_node is None:
+        raise ValueError("GAVO metadata parse did not yield a VOTABLE root.")
+    return votable_node
+
+
 def _gavo_votable_tree_from_source(file_path):
-    """Parses a VOTable byte stream into a GAVO stanxml tree.
+    """Parses VOTable metadata into a GAVO stanxml tree (no row materialisation).
 
     Args:
         file_path (str or file-like): Path or stream containing VOTable bytes.
@@ -517,11 +562,7 @@ def _gavo_votable_tree_from_source(file_path):
     Returns:
         GAVO stanxml tree root for metadata walkers.
     """
-    if hasattr(file_path, "seek"):
-        file_path.seek(0)
-        return votparse.readRaw(file_path)
-    with open(file_path, "rb") as handle:
-        return votparse.readRaw(handle)
+    return _gavo_votable_metadata_tree(_read_votable_payload(file_path))
 
 
 def extract_timesys(tree):
@@ -948,75 +989,63 @@ class VOLightCurve:
 
         self._ingest(file_path)
 
+    def _ingest_votable(self, payload: bytes) -> None:
+        """Ingests a confirmed VOTable byte payload into table and VO metadata.
+
+        Table rows come from Astropy; TIMESYS, COOSYS, and PhotDM (including
+        standard ``PARAMref`` resolution) come from GAVO metadata walkers on a
+        parse that skips ``<DATA>`` row consumption.
+
+        Args:
+            payload (bytes): Raw VOTable content.
+        """
+        import astropy.io.votable as vot
+
+        self.table = Table.read(io.BytesIO(payload), format="votable")
+
+        astro_tree = vot.parse(io.BytesIO(payload))
+        first_table = astro_tree.get_first_table()
+        for param in first_table.params:
+            if param.name:
+                self.table.meta[param.name] = param.value
+
+        gavo_tree = _gavo_votable_metadata_tree(payload)
+        _apply_gavo_votable_metadata(self, gavo_tree)
+
+        self.table = _promote_to_vo_standards(self.table)
+        if not self.timesys.timeorigin:
+            self.timesys.timeorigin = _pickup_jd0_from_table(self.table)
+
     def _ingest(self, file_path):
         """Main ingestion flow that loads and processes the input file.
 
-        Attempts to load the file as a standard VOTable first. Table data and TABLE
-        PARAM values are copied with astropy; ``TIMESYS``, ``COOSYS``, and PhotDM
-        metadata use GAVO tree walkers. If the file is not a valid VOTable, it
-        attempts to read it as a standard tabular file, falling back to ASCII parsing
-        and heuristic column recovery based on comments/position.
+        VOTable products: one byte read, Astropy for table data and TABLE PARAM
+        values, GAVO metadata parse (no BINARY row decode) for TIMESYS, COOSYS,
+        and PhotDM including ``PARAMref``. Non-VOTable inputs fall back to generic
+        tabular or heuristic ASCII parsing.
 
         Args:
             file_path (str or file-like object): Path to the input file or an active file-like stream.
         """
         try:
-            if hasattr(file_path, 'seek'):
-                file_path.seek(0)
-            
-            votable_detected = is_votable(file_path)
-            
-            if hasattr(file_path, 'seek'):
+            if hasattr(file_path, "seek"):
                 file_path.seek(0)
 
-            if votable_detected:
-                # The best track:
-                self.table = Table.read(file_path, format='votable')
-                
-                # Copy TABLE PARAM values with astropy; VO metadata via GAVO walkers.
-                astropy_success = False
-                try:
-                    if hasattr(file_path, 'seek'):
-                        file_path.seek(0)
-                    import astropy.io.votable as vot
+            if is_votable(file_path):
+                self._ingest_votable(_read_votable_payload(file_path))
+                return
 
-                    tree = vot.parse(file_path)
-                    first_table = tree.get_first_table()
-                    for param in first_table.params:
-                        if param.name:
-                            self.table.meta[param.name] = param.value
-
-                    gavo_tree = _gavo_votable_tree_from_source(file_path)
-                    _apply_gavo_votable_metadata(self, gavo_tree)
-                    self.table = _promote_to_vo_standards(self.table)
-                    astropy_success = True
-                except Exception as e:
-                    logger.warning(f"Failed to parse VOTable params and metadata: {e}")
-
-                if astropy_success:
-                    return
-
-                # Fallback when TABLE PARAM copy failed but the file is still a VOTable
-                try:
-                    votable_tree = _gavo_votable_tree_from_source(file_path)
-
-                    self.table = _promote_to_vo_standards(self.table)
-                    _apply_gavo_votable_metadata(self, votable_tree)
-                    return
-                except Exception as e_gavo:
-                    logger.warning(f"GAVO metadata parsing also failed: {e_gavo}")
-                    raise
-
-            # Try to fix things ...
-            if hasattr(file_path, 'seek'):
+            if hasattr(file_path, "seek"):
                 file_path.seek(0)
             self.table = Table.read(file_path)
-            logger.info(f"We have read {file_path} using Table.read, though it is not the right VOTable")
+            logger.info(
+                "Read %s with Table.read; file is not a VOTable.",
+                file_path,
+            )
 
-        except Exception as e:
-            logger.warning(f"Standard read failed, trying heuristic ASCII...")
-            # print(f"Standard read failed ({e}), trying heuristic ASCII...")
-            if hasattr(file_path, 'seek'):
+        except Exception:
+            logger.warning("Standard read failed, trying heuristic ASCII...")
+            if hasattr(file_path, "seek"):
                 file_path.seek(0)
             self.table = ascii.read(file_path)
             self.table = _recover_lc_colnames(self.table)

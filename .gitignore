@@ -44,3 +44,6 @@ canvases/
 docs/bessell2005.pdf
 pkl/
 deprecated/
+data/
+ebs/
+tmp/

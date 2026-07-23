@@ -4,7 +4,7 @@ This document describes how lightcurve data is ingested, processed, serialised, 
 
 **Planned extension:** multi-mission archive adapters (search + fetch) are specified in [mission_lightcurve_providers.md](mission_lightcurve_providers.md). Fetch from missions returns `VOLightCurve`; conversion to `CurveDash` remains in this document's pipeline.
 
-**Last updated:** 2026-07-02 — domain-aware ingestion, bridge export profiles, on-demand conversion.
+**Last updated:** 2026-07-23 — VOTable ingest split (Astropy data + GAVO metadata-only parse); diagnostic trace scripts.
 
 ---
 
@@ -12,10 +12,10 @@ This document describes how lightcurve data is ingested, processed, serialised, 
 
 | Layer | Module | Knows about | Must NOT know about |
 |-------|--------|-------------|---------------------|
-| **Scientific core** | `skvo_veb/volightcurve/` | Astropy, IVOA VOTable, photDM, `PhotCal` unit-safe conversions | Dash, Plotly, `CurveDash`, cache keys, TESS pipeline UI |
+| **Scientific core** | `skvo_veb/volightcurve/` | Astropy (table data), GAVO walkers (VO metadata, `PARAMref`), photDM, `PhotCal` | Dash, Plotly, `CurveDash`, cache keys, TESS pipeline UI |
 | **Application bridge** | `skvo_veb/utils/lc_bridge.py` | `VOLightCurve`, `CurveDash`, export profiles | Dash callbacks, HTML layout, component IDs |
 | **Application state** | `skvo_veb/utils/curve_dash.py` | Pandas DataFrame, `active_domain`, phase/selection UI columns | VOTable XML construction, Lightkurve queries |
-| **Mission / instrument config** | `tess_config.py`, `lc_config.py` | Physical constants, pipeline identifiers | UI, parsing logic |
+| **Mission / instrument config** | `utils/mission_config/` (e.g. `tess.py`), `lc_config.py` | Physical constants, pipeline identifiers | UI, parsing logic |
 | **Archive builder** | `skvo_veb/utils/tess_lc_builder.py` | Lightkurve → `CurveDash` (flux domain) | Dash callbacks |
 | **UI controller** | `skvo_veb/pages/lightcurve_tess_srv.py` | Callback wiring, cache UUIDs, Plotly figures | Column heuristics, mag↔flux math, VOTable XML |
 
@@ -67,17 +67,69 @@ Accessors for plotting and export:
   [ Uploaded file (.vot / .dat / .csv) ]
                  |
                  v
-         VOLightCurve(file)              ← volightcurve/ (parse, no conversion)
+         ingest_lightcurve_file()       ← lc_bridge (dispatches by extension)
                  |
-                 v
-         volc_to_curvedash()             ← lc_bridge (JD0, column map, photcal meta)
-                 |                         stores mag OR flux as-is
+       +---------+---------+
+       |                   |
+   .vot / .xml          .csv / .dat / .ecsv
+       |                   |
+       v                   v
+  VOLightCurve(file)   tabular_table_to_curvedash()
+       |                   |
+       v                   |
+  volc_to_curvedash()  ←---+  (JD0, column map, photcal meta; no domain conversion)
+                 |
                  v
          CurveDash.serialize()           ← {"lightcurve": {...}, "metadata": {...}}
                  |
                  v
          DiskCache (server-side UUID)
 ```
+
+#### VOTable ingest inside `VOLightCurve._ingest` (`.vot` / `.xml`)
+
+VOTable products take a **single byte read**, then two complementary parsers — not duplicate full parses:
+
+```text
+  _read_votable_payload(source)  →  bytes (once)
+                 |
+       +---------+---------+
+       |                   |
+  Astropy               GAVO (metadata only)
+       |                   |
+  Table.read            votparse.parse(watchset={VOTABLE})
+  → self.table          skip tableparser.Rows (do NOT list/consume)
+  (rows, columns,       → _gavo_votable_metadata_tree()
+   column UCDs/units)         |
+  vot.parse             _apply_gavo_votable_metadata()
+  → TABLE PARAM         → timesys, coosys, photdms
+     → table.meta      (TIMESYS registry, PhotDM, PARAMref resolution)
+       |                   |
+       +---------+---------+
+                 |
+                 v
+         _promote_to_vo_standards(self.table)
+```
+
+**Division of responsibility**
+
+| Concern | Authority | Notes |
+|---------|-----------|--------|
+| Row data (including **binary** VOTables) | Astropy `Table.read` | Reliable on mission exports (TESS, etc.) |
+| TABLE `<PARAM>` values | Astropy `vot.parse` | Direct PARAM elements → `table.meta` |
+| `TIMESYS`, `COOSYS`, FIELD `@ref` | GAVO walkers on metadata tree | From XML header |
+| `photcal` GROUP, **`PARAMref`** | GAVO `extract_photdm` | Standard IVOA indirection; Astropy exposes refs but **does not dereference** them |
+| Heuristic ASCII / CSV | `_ingest` fallback branch | When `is_votable` is false |
+
+**Why not GAVO `readRaw`?** `readRaw` materialises every row into the GAVO tree. On binary mission VOTables that decode step fails (`OSError: No data left`) even though metadata (TIMESYS, photcal) lives in the **XML header**, not in the BINARY block. Ingest therefore uses `votparse.parse` and **skips** the `Rows` iterator at `<DATA>` — see `scripts/spike_gavo_metadata_parse.py`.
+
+**Diagnostic scripts** (do not modify application state):
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/trace_votable_ingest_flow.py` | Layer-by-layer trace for a local `.vot` (default `bin.vot`) |
+| `scripts/trace_ogle_lightcurve_flow.py` | OGLE accref download; PARAMref / photcal inspection |
+| `scripts/spike_gavo_metadata_parse.py` | Compare `readRaw` vs metadata-only GAVO parse |
 
 ### 3.2 TESS archive download (Lightkurve → cache)
 
@@ -133,6 +185,7 @@ Retained for lightweight cross-service transport; the TESS page plots from `Curv
 | Function | Purpose |
 |----------|---------|
 | `read_to_volc(file_source)` | File → `VOLightCurve` |
+| `ingest_lightcurve_file(file_source, filename)` | Upload entry point: VOTable → `volc_to_curvedash`; tabular → `tabular_table_to_curvedash` |
 | `volc_to_curvedash(volc, filename)` | Upload path: VO → `CurveDash`, no domain conversion |
 | `curvedash_to_table(lcd)` | Strip UI columns → clean `Table` for export |
 | `export_curvedash(lcd, format, profile)` | Unified export entry point |
@@ -160,10 +213,10 @@ The **cutout** profile records `cutout_source` (FFI/TPF), `mask_mode` (handmade/
 - `MAG_TO_FLUX_ERR_FACTOR`, `FLUX_TO_MAG_ERR_FACTOR` — fallback error propagation
 - `DOMAIN_FLUX`, `DOMAIN_MAG` — domain identifier constants
 
-### `tess_config.py` (TESS-specific)
+### `mission_config/` (instrument-specific, e.g. `tess.py`)
 
 - Timescale, filter ID, BTJD origin, SPOC zero points
-- `is_spoc_pipeline(authors)` — zero-point inclusion rule for export
+- `resolve_tess_photcal()` / pipeline rules for export zero-point inclusion
 
 Import config modules wholesale; do not scatter constants across callbacks.
 
@@ -207,11 +260,17 @@ Export clipping uses `prepare_lcd_for_export()` on the server (srv) or at downlo
 
 ### A. `skvo_veb/volightcurve/`
 
-Independent VO package. Parses VOTable and heuristic ASCII. Provides `PhotCal.mag_to_flux()` / `flux_to_mag()`. Writes VOTable via `write_vo_lightcurve(table, …)`.
+Independent VO package. Parses VOTable and heuristic ASCII.
+
+**VOTable ingest** (`VOLightCurve._ingest_votable`): one payload read; Astropy for table rows and TABLE PARAMs; GAVO metadata-only parse (`_gavo_votable_metadata_tree`) plus walkers for TIMESYS, COOSYS, and PhotDM including standard **`PARAMref`** resolution in `photcal` GROUPs. Does **not** use GAVO `readRaw` (full row materialisation).
+
+**Metadata modules:** `time_reference.py` (TIMESYS registry and epoch normalisation), `extract_photdm` / `extract_coosys` in `lightcurve.py`.
+
+Provides `PhotCal.mag_to_flux()` / `flux_to_mag()`. Writes VOTable via `write_vo_lightcurve(table, …)`.
 
 ### B. `skvo_veb/utils/lc_bridge.py`
 
-Decouples VO core from Dash app. Single upload path (`volc_to_curvedash`) and single export path (`export_curvedash`).
+Decouples VO core from Dash app. Upload via `ingest_lightcurve_file()`; VO conversion via `volc_to_curvedash()`; export via `export_curvedash()`.
 
 ### C. `skvo_veb/utils/curve_dash.py`
 
@@ -240,9 +299,11 @@ sequenceDiagram
     participant Cache as DiskCache
 
     UI->>UI: base64 decode → BytesIO
-    UI->>VO: VOLightCurve(file)
-    VO-->>UI: volc (native domain preserved)
-    UI->>Bridge: volc_to_curvedash(volc, filename)
+    UI->>Bridge: ingest_lightcurve_file(file, filename)
+    Bridge->>VO: VOLightCurve(file)
+    Note over VO: VOTable: Astropy table + GAVO metadata walkers
+    VO-->>Bridge: volc (native domain preserved)
+    Bridge->>Bridge: volc_to_curvedash(volc, filename)
     Bridge-->>UI: CurveDash (active_domain = mag or flux)
     UI->>CD: serialize()
     UI->>Cache: write(uuid, json)
@@ -284,8 +345,10 @@ sequenceDiagram
 | Item | Status |
 |------|--------|
 | Domain-aware ingestion (no auto-conversion) | **Done** |
+| VOTable ingest: Astropy data + GAVO metadata-only parse (no `readRaw`) | **Done** |
 | `CurveDash.convert_to_flux()` / `convert_to_mag()` | **Done** |
 | `export_curvedash()` with TESS profile | **Done** |
+| `ingest_lightcurve_file()` unified upload entry | **Done** |
 | `tess_lc_builder.py` extracted from page | **Done** |
 | `lc_config.py` centralised defaults | **Done** |
 | `write_vo_lightcurve` accepts Table only (not CurveDash) | **Done** |

@@ -1,3 +1,5 @@
+from math import e
+from amqp.exceptions import NotFound
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astropy.time import Time
@@ -31,14 +33,15 @@ def search_missions_lightkurve(ra, dec, radius_arcsec=3,
     """
     coords = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame='icrs')
     
-    print(f"Searching MAST for Kepler/K2/TESS {cutout_type} within {radius_arcsec} arcseconds...")
+    print(f"Searching MAST for Kepler/K2/TESS lightcurve within {radius_arcsec} arcseconds...")
     
     # Perform the search
     search_results = lk.search_lightcurve(coords, radius=radius_arcsec)
     
+
     if len(search_results) == 0:
-        print("No light curves found in this region.")
-        return None
+        print(f"No light curves found in this region: {ra=} {dec=}")
+        raise NotFound(f"No light curves found in this region: {ra=} {dec=}")
         
     # Apply optional time filtering
     if t_start is not None or t_end is not None:
@@ -181,80 +184,141 @@ def search_missions_ffi(ra, dec, t_start=None, t_end=None, how='overlap'):
         
     return observations
 
+def bulk_search_lc(filename):
+    import csv
+
+    t_start = '2024-07-01'
+    t_end = '2030-01-01'
+    radius = 5
+    how = 'overlap'
+
+    selected_columns = ['obs_collection','provenance_name','project','s_ra','s_dec',
+    'dataproduct_type', 'calib_level','t_min','t_max','t_exptime', 'distance', 
+    'exptime', 'size', 'author','mission', 'year']
+
+    with open(filename) as f:
+        reader = csv.reader(f, skipinitialspace=True)
+        for row in reader:
+            if not row or row[0].startswith("#"):
+                continue
+            star_name, ra_target, dec_target = row[0].strip(), float(row[1]), float(row[2])
+            
+            output_filename_base = f"{star_name.strip().replace(' ', '_')}_{t_start}_{t_end}_{how}"
+
+            try:
+                results = search_missions_lightkurve(
+                    ra=ra_target, 
+                    dec=dec_target, 
+                    radius_arcsec=radius,
+                    t_start=t_start,
+                    t_end=t_end,
+                    how=how
+                )
+                results.table[selected_columns].write(
+                    f'{output_filename_base}.ecsv', format='ascii.ecsv', overwrite=True)
+                print("Selected columns saved to lightkurve_subset.ecsv")
+                
+                with open(f'{output_filename_base}.pkl', 'wb') as f:
+                            pickle.dump(results, f)
+                print(f"Fully functional SearchResult frozen to {output_filename_base}.pkl")
+                        
+                if results and len(results) > 0:
+                    print(f"\nFound {len(results)} matching light curves:")
+                    results.table.pprint(max_lines=-1)
+            except Exception as e:
+                print(f'Exception {e}')
+                with open(f'{output_filename_base}.fail', 'w') as f:
+                    f.write('Not found any')
+            
+            # input("Press any key to continue...")
+
 
 if __name__ == "__main__":
-    ra_target = 316.01949
-    dec_target = 46.52068
+    # bulk_search_lc("variables_for_TESS.csv")
+    # import sys
+    # exit(0)
+
+    what = "lc"
+    # what = "ffi"
+    
+    ra_target = 34.03879
+    dec_target =  -21.00822
     radius = 2.0 # arcseconds
 
     # Fetch Kepler & TESS data from 2018 onwards (which captures TESS data)
-    t_start = '2018-01-01'
-    t_end = '2024-12-31'
+    t_start = '2024-01-01'
+    # t_end = '2024-12-31'
+    t_end = '2030-12-31'
     how = 'overlap'
-    cutout_type = 'ffi'
-    load_from_file = True    
-    output_filename_base = f'{ra_target:.3f}_{dec_target:.3f}_{cutout_type}_{t_start}_{t_end}_{how}'  
+    # cutout_type = 'tpf'
+    load_from_file = False    
+    output_filename_base = f'{ra_target:.3f}_{dec_target:.3f}_{what}_{t_start}_{t_end}_{how}'  
 
     
-    if load_from_file:
-        with open(f'{output_filename_base}.pkl', 'rb') as f:
-            observations = pickle.load(f)
-        print(f"Restored a functional Observations object containing {len(observations)} rows")
-    else:
-        observations = search_missions_ffi(
+    if what == 'ffi':
+        if load_from_file:
+            with open(f'{output_filename_base}.pkl', 'rb') as f:
+                observations = pickle.load(f)
+            print(f"Restored a functional Observations object containing {len(observations)} rows")
+        else:
+            observations = search_missions_ffi(
+                    ra=ra_target, 
+                    dec=dec_target,
+                    t_start=t_start,
+                    t_end=t_end,
+                    how=how
+                )
+            with open(f'{output_filename_base}.pkl', 'wb') as f:
+                            pickle.dump(observations, f)
+            print(f"Fully functional Observations table frozen to {output_filename_base}.pkl")
+
+        print(observations['obs_collection', 's_ra', 's_dec', 'sequence_number', 't_min', 't_max', 'distance'])
+
+    # import sys
+    # sys.exit(0)
+    elif what == 'lc':
+        selected_columns = ['obs_collection','provenance_name','project','s_ra','s_dec',
+            'dataproduct_type', 'calib_level','t_min','t_max','t_exptime', 'distance', 
+            'exptime', 'size', 'author','mission', 'year']
+
+        if load_from_file:
+            # Reopen the file in another script or session
+            with open(f'{output_filename_base}.pkl', 'rb') as f:
+                results = pickle.load(f)
+            print(f"Restored a functional object containing {len(results)} rows")
+
+        else:
+            results = search_missions_lightkurve(
                 ra=ra_target, 
-                dec=dec_target,
+                dec=dec_target, 
+                radius_arcsec=radius,
                 t_start=t_start,
                 t_end=t_end,
                 how=how
             )
-        with open(f'{output_filename_base}.pkl', 'wb') as f:
-                        pickle.dump(observations, f)
-        print(f"Fully functional Observations table frozen to {output_filename_base}.pkl")
-
-    print(observations['obs_collection', 's_ra', 's_dec', 'sequence_number', 't_min', 't_max', 'distance'])
-
-    import sys
-    sys.exit(0)
-
-    selected_columns = ['obs_collection','provenance_name','project','s_ra','s_dec',
-        'dataproduct_type', 'calib_level','t_min','t_max','t_exptime', 'distance', 
-        'exptime', 'size', 'author','mission', 'year']
-
-    if load_from_file:
-        # Reopen the file in another script or session
-        with open(f'{output_filename_base}.pkl', 'rb') as f:
-            results = pickle.load(f)
-        print(f"Restored a functional object containing {len(results)} rows")
-
+            results.table[selected_columns].write(
+                f'{output_filename_base}.ecsv', format='ascii.ecsv', overwrite=True)
+            print("Selected columns saved to lightkurve_subset.ecsv")
+            
+            with open(f'{output_filename_base}.pkl', 'wb') as f:
+                        pickle.dump(results, f)
+            print(f"Fully functional SearchResult frozen to {output_filename_base}.pkl")
+            
+        
+        if results and len(results) > 0:
+            print(f"\nFound {len(results)} matching light curves:")
+            results.table.pprint(max_lines=-1)              
+            
+        # light_curves = results.download_all()
+        import matplotlib.pyplot as plt
+        print('Pick up some, download and plot it')
+        mask = (results.table['t_exptime'] > 180) & (results.table['author'] == 'TESS-SPOC') & (results.table['year'] == 2022)
+        if mask.sum() > 0:
+            lc = results[mask][0].download()
+            lc.plot()
+            plt.show()
     else:
-        results = search_missions_lightkurve(
-            ra=ra_target, 
-            dec=dec_target, 
-            radius_arcsec=radius,
-            t_start=t_start,
-            t_end=t_end,
-            how=how
-        )
-        results.table[selected_columns].write(
-            f'{output_filename_base}.ecsv', format='ascii.ecsv', overwrite=True)
-        print("Selected columns saved to lightkurve_subset.ecsv")
-        
-        with open(f'{output_filename_base}.pkl', 'wb') as f:
-                    pickle.dump(results, f)
-        print(f"Fully functional SearchResult frozen to {output_filename_base}.pkl")
-        
-    
-    if results and len(results) > 0:
-        print(f"\nFound {len(results)} matching light curves:")
-        results.table.pprint(max_lines=-1)              
-        
-    # light_curves = results.download_all()
-    import matplotlib.pyplot as plt
-    print('Pick up some, download and plot it')
-    mask = (results.table['t_exptime'] > 180) & (results.table['author'] == 'TESS-SPOC') & (results.table['year'] == 2022)
-    if mask.sum() > 0:
-        lc = results[mask][0].download()
-        lc.plot()
-        plt.show()
+        import sys
+        print('"What" must be "lc" or "ffi"')
+        sys.exit(1)
 

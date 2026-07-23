@@ -156,7 +156,7 @@ def layout():
                                 dag.AgGrid(
                                     id="data_tess_table",
                                     columnDefs=[{"field": col, "headerName": col.capitalize() if col != "#" else "#"} for col in
-                                                ["#", "mission", "year", "author", "exptime", "target", "distance"]],
+                                                ["#", "sector", "year", "author", "exptime", "target", "distance"]],
                                     rowData=[],
                                     columnSize="responsiveSizeToFit",
                                     defaultColDef={"filter": True, "sortable": True, "resizable": True},
@@ -164,11 +164,11 @@ def layout():
                                         "theme": "themeBalham",
                                         "rowSelection": "single",
                                         "animateRows": True,
-                                        "pagination": True,
-                                        "paginationPageSize": 10,
+                                        "pagination": False,
+                                        # "paginationPageSize": 10,
                                         'enableCellTextSelection': True,
                                     },
-                                    style={"height": "250px", "width": "100%"}
+                                    style={"height": "400px", "width": "100%"}
 
                                 )
                             ], id="search_results_row", style={"display": "none"}),  # Search results

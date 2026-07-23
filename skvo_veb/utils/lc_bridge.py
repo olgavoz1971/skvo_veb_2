@@ -739,6 +739,26 @@ def _jd0_from_packet_meta(meta: dict) -> float:
     return float(meta["jd0"])
 
 
+def _unit_to_storage_string(unit) -> str:
+    """Serialises an Astropy unit for CurveDash metadata storage.
+
+    VOUnit cannot represent every Astropy unit (for example TESS ``electron``).
+    Non-standard units fall back to Astropy's canonical string form.
+
+    Args:
+        unit (astropy.units.Unit): Physical unit to serialise.
+
+    Returns:
+        str: Unit label safe to store in application metadata.
+    """
+    if unit is None:
+        return ""
+    try:
+        return unit.to_string("vounit")
+    except (ValueError, u.UnitsError, u.UnitTypeError):
+        return unit.to_string()
+
+
 def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
     """Serialises an IVOA photcal GROUP into CurveDash ``metadata['photcal']``.
 
@@ -774,11 +794,11 @@ def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
     if photcal is not None:
         if photcal.zp_flux is not None:
             meta[PHOTCAL_KEY_ZP_FLUX] = float(photcal.zp_flux.value)
-            meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = photcal.zp_flux.unit.to_string("vounit")
+            meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = _unit_to_storage_string(photcal.zp_flux.unit)
         if photcal.zp_mag is not None:
             meta[PHOTCAL_KEY_ZP_MAG] = float(photcal.zp_mag.value)
             meta[PHOTCAL_KEY_ZP_MAG_UNIT] = (
-                photcal.zp_mag.unit.to_string("vounit") if photcal.zp_mag.unit else "mag"
+                _unit_to_storage_string(photcal.zp_mag.unit) if photcal.zp_mag.unit else "mag"
             )
         if photcal.mag_sys:
             meta[PHOTCAL_KEY_MAG_SYS] = photcal.mag_sys
