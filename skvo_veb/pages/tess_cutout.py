@@ -156,7 +156,7 @@ def layout():
                                 dag.AgGrid(
                                     id="data_tess_table",
                                     columnDefs=[{"field": col, "headerName": col.capitalize() if col != "#" else "#"} for col in
-                                                ["#", "sector", "year", "author", "exptime", "target", "distance"]],
+                                                ["#", "mission", "year", "author", "exptime", "target", "distance"]],
                                     rowData=[],
                                     columnSize="responsiveSizeToFit",
                                     defaultColDef={"filter": True, "sortable": True, "resizable": True},

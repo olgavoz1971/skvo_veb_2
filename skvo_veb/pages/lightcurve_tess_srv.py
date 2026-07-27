@@ -52,8 +52,8 @@ from skvo_veb.utils.lc_bridge import (
     build_curvedash_title,
     ingest_lightcurve_file,
     export_file_extension,
-    apply_phot_domain_view,
 )
+from skvo_veb.utils.mission_config.tess import apply_tess_phot_domain_view
 from skvo_veb.utils.lc_config import (
     DEFAULT_EXPORT_FORMAT,
     EXPORT_FORMAT_OPTIONS,
@@ -188,7 +188,7 @@ def layout():
                                             "checkboxSelection": True if col == "#" else False,
                                             "headerCheckboxSelection": True if col == "#" else False,
                                         }
-                                        for col in ["#", "sector", "year", "author", "exptime", "target"]
+                                        for col in ["#", "mission", "year", "author", "exptime", "target"]
                                     ],
                                     rowData=[],
                                     columnSize="responsiveSizeToFit",
@@ -1055,7 +1055,7 @@ def toggle_mag_view(show_magnitude, user_tab_id):
         if lcd.active_domain == desired_domain:
             return dash.no_update, dash.no_update
 
-        apply_phot_domain_view(lcd, show_magnitude)
+        apply_tess_phot_domain_view(lcd, show_magnitude)
         write_user_data_to_cache(lcd.serialize(), user_tab_id)
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
         return str(uuid.uuid4()), dash.no_update

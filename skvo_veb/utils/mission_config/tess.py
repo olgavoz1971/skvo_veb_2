@@ -22,6 +22,7 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
 )
+from skvo_veb.utils.lc_bridge import apply_phot_domain_view
 from skvo_veb.volightcurve.time_reference import export_absolute_jd_as_time_offset
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
@@ -37,6 +38,7 @@ TESS_TIMEORIGIN = 2457000.0  # Lightkurve BTJD offset (ingest/plot only; not VOT
 TESS_SPOC_ZERO_POINT_REF_MAG = 20.44
 TESS_SPOC_ZERO_POINT_FLUX = 1.0
 TESS_SPOC_ZERO_POINT_FLUX_UNIT = "electron s-1"
+QLP_FLUX_UNIT = u.dimensionless_unscaled
 TESS_FILTER_IDENTIFIER = "TESS/TESS.Red"
 TESS_EFFECTIVE_WAVELENGTH = 7453 * u.Angstrom
 
@@ -59,6 +61,22 @@ def is_spoc_pipeline(authors) -> bool:
     return any(isinstance(a, str) and a.upper() in ["SPOC", "TESS-SPOC"] for a in authors)
 
 
+def is_qlp_pipeline(authors) -> bool:
+    """Checks if the pipeline author list includes QLP.
+
+    Args:
+        authors (str or list of str): The pipeline author(s) to check.
+
+    Returns:
+        bool: True when QLP is present, False otherwise.
+    """
+    if not authors:
+        return False
+    if isinstance(authors, str):
+        authors = [authors]
+    return any(isinstance(a, str) and a.upper() == "QLP" for a in authors)
+
+
 def filter_group_meta() -> dict:
     """Returns serialisable TESS passband fields for ``metadata['photcal']``.
 
@@ -73,36 +91,127 @@ def filter_group_meta() -> dict:
     }
 
 
-def resolve_photcal(authors, stitched: bool = False) -> dict:
+def resolve_photcal(
+    authors,
+    stitched: bool = False,
+    tess_mag: float | None = None,
+) -> dict:
     """Builds serialisable photcal GROUP metadata for TESS archive lightcurves.
 
-    Filter passband fields are always stored. SPOC pipeline zero points apply
-    only to unstitched curves; stitched and non-SPOC pipelines omit zero points
+    Filter passband fields are always stored. SPOC pipeline zero points apply to
+    unstitched SPOC curves (fixed reference magnitude). QLP unstitched curves use
+    ``tess_mag`` from Lightkurve ``TESSMAG`` header metadata when supplied.
+    Stitched curves and pipelines without calibration metadata omit zero points
     but retain filter identification for export and future multicolour work.
 
     Args:
         authors (str or list of str): Pipeline author tag(s) from Lightkurve.
         stitched (bool): True when sectors were stitched with relative normalisation.
+        tess_mag (float, optional): ``TESSMAG`` from downloaded QLP product header.
 
     Returns:
         dict: Full photcal GROUP fields appropriate for serialised storage.
     """
     meta = filter_group_meta()
-    if stitched or not is_spoc_pipeline(authors):
+    if stitched:
         return meta
-    meta.update({
-        PHOTCAL_KEY_ZP_FLUX: TESS_SPOC_ZERO_POINT_FLUX,
-        PHOTCAL_KEY_ZP_FLUX_UNIT: TESS_SPOC_ZERO_POINT_FLUX_UNIT,
-        PHOTCAL_KEY_ZP_MAG: TESS_SPOC_ZERO_POINT_REF_MAG,
-        PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
-        PHOTCAL_KEY_MAG_SYS: "Vega",
-    })
+    if is_spoc_pipeline(authors):
+        meta.update({
+            PHOTCAL_KEY_ZP_FLUX: TESS_SPOC_ZERO_POINT_FLUX,
+            PHOTCAL_KEY_ZP_FLUX_UNIT: TESS_SPOC_ZERO_POINT_FLUX_UNIT,
+            PHOTCAL_KEY_ZP_MAG: TESS_SPOC_ZERO_POINT_REF_MAG,
+            PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
+            PHOTCAL_KEY_MAG_SYS: "Vega",
+        })
+        return meta
+    if is_qlp_pipeline(authors):
+        if tess_mag is None:
+            logger.warning(
+                "QLP TESS lightcurve missing TESSMAG metadata; photcal passband only."
+            )
+            return meta
+        try:
+            zp_mag = float(tess_mag)
+        except (TypeError, ValueError):
+            logger.warning("QLP photcal skipped: invalid TESSMAG value %r.", tess_mag)
+            return meta
+        meta.update({
+            PHOTCAL_KEY_ZP_FLUX: 1.0,
+            PHOTCAL_KEY_ZP_FLUX_UNIT: QLP_FLUX_UNIT.to_string(),
+            PHOTCAL_KEY_ZP_MAG: zp_mag,
+            PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
+            PHOTCAL_KEY_MAG_SYS: "Vega",
+        })
+        return meta
     return meta
 
 
 # Backward-compatible aliases for existing import paths during migration.
 tess_filter_group_meta = filter_group_meta
 resolve_tess_photcal = resolve_photcal
+
+
+def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str:
+    """Returns the flux-unit label stored on a TESS archive ``CurveDash``.
+
+    Pipeline-specific units are assigned at ingest from mission configuration,
+    not inferred silently during later domain conversion.
+
+    Args:
+        authors (str or list of str): Pipeline author tag(s) from Lightkurve.
+        lightkurve_flux_unit: Unit object or string from the downloaded product.
+
+    Returns:
+        str: Serialised flux unit for ``CurveDash`` metadata.
+    """
+    if is_qlp_pipeline(authors):
+        return QLP_FLUX_UNIT.to_string()
+    return str(lightkurve_flux_unit)
+
+
+def validate_tess_magnitude_conversion(lcd) -> None:
+    """Checks that a TESS archive lightcurve may be converted to magnitudes.
+
+    Stitched curves and products without zero-point metadata must not be converted;
+    unit mismatches are left to ``PhotCal`` and surface as conversion errors.
+
+    Args:
+        lcd (CurveDash): Cached lightcurve from the TESS archive page.
+
+    Raises:
+        PipeException: When magnitude conversion is not scientifically defined.
+    """
+    if lcd.metadata is None:
+        raise PipeException("Cannot convert to magnitude: lightcurve metadata is missing.")
+
+    if lcd.metadata.get("stitched"):
+        raise PipeException(
+            "Cannot convert to magnitude: stitched TESS lightcurves have no flux zero point."
+        )
+
+    photcal = lcd.metadata.get("photcal") or {}
+    if photcal.get(PHOTCAL_KEY_ZP_MAG) is None or photcal.get(PHOTCAL_KEY_ZP_FLUX) is None:
+        raise PipeException(
+            "Cannot convert to magnitude: photometric zero point is not defined for this "
+            "lightcurve."
+        )
+
+
+def apply_tess_phot_domain_view(lcd, show_magnitude: bool) -> None:
+    """Converts a TESS archive lightcurve between flux and magnitude views.
+
+    Uses the shared bridge conversion path after TESS-specific preconditions are met.
+    Magnitude conversion requires a defined, unstitched zero point; incompatible flux
+    and zero-point units raise an error rather than producing silent wrong results.
+
+    Args:
+        lcd (CurveDash): Cached lightcurve to mutate.
+        show_magnitude (bool): When true, convert to magnitude domain.
+    """
+    if show_magnitude:
+        validate_tess_magnitude_conversion(lcd)
+
+    apply_phot_domain_view(lcd, show_magnitude)
 
 
 def resolve_cutout_mask_mode(auto_mask, mask_type: str | None) -> str:

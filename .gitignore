@@ -47,3 +47,5 @@ deprecated/
 data/
 ebs/
 tmp/
+*.fits
+*.vot

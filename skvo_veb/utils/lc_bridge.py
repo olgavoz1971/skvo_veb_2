@@ -679,9 +679,10 @@ def _strip_zero_points_from_photcal(photcal: dict | None) -> dict:
 def photcal_from_metadata(photcal: dict | None) -> PhotCal:
     """Builds a ``PhotCal`` from CurveDash ``metadata['photcal']``.
 
-    Required keys: ``PHOTCAL_KEY_ZP_FLUX``, ``PHOTCAL_KEY_ZP_MAG``,
-    ``PHOTCAL_KEY_ZP_FLUX_UNIT``. Optional magnitude-system and unit keys are passed
-    through when present; otherwise ``PhotCal`` constructor defaults apply.
+    Required keys: ``PHOTCAL_KEY_ZP_FLUX`` and ``PHOTCAL_KEY_ZP_MAG``.
+    ``PHOTCAL_KEY_ZP_FLUX_UNIT`` is optional; when absent or empty the zero-point
+    flux is dimensionless. Other magnitude-system and unit keys pass through when
+    present.
 
     Args:
         photcal (dict): Serialised photcal GROUP from CurveDash metadata.
@@ -698,17 +699,22 @@ def photcal_from_metadata(photcal: dict | None) -> PhotCal:
     zp_flux = photcal.get(PHOTCAL_KEY_ZP_FLUX)
     zp_mag = photcal.get(PHOTCAL_KEY_ZP_MAG)
     zp_flux_unit = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
-    if zp_flux is None or zp_mag is None or not zp_flux_unit:
+    if zp_flux is None or zp_mag is None:
         raise ValueError(
             "Incomplete photcal metadata for conversion: "
-            "require zp_flux, zp_mag, and zp_flux_unit."
+            "require zp_flux and zp_mag."
         )
 
+    # An empty ``zp_flux_unit`` means dimensionless zero-point flux (for example
+    # TESS QLP archive products stored with ``u.dimensionless_unscaled``). ``PhotCal``
+    # already defaults to dimensionless when no unit is supplied. A non-empty string
+    # must be a valid Astropy/VO unit label (for example SPOC ``electron s-1``).
     kwargs = {
         "zp_flux": float(zp_flux),
-        "zp_flux_unit": zp_flux_unit,
         "zp_mag": float(zp_mag),
     }
+    if zp_flux_unit:
+        kwargs["zp_flux_unit"] = zp_flux_unit
     zp_mag_unit = photcal.get(PHOTCAL_KEY_ZP_MAG_UNIT)
     if zp_mag_unit:
         kwargs["zp_mag_unit"] = zp_mag_unit

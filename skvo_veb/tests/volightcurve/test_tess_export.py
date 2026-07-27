@@ -79,6 +79,25 @@ def test_tess_export():
     assert "TESS/TESS.Red" in xml_qlp
     assert "effectiveWavelength" in xml_qlp
 
+    lcd_qlp_cal = CurveDash(
+        name="TIC 35119266",
+        lookup_name="My Target",
+        jd=jd,
+        flux=flux,
+        flux_err=flux_err,
+        label=label,
+        time_unit="d",
+        timescale="tdb",
+        flux_unit="e-/s",
+    )
+    lcd_qlp_cal.metadata['authors'] = ["QLP"]
+    lcd_qlp_cal.metadata['photcal'] = resolve_tess_photcal(
+        lcd_qlp_cal.metadata['authors'], tess_mag=11.42
+    )
+    xml_qlp_cal = export_curvedash(lcd_qlp_cal, 'votable_binary', profile='tess').decode('utf-8')
+    assert "zeroPointReferenceMagnitude" in xml_qlp_cal
+    assert "11.42" in xml_qlp_cal
+
     lcd_stitched = CurveDash(
         name="TIC 159717514",
         lookup_name="My Target",

@@ -16,7 +16,7 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, resolve_photcal
+from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, archive_flux_unit_for_pipeline, resolve_photcal
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,41 @@ def _apply_flux_method(lc, flux_method: str) -> str:
             lc.flux_err = lc.sap_bkg_err
         return "sap_bkg"
     return lc.FLUX_ORIGIN
+
+
+def _tess_mag_from_lightkurve_list(lc_list) -> float | None:
+    """Collects a single ``TESSMAG`` reference from downloaded Lightkurve products.
+
+    QLP (and related) pipelines store target catalogue magnitude in FITS header
+    metadata as ``TESSMAG``. When several sectors are combined unstitched, values
+    should agree; a warning is logged when they differ.
+
+    Args:
+        lc_list (list): Downloaded Lightkurve lightcurve objects.
+
+    Returns:
+        float or None: Reference magnitude for QLP photcal, or ``None`` when absent.
+    """
+    values: list[float] = []
+    for lc in lc_list:
+        meta = getattr(lc, "meta", None) or {}
+        raw = meta.get("TESSMAG")
+        if raw is None:
+            continue
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            logger.warning("Invalid TESSMAG in Lightkurve metadata: %r", raw)
+    if not values:
+        return None
+    rounded = {round(v, 6) for v in values}
+    if len(rounded) > 1:
+        logger.warning(
+            "Multiple TESSMAG values across selected sectors %s; using %.6f.",
+            values,
+            values[0],
+        )
+    return values[0]
 
 
 def create_lc_from_selected_rows(
@@ -152,9 +187,10 @@ def create_lc_from_selected_rows(
                 sector_array,
                 np.full_like(lc_item.time.value, fill_value=lc_item.SECTOR, dtype=np.uint8),
             ])
-        flux_unit = str(lc_list[0].flux.unit)
+        flux_unit = archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
 
-    photcal_meta = resolve_photcal(authors, stitched=stitch)
+    tess_mag = _tess_mag_from_lightkurve_list(lc_list)
+    photcal_meta = resolve_photcal(authors, stitched=stitch, tess_mag=tess_mag)
 
     lcd = CurveDash(
         name=lc_list[0].LABEL,
@@ -187,6 +223,8 @@ def create_lc_from_selected_rows(
     lcd.metadata['authors'] = authors
     lcd.metadata['sectors'] = sectors
     lcd.metadata['flux_origins'] = flux_origins
+    if tess_mag is not None:
+        lcd.metadata['tess_mag'] = tess_mag
     if stitch:
         lcd.metadata['stitched'] = True
 
