@@ -184,6 +184,11 @@ def validate_tess_magnitude_conversion(lcd) -> None:
     if lcd.metadata is None:
         raise PipeException("Cannot convert to magnitude: lightcurve metadata is missing.")
 
+    if lcd.metadata.get("is_background_flux"):
+        raise PipeException(
+            "Cannot convert to magnitude: background columns are not target photometry."
+        )
+
     if lcd.metadata.get("stitched"):
         raise PipeException(
             "Cannot convert to magnitude: stitched TESS lightcurves have no flux zero point."

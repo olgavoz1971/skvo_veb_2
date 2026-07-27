@@ -69,7 +69,12 @@ from skvo_veb.utils.lc_interaction import (
     require_time_view_for_trim,
     trim_curvedash_from_selection_bounds,
 )
-from skvo_veb.utils.tess_lc_builder import create_lc_from_selected_rows
+from skvo_veb.utils.tess_lc_builder import (
+    create_lc_from_selected_rows,
+    effective_flux_method_for_selection,
+    flux_radio_options_for_rows,
+)
+from skvo_veb.utils.tess_flux_column_registry import FLUX_METHOD_DEFAULT
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
 from skvo_veb.utils.my_tools import (
@@ -226,13 +231,8 @@ def layout():
                             # region fold_it
                             dcc.RadioItems(  # type : ignore
                                 id='flux_tess_lc_srv_switch',
-                                options=[   # type: ignore
-                                    {'label': 'pdc_sap', 'value': 'pdcsap'},
-                                    {'label': 'sap', 'value': 'sap'},
-                                    {'label': 'default flux', 'value': 'default'},
-                                    {'label': 'background', 'value': 'background'},
-                                ],
-                                value='pdcsap',
+                                options=[],   # type: ignore
+                                value=FLUX_METHOD_DEFAULT,
                                 labelStyle=switch_label_style,
                             ),
                             # flux type radio
@@ -784,6 +784,42 @@ def restore_lc_srv_search_table(search_store, current_rows):
 
 
 @callback(
+    Output('flux_tess_lc_srv_switch', 'options'),
+    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('data_tess_lc_srv_table', 'selectedRows'),
+    State('data_tess_lc_srv_table', 'rowData'),
+    State('store_tess_lc_search_result', 'data'),
+    State('flux_tess_lc_srv_switch', 'value'),
+    prevent_initial_call=True,
+)
+def update_flux_radio_options(selected_rows, table_data, search_store, current_value):
+    """Updates flux-column radio choices from registry metadata for the selection."""
+    if not selected_rows:
+        raise PreventUpdate
+    options = flux_radio_options_for_rows(selected_rows, table_data, search_store)
+    if not options:
+        raise PreventUpdate
+    multi_row = len(selected_rows) > 1
+    if multi_row:
+        return options, FLUX_METHOD_DEFAULT
+    allowed = {opt['value'] for opt in options}
+    if current_value in allowed:
+        return options, dash.no_update
+    return options, FLUX_METHOD_DEFAULT
+
+
+@callback(
+    Output('flux_tess_lc_srv_switch', 'options', allow_duplicate=True),
+    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('store_tess_lc_search_result', 'data'),
+    prevent_initial_call=True,
+)
+def reset_flux_on_new_search(_search_store):
+    """Resets flux choice when a new MAST search replaces the sector table."""
+    return [], FLUX_METHOD_DEFAULT
+
+
+@callback(
     Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
     Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
     Input('store_user_tab_id_tess_lc_srv', 'data'),
@@ -870,6 +906,9 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         epoch = safe_float(epoch, 0)
         period = safe_float(period)
         epoch = epoch + jd0 if epoch else epoch
+        flux_method = effective_flux_method_for_selection(
+            selected_rows, table_data, flux_method
+        )
         lc = create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
                                           phase_view, period, epoch, search_store=search_store)
         # write it to server user cache
@@ -1463,6 +1502,9 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     try:
         # Store the loaded light curve into dcc.Store
         # Store a loaded light curve on the server side in the DiskCache instead
+        flux_method = effective_flux_method_for_selection(
+            selected_rows, table_data, flux_method
+        )
         write_user_data_to_cache(
             create_lc_from_selected_rows(
                 selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store

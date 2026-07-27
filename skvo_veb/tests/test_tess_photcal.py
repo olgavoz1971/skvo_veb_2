@@ -184,6 +184,23 @@ def test_qlp_unit_mismatch_rejects_magnitude_conversion():
         apply_tess_phot_domain_view(lcd, True)
 
 
+def test_background_flux_rejects_magnitude_conversion():
+    """Background columns must not convert to magnitudes."""
+    from skvo_veb.utils.mission_config.tess import validate_tess_magnitude_conversion
+    from skvo_veb.utils.my_tools import PipeException
+
+    lcd = _build_archive_lcd(
+        [1.0, 2.0],
+        [0.1, 0.1],
+        authors=["SPOC"],
+        photcal=resolve_tess_photcal(["SPOC"]),
+        flux_unit="electron s-1",
+    )
+    lcd.metadata["is_background_flux"] = True
+    with pytest.raises(PipeException, match="background"):
+        validate_tess_magnitude_conversion(lcd)
+
+
 def test_qlp_export_includes_zero_point_when_tess_mag_in_photcal():
     """VOTable export emits PhotCal zero points for QLP when photcal carries TESSMAG."""
     lcd = _build_archive_lcd(
