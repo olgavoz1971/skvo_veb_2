@@ -416,13 +416,60 @@ def _apply_gavo_votable_metadata(volc_instance, gavo_tree) -> None:
     volc_instance.photdms = extract_photdm(gavo_tree)
 
 
+def _normalize_photdm_column_key(name: str) -> str:
+    """Normalises a photometry column name for ``photdms`` lookup.
+
+    Args:
+        name (str): VOTable ``FIELD/@name`` or ``FIELDref/@ref`` value.
+
+    Returns:
+        str: Lowercase column key.
+    """
+    return str(name).strip().lower()
+
+
+def _link_photdm_field_refs(tree, photcal_groups: dict[str, PhotDM], dm_map: dict[str, PhotDM]) -> None:
+    """Links ``photcal`` GROUP instances to TABLE fields via ``FIELD/@ref``.
+
+    Gaia and other archives attach ``FIELD/@ref`` to a ``photcal`` GROUP ``@ID``
+    instead of embedding ``FIELDref`` inside the GROUP (UPJS/DaCHS style).
+
+    Args:
+        tree: GAVO stanxml root from ``votparse.parse``.
+        photcal_groups (dict): ``photcal`` GROUP ``ID`` to ``PhotDM`` instances.
+        dm_map (dict): Target mapping mutated in place (column name → ``PhotDM``).
+    """
+
+    def walk(node, text, attrs, childIter):
+        if node.name_ == "TABLE":
+            for child in childIter:
+                if child.name_ != "FIELD":
+                    continue
+                field_name = getattr(child, "name", None)
+                group_ref = getattr(child, "ref", None)
+                if not field_name or not group_ref:
+                    continue
+                photdm = photcal_groups.get(str(group_ref))
+                if photdm is None:
+                    continue
+                key = _normalize_photdm_column_key(field_name)
+                dm_map.setdefault(key, photdm)
+            return
+        for child in childIter:
+            if hasattr(child, "apply"):
+                child.apply(walk)
+
+    tree.apply(walk)
+
+
 def extract_photdm(tree):
     """GAVO tree walker for IVOA PhotDM ``photcal`` GROUP metadata.
 
     Traverses a GAVO-parsed VOTable tree and resolves photometric calibration
     groups linked to photometry columns. Handles inline ``PARAM`` entries and
     ``PARAMref`` indirection (the pattern used by modern VO publishers such as
-    DaCHS/UPJS TAP services).
+    DaCHS/UPJS TAP services), plus ``FIELD/@ref`` links to ``photcal`` GROUP
+    ``@ID`` values (Gaia DR3 ARI epoch photometry).
 
     Args:
         tree: The GAVO VOTable tree node/element to parse.
@@ -434,13 +481,16 @@ def extract_photdm(tree):
 
     def map_ids(node, text, attrs, childIter):
         node_id = getattr(node, "id", None) or getattr(node, "ID", None)
-        if node_id: id_map[node_id] = node
+        if node_id:
+            id_map[node_id] = node
         for child in childIter:
-            if hasattr(child, 'apply'): child.apply(map_ids)
+            if hasattr(child, "apply"):
+                child.apply(map_ids)
 
     tree.apply(map_ids)
 
     dm_map = {}
+    photcal_groups: dict[str, PhotDM] = {}
 
     UT_FLUX = "photDM:PhotCal.zeroPoint.flux.value"
     UT_MAG = "photDM:PhotCal.zeroPoint.referenceMagnitude.value"
@@ -448,65 +498,84 @@ def extract_photdm(tree):
     UT_FILTER = "photDM:PhotometryFilter.identifier"
     UT_FILTER_SPEC = "photDM:PhotometryFilter.spectralLocation.value"
 
-    # todo: extend this list
-
     def process_group(node, text, attrs, childIter):
-        if node.name_ == 'GROUP' and getattr(node, "name", None) == "photcal":
-            # arguments of PhotCal.__init__
-            cal_params = {'zp_flux': 1.0, 'zp_mag': 0.0, 'zp_mag_unit': 'mag', 'zp_flux_unit': None}
-            # these are arguments of the PhotomeryPilter.__init__
-            filter_params = {'filter_id': '', 'spectral_location': 0.0, 'spectral_location_unit': None}
-            # filter_id = ''
-            # filter_spec = None
-            # filter_spec_unit = None
+        if node.name_ == "GROUP" and getattr(node, "name", None) == "photcal":
+            cal_params = {
+                "zp_flux": 1.0,
+                "zp_mag": 0.0,
+                "zp_mag_unit": "mag",
+                "zp_flux_unit": None,
+            }
+            filter_params = {
+                "filter_id": "",
+                "spectral_location": 0.0,
+                "spectral_location_unit": None,
+            }
             target_col = None
+            group_id = getattr(node, "id", None) or getattr(node, "ID", None)
             for child in childIter:
-                # Logic for PARAM and PARAMref
                 target_param = None
-                # Note: we should always look for the utype on the child (the reference) first!
-                # The referenced parameter may have another utype
                 role_utype = (getattr(child, "utype", None) or "").lower()
 
-                if child.name_ == 'PARAM':
+                if child.name_ == "PARAM":
                     target_param = child
-                elif child.name_ == 'PARAMref':
+                elif child.name_ == "PARAMref":
                     target_param = id_map.get(getattr(child, "ref", None))
-                elif child.name_ == 'FIELDref':
+                elif child.name_ == "FIELDref":
                     target_col = getattr(child, "ref", None)
 
                 if target_param is not None:
-                    # If the reference (child) didn't have utype,
-                    # use the parameter's own utype (so, I do not like this case)
                     ut = role_utype or (getattr(target_param, "utype", None) or "").lower()
 
                     if ut == UT_FLUX.lower():
-                        cal_params['zp_flux'] = float(target_param.value)
-                        cal_params['zp_flux_unit'] = getattr(target_param, "unit", None)
+                        cal_params["zp_flux"] = float(target_param.value)
+                        cal_params["zp_flux_unit"] = getattr(target_param, "unit", None)
                     elif ut == UT_MAG.lower():
-                        cal_params['zp_mag'] = float(target_param.value)
-                        cal_params['zp_mag_unit'] = target_param.unit
+                        cal_params["zp_mag"] = float(target_param.value)
+                        cal_params["zp_mag_unit"] = target_param.unit
                     elif ut == UT_MAG_SYS.lower():
-                        cal_params['mag_sys'] = target_param.value
+                        cal_params["mag_sys"] = target_param.value
                     elif ut == UT_FILTER.lower():
-                        filter_params['filter_id'] = target_param.value
+                        filter_params["filter_id"] = target_param.value
                     elif ut == UT_FILTER_SPEC.lower():
-                        filter_params['spectral_location'] = float(target_param.value)
-                        filter_params['spectral_location_unit'] = getattr(target_param, "unit", None)
+                        filter_params["spectral_location"] = float(target_param.value)
+                        filter_params["spectral_location_unit"] = getattr(
+                            target_param, "unit", None
+                        )
 
+            phot_filter = PhotometryFilter(**filter_params)
+            photcal = PhotCal(**cal_params)
+            photdm = PhotDM(photcal=photcal, photometry_filter=phot_filter)
+            if group_id:
+                photcal_groups[str(group_id)] = photdm
             if target_col:
-                phot_filter = PhotometryFilter(**filter_params)
-                # filter_id=filter_id, spectral_location=filter_spec, spectral_location_unit=filter_spec_unit)
-                photcal = PhotCal(**cal_params)
-                # calibrations[target_col] = PhotCal(**params)
-                # Assign the DM hub to the column name
-                dm_map[target_col] = PhotDM(photcal=photcal, photometry_filter=phot_filter)
+                dm_map[_normalize_photdm_column_key(target_col)] = photdm
 
-        # Recursive walk
         for child in childIter:
-            if hasattr(child, 'apply'): child.apply(process_group)
+            if hasattr(child, "apply"):
+                child.apply(process_group)
 
     tree.apply(process_group)
+    _link_photdm_field_refs(tree, photcal_groups, dm_map)
     return dm_map
+
+
+def _list_votable_table_ids(payload: bytes) -> list[str | int]:
+    """Lists Astropy VOTable table identifiers for a byte payload.
+
+    Args:
+        payload (bytes): Raw VOTable content.
+
+    Returns:
+        list: Table ``ID``, ``name``, or zero-based index for each embedded table.
+    """
+    import astropy.io.votable as vot
+
+    vot_file = vot.parse(io.BytesIO(payload))
+    table_ids: list[str | int] = []
+    for index, table in enumerate(vot_file.iter_tables()):
+        table_ids.append(table.ID or table.name or index)
+    return table_ids
 
 
 def _read_votable_payload(file_path) -> bytes:
@@ -972,11 +1041,13 @@ class VOLightCurve:
     heuristic formats.
     """
 
-    def __init__(self, file_path):
+    def __init__(self, file_path, *, table_id: str | int | None = None):
         """Initialises a VOLightCurve instance and ingests the specified data file.
 
         Args:
             file_path (str or file-like object): Path to the input file or an active file-like stream.
+            table_id (str or int, optional): When the VOTable embeds multiple ``TABLE``
+                elements, selects one by Astropy table ``ID``, name, or zero-based index.
         """
         self.file_path = file_path
         self.table = None
@@ -986,10 +1057,11 @@ class VOLightCurve:
         self.param_timesys_ref: dict[str, str | None] = {}
         self.coosys = None
         self.photdms = {}  # maps column_name -> PhotDM instance
+        self._table_id = table_id
 
-        self._ingest(file_path)
+        self._ingest(file_path, table_id=table_id)
 
-    def _ingest_votable(self, payload: bytes) -> None:
+    def _ingest_votable(self, payload: bytes, *, table_id: str | int | None = None) -> None:
         """Ingests a confirmed VOTable byte payload into table and VO metadata.
 
         Table rows come from Astropy; TIMESYS, COOSYS, and PhotDM (including
@@ -998,14 +1070,35 @@ class VOLightCurve:
 
         Args:
             payload (bytes): Raw VOTable content.
+            table_id (str or int, optional): Selects one table when several are present.
+
+        Raises:
+            ValueError: When multiple tables are present and ``table_id`` is omitted.
         """
         import astropy.io.votable as vot
 
-        self.table = Table.read(io.BytesIO(payload), format="votable")
+        table_ids = _list_votable_table_ids(payload)
+        if len(table_ids) > 1 and table_id is None:
+            names = ", ".join(str(item) for item in table_ids)
+            raise ValueError(
+                f"Multiple VOTable tables found ({names}). "
+                "Pass table_id= to VOLightCurve to select one lightcurve table."
+            )
+
+        read_kwargs: dict = {"format": "votable"}
+        if table_id is not None:
+            read_kwargs["table_id"] = table_id
+        self.table = Table.read(io.BytesIO(payload), **read_kwargs)
 
         astro_tree = vot.parse(io.BytesIO(payload))
-        first_table = astro_tree.get_first_table()
-        for param in first_table.params:
+        if table_id is not None:
+            if isinstance(table_id, int):
+                selected_table = astro_tree.get_table_by_index(table_id)
+            else:
+                selected_table = astro_tree.get_table_by_id(table_id)
+        else:
+            selected_table = astro_tree.get_first_table()
+        for param in selected_table.params:
             if param.name:
                 self.table.meta[param.name] = param.value
 
@@ -1016,7 +1109,7 @@ class VOLightCurve:
         if not self.timesys.timeorigin:
             self.timesys.timeorigin = _pickup_jd0_from_table(self.table)
 
-    def _ingest(self, file_path):
+    def _ingest(self, file_path, *, table_id: str | int | None = None):
         """Main ingestion flow that loads and processes the input file.
 
         VOTable products: one byte read, Astropy for table data and TABLE PARAM
@@ -1026,15 +1119,16 @@ class VOLightCurve:
 
         Args:
             file_path (str or file-like object): Path to the input file or an active file-like stream.
+            table_id (str or int, optional): Selects one embedded VOTable table.
         """
+        if hasattr(file_path, "seek"):
+            file_path.seek(0)
+
+        if is_votable(file_path):
+            self._ingest_votable(_read_votable_payload(file_path), table_id=table_id)
+            return
+
         try:
-            if hasattr(file_path, "seek"):
-                file_path.seek(0)
-
-            if is_votable(file_path):
-                self._ingest_votable(_read_votable_payload(file_path))
-                return
-
             if hasattr(file_path, "seek"):
                 file_path.seek(0)
             self.table = Table.read(file_path)

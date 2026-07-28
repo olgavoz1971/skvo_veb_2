@@ -923,6 +923,9 @@ def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarr
 def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     """Finds the primary photometry column in an ingested table.
 
+    Prefers magnitude columns with attached ``photcal`` metadata, then other
+    photcal-linked columns, before falling back to generic flux/mag detection.
+
     Args:
         volc (VOLightCurve): Parsed lightcurve container.
 
@@ -931,12 +934,21 @@ def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     """
     if "phot" in volc.table.colnames:
         return "phot"
-    flux_cols = get_flux_colnames(volc)
-    mag_cols = get_mag_colnames(volc)
-    if flux_cols:
-        return flux_cols[0]
+
+    mag_cols = get_mag_colnames(volc.table)
+    flux_cols = get_flux_colnames(volc.table)
+    photdms = getattr(volc, "photdms", {}) or {}
+
+    for col in mag_cols:
+        if col in photdms:
+            return col
+    for col in flux_cols:
+        if col in photdms:
+            return col
     if mag_cols:
         return mag_cols[0]
+    if flux_cols:
+        return flux_cols[0]
     if "flux" in volc.table.colnames:
         return "flux"
     if "mag" in volc.table.colnames:
