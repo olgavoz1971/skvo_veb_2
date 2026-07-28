@@ -966,15 +966,21 @@ def _resolve_photometry_error_column(volc: VOLightCurve, phot_col: str) -> str |
     Returns:
         str or None: Error column name, if present.
     """
+    is_mag = (
+        phot_col == "mag"
+        or (phot_col == "phot" and is_magnitude_phot_column(volc.table, phot_col))
+        or is_mag_column(volc.table, phot_col)
+    )
+    if is_mag:
+        if "mag_err" in volc.table.colnames:
+            return "mag_err"
+        error_cols = volc.get_mag_error_colnames()
+        return error_cols[0] if error_cols else None
+
     if "flux_error" in volc.table.colnames:
         return "flux_error"
     if phot_col == "flux" and "flux_err" in volc.table.colnames:
         return "flux_err"
-    if phot_col == "mag" and "mag_err" in volc.table.colnames:
-        return "mag_err"
-    if is_mag_column(volc.table, phot_col):
-        error_cols = volc.get_mag_error_colnames()
-        return error_cols[0] if error_cols else None
     error_cols = volc.get_flux_error_colnames()
     return error_cols[0] if error_cols else None
 

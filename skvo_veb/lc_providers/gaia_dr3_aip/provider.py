@@ -266,6 +266,7 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             ra_deg=ra_deg,
             dec_deg=dec_deg,
             radius_arcsec=radius_arcsec,
+            row_limit=self.max_discovery_catalog_rows(),
         )
         return run_tap_sync_query(
             config.TAP_URL,

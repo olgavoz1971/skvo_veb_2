@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import MAG_ERR_FROM_SNR_FACTOR
+from skvo_veb.lc_providers.tap.adql import adql_top_limit_clause
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 from skvo_veb.utils.lc_config import JD_TO_MJD
 
@@ -28,8 +30,6 @@ GAIA_AIP_TIME_EPOCH_MJD = GAIA_AIP_TIME_EPOCH_JD - JD_TO_MJD
 # PhotCal constants aligned with Gaia DR3 (ARI) archive products (see data/gaia_ari.vot).
 GAIA_AIP_ZERO_POINT_REFERENCE_MAGNITUDE = 0.0
 GAIA_AIP_MAGNITUDE_SYSTEM = "Vega"
-
-MAG_ERR_FROM_SNR_FACTOR = 1.0857362
 
 SOURCE_SELECT_COLUMNS = (
     "gs.source_id",
@@ -197,6 +197,7 @@ def adql_gaia_source_cone(
     ra_deg: float,
     dec_deg: float,
     radius_arcsec: float,
+    row_limit: int | None = None,
 ) -> str:
     """Builds ADQL 2.0 cone search on ``gaiadr3.gaia_source`` with class join.
 
@@ -204,6 +205,7 @@ def adql_gaia_source_cone(
         ra_deg (float): Cone centre right ascension in degrees.
         dec_deg (float): Cone centre declination in degrees.
         radius_arcsec (float): Cone radius in arcseconds.
+        row_limit (int, optional): Maximum number of source rows (``SELECT TOP``).
 
     Returns:
         str: Complete ADQL query string.
@@ -212,8 +214,9 @@ def adql_gaia_source_cone(
     ra = float(ra_deg)
     dec = float(dec_deg)
     select_cols = _select_clause(SOURCE_SELECT_COLUMNS)
+    top = adql_top_limit_clause(row_limit)
     return (
-        f"SELECT {select_cols} "
+        f"SELECT {top}{select_cols} "
         f"FROM {GAIA_SOURCE_TABLE} AS gs "
         f"LEFT JOIN {VARI_CLASSIFIER_RESULT_TABLE} AS vcr "
         f"ON gs.source_id = vcr.source_id "

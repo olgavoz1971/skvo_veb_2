@@ -15,6 +15,8 @@ from skvo_veb.volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_DISCOVERY_CATALOG_ROWS = 100
+
 
 @dataclass(frozen=True)
 class MissionCapabilities:
@@ -170,6 +172,17 @@ class MissionLightcurveProvider(ABC):
         """
         return 10.0
 
+    def max_discovery_catalog_rows(self) -> int:
+        """Returns the maximum catalogue rows returned from a cone discovery search.
+
+        TAP cone queries should honour this limit with an ADQL ``TOP`` clause.
+        Direct archive-id or name lookups are not capped by default.
+
+        Returns:
+            int: Row cap for cone searches (default 100).
+        """
+        return DEFAULT_MAX_DISCOVERY_CATALOG_ROWS
+
     def descriptor(self) -> MissionDescriptor:
         """Builds registry metadata for UI mission selectors.
 
@@ -219,3 +232,23 @@ class MissionLightcurveProvider(ABC):
         if radius <= 0:
             raise PipeException(f"{self.display_name}: search radius must be positive.")
         return ra, dec, radius
+
+    def _truncate_catalog_table(self, table: Table) -> Table:
+        """Truncates a catalogue table to ``max_discovery_catalog_rows``.
+
+        Args:
+            table (astropy.table.Table): Candidate discovery catalogue.
+
+        Returns:
+            astropy.table.Table: Possibly truncated catalogue copy.
+        """
+        limit = self.max_discovery_catalog_rows()
+        if len(table) <= limit:
+            return table
+        logger.info(
+            "%s truncated discovery catalogue from %s to %s rows.",
+            self.display_name,
+            len(table),
+            limit,
+        )
+        return table[:limit]

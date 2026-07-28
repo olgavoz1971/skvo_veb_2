@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import logging
 
+from astropy import units as u
+
 from skvo_veb.lc_providers.gaia_dr3_ari import config
+from skvo_veb.lc_providers.shared.gaia_dr3_source_id import format_gaia_source_name
+from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import mag_error_from_flux_over_error
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 from skvo_veb.volightcurve.lightcurve import PhotCal
@@ -12,6 +16,71 @@ from skvo_veb.volightcurve.lightcurve import PhotCal
 logger = logging.getLogger(__name__)
 
 PRIMARY_PHOT_COLUMN = "mag"
+FLUX_OVER_ERROR_COLUMN = "flux_over_error"
+MAG_ERR_COLUMN = "mag_err"
+ARCHIVE_FLUX_ERROR_COLUMNS = ("flux_error", "flux_err")
+
+
+def _attach_mag_errors_from_snr(volc: VOLightCurve) -> None:
+    """Builds ``mag_err`` from ``flux_over_error`` and drops archive flux-error columns.
+
+    Gaia ARI VOTables expose electron-per-second ``flux_error`` alongside magnitude
+    photometry. Discovery uses mag-native uncertainties derived from SNR only.
+
+    Args:
+        volc (VOLightCurve): Parsed ARI product to mutate in place.
+
+    Raises:
+        PipeException: When ``flux_over_error`` is missing from the ingested table.
+    """
+    if FLUX_OVER_ERROR_COLUMN not in volc.table.colnames:
+        raise PipeException(
+            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing column "
+            f"'{FLUX_OVER_ERROR_COLUMN}' required for magnitude uncertainties."
+        )
+
+    snr = volc.table[FLUX_OVER_ERROR_COLUMN]
+    if hasattr(snr, "value"):
+        snr = snr.value
+    mag_err_vals = mag_error_from_flux_over_error(snr)
+    volc.table[MAG_ERR_COLUMN] = mag_err_vals * u.mag
+
+    for column in ARCHIVE_FLUX_ERROR_COLUMNS:
+        if column in volc.table.colnames:
+            volc.table.remove_column(column)
+
+    logger.debug(
+        "%s attached %s from %s and removed archive flux-error columns",
+        config.DISPLAY_NAME,
+        MAG_ERR_COLUMN,
+        FLUX_OVER_ERROR_COLUMN,
+    )
+
+
+def _discovery_lightcurve_title(meta: dict, *, filter_label: str) -> str:
+    """Builds a canonical Discovery title from Gaia ``source_id`` and passband.
+
+    Heidelberg ARI VOTables use verbose TABLE names such as
+    ``Gaia DR3 … - G band time series``; titles for plot and export are derived
+    from the ``source_id`` TABLE PARAM instead.
+
+    Args:
+        meta (dict): Parsed VOTable TABLE metadata.
+        filter_label (str): Human-readable passband label from the catalogue row.
+
+    Returns:
+        str: Title such as ``Gaia DR3 4090664085620846720 in Gaia G filter``.
+
+    Raises:
+        PipeException: When ``source_id`` is missing from the archive product.
+    """
+    source_id = meta.get("source_id")
+    if source_id is None or str(source_id).strip() == "":
+        raise PipeException(
+            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE PARAM source_id."
+        )
+    object_label = format_gaia_source_name(source_id)
+    return f"{object_label} in {filter_label} filter"
 
 
 def enrich_fetched_volightcurve(
@@ -52,12 +121,6 @@ def enrich_fetched_volightcurve(
             f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE description metadata."
         )
 
-    base_name = meta.get("name") or meta.get("ID")
-    if not base_name or not str(base_name).strip():
-        raise PipeException(
-            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE name metadata."
-        )
-
     photdm = volc.photdms.get(PRIMARY_PHOT_COLUMN)
     if photdm is None or photdm.photcal is None:
         raise PipeException(
@@ -77,6 +140,8 @@ def enrich_fetched_volightcurve(
         mag_sys=existing_photcal.mag_sys,
     )
 
+    _attach_mag_errors_from_snr(volc)
+
     pf_value = meta.get("pf")
     if pf_value is not None:
         try:
@@ -86,7 +151,7 @@ def enrich_fetched_volightcurve(
                 f"{config.DISPLAY_NAME}: TABLE PARAM pf is not a numeric period."
             ) from exc
 
-    title = f"{str(base_name).strip()} in {filter_label} filter"
+    title = _discovery_lightcurve_title(meta, filter_label=filter_label)
     meta["name"] = title
     meta["lightcurve_title"] = title
 

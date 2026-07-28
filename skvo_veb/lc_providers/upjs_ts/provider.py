@@ -147,6 +147,7 @@ class UpjsTsProvider(MissionLightcurveProvider):
                 radius_arcsec=radius,
                 time_start_mjd=time_start_mjd,
                 time_end_mjd=time_end_mjd,
+                row_limit=self.max_discovery_catalog_rows(),
             )
             tap_table = run_tap_sync_query(
                 config.TAP_URL,

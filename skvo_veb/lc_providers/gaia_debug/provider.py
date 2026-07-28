@@ -248,7 +248,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             )
         if not rows:
             return empty_catalog_table()
-        return validate_catalog_table(Table(rows))
+        return self._truncate_catalog_table(validate_catalog_table(Table(rows)))
 
     def _ssa_products_for_source(
         self,

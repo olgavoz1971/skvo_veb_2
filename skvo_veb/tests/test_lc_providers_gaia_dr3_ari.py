@@ -73,6 +73,13 @@ def test_ari_adql_cone_query():
     )
     assert "CONTAINS(POINT('ICRS', s_ra, s_dec), CIRCLE('ICRS'" in adql
     assert f"CIRCLE('ICRS', {AA_AND.ra_deg}, {AA_AND.dec_deg}," in adql
+    adql_limited = config.adql_catalog_cone(
+        ra_deg=AA_AND.ra_deg,
+        dec_deg=AA_AND.dec_deg,
+        radius_arcsec=10.0,
+        row_limit=100,
+    )
+    assert "SELECT TOP 100 " in adql_limited
 
 
 def test_ari_tap_dialect_is_adql_20():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from skvo_veb.lc_providers.tap.adql import adql_top_limit_clause
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 
 PROVIDER_ID = "gaia_dr3_ari"
@@ -126,6 +127,7 @@ def adql_catalog_cone(
     radius_arcsec: float,
     time_start_mjd: float | None = None,
     time_end_mjd: float | None = None,
+    row_limit: int | None = None,
 ) -> str:
     """Builds ADQL 2.0 for cone search on ObsCore sky position columns.
 
@@ -135,6 +137,7 @@ def adql_catalog_cone(
         radius_arcsec (float): Cone radius in arcseconds.
         time_start_mjd (float, optional): Lower time bound in MJD.
         time_end_mjd (float, optional): Upper time bound in MJD.
+        row_limit (int, optional): Maximum number of ObsCore rows (``SELECT TOP``).
 
     Returns:
         str: Complete ADQL query string.
@@ -151,4 +154,5 @@ def adql_catalog_cone(
         ),
     ]
     where = " AND ".join(predicates)
-    return f"SELECT {_select_clause()} FROM {OBSCORE_TABLE} WHERE {where}"
+    top = adql_top_limit_clause(row_limit)
+    return f"SELECT {top}{_select_clause()} FROM {OBSCORE_TABLE} WHERE {where}"

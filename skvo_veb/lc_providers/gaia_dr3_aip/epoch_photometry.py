@@ -11,6 +11,7 @@ from astropy.table import Table
 
 from skvo_veb.lc_providers.gaia_dr3_aip import config
 from skvo_veb.lc_providers.gaia_dr3_aip.array_columns import parse_array_column
+from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import mag_error_from_flux_over_error
 
 logger = logging.getLogger(__name__)
 
@@ -95,11 +96,7 @@ def mag_error_from_snr(snr_values: np.ndarray) -> np.ndarray:
     Returns:
         numpy.ndarray: Magnitude uncertainties in mag.
     """
-    snr = np.asarray(snr_values, dtype=float)
-    mag_err = np.full_like(snr, np.nan, dtype=float)
-    valid = np.isfinite(snr) & (snr > 0.0)
-    mag_err[valid] = config.MAG_ERR_FROM_SNR_FACTOR / snr[valid]
-    return mag_err
+    return mag_error_from_flux_over_error(snr_values)
 
 
 def aip_time_to_mjd(time_values: np.ndarray) -> np.ndarray:

@@ -67,6 +67,13 @@ def test_aip_adql_cone_query():
     assert "CONTAINS(POINT('ICRS', gs.ra, gs.dec), CIRCLE('ICRS'" in adql
     assert "LEFT JOIN gaiadr3.vari_classifier_result AS vcr" in adql
     assert "gs.has_epoch_photometry = 'True'" in adql
+    adql_limited = config.adql_gaia_source_cone(
+        ra_deg=274.587,
+        dec_deg=-21.707,
+        radius_arcsec=180.0,
+        row_limit=100,
+    )
+    assert "SELECT TOP 100 " in adql_limited
 
 
 def test_aip_adql_epoch_photometry_batch():
