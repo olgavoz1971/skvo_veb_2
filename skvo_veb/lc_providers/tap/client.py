@@ -37,6 +37,12 @@ def run_tap_sync_query(
         raise PipeException("ADQL query is empty.")
 
     language = dialect.value if isinstance(dialect, TapQueryDialect) else str(dialect)
+    logger.info(
+        "TAP ADQL query tap_url=%s dialect=%s adql=%s",
+        tap_url,
+        language,
+        adql.strip(),
+    )
 
     try:
         import pyvo

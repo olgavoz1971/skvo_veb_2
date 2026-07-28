@@ -19,7 +19,9 @@ from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import (
 from skvo_veb.lc_providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
 from skvo_veb.lc_providers.gaia_dr3_aip.vari_metadata import (
     PeriodKind,
+    VARI_SUMMARY_ROUTES,
     period_days_from_value,
+    periods_from_vari_table,
     pick_vari_route,
     route_sources_by_vari_table,
 )
@@ -62,18 +64,23 @@ def test_aip_adql_source_by_id():
 
 
 def test_aip_adql_cone_query():
-    """Cone search uses ICRS geometry on gaia_source sky columns with class join."""
+    """Cone search fences spatial hits before joining vari_classifier_result."""
     adql = config.adql_gaia_source_cone(ra_deg=274.587, dec_deg=-21.707, radius_arcsec=180.0)
-    assert "CONTAINS(POINT('ICRS', gs.ra, gs.dec), CIRCLE('ICRS'" in adql
+    assert "CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS'" in adql
+    assert "OFFSET 0" in adql
+    assert ") AS cone" in adql
     assert "LEFT JOIN gaiadr3.vari_classifier_result AS vcr" in adql
-    assert "gs.has_epoch_photometry = 'True'" in adql
+    assert "cone.has_epoch_photometry = 'True'" in adql
+    assert "ORDER BY cone.random_index" in adql
+    assert "SELECT TOP 10000 source_id" in adql
+    assert "gs.ra BETWEEN" not in adql
     adql_limited = config.adql_gaia_source_cone(
         ra_deg=274.587,
         dec_deg=-21.707,
         radius_arcsec=180.0,
         row_limit=100,
     )
-    assert "SELECT TOP 100 " in adql_limited
+    assert adql_limited.startswith("SELECT TOP 100 ")
 
 
 def test_aip_adql_epoch_photometry_batch():
@@ -193,6 +200,28 @@ def test_vari_route_picks_first_true_flag():
 def test_period_days_from_frequency():
     """Frequency columns convert to period in days."""
     assert period_days_from_value(2.0, period_kind=PeriodKind.FREQUENCY) == pytest.approx(0.5)
+
+
+def test_vari_ms_oscillator_route_uses_frequency1_column():
+    """MS oscillator vari table exposes frequency1 rather than frequency."""
+    route = next(
+        item
+        for item in VARI_SUMMARY_ROUTES
+        if item.table_name == "gaiadr3.vari_ms_oscillator"
+    )
+    assert route.period_column == "frequency1"
+
+    tap_table = Table({"source_id": [123], "frequency1": [2.0]})
+    periods = periods_from_vari_table("gaiadr3.vari_ms_oscillator", tap_table)
+    assert periods[123] == pytest.approx(0.5)
+
+    adql = config.adql_vari_period_for_source_ids(
+        "gaiadr3.vari_ms_oscillator",
+        route.period_column,
+        [123],
+    )
+    assert "frequency1" in adql
+    assert " frequency " not in adql
 
 
 def test_aip_search_catalog_prefetches_epoch_rows(monkeypatch, prefetch_cache_tmp):

@@ -56,7 +56,7 @@ VARI_SUMMARY_ROUTES: tuple[VariSummaryRoute, ...] = (
     VariSummaryRoute(
         "in_vari_ms_oscillator",
         "gaiadr3.vari_ms_oscillator",
-        "frequency",
+        "frequency1",
         PeriodKind.FREQUENCY,
     ),
     VariSummaryRoute(

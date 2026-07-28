@@ -81,6 +81,9 @@ PREFETCH_CACHE_DIR = Path(
 
 MAX_SOURCE_IDS_PER_EPOCH_QUERY = 50
 
+# Cap spatial cone hits before the OFFSET fence and vari_classifier join.
+GAIA_SOURCE_CONE_INNER_ROW_LIMIT = 10000
+
 
 @dataclass(frozen=True)
 class GaiaAipBandSpec:
@@ -201,11 +204,17 @@ def adql_gaia_source_cone(
 ) -> str:
     """Builds ADQL 2.0 cone search on ``gaiadr3.gaia_source`` with class join.
 
+    Spatial selection runs inside a fenced subquery (``OFFSET 0``) so the TAP
+    planner materialises the cone hit list before joining ``vari_classifier_result``.
+    The inner query uses ``TOP 10000`` on spatial hits; the outer query applies
+    ``TOP`` (discovery row cap), ``has_epoch_photometry`` filtering, and ordering.
+
     Args:
         ra_deg (float): Cone centre right ascension in degrees.
         dec_deg (float): Cone centre declination in degrees.
         radius_arcsec (float): Cone radius in arcseconds.
-        row_limit (int, optional): Maximum number of source rows (``SELECT TOP``).
+        row_limit (int, optional): Maximum number of source rows on the outer
+            ``SELECT TOP`` (defaults to discovery catalogue cap when omitted).
 
     Returns:
         str: Complete ADQL query string.
@@ -213,16 +222,24 @@ def adql_gaia_source_cone(
     radius_deg = float(radius_arcsec) / 3600.0
     ra = float(ra_deg)
     dec = float(dec_deg)
-    select_cols = _select_clause(SOURCE_SELECT_COLUMNS)
-    top = adql_top_limit_clause(row_limit)
+    outer_top = adql_top_limit_clause(row_limit)
+    inner_top = adql_top_limit_clause(GAIA_SOURCE_CONE_INNER_ROW_LIMIT)
     return (
-        f"SELECT {top}{select_cols} "
-        f"FROM {GAIA_SOURCE_TABLE} AS gs "
-        f"LEFT JOIN {VARI_CLASSIFIER_RESULT_TABLE} AS vcr "
-        f"ON gs.source_id = vcr.source_id "
-        f"WHERE 1 = CONTAINS(POINT('ICRS', gs.ra, gs.dec), "
+        f"SELECT {outer_top}"
+        "cone.source_id, cone.ra, cone.dec, cone.phot_g_mean_mag, "
+        "vcr.best_class_name "
+        "FROM ( "
+        f"SELECT {inner_top}"
+        "source_id, ra, dec, phot_g_mean_mag, has_epoch_photometry, random_index "
+        f"FROM {GAIA_SOURCE_TABLE} "
+        f"WHERE 1 = CONTAINS(POINT('ICRS', ra, dec), "
         f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) "
-        f"AND gs.has_epoch_photometry = 'True'"
+        "OFFSET 0 "
+        ") AS cone "
+        f"LEFT JOIN {VARI_CLASSIFIER_RESULT_TABLE} AS vcr "
+        "ON cone.source_id = vcr.source_id "
+        "WHERE cone.has_epoch_photometry = 'True' "
+        "ORDER BY cone.random_index"
     )
 
 
