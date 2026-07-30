@@ -13,6 +13,9 @@ from astropy.table import Table, vstack
 
 logger = logging.getLogger(__name__)
 
+DISCOVERY_META_MAY_BE_TRUNCATED = "discovery_may_be_truncated"
+DISCOVERY_META_TRUNCATION_DETAIL = "discovery_truncation_detail"
+
 REQUIRED_CATALOG_COLUMNS = (
     "distance_arcsec",
     "ra_deg",
@@ -20,11 +23,11 @@ REQUIRED_CATALOG_COLUMNS = (
     "object_name",
     "filter_name",
     "lc_key",
-    "t_min",
-    "t_max",
 )
 
 OPTIONAL_CATALOG_COLUMNS = (
+    "t_min",
+    "t_max",
     "filter_identifier",
     "n_points",
     "mag",
@@ -99,7 +102,27 @@ def validate_catalog_table(table: Table) -> Table:
             normalised[name] = np.ma.masked_all(len(normalised), dtype=CATALOG_COLUMN_DTYPES[name])
 
     ordered = REQUIRED_CATALOG_COLUMNS + OPTIONAL_CATALOG_COLUMNS
-    return normalised[ordered]
+    result = normalised[ordered]
+    result.meta.update(table.meta)
+    return result
+
+
+def read_discovery_truncation_meta(table: Table) -> tuple[bool, str | None]:
+    """Reads discovery truncation hints attached by a mission provider.
+
+    Args:
+        table (astropy.table.Table): Catalogue table from ``search_catalog``.
+
+    Returns:
+        tuple[bool, str | None]: ``(may_be_truncated, detail_message)``.
+    """
+    may_be = bool(table.meta.get(DISCOVERY_META_MAY_BE_TRUNCATED))
+    detail = table.meta.get(DISCOVERY_META_TRUNCATION_DETAIL)
+    if detail is not None and not str(detail).strip():
+        detail = None
+    elif detail is not None:
+        detail = str(detail)
+    return may_be, detail
 
 
 def catalog_table_to_row_dicts(table: Table) -> list[dict[str, Any]]:

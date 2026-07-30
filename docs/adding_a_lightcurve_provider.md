@@ -96,7 +96,12 @@ Everything else (`validate_lc_key`, `descriptor`, `_require_cone_search`) is inh
 
 Each search result row **must** include at least:
 
-`distance_arcsec`, `ra_deg`, `dec_deg`, `object_name`, `filter_name`, `lc_key`, `t_min`, `t_max`
+`distance_arcsec`, `ra_deg`, `dec_deg`, `object_name`, `filter_name`, `lc_key`
+
+Optional standard columns include `t_min`, `t_max`, `n_points`, `period`, and others listed in
+`catalog_schema.py`. Populate time coverage when the archive provides it cheaply at search time.
+Set `MissionCapabilities.supports_discovery_time_filter=False` when discovery cannot honour the
+UI earliest/latest time fields (Gaia DR3 AIP fetches epoch photometry only on row load).
 
 Use helpers from `lc_providers/catalog_schema.py`:
 

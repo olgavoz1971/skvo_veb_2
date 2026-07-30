@@ -48,6 +48,7 @@ from skvo_veb.utils.lc_discovery_load import (
 )
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
+    catalog_truncation_notice,
     catalog_rows_for_aggrid,
     run_catalog_search_for_mission,
 )
@@ -666,6 +667,11 @@ def _search_results_panel():
                         ],
                         className='lc-discovery-catalog-header-row',
                     ),
+                    html.Div(
+                        id='lc_discovery_catalog_truncation_notice',
+                        className='small text-warning mb-2',
+                        style={'display': 'none'},
+                    ),
                     dbc.Row(
                         [
                             dbc.Col(
@@ -1085,6 +1091,8 @@ def layout():
 @callback(
     Output('lc_discovery_catalog_table', 'rowData'),
     Output('lc_discovery_catalog_header', 'children'),
+    Output('lc_discovery_catalog_truncation_notice', 'children'),
+    Output('lc_discovery_catalog_truncation_notice', 'style'),
     Output('lc_discovery_object_card_markdown', 'children'),
     Output('lc_discovery_object_card', 'style'),
     Output('lc_discovery_search_status', 'children'),
@@ -1109,6 +1117,8 @@ def clear_catalog_on_mission_change(_mission_id):
         '',
         {'display': 'none'},
         '',
+        {'display': 'none'},
+        '',
         _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
         None,
         {'display': 'none'},
@@ -1121,6 +1131,8 @@ def clear_catalog_on_mission_change(_mission_id):
 @callback(
     Output('lc_discovery_catalog_table', 'rowData', allow_duplicate=True),
     Output('lc_discovery_catalog_header', 'children', allow_duplicate=True),
+    Output('lc_discovery_catalog_truncation_notice', 'children', allow_duplicate=True),
+    Output('lc_discovery_catalog_truncation_notice', 'style', allow_duplicate=True),
     Output('lc_discovery_object_card_markdown', 'children', allow_duplicate=True),
     Output('lc_discovery_object_card', 'style', allow_duplicate=True),
     Output('lc_discovery_search_status', 'children', allow_duplicate=True),
@@ -1232,6 +1244,8 @@ def submit_catalog_search(
             '',
             {'display': 'none'},
             '',
+            {'display': 'none'},
+            '',
             _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
             message.warning_alert(exc),
             {'display': 'block'},
@@ -1240,6 +1254,7 @@ def submit_catalog_search(
         )
 
     row_data = catalog_rows_for_aggrid(outcome.catalog)
+    truncation_text, truncation_style = catalog_truncation_notice(outcome)
     logger.info(
         "Discovery search mission=%s mode=%s rows=%s",
         mission_id,
@@ -1249,6 +1264,8 @@ def submit_catalog_search(
     return (
         row_data,
         catalog_results_header(outcome),
+        truncation_text,
+        truncation_style,
         outcome.resolved_markdown,
         {'display': 'block'},
         '',

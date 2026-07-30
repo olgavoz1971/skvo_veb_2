@@ -9,7 +9,10 @@ import pytest
 from astropy.table import Table
 
 from skvo_veb.lc_providers.gaia_dr3_aip import config
-from skvo_veb.lc_providers.gaia_dr3_aip.catalog import map_prefetched_sources_to_catalog
+from skvo_veb.lc_providers.gaia_dr3_aip.catalog import (
+    map_prefetched_sources_to_catalog,
+    map_source_table_to_catalog,
+)
 from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import (
     band_point_count,
     band_time_bounds,
@@ -29,6 +32,9 @@ from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 from skvo_veb.utils.lc_bridge import volc_to_curvedash
 from skvo_veb.utils.lc_config import DOMAIN_MAG, PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
+from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
+from skvo_veb.utils.lc_discovery_search import run_catalog_search_for_mission
+from skvo_veb.utils.my_tools import PipeException
 
 GAIA_AIP_VOT = Path(__file__).resolve().parents[2] / "data" / "gaia_aip.vot"
 SAMPLE_SOURCE_ID = 10655814178816
@@ -64,23 +70,22 @@ def test_aip_adql_source_by_id():
 
 
 def test_aip_adql_cone_query():
-    """Cone search fences spatial hits before joining vari_classifier_result."""
+    """Cone search filters epoch photometry, geometry, and orders by random_index."""
     adql = config.adql_gaia_source_cone(ra_deg=274.587, dec_deg=-21.707, radius_arcsec=180.0)
-    assert "CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS'" in adql
-    assert "OFFSET 0" in adql
-    assert ") AS cone" in adql
+    assert "FROM gaiadr3.gaia_source AS gs" in adql
     assert "LEFT JOIN gaiadr3.vari_classifier_result AS vcr" in adql
-    assert "cone.has_epoch_photometry = 'True'" in adql
-    assert "ORDER BY cone.random_index" in adql
-    assert "SELECT TOP 10000 source_id" in adql
-    assert "gs.ra BETWEEN" not in adql
+    assert "gs.has_epoch_photometry = 'True'" in adql
+    assert "CONTAINS(POINT('ICRS', gs.ra, gs.dec), CIRCLE('ICRS'" in adql
+    assert "ORDER BY gs.random_index" in adql
+    assert "OFFSET 0" not in adql
     adql_limited = config.adql_gaia_source_cone(
-        ra_deg=274.587,
-        dec_deg=-21.707,
-        radius_arcsec=180.0,
+        ra_deg=346.34517,
+        dec_deg=47.67631,
+        radius_arcsec=3600.0,
         row_limit=100,
     )
     assert adql_limited.startswith("SELECT TOP 100 ")
+    assert "CIRCLE('ICRS', 346.34517, 47.67631, 1.0)" in adql_limited
 
 
 def test_aip_adql_epoch_photometry_batch():
@@ -107,6 +112,28 @@ def test_extract_g_band_from_sample(gaia_aip_epoch_payload):
     t_min, t_max = band_time_bounds(gaia_aip_epoch_payload, band_code="G")
     assert t_min == pytest.approx(float(np.min(time_mjd)))
     assert t_max == pytest.approx(float(np.max(time_mjd)))
+
+
+def test_map_source_table_to_three_bands_without_epoch():
+    """Discovery mapper emits three band rows without epoch photometry metadata."""
+    source_table = Table(
+        {
+            "source_id": [SAMPLE_SOURCE_ID],
+            "ra": [274.5873003514723],
+            "dec": [-21.706522062249086],
+            "phot_g_mean_mag": [20.45],
+            "best_class_name": ["RR Lyrae Candidatel"],
+        }
+    )
+    catalog = map_source_table_to_catalog(
+        source_table,
+        provider_id=config.PROVIDER_ID,
+    )
+    assert len(catalog) == 3
+    assert set(catalog["filter_name"]) == {"Gaia G", "Gaia BP", "Gaia RP"}
+    assert catalog["mag"][catalog["filter_name"] == "Gaia G"][0] == pytest.approx(20.45)
+    assert np.all(np.ma.is_masked(catalog["t_min"]))
+    assert np.all(np.ma.is_masked(catalog["n_points"]))
 
 
 def test_map_prefetched_source_to_three_bands(gaia_aip_epoch_payload):
@@ -224,8 +251,8 @@ def test_vari_ms_oscillator_route_uses_frequency1_column():
     assert " frequency " not in adql
 
 
-def test_aip_search_catalog_prefetches_epoch_rows(monkeypatch, prefetch_cache_tmp):
-    """search_catalog runs source, vari, and epoch photometry TAP queries."""
+def test_aip_search_catalog_runs_gaia_source_query_only(monkeypatch, prefetch_cache_tmp):
+    """search_catalog uses a single gaia_source TAP query (no epoch prefetch)."""
     provider = GaiaDr3AipProvider()
     calls: list[str] = []
 
@@ -241,26 +268,7 @@ def test_aip_search_catalog_prefetches_epoch_rows(monkeypatch, prefetch_cache_tm
                     "best_class_name": ["RR Lyrae Candidatel"],
                 }
             )
-        if "gaiadr3.vari_summary" in adql:
-            return Table(
-                {
-                    "source_id": [SAMPLE_SOURCE_ID],
-                    "in_vari_cepheid": [False],
-                    "in_vari_rrlyrae": [True],
-                    "in_vari_eclipsing_binary": [False],
-                    "in_vari_long_period_variable": [False],
-                    "in_vari_ms_oscillator": [False],
-                    "in_vari_short_timescale": [False],
-                    "in_vari_rotation_modulation": [False],
-                    "in_vari_planetary_transit": [False],
-                    "in_vari_compact_companion": [False],
-                    "in_vari_agn": [False],
-                    "in_vari_microlensing": [False],
-                }
-            )
-        if "gaiadr3.vari_rrlyrae" in adql:
-            return Table({"source_id": [SAMPLE_SOURCE_ID], "pf": [0.5123]})
-        return Table.read(GAIA_AIP_VOT, format="votable")
+        raise AssertionError(f"Unexpected TAP query during discovery: {adql[:120]}")
 
     monkeypatch.setattr(
         "skvo_veb.lc_providers.gaia_dr3_aip.provider.run_tap_sync_query",
@@ -270,10 +278,46 @@ def test_aip_search_catalog_prefetches_epoch_rows(monkeypatch, prefetch_cache_tm
     catalog = provider.search_catalog(object_name=str(SAMPLE_SOURCE_ID))
     assert len(catalog) == 3
     assert list(catalog["object_class"]) == ["RR Lyrae Candidatel"] * len(catalog)
-    assert all(value == pytest.approx(0.5123) for value in catalog["period"])
     assert any("gaiadr3.gaia_source" in call for call in calls)
-    assert any("gaiadr3.vari_summary" in call for call in calls)
-    assert any("gaiadr3.vari_rrlyrae" in call for call in calls)
+    assert all("gaiadr3.epoch_photometry" not in call for call in calls)
+    assert not (prefetch_cache_tmp / f"{SAMPLE_SOURCE_ID}.json").is_file()
+
+
+def test_aip_fetch_lightcurve_queries_epoch_on_cache_miss(
+    monkeypatch,
+    prefetch_cache_tmp,
+    gaia_aip_epoch_table,
+):
+    """fetch_lightcurve downloads epoch photometry when the prefetch cache is empty."""
+    provider = GaiaDr3AipProvider()
+    calls: list[str] = []
+
+    def _fake_tap(_url, adql, *, dialect):
+        calls.append(adql)
+        if "gaiadr3.epoch_photometry" in adql:
+            return gaia_aip_epoch_table
+        raise AssertionError(f"Unexpected TAP query on load: {adql[:120]}")
+
+    monkeypatch.setattr(
+        "skvo_veb.lc_providers.gaia_dr3_aip.provider.run_tap_sync_query",
+        _fake_tap,
+    )
+
+    source_table = Table(
+        {
+            "source_id": [SAMPLE_SOURCE_ID],
+            "ra": [274.587],
+            "dec": [-21.707],
+            "phot_g_mean_mag": [20.45],
+        }
+    )
+    catalog = map_source_table_to_catalog(
+        source_table,
+        provider_id=config.PROVIDER_ID,
+    )
+    g_row = catalog[catalog["filter_name"] == "Gaia G"][0]
+    volc = provider.fetch_lightcurve(g_row["lc_key"])
+    assert len(volc) > 0
     assert any("gaiadr3.epoch_photometry" in call for call in calls)
     assert (prefetch_cache_tmp / f"{SAMPLE_SOURCE_ID}.json").is_file()
 
@@ -287,10 +331,7 @@ def test_aip_fetch_lightcurve_from_prefetch(
     from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import store_epoch_photometry
 
     provider = GaiaDr3AipProvider()
-    payload = dict(gaia_aip_epoch_payload)
-    payload["object_class"] = "RR Lyrae Candidatel"
-    payload["period_days"] = 0.5123
-    store_epoch_photometry(SAMPLE_SOURCE_ID, payload)
+    store_epoch_photometry(SAMPLE_SOURCE_ID, gaia_aip_epoch_payload)
 
     source_table = Table(
         {
@@ -310,11 +351,23 @@ def test_aip_fetch_lightcurve_from_prefetch(
     assert len(volc) == band_point_count(gaia_aip_epoch_payload, band_code="G")
     phot_col = "mag" if "mag" in volc.photdms else "phot"
     assert volc.photdms[phot_col].filter.filter_id == "GAIADR3.G"
-    assert volc.table.meta.get("period") == pytest.approx(0.5123)
-    assert volc.table.meta.get("object_class") == "RR Lyrae Candidatel"
+    assert volc.table.meta.get("period") is None
+    assert volc.table.meta.get("object_class") is None
 
     lcd = volc_to_curvedash(volc, "gaia_aip_G.vot")
     assert lcd.active_domain == DOMAIN_MAG
     photcal = lcd.metadata.get("photcal") or {}
     assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(3296.2)
     assert photcal.get(PHOTCAL_KEY_ZP_MAG) == pytest.approx(0.0)
+
+
+def test_aip_discovery_rejects_time_window_filter():
+    """Gaia AIP does not support discovery-time filtering by catalogue coverage."""
+    with pytest.raises(PipeException, match="does not support filtering catalogue"):
+        run_catalog_search_for_mission(
+            config.PROVIDER_ID,
+            "346.345 47.676",
+            "10",
+            "arcsec",
+            time_bounds=DiscoveryTimeBounds(time_start_mjd=57000.0, time_end_mjd=58000.0),
+        )

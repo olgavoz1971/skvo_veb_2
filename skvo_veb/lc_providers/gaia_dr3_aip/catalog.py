@@ -121,6 +121,118 @@ def map_source_epoch_to_catalog_rows(
     return rows
 
 
+def map_source_row_to_catalog_rows(
+    *,
+    source_row,
+    provider_id: str,
+    distance_arcsec: float,
+) -> list[dict[str, Any]]:
+    """Expands one ``gaia_source`` row into three catalogue rows without epoch data.
+
+    Args:
+        source_row: ``gaiadr3.gaia_source`` TAP row (with optional classifier join).
+        provider_id (str): Registry slug stored in ``lc_key``.
+        distance_arcsec (float): Separation from the search centre in arcseconds.
+
+    Returns:
+        list[dict]: Three standard catalogue row dicts (G, BP, RP).
+    """
+    source_id = _row_value(source_row, "source_id")
+    ra_val = _row_value(source_row, "ra")
+    dec_val = _row_value(source_row, "dec")
+    if source_id is None or ra_val is None or dec_val is None:
+        return []
+
+    object_name = format_gaia_source_name(source_id)
+    mean_mag = _row_value(source_row, "phot_g_mean_mag")
+    object_class = _row_value(source_row, config.CLASSIFIER_CLASS_COLUMN)
+    rows: list[dict[str, Any]] = []
+
+    for band in config.GAIA_AIP_BANDS:
+        lc_key = encode_lc_key(
+            provider_id,
+            {
+                "source_id": str(source_id),
+                "band": band.band_code,
+                "filter_name": band.filter_name,
+                "ra_deg": float(ra_val),
+                "dec_deg": float(dec_val),
+            },
+        )
+        catalog_row: dict[str, Any] = {
+            "distance_arcsec": float(distance_arcsec),
+            "ra_deg": float(ra_val),
+            "dec_deg": float(dec_val),
+            "object_name": object_name,
+            "filter_name": band.filter_name,
+            "lc_key": lc_key,
+            "filter_identifier": band.filter_identifier,
+            "survey": config.GAIA_SURVEY,
+            "provider_note": config.DISCOVERY_CATALOG_PROVIDER_NOTE,
+        }
+        if mean_mag is not None and band.band_code == "G":
+            try:
+                catalog_row["mag"] = float(mean_mag)
+            except (TypeError, ValueError):
+                pass
+        if object_class is not None and str(object_class).strip():
+            catalog_row["object_class"] = str(object_class).strip()
+        rows.append(catalog_row)
+    return rows
+
+
+def map_source_table_to_catalog(
+    source_table: Table,
+    *,
+    provider_id: str,
+    centre_ra_deg: float | None = None,
+    centre_dec_deg: float | None = None,
+) -> Table:
+    """Maps Gaia source TAP rows onto the catalogue schema without epoch photometry.
+
+    Args:
+        source_table (astropy.table.Table): ``gaiadr3.gaia_source`` TAP result.
+        provider_id (str): Registry slug for ``lc_key`` encoding.
+        centre_ra_deg (float, optional): Search centre RA for separation.
+        centre_dec_deg (float, optional): Search centre Dec for separation.
+
+    Returns:
+        astropy.table.Table: Validated catalogue table (possibly empty).
+    """
+    if len(source_table) == 0:
+        return empty_catalog_table()
+
+    centre = None
+    if centre_ra_deg is not None and centre_dec_deg is not None:
+        centre = SkyCoord(
+            ra=float(centre_ra_deg) * u.deg,
+            dec=float(centre_dec_deg) * u.deg,
+            frame="icrs",
+        )
+
+    rows: list[dict[str, Any]] = []
+    for source_row in source_table:
+        ra_val = _row_value(source_row, "ra")
+        dec_val = _row_value(source_row, "dec")
+        if centre is not None and ra_val is not None and dec_val is not None:
+            source = SkyCoord(ra=float(ra_val) * u.deg, dec=float(dec_val) * u.deg, frame="icrs")
+            distance_arcsec = centre.separation(source).to_value(u.arcsec)
+        else:
+            distance_arcsec = 0.0
+
+        rows.extend(
+            map_source_row_to_catalog_rows(
+                source_row=source_row,
+                provider_id=provider_id,
+                distance_arcsec=distance_arcsec,
+            )
+        )
+
+    if not rows:
+        return empty_catalog_table()
+    return validate_catalog_table(Table(rows))
+
+
 def map_prefetched_sources_to_catalog(
     source_table: Table,
     epoch_by_source: dict[int, dict[str, Any]],

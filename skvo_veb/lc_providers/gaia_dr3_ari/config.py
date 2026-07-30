@@ -11,6 +11,12 @@ PROVIDER_ID = "gaia_dr3_ari"
 DISPLAY_NAME = "Gaia DR3 (ARI)"
 TAP_URL = "https://gaia.ari.uni-heidelberg.de/tap"
 TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_0
+MAX_DISCOVERY_SEARCH_RADIUS_DEG = 1.0
+GAIA_SOURCE_TABLE = "gaiadr3.gaia_source"
+VARI_CLASSIFIER_RESULT_TABLE = "gaiadr3.vari_classifier_result"
+CLASSIFIER_CLASS_COLUMN = "best_class_name"
+GAIA_SURVEY = "Gaia DR3"
+TIMESERIES_DATALINK_BASE_URL = "https://gaia.ari.uni-heidelberg.de/timeseries/gaiadr3"
 OBSCORE_TABLE = "ivoa.ObsCore"
 OBS_COLLECTION = "gaiadr3"
 DATA_PRODUCT_TYPE = "timeseries"
@@ -32,6 +38,112 @@ N_POINTS_PROVIDER_NOTE = (
     "Point count from ObsCore t_xel reflects the G-band lightcurve length only."
 )
 
+DISCOVERY_CATALOG_PROVIDER_NOTE = (
+    "Epoch photometry is downloaded from the ARI timeseries datalink when a row is loaded."
+)
+
+DISCOVERY_SOURCE_SELECT_COLUMNS = (
+    "gs.source_id",
+    "gs.ra",
+    "gs.dec",
+    "gs.phot_g_mean_mag",
+    "vcr.best_class_name",
+)
+
+
+def _discovery_select_clause(*, row_limit: int | None = None) -> str:
+    """Returns the discovery SELECT prefix including optional ``TOP``.
+
+    Args:
+        row_limit (int, optional): Maximum number of source rows.
+
+    Returns:
+        str: ``SELECT`` or ``SELECT TOP n`` fragment with column list.
+    """
+    top = adql_top_limit_clause(row_limit)
+    columns = ", ".join(DISCOVERY_SOURCE_SELECT_COLUMNS)
+    return f"SELECT {top}{columns}"
+
+
+def _discovery_from_join() -> str:
+    """Returns the shared ``gaia_source`` discovery FROM/JOIN clause.
+
+    Returns:
+        str: ADQL FROM fragment with classifier left join.
+    """
+    return (
+        f"FROM {GAIA_SOURCE_TABLE} AS gs "
+        f"LEFT JOIN {VARI_CLASSIFIER_RESULT_TABLE} AS vcr "
+        f"ON gs.source_id = vcr.source_id "
+    )
+
+
+def adql_gaia_source_cone(
+    *,
+    ra_deg: float,
+    dec_deg: float,
+    radius_arcsec: float,
+    row_limit: int | None = None,
+) -> str:
+    """Builds ADQL 2.0 cone search on ``gaiadr3.gaia_source`` with class join.
+
+    Discovery is tuned independently from Gaia@AIP: Heidelberg TAP uses the full
+    ``gaia_source`` table (not ``gaia_source_lite``) with ``vari_classifier_result``.
+
+    Args:
+        ra_deg (float): Cone centre right ascension in degrees.
+        dec_deg (float): Cone centre declination in degrees.
+        radius_arcsec (float): Cone radius in arcseconds.
+        row_limit (int, optional): Maximum number of source rows (``SELECT TOP``).
+
+    Returns:
+        str: Complete ADQL query string.
+    """
+    radius_deg = float(radius_arcsec) / 3600.0
+    ra = float(ra_deg)
+    dec = float(dec_deg)
+    return (
+        f"{_discovery_select_clause(row_limit=row_limit)} "
+        f"{_discovery_from_join()}"
+        f"WHERE gs.has_epoch_photometry = 'True' "
+        f"AND 1 = CONTAINS(POINT('ICRS', gs.ra, gs.dec), "
+        f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) "
+        f"ORDER BY random_index"
+    )
+
+
+def adql_gaia_source_by_source_id(
+    source_id: int | str,
+    *,
+    row_limit: int | None = 1,
+) -> str:
+    """Builds ADQL 2.0 for direct ``gaia_source`` lookup with class join.
+
+    Args:
+        source_id (int or str): Gaia DR3 source identifier.
+        row_limit (int, optional): ``SELECT TOP`` limit (default 1).
+
+    Returns:
+        str: Complete ADQL query string.
+    """
+    sid = int(source_id)
+    return (
+        f"{_discovery_select_clause(row_limit=row_limit)} "
+        f"{_discovery_from_join()}"
+        f"WHERE gs.has_epoch_photometry = 'True' "
+        f"AND gs.source_id = {sid} "
+        f"ORDER BY random_index"
+    )
+
+
+def _select_clause() -> str:
+    """Returns the shared ObsCore SELECT column list.
+
+    Returns:
+        str: Comma-separated ObsCore column names.
+    """
+    return ", ".join(OBSCORE_SELECT_COLUMNS)
+
 
 @dataclass(frozen=True)
 class GaiaAriBandSpec:
@@ -47,15 +159,6 @@ GAIA_ARI_BANDS: tuple[GaiaAriBandSpec, ...] = (
     GaiaAriBandSpec(band_code="BP", filter_name="Gaia BP", table_id=1),
     GaiaAriBandSpec(band_code="RP", filter_name="Gaia RP", table_id=2),
 )
-
-
-def _select_clause() -> str:
-    """Returns the shared ObsCore SELECT column list.
-
-    Returns:
-        str: Comma-separated ObsCore column names.
-    """
-    return ", ".join(OBSCORE_SELECT_COLUMNS)
 
 
 def _base_predicates() -> list[str]:

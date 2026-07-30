@@ -93,6 +93,14 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
         """
         return 10.0
 
+    def max_discovery_search_radius_deg(self) -> float:
+        """Returns the maximum cone search radius for the debug micro-catalogue.
+
+        Returns:
+            float: Upper bound in degrees.
+        """
+        return gaia_config.MAX_DISCOVERY_SEARCH_RADIUS_DEG
+
     def pick_archive_id_from_simbad(self, simbad_result: SimbadResolveResult) -> MissionArchiveMatch | None:
         """Selects a Gaia DR3 source id from Simbad cross-identifiers.
 
@@ -248,7 +256,13 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             )
         if not rows:
             return empty_catalog_table()
-        return self._truncate_catalog_table(validate_catalog_table(Table(rows)))
+        table = validate_catalog_table(Table(rows))
+        query_row_count = len(table)
+        truncated = self._truncate_catalog_table(table)
+        return self.annotate_discovery_truncation(
+            truncated,
+            cone_query_row_count=query_row_count,
+        )
 
     def _ssa_products_for_source(
         self,

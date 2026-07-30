@@ -52,6 +52,14 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
         """
         return 2.0
 
+    def max_discovery_search_radius_deg(self) -> float:
+        """Returns the maximum cone search radius for UPJŠ Gaia SSA TAP.
+
+        Returns:
+            float: Upper bound in degrees.
+        """
+        return config.MAX_DISCOVERY_SEARCH_RADIUS_DEG
+
     def pick_archive_id_from_simbad(
         self,
         simbad_result: SimbadResolveResult,
@@ -152,11 +160,15 @@ class GaiaDr3VebProvider(MissionLightcurveProvider):
                 adql,
                 dialect=config.TAP_QUERY_DIALECT,
             )
-            return map_ssa_table_to_catalog(
+            catalog = map_ssa_table_to_catalog(
                 tap_table,
                 provider_id=self.mission_id,
                 centre_ra_deg=ra,
                 centre_dec_deg=dec,
+            )
+            return self.annotate_discovery_truncation(
+                catalog,
+                cone_query_row_count=len(tap_table),
             )
 
         return empty_catalog_table()

@@ -55,6 +55,7 @@ GAIA_G_ZP_MAG = 0.0
 
 # Backward-compatible alias for tests that referenced mission_config.gaia.MISSION_ID.
 MISSION_ID = PROVIDER_ID
+MAX_DISCOVERY_SEARCH_RADIUS_DEG = 1.0
 
 _BAND_METADATA = {
     GAIA_G_BAND: {

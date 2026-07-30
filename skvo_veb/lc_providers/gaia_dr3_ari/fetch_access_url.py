@@ -1,4 +1,4 @@
-"""Fetch Gaia DR3 (ARI) epoch photometry from ObsCore ``access_url`` products."""
+"""Fetch Gaia DR3 (ARI) epoch photometry VOTables (datalink or direct URL)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import logging
 import urllib.error
 import urllib.request
 
+from skvo_veb.lc_providers.gaia_dr3_ari.datalink import build_timeseries_datalink_url
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 
@@ -64,3 +65,30 @@ def fetch_volightcurve_from_access_url(
         len(volc),
     )
     return volc
+
+
+def fetch_volightcurve_from_timeseries_datalink(
+    source_id: int | str,
+    *,
+    table_id: int,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SEC,
+) -> VOLightCurve:
+    """Downloads one band via the Heidelberg Gaia DR3 timeseries datalink.
+
+    Args:
+        source_id (int or str): Gaia DR3 ``source_id``.
+        table_id (int): Zero-based Astropy table index (G=0, BP=1, RP=2).
+        timeout_sec (float): Network read timeout in seconds.
+
+    Returns:
+        VOLightCurve: Parsed single-band VO lightcurve.
+
+    Raises:
+        PipeException: When the download or parse fails.
+    """
+    url = build_timeseries_datalink_url(source_id)
+    return fetch_volightcurve_from_access_url(
+        url,
+        table_id=table_id,
+        timeout_sec=timeout_sec,
+    )

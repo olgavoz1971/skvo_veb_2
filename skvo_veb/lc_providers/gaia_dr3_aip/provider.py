@@ -11,16 +11,16 @@ from skvo_veb.lc_providers.base import (
     MissionCapabilities,
     MissionLightcurveProvider,
 )
-from skvo_veb.lc_providers.catalog_schema import (
-    empty_catalog_table,
-    filter_catalog_table_by_time_bounds,
-)
+from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.gaia_dr3_aip import config
 from skvo_veb.lc_providers.gaia_dr3_aip.build_volightcurve import build_volightcurve_from_prefetch
-from skvo_veb.lc_providers.gaia_dr3_aip.catalog import map_prefetched_sources_to_catalog
+from skvo_veb.lc_providers.gaia_dr3_aip.catalog import map_source_table_to_catalog
 from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import cache_dict_from_tap_table
-from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import clear_epoch_photometry, store_epoch_photometry
-from skvo_veb.lc_providers.gaia_dr3_aip.vari_metadata import fetch_periods_by_source_id
+from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import (
+    clear_epoch_photometry,
+    epoch_photometry_is_cached,
+    store_epoch_photometry,
+)
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
     format_gaia_source_name,
@@ -46,7 +46,8 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
         supports_name_resolve=True,
         supports_id_lookup=True,
         supports_force_refresh=True,
-        provides_catalog_epoch_period=True,
+        provides_catalog_epoch_period=False,
+        supports_discovery_time_filter=False,
     )
     is_mock = False
 
@@ -57,6 +58,14 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             float: Default search radius in arcseconds.
         """
         return 5.0
+
+    def max_discovery_search_radius_deg(self) -> float:
+        """Returns the maximum cone search radius for Gaia@AIP TAP queries.
+
+        Returns:
+            float: Upper bound in degrees.
+        """
+        return config.MAX_DISCOVERY_SEARCH_RADIUS_DEG
 
     def pick_archive_id_from_simbad(
         self,
@@ -103,12 +112,11 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
         time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Queries Gaia@AIP and prefetches epoch photometry for catalogue rows.
+        """Queries Gaia@AIP ``gaia_source`` for discovery catalogue rows.
 
-        Discovery performs a multi-step TAP workflow: ``gaiadr3.gaia_source`` joined with
-        ``vari_classifier_result`` for ``best_class_name``, ``vari_summary`` routing for
-        variability periods, then ``epoch_photometry`` prefetch. Time coverage bounds
-        are derived from the epoch arrays.
+        Discovery runs a single TAP query (cone or direct ``source_id``) with an
+        optional ``vari_classifier_result`` join. Epoch photometry is fetched when
+        a row is loaded, not during catalogue search.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
@@ -116,8 +124,8 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             radius_arcsec (float, optional): Cone radius in arcseconds.
             object_name (str, optional): Gaia ``source_id`` string from the UI.
             archive_id (str, optional): Gaia ``source_id`` for direct lookup.
-            time_start_mjd (float, optional): Lower time limit in MJD.
-            time_end_mjd (float, optional): Upper time limit in MJD.
+            time_start_mjd (float, optional): Ignored; time filtering is unsupported.
+            time_end_mjd (float, optional): Ignored; time filtering is unsupported.
             **mission_options: Reserved for future provider options.
 
         Returns:
@@ -125,6 +133,7 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
         """
         centre_ra = ra_deg
         centre_dec = dec_deg
+        cone_query_row_count: int | None = None
 
         source_id = self._resolve_source_id(
             archive_id=archive_id,
@@ -144,36 +153,34 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
                 dec_deg=dec,
                 radius_arcsec=radius,
             )
+            cone_query_row_count = len(source_table)
         else:
             return empty_catalog_table()
 
         if len(source_table) == 0:
             return empty_catalog_table()
 
-        source_ids = self._collect_source_ids(source_table)
-        period_by_source = self._fetch_variability_periods(source_ids)
-        epoch_by_source = self._prefetch_epoch_photometry(
-            source_ids,
-            source_table=source_table,
-            period_by_source=period_by_source,
-        )
-
-        catalog = map_prefetched_sources_to_catalog(
+        catalog = map_source_table_to_catalog(
             source_table,
-            epoch_by_source,
             provider_id=self.mission_id,
             centre_ra_deg=centre_ra,
             centre_dec_deg=centre_dec,
-            period_by_source=period_by_source,
         )
-        return filter_catalog_table_by_time_bounds(
+        return self.annotate_discovery_truncation(
             catalog,
-            time_start_mjd=time_start_mjd,
-            time_end_mjd=time_end_mjd,
+            cone_query_row_count=cone_query_row_count,
         )
 
+    def discovery_cone_limit_entity_label(self) -> str:
+        """Returns UI wording for the Gaia@AIP cone ``TOP`` limit.
+
+        Returns:
+            str: Entity label for truncation notices.
+        """
+        return "Gaia sources"
+
     def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
-        """Builds one passband lightcurve from prefetched epoch photometry.
+        """Builds one passband lightcurve, fetching epoch photometry on demand.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
@@ -183,7 +190,7 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             VOLightCurve: VO-standard single-band lightcurve.
 
         Raises:
-            PipeException: When the key is invalid or prefetch data are missing.
+            PipeException: When the key is invalid or fetch fails validation.
         """
         if not self.validate_lc_key(lc_key):
             raise PipeException(f"{self.display_name}: invalid lightcurve key.")
@@ -205,14 +212,8 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
 
         if force_refresh:
             clear_epoch_photometry(source_id)
-            epoch_table = self._query_epoch_photometry([int(source_id)])
-            epoch_by_source = cache_dict_from_tap_table(epoch_table)
-            epoch_payload = epoch_by_source.get(int(source_id))
-            if epoch_payload is None:
-                raise PipeException(
-                    f"{self.display_name}: TAP returned no epoch photometry for source_id {source_id}."
-                )
-            store_epoch_photometry(source_id, epoch_payload)
+        if force_refresh or not epoch_photometry_is_cached(source_id):
+            self._fetch_and_cache_epoch_photometry(int(source_id))
 
         logger.info(
             "%s fetch source_id=%s band=%s force_refresh=%s",
@@ -305,90 +306,28 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
 
         return vstack(chunks)
 
-    def _fetch_variability_periods(self, source_ids: list[int]) -> dict[int, float]:
-        """Queries ``vari_summary`` and routed ``vari_*`` tables for source periods.
+    def _fetch_and_cache_epoch_photometry(self, source_id: int) -> None:
+        """Queries ``epoch_photometry`` for one source and stores it in the prefetch cache.
 
         Args:
-            source_ids (list[int]): Gaia DR3 source identifiers from the source query.
+            source_id (int): Gaia DR3 source identifier.
 
-        Returns:
-            dict[int, float]: Source id to period in days when resolved.
+        Raises:
+            PipeException: When TAP returns no epoch photometry for the source.
         """
-        if not source_ids:
-            return {}
-
-        def _run(adql: str) -> Table:
-            return run_tap_sync_query(
-                config.TAP_URL,
-                adql,
-                dialect=config.TAP_QUERY_DIALECT,
-            )
-
-        return fetch_periods_by_source_id(source_ids, run_tap_query=_run)
-
-    def _prefetch_epoch_photometry(
-        self,
-        source_ids: list[int],
-        *,
-        source_table: Table,
-        period_by_source: dict[int, float],
-    ) -> dict[int, dict]:
-        """Fetches and stores epoch photometry for all catalogue source ids.
-
-        Args:
-            source_ids (list[int]): Gaia DR3 source identifiers from source query.
-            source_table (astropy.table.Table): Source query rows with optional class join.
-            period_by_source (dict[int, float]): Variability periods keyed by source id.
-
-        Returns:
-            dict[int, dict]: Prefetched epoch payloads keyed by source id.
-        """
-        object_class_by_source = self._object_class_by_source(source_table)
-        epoch_table = self._query_epoch_photometry(source_ids)
+        epoch_table = self._query_epoch_photometry([source_id])
         epoch_by_source = cache_dict_from_tap_table(epoch_table)
-        for source_id, payload in epoch_by_source.items():
-            enriched = dict(payload)
-            enriched["object_class"] = object_class_by_source.get(source_id)
-            period_days = period_by_source.get(source_id)
-            if period_days is not None:
-                enriched["period_days"] = period_days
-            store_epoch_photometry(source_id, enriched)
-            epoch_by_source[source_id] = enriched
+        epoch_payload = epoch_by_source.get(source_id)
+        if epoch_payload is None:
+            raise PipeException(
+                f"{self.display_name}: TAP returned no epoch photometry for source_id {source_id}."
+            )
+        store_epoch_photometry(source_id, epoch_payload)
         logger.info(
-            "%s prefetched epoch photometry for %s/%s sources",
+            "%s cached epoch photometry for source_id=%s",
             self.display_name,
-            len(epoch_by_source),
-            len(source_ids),
+            source_id,
         )
-        return epoch_by_source
-
-    @staticmethod
-    def _object_class_by_source(source_table: Table) -> dict[int, str]:
-        """Builds a source-id map from joined classifier ``best_class_name`` values.
-
-        Args:
-            source_table (astropy.table.Table): Source query result with optional join.
-
-        Returns:
-            dict[int, str]: Source id to human-readable variability class label.
-        """
-        mapping: dict[int, str] = {}
-        for row in source_table:
-            if "source_id" not in row.colnames:
-                continue
-            try:
-                source_id = int(row["source_id"])
-            except (TypeError, ValueError):
-                continue
-            if config.CLASSIFIER_CLASS_COLUMN not in row.colnames:
-                continue
-            value = row[config.CLASSIFIER_CLASS_COLUMN]
-            if value is None or value == "":
-                continue
-            label = str(value).strip()
-            if label:
-                mapping[source_id] = label
-        return mapping
 
     @staticmethod
     def _resolve_source_id(
@@ -412,24 +351,3 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             if source_id is not None:
                 return source_id
         return None
-
-    @staticmethod
-    def _collect_source_ids(source_table: Table) -> list[int]:
-        """Collects Gaia source ids from a ``gaia_source`` TAP table.
-
-        Args:
-            source_table (astropy.table.Table): Source query result.
-
-        Returns:
-            list[int]: Unique source identifiers.
-        """
-        ids: list[int] = []
-        for row in source_table:
-            value = row["source_id"] if "source_id" in row.colnames else None
-            if value is None:
-                continue
-            try:
-                ids.append(int(value))
-            except (TypeError, ValueError):
-                continue
-        return ids

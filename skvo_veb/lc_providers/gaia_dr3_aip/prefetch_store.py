@@ -1,4 +1,4 @@
-"""Disk cache for Gaia DR3 (AIP) epoch photometry prefetched at discovery."""
+"""Disk cache for Gaia DR3 (AIP) epoch photometry fetched on lightcurve load."""
 
 from __future__ import annotations
 
@@ -53,6 +53,18 @@ def store_epoch_photometry(source_id: int | str, payload: dict[str, Any]) -> Non
     logger.debug("%s prefetch stored source_id=%s path=%s", config.DISPLAY_NAME, source_id, path)
 
 
+def epoch_photometry_is_cached(source_id: int | str) -> bool:
+    """Reports whether epoch photometry for a source is present in the prefetch cache.
+
+    Args:
+        source_id (int or str): Gaia DR3 source identifier.
+
+    Returns:
+        bool: True when a cache file exists for the source.
+    """
+    return _cache_path(source_id).is_file()
+
+
 def load_epoch_photometry(source_id: int | str) -> dict[str, Any]:
     """Loads one prefetched epoch-photometry record from disk.
 
@@ -68,8 +80,7 @@ def load_epoch_photometry(source_id: int | str) -> dict[str, Any]:
     path = _cache_path(source_id)
     if not path.is_file():
         raise PipeException(
-            f"{config.DISPLAY_NAME}: no prefetched epoch photometry for source_id {source_id}. "
-            "Run catalogue search again before loading this lightcurve."
+            f"{config.DISPLAY_NAME}: no cached epoch photometry for source_id {source_id}."
         )
     with _STORE_LOCK:
         document = json.loads(path.read_text(encoding="utf-8"))

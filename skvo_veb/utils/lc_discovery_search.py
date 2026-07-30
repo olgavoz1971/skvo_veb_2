@@ -11,7 +11,7 @@ from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
 from skvo_veb.lc_providers.base import MissionArchiveMatch, MissionLightcurveProvider
-from skvo_veb.lc_providers.catalog_schema import catalog_table_to_row_dicts
+from skvo_veb.lc_providers.catalog_schema import catalog_table_to_row_dicts, read_discovery_truncation_meta
 from skvo_veb.lc_providers.registry import get_provider
 from skvo_veb.utils.coord import parse_coord_to_skycoord, skycoord_to_hms_dms
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
@@ -45,6 +45,8 @@ class SearchOutcome:
     time_end_mjd: float | None = None
     radius_value: float | None = None
     radius_unit: str | None = None
+    catalog_may_be_truncated: bool = False
+    catalog_truncation_detail: str | None = None
 
     def to_store_dict(self) -> dict:
         """Serialises lightweight metadata for ``dcc.Store``.
@@ -73,6 +75,8 @@ class SearchOutcome:
             "time_end_mjd": self.time_end_mjd,
             "radius_value": self.radius_value,
             "radius_unit": self.radius_unit,
+            "catalog_may_be_truncated": self.catalog_may_be_truncated,
+            "catalog_truncation_detail": self.catalog_truncation_detail,
         }
 
 
@@ -399,6 +403,23 @@ def catalog_results_header(outcome: SearchOutcome) -> str:
     return outcome.user_target
 
 
+def catalog_truncation_notice(outcome: SearchOutcome) -> tuple[str, dict[str, str]]:
+    """Builds the optional truncation warning under the catalogue results header.
+
+    Args:
+        outcome (SearchOutcome): Completed search result.
+
+    Returns:
+        tuple[str, dict]: Notice text and layout style (hidden when not applicable).
+    """
+    if not outcome.catalog_may_be_truncated:
+        return "", {"display": "none"}
+    detail = outcome.catalog_truncation_detail or (
+        "Results may be truncated: the search reached the provider row limit."
+    )
+    return detail, {"display": "block"}
+
+
 def _provider_time_kwargs(time_bounds: DiscoveryTimeBounds | None) -> dict[str, float | None]:
     """Builds provider ``search_catalog`` time-limit keyword arguments in MJD.
 
@@ -413,6 +434,29 @@ def _provider_time_kwargs(time_bounds: DiscoveryTimeBounds | None) -> dict[str, 
         "time_start_mjd": bounds.time_start_mjd,
         "time_end_mjd": bounds.time_end_mjd,
     }
+
+
+def _ensure_discovery_time_filter_allowed(
+    provider: MissionLightcurveProvider,
+    time_bounds: DiscoveryTimeBounds | None,
+) -> None:
+    """Rejects UI time limits when the mission cannot filter discovery results by coverage.
+
+    Args:
+        provider (MissionLightcurveProvider): Selected mission adapter.
+        time_bounds (DiscoveryTimeBounds, optional): Parsed UI limits.
+
+    Raises:
+        PipeException: When time bounds are set but the provider does not support them.
+    """
+    if provider.capabilities.supports_discovery_time_filter:
+        return
+    bounds = time_bounds or DiscoveryTimeBounds()
+    if bounds.time_start_mjd is not None or bounds.time_end_mjd is not None:
+        raise PipeException(
+            f"{provider.display_name} does not support filtering catalogue results "
+            "by time coverage at discovery. Clear the earliest and latest time fields."
+        )
 
 
 def _finish_outcome(
@@ -448,6 +492,7 @@ def _finish_outcome(
         SearchOutcome: Completed search result for the UI layer.
     """
     bounds = time_bounds or DiscoveryTimeBounds()
+    may_be_truncated, truncation_detail = read_discovery_truncation_meta(catalog)
     return SearchOutcome(
         catalog=catalog,
         resolved_markdown=resolved_markdown,
@@ -461,6 +506,8 @@ def _finish_outcome(
         time_end_mjd=bounds.time_end_mjd,
         radius_value=radius_value,
         radius_unit=radius_unit,
+        catalog_may_be_truncated=may_be_truncated,
+        catalog_truncation_detail=truncation_detail,
     )
 
 
@@ -780,10 +827,20 @@ def run_catalog_search_for_mission(
         SearchOutcome: Completed search result.
     """
     provider = get_provider(mission_id)
+    _ensure_discovery_time_filter_allowed(provider, time_bounds)
     radius_display_value = safe_float(radius_text)
     if radius_display_value is None:
         raise PipeException("Search radius is required.")
     radius_arcsec = radius_to_arcsec(float(radius_display_value), radius_unit)
+    if provider.capabilities.supports_cone_search:
+        max_arcsec = provider.max_discovery_search_radius_deg() * 3600.0
+        if radius_arcsec > max_arcsec:
+            max_deg = provider.max_discovery_search_radius_deg()
+            raise PipeException(
+                f"{provider.display_name}: search radius "
+                f"{radius_arcsec / 3600.0:g} deg exceeds the provider maximum of "
+                f"{max_deg:g} deg."
+            )
     logger.info(
         "Discovery search for mission=%r target=%r radius=%.3f arcsec.",
         mission_id,

@@ -9,6 +9,7 @@ PROVIDER_ID = "ogle_ocvs"
 DISPLAY_NAME = "OGLE OCVS"
 TAP_URL = "https://skvo.science.upjs.sk/tap"
 TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_1
+MAX_DISCOVERY_SEARCH_RADIUS_DEG = 10.0
 SSA_TABLE = "ogle.ts_ssa"
 
 SSA_SELECT_COLUMNS = (

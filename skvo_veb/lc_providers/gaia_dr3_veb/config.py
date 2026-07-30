@@ -9,6 +9,7 @@ PROVIDER_ID = "gaia_dr3_veb"
 DISPLAY_NAME = "Gaia DR3 VEB"
 TAP_URL = "https://skvo.science.upjs.sk/tap"
 TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_1
+MAX_DISCOVERY_SEARCH_RADIUS_DEG = 10.0
 SSA_TABLE = "gaiadr3_eb.ts_ssa"
 
 SSA_SELECT_COLUMNS = (

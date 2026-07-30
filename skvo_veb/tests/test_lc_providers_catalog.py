@@ -1,6 +1,7 @@
 """Tests for the standardised multi-mission catalog table schema."""
 
 import numpy as np
+import numpy as np
 import pytest
 from astropy.table import Table
 
@@ -56,6 +57,16 @@ def test_validate_catalog_table_rejects_missing_required_column():
     table.remove_column("lc_key")
     with pytest.raises(ValueError, match="missing required columns"):
         validate_catalog_table(table)
+
+
+def test_validate_catalog_table_accepts_missing_time_coverage():
+    """t_min and t_max are optional; validation adds masked optional columns."""
+    row = _sample_catalog_row()
+    del row["t_min"]
+    del row["t_max"]
+    table = validate_catalog_table(Table([row]))
+    assert np.all(np.ma.is_masked(table["t_min"]))
+    assert np.all(np.ma.is_masked(table["t_max"]))
 
 
 def test_catalog_table_to_row_dicts_round_trip():

@@ -14,6 +14,7 @@ from skvo_veb.utils.lc_discovery_search import (
     SEARCH_MODE_SIMBAD_ARCHIVE_ID,
     SEARCH_MODE_SIMBAD_CONE,
     catalog_results_header,
+    catalog_truncation_notice,
     catalog_rows_for_aggrid,
     radius_to_arcsec,
     status_no_match_asking_simbad,
@@ -27,6 +28,8 @@ from skvo_veb.utils.lc_discovery_search import (
     run_catalog_search_for_mission,
 )
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND, AB_AND
+from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
+from skvo_veb.utils.lc_discovery_search import SearchOutcome
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 
@@ -263,6 +266,38 @@ def test_catalog_results_header_uses_object_name_for_direct_lookup():
     assert catalog_results_header(outcome) == gaia_id_text
 
 
+def test_catalog_truncation_notice_when_not_truncated():
+    """Truncation banner stays hidden unless the provider set the flag."""
+    outcome = SearchOutcome(
+        catalog=empty_catalog_table(),
+        resolved_markdown="",
+        search_mode=SEARCH_MODE_CONE,
+        centre_ra_deg=0.0,
+        centre_dec_deg=0.0,
+        user_target="test",
+    )
+    text, style = catalog_truncation_notice(outcome)
+    assert text == ""
+    assert style == {"display": "none"}
+
+
+def test_catalog_truncation_notice_when_truncated():
+    """Truncation banner shows provider detail when the cone cap may apply."""
+    outcome = SearchOutcome(
+        catalog=empty_catalog_table(),
+        resolved_markdown="",
+        search_mode=SEARCH_MODE_CONE,
+        centre_ra_deg=0.0,
+        centre_dec_deg=0.0,
+        user_target="test",
+        catalog_may_be_truncated=True,
+        catalog_truncation_detail="Results may be truncated: example.",
+    )
+    text, style = catalog_truncation_notice(outcome)
+    assert "truncated" in text
+    assert style == {"display": "block"}
+
+
 def test_run_catalog_search_applies_optional_time_bounds():
     """Orchestration forwards parsed MJD limits to the provider search."""
     provider = GaiaDr3Provider()
@@ -383,7 +418,7 @@ def test_run_catalog_search_personal_cross_ident_before_simbad(monkeypatch):
     assert outcome.archive_match is not None
     assert outcome.archive_match.archive_id == "MO_Psc"
     assert status_messages == [
-        status_querying_object("UPJS Personal TS", "MO Psc"),
-        status_resolving_provider_name("UPJS Personal TS", "MO Psc"),
-        status_querying_provider_archive_id("UPJS Personal TS", "MO_Psc"),
+        status_querying_object(config.DISPLAY_NAME, "MO Psc"),
+        status_resolving_provider_name(config.DISPLAY_NAME, "MO Psc"),
+        status_querying_provider_archive_id(config.DISPLAY_NAME, "MO_Psc"),
     ]

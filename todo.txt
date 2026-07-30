@@ -43,4 +43,7 @@ In the sqlite table? NOT IN THE MAIN Postgresq Database
 # periods with ref=ts -- timeorigin!!!
 # Gaia -- dual mag/flux phot, disentangle zeropoints
 # Publish Gaia cross-ident table
-# Publisj Gaia lite table
+# Publish Gaia lite table
+# Add Gaia-like random_index to OGLE
+# Add Gaia random indox to my Gaia VEB publication
+

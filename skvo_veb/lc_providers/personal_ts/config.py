@@ -9,6 +9,7 @@ PROVIDER_ID = "personal_ts"
 DISPLAY_NAME = "Personal collections"
 TAP_URL = "https://skvo.science.upjs.sk/tap"
 TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_1
+MAX_DISCOVERY_SEARCH_RADIUS_DEG = 30.0
 SSA_TABLE = "personal.ts_ssa"
 OBJECTS_TABLE = "personal.objects"
 

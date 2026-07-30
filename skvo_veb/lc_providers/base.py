@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
+from skvo_veb.lc_providers.catalog_schema import (
+    DISCOVERY_META_MAY_BE_TRUNCATED,
+    DISCOVERY_META_TRUNCATION_DETAIL,
+)
 from skvo_veb.lc_providers.lc_key import cache_key, validate_lc_key
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
@@ -16,6 +20,7 @@ from skvo_veb.volightcurve import VOLightCurve
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_DISCOVERY_CATALOG_ROWS = 100
+DEFAULT_MAX_DISCOVERY_SEARCH_RADIUS_DEG = 1.0
 
 
 @dataclass(frozen=True)
@@ -27,6 +32,7 @@ class MissionCapabilities:
     supports_id_lookup: bool = False
     supports_force_refresh: bool = False
     provides_catalog_epoch_period: bool = False
+    supports_discovery_time_filter: bool = True
 
 
 @dataclass(frozen=True)
@@ -173,15 +179,83 @@ class MissionLightcurveProvider(ABC):
         return 10.0
 
     def max_discovery_catalog_rows(self) -> int:
-        """Returns the maximum catalogue rows returned from a cone discovery search.
+        """Returns the default row cap used in cone discovery ADQL ``TOP`` clauses.
 
-        TAP cone queries should honour this limit with an ADQL ``TOP`` clause.
-        Direct archive-id or name lookups are not capped by default.
+        Missions may apply this limit to different entities (SSA rows, Gaia
+        ``source_id`` rows, or catalogue rows). Use
+        ``discovery_cone_limit_entity_label()`` for UI wording.
 
         Returns:
             int: Row cap for cone searches (default 100).
         """
         return DEFAULT_MAX_DISCOVERY_CATALOG_ROWS
+
+    def discovery_cone_query_row_limit(self) -> int:
+        """Returns the numeric cap compared against cone query result counts.
+
+        Returns:
+            int: Limit used when deciding whether results may be truncated.
+        """
+        return self.max_discovery_catalog_rows()
+
+    def discovery_cone_limit_entity_label(self) -> str:
+        """Describes what the cone ``TOP`` limit applies to in user-facing text.
+
+        Returns:
+            str: Short plural label (e.g. ``catalogue rows``, ``Gaia sources``).
+        """
+        return "catalogue rows"
+
+    def annotate_discovery_truncation(
+        self,
+        catalog: Table,
+        *,
+        cone_query_row_count: int | None,
+    ) -> Table:
+        """Marks catalogue metadata when a cone query may have hit the row cap.
+
+        Providers should pass the raw row count from the limited query (TAP
+        ``TOP``, local truncation, etc.), not the expanded catalogue row count.
+
+        Args:
+            catalog (astropy.table.Table): Standardised discovery catalogue.
+            cone_query_row_count (int, optional): Rows returned by the limited
+                cone query step. When ``None``, no truncation hint is applied.
+
+        Returns:
+            astropy.table.Table: Same table with optional ``meta`` hints set.
+        """
+        if cone_query_row_count is None:
+            return catalog
+        limit = self.discovery_cone_query_row_limit()
+        if int(cone_query_row_count) < limit:
+            return catalog
+        entity = self.discovery_cone_limit_entity_label()
+        catalog.meta[DISCOVERY_META_MAY_BE_TRUNCATED] = True
+        catalog.meta[DISCOVERY_META_TRUNCATION_DETAIL] = (
+            f"Results may be truncated: the cone search returned {cone_query_row_count} "
+            f"{entity}. More matches may exist — try a smaller "
+            "radius or a more specific target."
+        )
+        logger.info(
+            "%s cone discovery may be truncated query_rows=%s limit=%s entity=%s",
+            self.display_name,
+            cone_query_row_count,
+            limit,
+            entity,
+        )
+        return catalog
+
+    def max_discovery_search_radius_deg(self) -> float:
+        """Returns the maximum allowed cone search radius in degrees.
+
+        Discovery rejects coordinate cone searches above this limit for the
+        mission. Direct archive-id or name lookups are not radius-limited.
+
+        Returns:
+            float: Upper bound on cone radius in degrees (default 1).
+        """
+        return DEFAULT_MAX_DISCOVERY_SEARCH_RADIUS_DEG
 
     def descriptor(self) -> MissionDescriptor:
         """Builds registry metadata for UI mission selectors.
@@ -231,6 +305,13 @@ class MissionLightcurveProvider(ABC):
             ) from exc
         if radius <= 0:
             raise PipeException(f"{self.display_name}: search radius must be positive.")
+        max_arcsec = self.max_discovery_search_radius_deg() * 3600.0
+        if radius > max_arcsec:
+            max_deg = self.max_discovery_search_radius_deg()
+            raise PipeException(
+                f"{self.display_name}: search radius {radius / 3600.0:g} deg exceeds "
+                f"the mission maximum of {max_deg:g} deg."
+            )
         return ra, dec, radius
 
     def _truncate_catalog_table(self, table: Table) -> Table:
