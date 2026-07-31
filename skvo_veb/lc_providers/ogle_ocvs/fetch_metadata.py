@@ -56,6 +56,8 @@ def enrich_fetched_volightcurve(
     title = f"{str(base_name).strip()} in {filter_label} filter"
     meta["name"] = title
     meta["lightcurve_title"] = title
+    meta["facility_name"] = config.FACILITY_NAME
+    meta["instrument_name"] = config.INSTRUMENT_NAME
 
     logger.debug(
         "%s metadata enriched title=%s publication_id=%s",

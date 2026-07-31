@@ -1431,7 +1431,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
             was_purged, lc = lightkurve_cache.purge_and_redownload_row(search_result, row_idx)
             label = getattr(lc, 'LABEL', None) or f'sector {getattr(lc, "SECTOR", "?")}'
             action = 'purged and redownloaded' if was_purged else 'redownloaded (no local cache file found)'
-            summaries.append(f'Row {row_idx}: {action} — {label}')
+            summaries.append(f'Row {row_idx}: {action} - {label}')
             logger.info(f"purge_redownload_selected_rows: Completed row {row_idx}: {action}")
 
         msg = 'Fresh MAST download completed:\n' + '\n'.join(summaries)

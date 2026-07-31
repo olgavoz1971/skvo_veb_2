@@ -76,7 +76,7 @@ def enrich_fetched_volightcurve(
         meta = volc.table.meta
 
     if lookup_name:
-        title = f"{lookup_name} — {oid_label} ({band.filter_name})"
+        title = f"{lookup_name} - {oid_label} ({band.filter_name})"
         meta["lookup_name"] = lookup_name
     else:
         title = f"{oid_label} ({band.filter_name})"

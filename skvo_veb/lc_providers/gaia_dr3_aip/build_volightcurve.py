@@ -117,12 +117,16 @@ def build_volightcurve_from_prefetch(
         coosys_epoch=2016.0,
         period=period_param,
         binary=False,
+        facility_name=config.FACILITY_NAME,
+        instrument_name=config.INSTRUMENT_NAME,
     )
     buffer.seek(0)
     volc = VOLightCurve(buffer)
     title = f"Gaia DR3 {source_id} in {filter_name} filter"
     volc.table.meta["name"] = title
     volc.table.meta["lightcurve_title"] = title
+    volc.table.meta["facility_name"] = config.FACILITY_NAME
+    volc.table.meta["instrument_name"] = config.INSTRUMENT_NAME
     if period_param is not None:
         volc.table.meta["period"] = period_param
     if object_class:

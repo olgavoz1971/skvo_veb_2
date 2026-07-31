@@ -118,6 +118,7 @@ When implementing physical formulas, statistical analysis, curve fitting, or coo
 - **Strict Exception:** Programming syntax, library functions, HTML attributes, and CSS properties/values MUST remain in their standard technical specifications (which use US spelling). 
   - *Never write:* `text-align: centre;` or `background-color: colour;`
   - *Always write:* `text-align: center;` and `background-color: color;`
+- **Do not use "—" (long) in the file names and inside files with data
 
 ## Server-Side Data Caching Engine (Shared Archive Cache)
 

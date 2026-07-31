@@ -61,4 +61,7 @@ In the sqlite table? NOT IN THE MAIN Postgresq Database
 # Publish Gaia lite table
 # Add Gaia-like random_index to OGLE
 # Add Gaia random indox to my Gaia VEB publication
-
+# Add facility_name and instrument_name to the lghtcurve paeameters --
+ instrumnet s present in ssa_row, facility name -- not, in the Obscore only. Add?
+And after make cooresponded provider tae this infor from lc parameters
+rather than from config

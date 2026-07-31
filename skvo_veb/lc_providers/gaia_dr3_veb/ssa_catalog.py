@@ -54,7 +54,7 @@ def map_ssa_row_to_catalog_dict(
     object_class = object_class_from_ssa_row(row)
 
     note_parts = [part for part in (dstitle, creator) if part]
-    provider_note = " — ".join(str(part) for part in note_parts) if note_parts else None
+    provider_note = " - ".join(str(part) for part in note_parts) if note_parts else None
 
     lc_key = encode_lc_key(
         provider_id,

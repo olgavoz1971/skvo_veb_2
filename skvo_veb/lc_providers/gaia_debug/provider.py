@@ -391,6 +391,8 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
         )
         buffer.seek(0)
         volc = VOLightCurve(buffer)
+        volc.table.meta["facility_name"] = gaia_config.FACILITY_NAME
+        volc.table.meta["instrument_name"] = gaia_config.INSTRUMENT_NAME
         logger.info(
             "%s fetch source_id=%s band=%s n_points=%s force_refresh=%s",
             self.display_name,

@@ -154,6 +154,8 @@ def enrich_fetched_volightcurve(
     title = _discovery_lightcurve_title(meta, filter_label=filter_label)
     meta["name"] = title
     meta["lightcurve_title"] = title
+    meta["facility_name"] = config.FACILITY_NAME
+    meta["instrument_name"] = config.INSTRUMENT_NAME
 
     logger.debug(
         "%s metadata enriched title=%s period=%s zp_mag=%s",

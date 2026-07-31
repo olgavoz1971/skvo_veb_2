@@ -34,6 +34,9 @@ GAIA_COOSYS_EPOCH = 2016.0
 GAIA_PIPELINE = "Gaia DR3 (debug catalogue)"
 GAIA_SURVEY = "Gaia DR3"
 
+FACILITY_NAME = "Gaia"
+INSTRUMENT_NAME = "Gaia"
+
 GAIA_G_BAND = "G"
 GAIA_BP_BAND = "BP"
 GAIA_RP_BAND = "RP"
@@ -209,6 +212,8 @@ def build_fetch_votable_kwargs(
         "coosys_system": GAIA_COOSYS_SYSTEM,
         "coosys_epoch": GAIA_COOSYS_EPOCH,
         "binary": True,
+        "facility_name": FACILITY_NAME,
+        "instrument_name": INSTRUMENT_NAME,
     }
     if epoch is not None:
         kwargs["epoch"] = float(epoch)

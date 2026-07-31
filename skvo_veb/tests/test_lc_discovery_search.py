@@ -187,7 +187,7 @@ def test_run_catalog_search_simbad_cone_when_no_archive_id():
     assert "No direct match" not in outcome.resolved_markdown
     coord = parse_coord_to_skycoord(f"{AB_AND.ra_deg} {AB_AND.dec_deg}")
     assert catalog_results_header(outcome) == (
-        f"V* DP Peg — {skycoord_to_hms_dms(coord)}, r = 10 arcsec"
+        f"V* DP Peg - {skycoord_to_hms_dms(coord)}, r = 10 arcsec"
     )
     status_messages: list[str] = []
     run_catalog_search(

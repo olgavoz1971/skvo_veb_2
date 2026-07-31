@@ -389,7 +389,7 @@ def catalog_results_header(outcome: SearchOutcome) -> str:
         lookup = outcome.simbad_main_id or outcome.user_target
         lookup_prefix = ""
         if outcome.search_mode == SEARCH_MODE_SIMBAD_CONE and lookup and str(lookup).strip():
-            lookup_prefix = f"{str(lookup).strip()} — "
+            lookup_prefix = f"{str(lookup).strip()} - "
         if outcome.centre_ra_deg is not None and outcome.centre_dec_deg is not None:
             coord = SkyCoord(
                 ra=outcome.centre_ra_deg * u.deg,

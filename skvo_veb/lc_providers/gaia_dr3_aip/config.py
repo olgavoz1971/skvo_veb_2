@@ -22,6 +22,9 @@ VARI_CLASSIFIER_RESULT_TABLE = "gaiadr3.vari_classifier_result"
 VARI_SUMMARY_TABLE = "gaiadr3.vari_summary"
 GAIA_SURVEY = "Gaia DR3"
 
+FACILITY_NAME = "Gaia"
+INSTRUMENT_NAME = "Gaia"
+
 CLASSIFIER_CLASS_COLUMN = "best_class_name"
 
 # BJD reference epoch for AIP epoch-photometry time columns (2010-01-01T00:00:00).

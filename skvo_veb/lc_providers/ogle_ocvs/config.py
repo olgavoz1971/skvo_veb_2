@@ -12,6 +12,9 @@ TAP_QUERY_DIALECT = TapQueryDialect.ADQL_2_1
 MAX_DISCOVERY_SEARCH_RADIUS_DEG = 10.0
 SSA_TABLE = "ogle.ts_ssa"
 
+FACILITY_NAME = "Las Campanas"
+INSTRUMENT_NAME = "Warsaw 1.3m Telescope"
+
 SSA_SELECT_COLUMNS = (
     "object_id",
     "accref",

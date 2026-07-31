@@ -16,6 +16,10 @@ GAIA_SOURCE_TABLE = "gaiadr3.gaia_source"
 VARI_CLASSIFIER_RESULT_TABLE = "gaiadr3.vari_classifier_result"
 CLASSIFIER_CLASS_COLUMN = "best_class_name"
 GAIA_SURVEY = "Gaia DR3"
+
+FACILITY_NAME = "Gaia"
+INSTRUMENT_NAME = "Gaia"
+
 TIMESERIES_DATALINK_BASE_URL = "https://gaia.ari.uni-heidelberg.de/timeseries/gaiadr3"
 OBSCORE_TABLE = "ivoa.ObsCore"
 OBS_COLLECTION = "gaiadr3"
