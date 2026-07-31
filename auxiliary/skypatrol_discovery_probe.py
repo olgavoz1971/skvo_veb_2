@@ -400,7 +400,7 @@ def run_fetch_gaia_band(
 
     lc_df = getattr(res, "data", None)
     if isinstance(lc_df, pd.DataFrame) and "phot_filter" in lc_df.columns:
-        subset = lc_df[lc_df["phot_filter"] == band][["jd", "flux", "flux_err"]]
+        subset = lc_df[lc_df["phot_filter"] == band][["jd", "flux", "flux_err", "camera"]]
         _stdout(
             f"Band slice phot_filter == {band!r}",
             f"rows: {len(subset)}\n{subset.head(10).to_string()}",

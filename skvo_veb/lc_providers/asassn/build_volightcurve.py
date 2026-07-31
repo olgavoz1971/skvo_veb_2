@@ -19,6 +19,44 @@ from skvo_veb.volightcurve.lightcurve import write_vo_lightcurve
 logger = logging.getLogger(__name__)
 
 
+def _optional_camera_labels(band_table: pd.DataFrame) -> np.ndarray | None:
+    """Maps Sky Patrol ``camera`` values to VOTable ``label`` strings when available.
+
+    Args:
+        band_table (pandas.DataFrame): Band slice from ``slice_band_photometry``.
+
+    Returns:
+        numpy.ndarray or None: Per-epoch label strings, or ``None`` when ``camera``
+        is absent or entirely null/empty (photometry is still built without labels).
+    """
+    if "camera" not in band_table.columns:
+        return None
+    series = band_table["camera"]
+    if series.isna().all():
+        logger.debug(
+            "%s: camera column present but all null; omitting epoch labels.",
+            config.DISPLAY_NAME,
+        )
+        return None
+    labels: list[str] = []
+    any_non_empty = False
+    for value in series:
+        if pd.isna(value):
+            labels.append("")
+            continue
+        text = str(value).strip()
+        if text:
+            any_non_empty = True
+        labels.append(text)
+    if not any_non_empty:
+        logger.debug(
+            "%s: camera column has no usable values; omitting epoch labels.",
+            config.DISPLAY_NAME,
+        )
+        return None
+    return np.asarray(labels, dtype=str)
+
+
 def build_volightcurve_from_band_table(
     band_table: pd.DataFrame,
     *,
@@ -32,7 +70,9 @@ def build_volightcurve_from_band_table(
     """Serialises one band slice into a flux-native ``VOLightCurve``.
 
     Args:
-        band_table (pandas.DataFrame): Columns ``jd``, ``flux``, ``flux_err`` (mJy).
+        band_table (pandas.DataFrame): Columns ``jd``, ``flux``, ``flux_err`` (mJy);
+            optional ``camera`` (Sky Patrol CCD/instrument code per epoch) becomes
+            VOTable ``label`` when present and non-empty.
         asas_sn_id (int or str): Sky Patrol source identifier.
         band_code (str): ``g`` or ``V``.
         ra_deg (float, optional): ICRS right ascension in degrees.
@@ -53,6 +93,7 @@ def build_volightcurve_from_band_table(
     jd = np.asarray(band_table["jd"], dtype=np.float64)
     flux_mjy = np.asarray(band_table["flux"], dtype=np.float64)
     flux_err_mjy = np.asarray(band_table["flux_err"], dtype=np.float64)
+    camera_labels = _optional_camera_labels(band_table)
 
     obs_time_mjd = (jd - JD_TO_MJD) * u.d
     flux_jy = (flux_mjy * 1e-3) * u.Jy
@@ -62,6 +103,8 @@ def build_volightcurve_from_band_table(
     table["obs_time"] = obs_time_mjd
     table["phot"] = flux_jy
     table["flux_error"] = flux_err_jy
+    if camera_labels is not None:
+        table["label"] = camera_labels
 
     sid = int(asas_sn_id)
     description = (

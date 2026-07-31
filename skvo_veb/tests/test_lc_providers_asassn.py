@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pandas as pd
 import pytest
 from astropy.table import Table
@@ -13,6 +15,8 @@ from skvo_veb.lc_providers.asassn.provider import AsassnProvider
 from skvo_veb.lc_providers.catalog_schema import read_discovery_truncation_meta
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.lc_providers.lc_key import decode_lc_key
+from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
+from skvo_veb.volightcurve import VOLightCurve
 
 
 def _sample_metadata_df() -> pd.DataFrame:
@@ -60,6 +64,7 @@ def test_build_volightcurve_from_band_table():
             "jd": [2459000.5, 2459001.5],
             "flux": [120.0, 125.0],
             "flux_err": [0.3, 0.4],
+            "camera": ["bs", "br"],
         }
     )
     volc = build_volightcurve_from_band_table(
@@ -71,6 +76,51 @@ def test_build_volightcurve_from_band_table():
     )
     assert len(volc) == 2
     assert "phot" in volc.colnames
+    assert "label" in volc.colnames
+    assert list(volc["label"]) == ["bs", "br"]
+
+
+def test_build_volightcurve_without_camera_omits_label():
+    """Photometry build succeeds when Sky Patrol omits the auxiliary camera column."""
+    band_df = pd.DataFrame(
+        {
+            "jd": [2459000.5, 2459001.5],
+            "flux": [120.0, 125.0],
+            "flux_err": [0.3, 0.4],
+        }
+    )
+    volc = build_volightcurve_from_band_table(
+        band_df,
+        asas_sn_id=85900701048,
+        band_code="g",
+    )
+    assert len(volc) == 2
+    assert "phot" in volc.colnames
+    assert "label" not in volc.colnames
+
+
+def test_asassn_camera_label_survives_export_roundtrip():
+    """Per-epoch camera codes remain in VOTable label through CurveDash export."""
+    band_df = pd.DataFrame(
+        {
+            "jd": [2459000.5, 2459001.5],
+            "flux": [120.0, 125.0],
+            "flux_err": [0.3, 0.4],
+            "camera": ["bs", "br"],
+        }
+    )
+    volc = build_volightcurve_from_band_table(
+        band_df,
+        asas_sn_id=85900701048,
+        band_code="g",
+    )
+    lcd = volc_to_curvedash(volc, "asassn_g.vot")
+    assert list(lcd.lightcurve["label"]) == ["bs", "br"]
+
+    buf = io.BytesIO(export_curvedash(lcd, "votable_binary", profile="asassn"))
+    exported = VOLightCurve(buf)
+    assert "label" in exported.colnames
+    assert list(exported["label"]) == ["bs", "br"]
 
 
 def test_search_catalog_by_gaia_id(monkeypatch):
@@ -138,6 +188,7 @@ def test_fetch_lightcurve_empty_band(monkeypatch):
             "flux": [120.0],
             "flux_err": [0.3],
             "phot_filter": ["g"],
+            "camera": ["bs"],
         }
     )
 
@@ -175,6 +226,7 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
             "flux": [120.0, 125.0],
             "flux_err": [0.3, 0.4],
             "phot_filter": ["g", "g"],
+            "camera": ["bs", "br"],
         }
     )
 
@@ -195,3 +247,4 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
     assert len(volc) == 2
     assert volc.table.meta.get("mission") == config.PROVIDER_ID
     assert volc.table.meta.get("period") == pytest.approx(0.46)
+    assert list(volc["label"]) == ["bs", "br"]

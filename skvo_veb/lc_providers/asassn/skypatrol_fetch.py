@@ -282,7 +282,8 @@ def slice_band_photometry(
         asas_sn_id (int or str): Source id for error messages.
 
     Returns:
-        pandas.DataFrame: Columns ``jd``, ``flux``, ``flux_err``.
+        pandas.DataFrame: Columns ``jd``, ``flux``, ``flux_err``, and optionally
+        ``camera`` when present in the download.
 
     Raises:
         PipeException: When the band has no rows or columns are missing.
@@ -299,7 +300,10 @@ def slice_band_photometry(
         raise PipeException(
             f"{config.DISPLAY_NAME}: photometry missing columns {missing}."
         )
-    band_df = subset[list(required)].dropna(subset=["flux"])
+    keep_cols = list(required)
+    if "camera" in subset.columns:
+        keep_cols.append("camera")
+    band_df = subset[keep_cols].dropna(subset=["flux"])
     if band_df.empty:
         raise PipeException(
             f"{config.DISPLAY_NAME}: asas_sn_id {asas_sn_id} has no observations "
