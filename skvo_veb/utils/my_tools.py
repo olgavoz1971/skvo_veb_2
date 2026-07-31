@@ -13,7 +13,20 @@ positive_integer_pattern = r"^[1-9]\d*$"
 
 
 def sanitize_filename(name: str) -> str:
-    return re.sub(r'[<>:"/\\|?*, ]', '_', name)
+    """Returns a filesystem-safe stem from a human-readable label.
+
+    Parentheses are removed. Other forbidden characters become underscores;
+    consecutive underscores are collapsed to one.
+
+    Args:
+        name (str): Raw title or label text.
+
+    Returns:
+        str: Sanitised filename stem.
+    """
+    without_parens = re.sub(r"[()]", "", name)
+    cleaned = re.sub(r'[<>:"/\\|?*, ]', "_", without_parens)
+    return re.sub(r"_+", "_", cleaned)
 
 
 def log_gamma(data, gamma=0.9, log=True):

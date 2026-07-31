@@ -1,4 +1,4 @@
-"""Gaia DR3 (ARI) TAP lightcurve provider."""
+"""ASAS-SN Sky Patrol lightcurve provider."""
 
 from __future__ import annotations
 
@@ -6,26 +6,31 @@ import logging
 
 from astropy.table import Table
 
+from skvo_veb.lc_providers.asassn import config
+from skvo_veb.lc_providers.asassn.build_volightcurve import build_volightcurve_from_band_table
+from skvo_veb.lc_providers.asassn.catalog import map_metadata_table_to_catalog
+from skvo_veb.lc_providers.asassn.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.asassn.skypatrol_fetch import (
+    fetch_discovery_by_asas_sn_id,
+    fetch_discovery_by_gaia_id,
+    fetch_discovery_by_simbad_name,
+    fetch_discovery_cone,
+    fetch_epoch_period_for_asas_sn_id,
+    fetch_photometry_by_asas_sn_id,
+    slice_band_photometry,
+)
 from skvo_veb.lc_providers.base import (
     MissionArchiveMatch,
     MissionCapabilities,
     MissionLightcurveProvider,
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
-from skvo_veb.lc_providers.gaia_dr3_ari import config
-from skvo_veb.lc_providers.gaia_dr3_ari.fetch_access_url import (
-    fetch_volightcurve_from_access_url,
-    fetch_volightcurve_from_timeseries_datalink,
-)
-from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
-from skvo_veb.lc_providers.gaia_dr3_ari.source_catalog import map_source_table_to_catalog
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
     format_gaia_source_name,
     parse_gaia_source_id,
     pick_gaia_archive_id_from_simbad,
 )
-from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 from skvo_veb.volightcurve import VOLightCurve
@@ -33,12 +38,12 @@ from skvo_veb.volightcurve import VOLightCurve
 logger = logging.getLogger(__name__)
 
 
-class GaiaDr3AriProvider(MissionLightcurveProvider):
-    """Gaia DR3 epoch photometry via Heidelberg ARI ``gaia_source`` discovery and timeseries datalink."""
+class AsassnProvider(MissionLightcurveProvider):
+    """ASAS-SN epoch photometry via the Sky Patrol client (no provider-side cache)."""
 
     mission_id = config.PROVIDER_ID
     display_name = config.DISPLAY_NAME
-    export_profile = config.PROVIDER_ID
+    export_profile = config.EXPORT_PROFILE
     capabilities = MissionCapabilities(
         supports_cone_search=True,
         supports_name_resolve=True,
@@ -55,27 +60,35 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         Returns:
             float: Default search radius in arcseconds.
         """
-        return 5.0
+        return 30.0
 
     def max_discovery_search_radius_deg(self) -> float:
-        """Returns the maximum cone search radius for Heidelberg TAP discovery.
+        """Returns the maximum cone search radius for Sky Patrol discovery.
 
         Returns:
             float: Upper bound in degrees.
         """
         return config.MAX_DISCOVERY_SEARCH_RADIUS_DEG
 
+    def discovery_cone_limit_entity_label(self) -> str:
+        """Returns UI wording for cone truncation notices.
+
+        Returns:
+            str: Entity label for the discovery row cap.
+        """
+        return "ASAS-SN sources"
+
     def pick_archive_id_from_simbad(
         self,
         simbad_result: SimbadResolveResult,
     ) -> MissionArchiveMatch | None:
-        """Selects a Gaia DR3 ``source_id`` from Simbad cross-identifiers.
+        """Selects Gaia DR3 ``source_id`` when present for ASAS-SN cross-match.
 
         Args:
             simbad_result (SimbadResolveResult): Shared Simbad resolve payload.
 
         Returns:
-            MissionArchiveMatch or None: Gaia archive match when recognised.
+            MissionArchiveMatch or None: Gaia id match when recognised.
         """
         return pick_gaia_archive_id_from_simbad(simbad_result)
 
@@ -110,16 +123,13 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         time_end_mjd: float | None = None,
         **mission_options,
     ) -> Table:
-        """Queries ``gaiadr3.gaia_source`` with ``vari_classifier_result`` for discovery.
-
-        Discovery runs one TAP query (cone or direct ``source_id``). Bundled epoch
-        VOTables are fetched from the timeseries datalink when a row is loaded.
+        """Queries Sky Patrol ``stellar_main`` metadata and expands candidate bands.
 
         Args:
             ra_deg (float, optional): ICRS right ascension in degrees.
             dec_deg (float, optional): ICRS declination in degrees.
             radius_arcsec (float, optional): Cone radius in arcseconds.
-            object_name (str, optional): Gaia ``source_id`` string from the UI.
+            object_name (str, optional): Gaia id or target name from the UI.
             archive_id (str, optional): Gaia ``source_id`` for direct lookup.
             time_start_mjd (float, optional): Ignored; time filtering is unsupported.
             time_end_mjd (float, optional): Ignored; time filtering is unsupported.
@@ -132,64 +142,44 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         centre_dec = dec_deg
         cone_query_row_count: int | None = None
 
-        source_id = self._resolve_source_id(
-            archive_id=archive_id,
-            object_name=object_name,
-        )
-
-        if source_id is not None:
-            adql = config.adql_gaia_source_by_source_id(source_id)
-            tap_table = run_tap_sync_query(
-                config.TAP_URL,
-                adql,
-                dialect=config.TAP_QUERY_DIALECT,
-            )
-            return map_source_table_to_catalog(
-                tap_table,
-                provider_id=self.mission_id,
-                centre_ra_deg=centre_ra,
-                centre_dec_deg=centre_dec,
-            )
-
-        if ra_deg is not None and dec_deg is not None and radius_arcsec is not None:
+        gaia_id = self._resolve_gaia_id(archive_id=archive_id, object_name=object_name)
+        if gaia_id is not None:
+            metadata = fetch_discovery_by_gaia_id(gaia_id)
+        elif object_name and str(object_name).strip() and archive_id is None:
+            metadata = fetch_discovery_by_simbad_name(str(object_name).strip())
+        elif ra_deg is not None and dec_deg is not None and radius_arcsec is not None:
             ra, dec, radius = self._require_cone_search(
                 ra_deg=ra_deg,
                 dec_deg=dec_deg,
                 radius_arcsec=radius_arcsec,
             )
             centre_ra, centre_dec = ra, dec
-            adql = config.adql_gaia_source_cone(
+            metadata = fetch_discovery_cone(
                 ra_deg=ra,
                 dec_deg=dec,
                 radius_arcsec=radius,
-                row_limit=self.max_discovery_catalog_rows(),
             )
-            tap_table = run_tap_sync_query(
-                config.TAP_URL,
-                adql,
-                dialect=config.TAP_QUERY_DIALECT,
-            )
-            cone_query_row_count = len(tap_table)
-            catalog = map_source_table_to_catalog(
-                tap_table,
-                provider_id=self.mission_id,
-                centre_ra_deg=ra,
-                centre_dec_deg=dec,
-            )
-            return self.finalize_discovery_catalog(
-                catalog,
-                cone_query_row_count=cone_query_row_count,
-            )
+            limit = self.discovery_cone_query_row_limit()
+            source_count = len(metadata)
+            if source_count > limit:
+                metadata = metadata.iloc[:limit].copy()
+            cone_query_row_count = source_count
+        else:
+            return empty_catalog_table()
 
-        return empty_catalog_table()
+        if len(metadata) == 0:
+            return empty_catalog_table()
 
-    def discovery_cone_limit_entity_label(self) -> str:
-        """Returns UI wording for the Heidelberg cone ``TOP`` limit.
-
-        Returns:
-            str: Entity label for truncation notices.
-        """
-        return "Gaia sources"
+        catalog = map_metadata_table_to_catalog(
+            metadata,
+            provider_id=self.mission_id,
+            centre_ra_deg=centre_ra,
+            centre_dec_deg=centre_dec,
+        )
+        return self.finalize_discovery_catalog(
+            catalog,
+            cone_query_row_count=cone_query_row_count,
+        )
 
     def fetch_lightcurve(
         self,
@@ -198,62 +188,71 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         force_refresh: bool = False,
         discovery_context=None,
     ) -> VOLightCurve:
-        """Downloads one band from the ARI timeseries datalink VOTable product.
+        """Downloads one candidate band for an ASAS-SN ``asas_sn_id``.
 
         Args:
-            lc_key (str): Serialised fetch handle from a catalog row.
-            force_refresh (bool): Accepted for API compatibility; no cache yet.
+            lc_key (str): Serialised fetch handle from a catalogue row.
+            force_refresh (bool): Accepted for API compatibility; always remote fetch.
 
         Returns:
-            VOLightCurve: VO-standard single-band lightcurve.
+            VOLightCurve: VO-standard flux-native lightcurve.
 
         Raises:
-            PipeException: When the key is invalid or download fails.
+            PipeException: When the key is invalid or the band has no data.
         """
         if not self.validate_lc_key(lc_key):
             raise PipeException(f"{self.display_name}: invalid lightcurve key.")
 
         payload = decode_lc_key(lc_key)["payload"]
-        source_id = payload.get("source_id")
-        access_url = payload.get("access_url")
-        table_id = payload.get("table_id")
-        filter_name = payload.get("filter_name")
-        if table_id is None:
-            raise PipeException(f"{self.display_name}: lc_key payload missing table_id.")
-        if not filter_name:
-            raise PipeException(f"{self.display_name}: lc_key payload missing filter_name.")
+        asas_sn_id = payload.get("asas_sn_id")
+        band = payload.get("band")
+        if not asas_sn_id:
+            raise PipeException(f"{self.display_name}: lc_key payload missing asas_sn_id.")
+        if not band:
+            raise PipeException(f"{self.display_name}: lc_key payload missing band.")
 
-        if source_id:
-            logger.info(
-                "%s fetch source_id=%s table_id=%s force_refresh=%s",
-                self.display_name,
-                source_id,
-                table_id,
-                force_refresh,
-            )
-            volc = fetch_volightcurve_from_timeseries_datalink(
-                source_id,
-                table_id=int(table_id),
-            )
-        elif access_url:
-            logger.info(
-                "%s fetch access_url=%s table_id=%s force_refresh=%s",
-                self.display_name,
-                str(access_url)[:64],
-                table_id,
-                force_refresh,
-            )
-            volc = fetch_volightcurve_from_access_url(
-                str(access_url),
-                table_id=int(table_id),
-            )
-        else:
-            raise PipeException(f"{self.display_name}: lc_key payload missing source_id.")
+        logger.info(
+            "%s fetch asas_sn_id=%s band=%s force_refresh=%s",
+            self.display_name,
+            asas_sn_id,
+            band,
+            force_refresh,
+        )
 
-        return enrich_fetched_volightcurve(volc, filter_name=str(filter_name))
+        photometry = fetch_photometry_by_asas_sn_id(asas_sn_id)
+        band_table = slice_band_photometry(
+            photometry,
+            band=str(band),
+            asas_sn_id=asas_sn_id,
+        )
+        epoch_jd, period_days = fetch_epoch_period_for_asas_sn_id(asas_sn_id)
+
+        meta_frame = fetch_discovery_by_asas_sn_id(asas_sn_id)
+        ra_deg = dec_deg = None
+        if len(meta_frame) > 0:
+            try:
+                ra_deg = float(meta_frame["ra_deg"].iloc[0])
+                dec_deg = float(meta_frame["dec_deg"].iloc[0])
+            except (TypeError, ValueError, KeyError):
+                ra_deg = dec_deg = None
+
+        volc = build_volightcurve_from_band_table(
+            band_table,
+            asas_sn_id=asas_sn_id,
+            band_code=str(band),
+            ra_deg=ra_deg,
+            dec_deg=dec_deg,
+            epoch_jd=epoch_jd,
+            period_days=period_days,
+        )
+        return enrich_fetched_volightcurve(
+            volc,
+            band_code=str(band),
+            asas_sn_id=asas_sn_id,
+        )
 
     @staticmethod
-    def _resolve_source_id(
+    def _resolve_gaia_id(
         *,
         archive_id: str | None,
         object_name: str | None,

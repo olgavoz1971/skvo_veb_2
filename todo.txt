@@ -1,3 +1,18 @@
+Discovey page:
+Add
+ZTF
+Panstarrs
+AAVSO???
+ATLAS
+
+
+VO loghtcurve stabndards
+1) add facility / location to the lightcurve votable as obligartory
+parameters (topocentric times for example etc)
+
+2) Add data collection parameter into the lightcurve votable
+
+
 TESS Curve page
 		1) resolve -> do not touch list of sectors
 1a) clean -> list of sectors, lightcurves, pixel

@@ -178,11 +178,12 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
         )
         if debug_source is not None:
             table = self._catalog_for_debug_source(debug_source, distance_arcsec=0.0)
-            return filter_catalog_table_by_time_bounds(
+            filtered = filter_catalog_table_by_time_bounds(
                 table,
                 time_start_mjd=time_start_mjd,
                 time_end_mjd=time_end_mjd,
             )
+            return self.finalize_discovery_catalog(filtered)
 
         if ra_deg is not None and dec_deg is not None and radius_arcsec is not None:
             table = self._catalog_cone(
@@ -259,7 +260,7 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
         table = validate_catalog_table(Table(rows))
         query_row_count = len(table)
         truncated = self._truncate_catalog_table(table)
-        return self.annotate_discovery_truncation(
+        return self.finalize_discovery_catalog(
             truncated,
             cone_query_row_count=query_row_count,
         )
@@ -337,7 +338,13 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             row["period"] = band_model.period_days
         return row
 
-    def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
+    def fetch_lightcurve(
+        self,
+        lc_key: str,
+        *,
+        force_refresh: bool = False,
+        discovery_context=None,
+    ) -> VOLightCurve:
         """Builds synthetic Gaia passband epoch photometry for a debug ``lc_key``.
 
         Args:

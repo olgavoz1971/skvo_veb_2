@@ -367,6 +367,7 @@ Discovery orchestration uses these flags to choose Simbad fallbacks (see [§9 in
 - **Architecture and search flows:** [mission_lightcurve_providers.md](mission_lightcurve_providers.md)
 - **Repository layout:** [structure.md](structure.md)
 - **Working TAP example:** `skvo_veb/lc_providers/gaia_dr3_veb/`
+- **Non-TAP / Sky Patrol example:** `skvo_veb/lc_providers/asassn/` (cone + `query_list` on `stellar_main`, candidate band rows)
 - **Synthetic/debug example:** `skvo_veb/lc_providers/gaia_debug/`
 
 When adding a provider that needs a new search strategy or changes to shared code, agree the design with maintainers first (project rule).

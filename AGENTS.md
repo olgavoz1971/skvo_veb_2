@@ -178,6 +178,9 @@ Keep this structural pipeline in mind for every interactive feature you build:
 - The docstring must briefly state the purpose, expected inputs (with types), and return values.
 - Write docstrings immediately during the code generation phase; do not skip them for later.
 
+# Interaction with a developer
+- Do not implement code until the developer explicitly asks about this. The default is "Think, discuss, no code yet"
+
 # Scientific Data Integrity
 - **No Silent Fallbacks or Blind Failure Mitigation:** You are strictly forbidden from implementing *any* fallback mechanisms without explicit consultation with Developer
 - **Fail-Fast over Synthetic Defaults:** We are building scientific software. Under no circumstances should you invent default values, patch missing fields with dummy data, or silently bypass structural/type inconsistencies.

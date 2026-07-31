@@ -1504,6 +1504,8 @@ def write_vo_lightcurve(
     coosys_system: str | None = None,
     coosys_epoch: float | str | None = None,
     publication_id: str | None = None,
+    facility_name: str | None = None,
+    instrument_name: str | None = None,
 ):
     """Writes a lightcurve to a compliant IVOA VOTable (v1.4) XML file/stream.
 
@@ -1547,6 +1549,8 @@ def write_vo_lightcurve(
             no ``<COOSYS>`` element is written unless supplied via a ``VOLightCurve``.
         coosys_epoch (float or str, optional): ``COOSYS/@epoch`` (proper-motion epoch).
         publication_id (str, optional): Publication bibcode written as TABLE ``bibcode`` PARAM.
+        facility_name (str, optional): Observatory or facility name TABLE PARAM (may be empty).
+        instrument_name (str, optional): Instrument name TABLE PARAM (may be empty).
     """
     import astropy.io.votable as vot
     from astropy.io.votable.tree import Group, Param, Info, FieldRef, TimeSys, CooSys as VOTableCooSys
@@ -1766,6 +1770,20 @@ def write_vo_lightcurve(
         p_bib.utype = 'ssa:Curation.Reference'
         p_bib.description = 'URL or bibcode of a publication describing this data.'
         tab.params.append(p_bib)
+
+    for param_name, param_value in (
+        ("facility_name", facility_name),
+        ("instrument_name", instrument_name),
+    ):
+        p_fac = Param(
+            vot_file,
+            name=param_name,
+            value="" if param_value is None else str(param_value),
+            datatype="char",
+            arraysize="*",
+        )
+        p_fac.description = f"Observatory {param_name.replace('_', ' ')}"
+        tab.params.append(p_fac)
 
     meta_src = getattr(t, 'meta', None) or {}
     optional_char_params = (

@@ -158,14 +158,20 @@ class OgleOcvsProvider(MissionLightcurveProvider):
                 centre_ra_deg=ra,
                 centre_dec_deg=dec,
             )
-            return self.annotate_discovery_truncation(
+            return self.finalize_discovery_catalog(
                 catalog,
                 cone_query_row_count=len(tap_table),
             )
 
         return empty_catalog_table()
 
-    def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
+    def fetch_lightcurve(
+        self,
+        lc_key: str,
+        *,
+        force_refresh: bool = False,
+        discovery_context=None,
+    ) -> VOLightCurve:
         """Downloads one lightcurve from the SSA row ``accref`` URL.
 
         Args:

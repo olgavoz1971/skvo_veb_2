@@ -386,6 +386,10 @@ def catalog_results_header(outcome: SearchOutcome) -> str:
         str: Title text for the results table header.
     """
     if outcome.search_mode in (SEARCH_MODE_CONE, SEARCH_MODE_SIMBAD_CONE):
+        lookup = outcome.simbad_main_id or outcome.user_target
+        lookup_prefix = ""
+        if outcome.search_mode == SEARCH_MODE_SIMBAD_CONE and lookup and str(lookup).strip():
+            lookup_prefix = f"{str(lookup).strip()} — "
         if outcome.centre_ra_deg is not None and outcome.centre_dec_deg is not None:
             coord = SkyCoord(
                 ra=outcome.centre_ra_deg * u.deg,
@@ -398,8 +402,8 @@ def catalog_results_header(outcome: SearchOutcome) -> str:
                 outcome.radius_unit,
             )
             if radius_text:
-                return f"{coord_text}, r = {radius_text}"
-            return coord_text
+                return f"{lookup_prefix}{coord_text}, r = {radius_text}"
+            return f"{lookup_prefix}{coord_text}"
     return outcome.user_target
 
 

@@ -1080,6 +1080,11 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     if target_name.startswith("TESS_"):
         target_name = target_name[5:]
 
+    if "lookup_name" in meta:
+        lookup_name = meta.get("lookup_name") or ""
+    else:
+        lookup_name = target_name
+
     absolute_epoch = None
     if meta.get("epoch") is not None:
         try:
@@ -1089,7 +1094,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
 
     common_kwargs = dict(
         name=target_name,
-        lookup_name=target_name,
+        lookup_name=lookup_name,
         jd=jd_absolute,
         label=label_vals,
         time_unit="d",
@@ -1119,6 +1124,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
 
     lcd.metadata['ra'] = meta.get('ra')
     lcd.metadata['dec'] = meta.get('dec')
+    for key in ("facility_name", "instrument_name", "lookup_name", "ztf_oid", "user_search_target"):
+        if key in meta:
+            lcd.metadata[key] = meta.get(key)
     lcd.metadata[METADATA_KEY_VO_ENVELOPE] = _extract_vo_envelope_meta(volc, filename=filename)
     for key in ('authors', 'sectors', 'flux_origins'):
         if key in meta:
@@ -1425,6 +1433,10 @@ def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
     if publication_id and str(publication_id).strip():
         envelope[VO_ENVELOPE_KEY_PUBLICATION_ID] = str(publication_id).strip()
 
+    for key in ("facility_name", "instrument_name"):
+        if key in table_meta:
+            envelope[key] = table_meta.get(key)
+
     creator = table_meta.get("creator")
     if creator:
         envelope["creator"] = str(creator)
@@ -1530,6 +1542,12 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         kwargs["coosys_system"] = str(coosys_system)
         if envelope.get("coosys_epoch") is not None:
             kwargs["coosys_epoch"] = envelope["coosys_epoch"]
+
+    for key in ("facility_name", "instrument_name"):
+        if key in meta:
+            kwargs[key] = meta.get(key)
+        elif key in envelope:
+            kwargs[key] = envelope.get(key)
 
     return kwargs
 

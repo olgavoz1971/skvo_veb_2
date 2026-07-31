@@ -68,7 +68,12 @@ def discovery_export_basename(lcd: CurveDash) -> str:
     return sanitize_filename(f'lc_discovery_{title}')
 
 
-def fetch_discovery_volightcurve(lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
+def fetch_discovery_volightcurve(
+    lc_key: str,
+    *,
+    force_refresh: bool = False,
+    discovery_context=None,
+) -> VOLightCurve:
     """Fetches a mission lightcurve at the VO layer (no ``CurveDash``).
 
     Args:
@@ -89,7 +94,11 @@ def fetch_discovery_volightcurve(lc_key: str, *, force_refresh: bool = False) ->
     if not provider.validate_lc_key(lc_key):
         raise PipeException(f'{provider.display_name}: invalid lightcurve key.')
 
-    volc = provider.fetch_lightcurve(lc_key, force_refresh=force_refresh)
+    volc = provider.fetch_lightcurve(
+        lc_key,
+        force_refresh=force_refresh,
+        discovery_context=discovery_context,
+    )
     logger.info(
         'Discovery fetch mission=%s lc_key=%s n_points=%s force_refresh=%s',
         mission_id,
@@ -151,7 +160,12 @@ def apply_catalog_folding_hints(lcd: CurveDash, catalog_row: dict) -> None:
         lcd.epoch = time_offset_to_absolute_jd(float(epoch), JD_TO_MJD)
 
 
-def curvedash_from_catalog_row(catalog_row: dict, *, force_refresh: bool = False) -> CurveDash:
+def curvedash_from_catalog_row(
+    catalog_row: dict,
+    *,
+    force_refresh: bool = False,
+    discovery_context=None,
+) -> CurveDash:
     """Fetches and converts one catalogue row to ``CurveDash``.
 
     Args:
@@ -168,7 +182,11 @@ def curvedash_from_catalog_row(catalog_row: dict, *, force_refresh: bool = False
     if not lc_key:
         raise PipeException('Catalogue row is missing lc_key.')
 
-    volc = fetch_discovery_volightcurve(lc_key, force_refresh=force_refresh)
+    volc = fetch_discovery_volightcurve(
+        lc_key,
+        force_refresh=force_refresh,
+        discovery_context=discovery_context,
+    )
     lcd = volc_to_curvedash(
         volc,
         _volc_filename_from_catalog_row(catalog_row),

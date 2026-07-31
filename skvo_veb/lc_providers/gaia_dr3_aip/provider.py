@@ -166,7 +166,7 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             centre_ra_deg=centre_ra,
             centre_dec_deg=centre_dec,
         )
-        return self.annotate_discovery_truncation(
+        return self.finalize_discovery_catalog(
             catalog,
             cone_query_row_count=cone_query_row_count,
         )
@@ -179,7 +179,13 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
         """
         return "Gaia sources"
 
-    def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
+    def fetch_lightcurve(
+        self,
+        lc_key: str,
+        *,
+        force_refresh: bool = False,
+        discovery_context=None,
+    ) -> VOLightCurve:
         """Builds one passband lightcurve, fetching epoch photometry on demand.
 
         Args:

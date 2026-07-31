@@ -4,7 +4,7 @@
 
 **Human-readable how-to:** [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md) — shorter checklist for plugging in a new provider (including TAP).
 
-**Status:** Partially implemented (2026-07-17). `lc_providers/` package, Gaia mock provider, search orchestration (`utils/lc_discovery_search.py`), and Discovery Submit background callback are in place. ASAS-SN adapter and Load/fetch wiring are next.
+**Status:** Implemented for Discovery (2026-07-30). `lc_providers/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Download on `/lc_discovery`. Legacy `/asassn` page remains until retired.
 
 **Related docs:**
 - [lightcurve_data_flow.md](lightcurve_data_flow.md) — existing layer boundaries (`VOLightCurve` ↔ `CurveDash` ↔ export)
@@ -528,16 +528,20 @@ Fetch cache should store VOTable bytes so multiple users and notebooks share the
 
 ---
 
-## 13. ASAS-SN adapter (planned reference implementation)
+## 13. ASAS-SN adapter (implemented)
 
-| Step | Current | Target |
-|------|---------|--------|
-| Discovery | Name / Gaia lookup (no cone) | `search_catalog()` → 0–2 row catalog (`V`, `g`); Simbad main-name retry per §9 |
-| Fetch | `load_asassn_lightcurve()` → **CurveDash** | SkyPatrol → Table → `write_vo_lightcurve` → **VOLightCurve** |
-| App | Direct CurveDash in page | `volc_to_curvedash()` → session cache |
-| Export | `profile="asassn"` | Unchanged via `export_curvedash` |
+Package: `skvo_veb/lc_providers/asassn/` (`AsassnProvider`, registered as `asassn`).
 
-Existing tests: `tests/test_asassn_export.py` — fetch output should match the same semantic content those tests expect in VOTable form.
+| Area | Behaviour |
+|------|-----------|
+| Discovery | `stellar_main` + `cols` (`asas_sn_id`, `ra_deg`, `dec_deg`, `pstarrs_g_mag`); cone, Gaia id, or Simbad name; **two candidate rows** per source (`g`, `V`); `mag` on **g** only; shared `provider_note`; no discovery time filter |
+| Truncation | Cap **source count** (100) before ×2; entity label “ASAS-SN sources” |
+| Fetch | `lc_key`: `asas_sn_id` + `band`; Sky Patrol `download=True`; empty band → fail fast; epoch/period via `aavsovsx` ADQL at enrich |
+| Cache | None in provider (legacy page still uses `request_asassn` pickle cache) |
+| Export | `export_profile="asassn"` → `mission_config.asassn` via `export_curvedash` |
+| Legacy | `/asassn` + `utils/request_asassn.py` unchanged |
+
+Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asassn_export.py` (legacy export profile).
 
 ---
 
@@ -546,14 +550,15 @@ Existing tests: `tests/test_asassn_export.py` — fetch output should match the 
 **Done:**
 1. `lc_providers/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
 2. `lc_providers/gaia_debug/` (mock: cone, direct source_id, Simbad id pick)
-3. `utils/simbad_resolver.py`, `utils/lc_discovery_search.py` (Discovery orchestration)
-4. Discovery UI + Submit/Cancel background callback + mission-change clear
-5. Tests: `test_lc_providers_*`, `test_lc_discovery_search.py`
+3. Gaia DR3 AIP, ARI, VEB TAP providers
+4. **`lc_providers/asassn/`** — Sky Patrol discovery + fetch → `VOLightCurve`
+5. `utils/simbad_resolver.py`, `utils/lc_discovery_search.py` (Discovery orchestration)
+6. Discovery UI + Submit/Download + truncation notices
+7. Tests: `test_lc_providers_*`, `test_lc_discovery_search.py`, `test_lc_providers_asassn.py`
 
 **Next:**
-6. **`lc_providers/asassn.py`** — SkyPatrol; fetch returns `VOLightCurve`
-7. Discovery **Load selected** → `fetch_lightcurve` → `volc_to_curvedash` → plot tab
-8. Search result caching (§11) — optional follow-up
+- Retire standalone `/asassn` when Discovery parity is confirmed
+- Search result caching (§11) — optional follow-up
 
 ---
 

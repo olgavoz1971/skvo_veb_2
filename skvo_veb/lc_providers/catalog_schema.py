@@ -107,6 +107,26 @@ def validate_catalog_table(table: Table) -> Table:
     return result
 
 
+def sort_catalog_by_distance(table: Table) -> Table:
+    """Sorts catalogue rows by ascending ``distance_arcsec`` (masked last).
+
+    Args:
+        table (astropy.table.Table): Standardised discovery catalogue.
+
+    Returns:
+        astropy.table.Table: Sorted copy when the column is present.
+    """
+    if len(table) == 0 or "distance_arcsec" not in table.colnames:
+        return table
+    distances = np.asarray(table["distance_arcsec"], dtype=np.float64)
+    if np.ma.isMaskedArray(distances):
+        fill = np.nanmax(distances.filled(np.nan)) + 1.0 if len(distances) else 0.0
+        order = np.argsort(distances.filled(fill))
+    else:
+        order = np.argsort(distances, kind="stable")
+    return table[order]
+
+
 def read_discovery_truncation_meta(table: Table) -> tuple[bool, str | None]:
     """Reads discovery truncation hints attached by a mission provider.
 

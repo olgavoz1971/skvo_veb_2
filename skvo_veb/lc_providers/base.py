@@ -12,7 +12,9 @@ from astropy.table import Table
 from skvo_veb.lc_providers.catalog_schema import (
     DISCOVERY_META_MAY_BE_TRUNCATED,
     DISCOVERY_META_TRUNCATION_DETAIL,
+    sort_catalog_by_distance,
 )
+from skvo_veb.lc_providers.discovery_fetch_context import DiscoveryFetchContext
 from skvo_veb.lc_providers.lc_key import cache_key, validate_lc_key
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
@@ -96,12 +98,20 @@ class MissionLightcurveProvider(ABC):
         """
 
     @abstractmethod
-    def fetch_lightcurve(self, lc_key: str, *, force_refresh: bool = False) -> VOLightCurve:
+    def fetch_lightcurve(
+        self,
+        lc_key: str,
+        *,
+        force_refresh: bool = False,
+        discovery_context: DiscoveryFetchContext | None = None,
+    ) -> VOLightCurve:
         """Fetches one lightcurve and returns a VO-standard in-memory object.
 
         Args:
             lc_key (str): Opaque fetch handle from a catalog row.
             force_refresh (bool): When True, bypass provider-local caches.
+            discovery_context (DiscoveryFetchContext, optional): Discovery session
+                metadata for title enrichment (mission-specific).
 
         Returns:
             VOLightCurve: Parsed VO lightcurve compliant with the skvo_veb profile.
@@ -245,6 +255,28 @@ class MissionLightcurveProvider(ABC):
             entity,
         )
         return catalog
+
+    def finalize_discovery_catalog(
+        self,
+        catalog: Table,
+        *,
+        cone_query_row_count: int | None = None,
+    ) -> Table:
+        """Sorts discovery rows by distance and applies truncation hints.
+
+        Args:
+            catalog (astropy.table.Table): Standardised discovery catalogue.
+            cone_query_row_count (int, optional): Raw cone query row count before
+                catalogue expansion.
+
+        Returns:
+            astropy.table.Table: Sorted catalogue with optional truncation meta.
+        """
+        sorted_catalog = sort_catalog_by_distance(catalog)
+        return self.annotate_discovery_truncation(
+            sorted_catalog,
+            cone_query_row_count=cone_query_row_count,
+        )
 
     def max_discovery_search_radius_deg(self) -> float:
         """Returns the maximum allowed cone search radius in degrees.

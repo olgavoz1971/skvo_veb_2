@@ -17,6 +17,7 @@ from dash.exceptions import PreventUpdate
 
 from skvo_veb.components import message
 from skvo_veb.logging_config import configure_logging
+from skvo_veb.lc_providers.discovery_fetch_context import discovery_fetch_context_from_store
 from skvo_veb.lc_providers.registry import list_missions
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import apply_phot_domain_view, export_curvedash, export_file_extension
@@ -1509,6 +1510,7 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         mission_id=State('lc_discovery_mission_switch', 'value'),
         lc_key=State('store_lc_discovery_selected_key', 'data'),
         row_data=State('lc_discovery_catalog_table', 'rowData'),
+        search_metadata=State('store_lc_discovery_resolved_target', 'data'),
         phase_view=State('lc_discovery_fold_switch', 'value'),
         user_tab_id=State('store_lc_discovery_user_tab_id', 'data'),
     ),
@@ -1527,6 +1529,7 @@ def fetch_lc_discovery_lightcurve(
     mission_id,
     lc_key,
     row_data,
+    search_metadata,
     phase_view,
     user_tab_id,
 ):
@@ -1542,6 +1545,7 @@ def fetch_lc_discovery_lightcurve(
         mission_id (str): Selected mission slug from the UI.
         lc_key (str): Serialised fetch handle for the selected row.
         row_data (list[dict]): Current AgGrid catalogue rows.
+        search_metadata (dict, optional): Serialised Discovery search outcome store.
         phase_view (bool): Current fold switch state.
         user_tab_id (str, optional): Session plot-store key.
 
@@ -1599,7 +1603,15 @@ def fetch_lc_discovery_lightcurve(
     fold_warning_style = {'display': 'none'}
 
     try:
-        lcd = curvedash_from_catalog_row(catalog_row, force_refresh=force_refresh)
+        discovery_context = discovery_fetch_context_from_store(
+            search_metadata,
+            catalog_row,
+        )
+        lcd = curvedash_from_catalog_row(
+            catalog_row,
+            force_refresh=force_refresh,
+            discovery_context=discovery_context,
+        )
         lcd.folded_view = bool(phase_view)
 
         period = lcd.period

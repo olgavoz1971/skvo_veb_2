@@ -40,10 +40,12 @@ def test_registered_provider_search_radius_caps():
         "gaia": 1.0,
         "gaia_dr3_aip": 1.0,
         "gaia_dr3_ari": 1.0,
+        "asassn": 10.0,
         "gaia_dr3_veb": 10.0,
         "upjs_ts": 30.0,
         "personal_ts": 30.0,
         "ogle_ocvs": 10.0,
+        "ztf_dr24": 1.0,
     }
     for mission_id, max_deg in expected.items():
         assert PROVIDERS[mission_id].max_discovery_search_radius_deg() == max_deg
