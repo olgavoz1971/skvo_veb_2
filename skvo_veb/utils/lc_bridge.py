@@ -99,6 +99,72 @@ def read_to_volc(file_source):
         raise
 
 
+def _read_dat_upload_table(file_source) -> Table:
+    """Reads a ``.dat`` upload preserving all ``#`` metadata comment lines.
+
+    Uses a blank-line-free ASCII reader so ``# JD0=``, ``# FILTER=``, and a separate
+    ``# jd mag mag_err`` header comment coexist (unlike ``ascii.commented_header``,
+    which treats only the first ``#`` line as column names).
+
+    Args:
+        file_source: Path or readable binary stream.
+
+    Returns:
+        astropy.table.Table: Data rows with ``meta['comments']`` populated.
+    """
+    from astropy.io import ascii
+
+    if hasattr(file_source, "seek"):
+        file_source.seek(0)
+    return ascii.read(file_source, comment="#")
+
+
+def ingest_volightcurve_file(
+    file_source,
+    filename: str,
+    *,
+    table_id: str | int | None = None,
+) -> VOLightCurve:
+    """Canonical user-upload ingest: always returns a ``VOLightCurve``.
+
+    Dispatches by file extension so TESS, GP, and future pages share one parse path.
+    VOTable products use full VO metadata ingest. Tabular formats use explicit Astropy
+    readers; ``.dat`` uses ``ascii.read(..., comment='#')`` so ``JD0`` / ``FILTER`` /
+    column-name comments are all kept in ``table.meta['comments']`` before heuristics run.
+
+    Args:
+        file_source (str or file-like): Path or open binary stream.
+        filename (str): Original upload filename (required for format detection).
+        table_id (str or int, optional): Select one embedded VOTable table.
+
+    Returns:
+        VOLightCurve: Parsed lightcurve with timescale and photometry metadata.
+    """
+    ext = Path(filename).suffix.lower().lstrip(".")
+    if ext in ("vot", "xml"):
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        return VOLightCurve(file_source, table_id=table_id)
+
+    tabular_formats = {
+        "ecsv": "ascii.ecsv",
+        "csv": "csv",
+    }
+    if ext == "dat":
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        return VOLightCurve.from_table(_read_dat_upload_table(file_source))
+    if ext in tabular_formats:
+        if hasattr(file_source, "seek"):
+            file_source.seek(0)
+        table = Table.read(file_source, format=tabular_formats[ext])
+        return VOLightCurve.from_table(table)
+
+    if hasattr(file_source, "seek"):
+        file_source.seek(0)
+    return VOLightCurve(file_source, table_id=table_id)
+
+
 def ingest_lightcurve_file(file_source, filename: str):
     """Ingests an uploaded lightcurve file into a ``CurveDash`` instance.
 
@@ -113,23 +179,9 @@ def ingest_lightcurve_file(file_source, filename: str):
         CurveDash: Parsed application lightcurve state.
     """
     ext = Path(filename).suffix.lower().lstrip(".")
-    if ext in ("vot", "xml"):
-        volc = read_to_volc(file_source)
-        return volc_to_curvedash(volc, filename, preserve_photcal=True)
-
-    tabular_formats = {
-        "ecsv": "ascii.ecsv",
-        "csv": "csv",
-        "dat": "ascii.commented_header",
-    }
-    if ext in tabular_formats:
-        if hasattr(file_source, "seek"):
-            file_source.seek(0)
-        table = Table.read(file_source, format=tabular_formats[ext])
-        return tabular_table_to_curvedash(table, filename)
-
-    volc = read_to_volc(file_source)
-    return volc_to_curvedash(volc, filename, preserve_photcal=False)
+    preserve_photcal = ext in ("vot", "xml")
+    volc = ingest_volightcurve_file(file_source, filename)
+    return volc_to_curvedash(volc, filename, preserve_photcal=preserve_photcal)
 
 
 def tabular_table_to_curvedash(table: Table, filename: str):
@@ -305,6 +357,28 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     f = f_data.value if hasattr(f_data, 'value') else f_data
 
     # Final Construction
+    table_meta = lc.table.meta or {}
+    meta_block = {
+        "active_domain": "mag" if primary_col in mag_cols else "flux",
+        "jd0": lc.timesys.jd0,
+        "photcal": photcal_meta,
+    }
+    timesys = lc.timesys
+    if timesys is not None:
+        if timesys.timescale:
+            meta_block["timescale"] = str(timesys.timescale).upper()
+        if timesys.refposition:
+            meta_block["refposition"] = str(timesys.refposition).upper()
+    if table_meta.get("period") is not None:
+        meta_block["period"] = float(table_meta["period"])
+    if table_meta.get("epoch") is not None:
+        try:
+            meta_block["epoch"] = float(
+                normalise_table_epoch_to_absolute_jd(lc, table_meta.get("epoch"))
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning("Could not normalise epoch for transport JSON: %s", exc)
+
     struct = {
         "schema": {
             "time": time_col,
@@ -313,11 +387,7 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
             "flag": flag_col,  # None if missing
         },
         "data": [list(row) for row in zip(t, v, e, f)],
-        "meta": {
-            "active_domain": "mag" if primary_col in mag_cols else "flux",
-            "jd0": lc.timesys.jd0,
-            "photcal": photcal_meta
-        }
+        "meta": meta_block,
     }
 
     return json.dumps(struct, cls=LCEncoder)
@@ -416,7 +486,9 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
         'flag': f,
         'x_label': "Julian Date (JD)",
         'y_label': "Magnitude" if view_mode == 'mag' else "Flux",
-        'is_mag': (view_mode == 'mag')
+        'is_mag': (view_mode == 'mag'),
+        'timescale': meta.get('timescale'),
+        'refposition': meta.get('refposition'),
     }
 
 
@@ -793,6 +865,8 @@ def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
             logger.warning("Could not serialise effective wavelength: %s", exc)
 
     filter_name = table_meta.get("filter") or table_meta.get("filter_name")
+    if not filter_name and phot_filter and phot_filter.filter_id:
+        filter_name = phot_filter.filter_id
     if filter_name:
         meta[PHOTCAL_KEY_FILTER_NAME] = str(filter_name)
 
@@ -998,8 +1072,10 @@ def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
         lcd.metadata["flux_origins"] = _parse_list_meta(meta["method"])
     if meta.get("filter"):
         lcd.metadata.setdefault("photcal", {})
-        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] = meta["filter"]
-    for key in ("ra", "dec", "period", "epoch", "name"):
+        filter_label = str(meta["filter"])
+        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] = filter_label
+        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_IDENTIFIER] = filter_label
+    for key in ("ra", "dec", "period", "name"):
         if meta.get(key) is not None:
             lcd.metadata[key] = meta[key]
 
@@ -1134,6 +1210,8 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     if not preserve_photcal:
         lcd.metadata['photcal'] = {}
         _apply_tabular_meta_to_curvedash(lcd, meta)
+    if absolute_epoch is not None:
+        lcd.epoch = absolute_epoch
     if meta.get('stitched') in (True, 'true', 'True', '1', 1):
         lcd.metadata['stitched'] = True
         lcd.metadata['photcal'] = _strip_zero_points_from_photcal(lcd.metadata.get('photcal'))
@@ -1675,7 +1753,7 @@ def main():
     ]:
         logger.info('Ingesting %s', filename)
 
-        lc1 = read_to_volc(filename)
+        lc1 = ingest_volightcurve_file(filename, Path(filename).name)
         logger.info('%s', lc1)
         json_str = pack_volc_to_json(lc1)
         pretty_print_lc_json(json_str)

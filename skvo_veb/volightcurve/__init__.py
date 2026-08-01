@@ -20,4 +20,5 @@ __all__ = [
     "is_flux_column",
     "is_magnitude_phot_column",
     "assign_photometry_column_semantics",
+    "apply_non_votable_heuristics",
 ]

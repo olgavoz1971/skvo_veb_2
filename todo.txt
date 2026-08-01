@@ -65,3 +65,5 @@ In the sqlite table? NOT IN THE MAIN Postgresq Database
  instrumnet s present in ssa_row, facility name -- not, in the Obscore only. Add?
 And after make cooresponded provider tae this infor from lc parameters
 rather than from config
+
+# Filters schema -- add all filters used by pluginned surveys

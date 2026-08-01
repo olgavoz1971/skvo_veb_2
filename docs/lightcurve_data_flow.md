@@ -64,27 +64,40 @@ Accessors for plotting and export:
 ### 3.1 User upload (file → cache)
 
 ```text
-  [ Uploaded file (.vot / .dat / .csv) ]
+  [ Uploaded file (.vot / .dat / .csv / .ecsv) ]
                  |
                  v
-         ingest_lightcurve_file()       ← lc_bridge (dispatches by extension)
+         ingest_volightcurve_file()     ← lc_bridge (dispatches by extension; always VOLightCurve)
                  |
        +---------+---------+
        |                   |
    .vot / .xml          .csv / .dat / .ecsv
        |                   |
        v                   v
-  VOLightCurve(file)   tabular_table_to_curvedash()
+  VOLightCurve(file)   Table.read (explicit format)
        |                   |
-       v                   |
-  volc_to_curvedash()  ←---+  (JD0, column map, photcal meta; no domain conversion)
+       |                   v
+       |            VOLightCurve.from_table()
+       |                   |
+       +---------+---------+
                  |
                  v
-         CurveDash.serialize()           ← {"lightcurve": {...}, "metadata": {...}}
+         volc_to_curvedash()            ← TESS / cutout pages → CurveDash → cache
                  |
                  v
-         DiskCache (server-side UUID)
+         pack_volc_to_json()            ← GP O-C page → dcc.Store transport JSON
 ```
+
+Comment-header metadata for **`.dat`** files is documented in [dat_lightcurve_comments.md](dat_lightcurve_comments.md).
+
+Legacy diagram note: ``ingest_lightcurve_file()`` is now a thin wrapper around
+``ingest_volightcurve_file()`` plus ``volc_to_curvedash()``.
+
+```text
+         volc_to_curvedash()  →  CurveDash.serialize()  →  DiskCache (server-side UUID)
+```
+
+(GP page skips CurveDash and uses ``pack_volc_to_json()`` into ``dcc.Store`` instead.)
 
 #### VOTable ingest inside `VOLightCurve._ingest` (`.vot` / `.xml`)
 
@@ -209,6 +222,7 @@ The **cutout** profile records `cutout_source` (FFI/TPF), `mask_mode` (handmade/
 
 - `JD_TO_MJD` — Julian Date offset for Modified Julian Date (2400000.5); `MJD = JD - JD_TO_MJD`
 - `DEFAULT_EPOCH_JD` — alias of `JD_TO_MJD`; used for relative JD plot axes
+- `display_epoch_offset()` / `absolute_jd_from_display_epoch()` — convert between **absolute JD** (cache, `CurveDash.epoch`, transport `meta.epoch`) and **UI fold inputs** labelled `Epoch-{DEFAULT_EPOCH_JD}` (MJD-style offset). TESS, discovery, and GP prep plots use that offset in the fold field when the time axis is MJD; GP intervals and GP pipeline still store **absolute JD**.
 - `FALLBACK_MAG_ZERO_POINT` — used when PhotCal metadata is missing
 - `MAG_TO_FLUX_ERR_FACTOR`, `FLUX_TO_MAG_ERR_FACTOR` — fallback error propagation
 - `DOMAIN_FLUX`, `DOMAIN_MAG` — domain identifier constants
@@ -219,6 +233,21 @@ The **cutout** profile records `cutout_source` (FFI/TPF), `mask_mode` (handmade/
 - `resolve_tess_photcal()` / pipeline rules for export zero-point inclusion
 
 Import config modules wholesale; do not scatter constants across callbacks.
+
+### Folding period and epoch in the UI
+
+**Canonical time (all products)**
+
+1. **Ingest:** Time column offsets and ``EPOCH`` use the file time origin (VOTable ``TIMESYS/@timeorigin``; ``.dat`` ``JD0=`` is the same role). Both are converted to **absolute Julian Date** with that **same** origin.
+2. **Storage:** ``CurveDash.jd`` and ``metadata['epoch']`` are always absolute JD. ``vo_envelope['source_timeorigin']`` is provenance for export only.
+3. **Display (MJD lightcurve pages):** The time axis **and** the epoch fold input both use **MJD**: ``absolute_JD - DEFAULT_EPOCH_JD`` (2400000.5). The epoch field never uses a different origin than the plotted time axis.
+
+**UI behaviour**
+
+1. **On upload**, period/epoch inputs are prefilled from file metadata (epoch via ``display_epoch_offset(..., DEFAULT_EPOCH_JD)``).
+2. **User edits win** for folding, replot, shift-to-min, trim/export: callbacks read ``State`` from the inputs and apply those values to ``lcd.period`` / ``lcd.epoch``.
+3. **Folding** uses ``absolute_jd_from_display_epoch(input, DEFAULT_EPOCH_JD)`` so the stored epoch stays absolute JD and matches the MJD axis.
+4. **TIMESYS labels** (timescale, refposition) describe the file product; they do not imply a second display origin for epoch alone.
 
 ---
 

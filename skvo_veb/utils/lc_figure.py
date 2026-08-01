@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
     DOMAIN_MAG,
+    METADATA_KEY_VO_ENVELOPE,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
     normalize_time_axis_mode,
@@ -29,6 +31,119 @@ DATE_X_TICKFORMAT = '%Y-%m-%d'
 DATE_X_HOVERFORMAT = '%Y-%m-%d %H:%M'
 
 
+def format_timesys_axis_suffix(
+    timescale: str | None = None,
+    refposition: str | None = None,
+) -> str:
+    """Builds a parenthetical TIMESYS annotation for plot axis titles.
+
+    Args:
+        timescale (str, optional): ``TIMESYS/@timescale`` (for example ``TCB``).
+        refposition (str, optional): ``TIMESYS/@refposition`` (for example ``BARYCENTER``).
+
+    Returns:
+        str: ``" (TCB, BARYCENTER)"`` or ``""`` when no metadata is available.
+    """
+    parts = []
+    if timescale:
+        parts.append(str(timescale).strip().upper())
+    if refposition:
+        parts.append(str(refposition).strip().upper())
+    if not parts:
+        return ""
+    return f" ({', '.join(parts)})"
+
+
+def _astropy_scale_for_timesys(timescale: str | None) -> str | None:
+    """Maps VOTable ``TIMESYS/@timescale`` to an Astropy ``Time`` scale when supported.
+
+    Args:
+        timescale (str, optional): TIMESYS timescale string from ingest.
+
+    Returns:
+        str or None: Lower-case Astropy scale, or ``None`` when unsupported/absent.
+    """
+    if not timescale:
+        return None
+    scale = str(timescale).strip().lower()
+    if scale in ("hjd", "bjd"):
+        return None
+    return scale
+
+
+def time_axis_xaxis_title(
+    time_axis_mode: str,
+    timescale: str | None = None,
+    refposition: str | None = None,
+) -> str:
+    """Returns the unfolded time-axis title for a lightcurve plot.
+
+    Args:
+        time_axis_mode (str): ``mjd`` or ``date``.
+        timescale (str, optional): Ingested ``TIMESYS/@timescale``; never invented.
+        refposition (str, optional): Ingested ``TIMESYS/@refposition``.
+
+    Returns:
+        str: Axis title matching ``_build_time_axis`` (no default timescale).
+    """
+    suffix = format_timesys_axis_suffix(timescale, refposition)
+    mode = normalize_time_axis_mode(time_axis_mode)
+    if mode == TIME_AXIS_DATE:
+        return f"Date{suffix}" if suffix else "Date"
+    return f"MJD{suffix}" if suffix else "MJD"
+
+
+def absolute_jd_to_plot_x(
+    jd_values,
+    time_axis_mode: str,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+    *,
+    timescale: str | None = None,
+):
+    """Maps absolute Julian Date(s) to Plotly x coordinates for the active axis mode.
+
+    Args:
+        jd_values: Scalar or array-like absolute JD.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        display_epoch (float): Reference subtracted in MJD mode.
+        timescale (str, optional): ``TIMESYS/@timescale`` for calendar-date plotting.
+
+    Returns:
+        float, numpy.ndarray, or list: Plot x values (MJD offset or datetimes).
+    """
+    from astropy.time import Time
+
+    mode = normalize_time_axis_mode(time_axis_mode)
+    scalar = np.isscalar(jd_values) or (
+        isinstance(jd_values, (float, int)) and not hasattr(jd_values, '__len__')
+    )
+    arr = np.atleast_1d(np.asarray(jd_values, dtype=float))
+    if mode == TIME_AXIS_DATE:
+        scale = _astropy_scale_for_timesys(timescale)
+        if scale:
+            converted = Time(arr, format="jd", scale=scale).datetime
+        else:
+            converted = Time(arr, format="jd").datetime
+        if scalar and len(converted) == 1:
+            return converted[0]
+        return list(converted)
+    out = arr - float(display_epoch)
+    if scalar and out.size == 1:
+        return float(out[0])
+    return out
+
+
+def apply_time_xaxis_format(fig, *, phase_view: bool, time_axis_mode: str) -> None:
+    """Applies variable-star-friendly x-axis tick formatting (public wrapper).
+
+    Args:
+        fig (plotly.graph_objects.Figure): Target figure.
+        phase_view (bool): Whether the x-axis shows phase.
+        time_axis_mode (str): ``mjd`` or ``date`` when not in phase view.
+    """
+    _apply_time_xaxis_format(fig, phase_view=phase_view, time_axis_mode=time_axis_mode)
+
+
 def _build_time_axis(lcd, display_epoch: float, time_axis_mode: str):
     """Builds x-axis values and label for the unfolded time view.
 
@@ -42,17 +157,26 @@ def _build_time_axis(lcd, display_epoch: float, time_axis_mode: str):
     """
     from astropy.time import Time
 
-    timescale_label = safe_none(lcd.timescale) or 'UTC'
+    timescale_label = safe_none(lcd.timescale)
+    envelope = (lcd.metadata or {}).get(METADATA_KEY_VO_ENVELOPE) or {}
+    refposition = envelope.get("refposition")
+    suffix = format_timesys_axis_suffix(timescale_label, refposition)
     jd = lcd.jd
     mode = normalize_time_axis_mode(time_axis_mode)
 
     if mode == TIME_AXIS_DATE:
-        time_values = Time(jd, format='jd')
+        scale = _astropy_scale_for_timesys(timescale_label)
+        if scale:
+            time_values = Time(jd, format="jd", scale=scale)
+        else:
+            time_values = Time(jd, format="jd")
         x = pd.Series(time_values.datetime, index=jd.index if hasattr(jd, 'index') else None)
-        return x, 'time', f'Date ({timescale_label})'
+        title = f"Date{suffix}" if suffix else "Date"
+        return x, 'time', title
 
     x = jd - display_epoch if jd is not None else jd
-    return x, 'mjd', f'MJD ({timescale_label})'
+    title = f"MJD{suffix}" if suffix else "MJD"
+    return x, 'mjd', title
 
 
 def _apply_time_xaxis_format(fig, *, phase_view: bool, time_axis_mode: str) -> None:

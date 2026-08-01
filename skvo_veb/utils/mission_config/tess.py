@@ -376,8 +376,15 @@ def build_archive_votable_kwargs(lcd) -> dict:
         else ""
     )
 
+    filter_identifier = photcal_fields.get("filter_identifier") or photcal.get(
+        PHOTCAL_KEY_FILTER_IDENTIFIER
+    )
+    if not filter_identifier:
+        filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_NAME) or TESS_FILTER_IDENTIFIER
+
     return {
         "table_name": f"TESS_{sanitize_filename(tic_id)}",
+        "filter_identifier": str(filter_identifier),
         "refposition": TESS_REFPOSITION,
         "timescale": TESS_TIMESCALE,
         "timeorigin": JD_TO_MJD,

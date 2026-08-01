@@ -960,29 +960,90 @@ def _pickup_mag0_from_table(table):
     return 0.0
 
 
-def _pickup_filter_from_table(table):
-    """Scans the table comments for filter/band identification.
-
-    Matches comments containing patterns like: FILTER=Gaia_G.v2 or BAND = r.
+def _pickup_period_from_table(table):
+    """Parses ``PERIOD=`` from comment metadata (folding period in days).
 
     Args:
         table (astropy.table.Table): The table to scan.
 
     Returns:
-        str: The extracted filter name or identifier if found, otherwise "Unknown".
+        float or None: Period in days if a matching comment line exists.
     """
-    # Matches alphanumeric, dots, underscores, and dashes after the '='
-    filter_pattern = re.compile(r"(?:FILTER|BAND)\s*=\s*([\w\.\-]+)")
-
-    for line in table.meta.get('comments', []):
-        match = filter_pattern.search(line.upper())
+    pattern = re.compile(
+        r"PERIOD\s*=\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
+        re.IGNORECASE,
+    )
+    for line in table.meta.get("comments", []):
+        match = pattern.search(line)
         if match:
-            # We return the original case from the line, not the upper() version
-            # so 'Gaia_G' doesn't become 'GAIA_G'
-            actual_line = line.split('=')[-1].strip()
-            return actual_line.split()[0]  # Take first word to avoid trailing comments
+            return float(match.group(1))
+    return None
 
-    return "Unknown"
+
+def _pickup_epoch_from_table(table):
+    """Parses ``EPOCH=`` from comment metadata (same time scale as the time column).
+
+    The value is stored in ``table.meta['epoch']`` and converted to absolute JD when
+    packing transport JSON (respecting ``JD0`` / TIMESYS, same as VOTable PARAMs).
+
+    Args:
+        table (astropy.table.Table): The table to scan.
+
+    Returns:
+        float or None: Epoch coordinate if a matching comment line exists.
+    """
+    pattern = re.compile(
+        r"EPOCH\s*=\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)",
+        re.IGNORECASE,
+    )
+    for line in table.meta.get("comments", []):
+        match = pattern.search(line)
+        if match:
+            return float(match.group(1))
+    return None
+
+
+_DAT_METADATA_COMMENT = re.compile(
+    r"(?:JD0|MAG0|PERIOD|EPOCH|FILTER|BAND)\s*=",
+    re.IGNORECASE,
+)
+
+
+def _is_dat_metadata_comment_line(line: str) -> bool:
+    """Return True when a ``#`` comment line carries ``KEY=value`` metadata, not column names.
+
+    Args:
+        line (str): One entry from ``table.meta['comments']`` (without leading ``#``).
+
+    Returns:
+        bool: True for lines such as ``JD0 = 0`` or ``FILTER=Gaia/GAIA3.G``.
+    """
+    text = line.strip().lstrip("#").strip()
+    return bool(_DAT_METADATA_COMMENT.search(text))
+
+
+def _pickup_filter_from_table(table):
+    """Scans the table comments for filter/band identification.
+
+    Matches comments containing patterns like: FILTER=Gaia/GAIA3.G or BAND = r.
+
+    Args:
+        table (astropy.table.Table): The table to scan.
+
+    Returns:
+        str or None: Filter or band identifier if found.
+    """
+    filter_pattern = re.compile(
+        r"(?:FILTER|BAND)\s*=\s*(\S+)",
+        re.IGNORECASE,
+    )
+
+    for line in table.meta.get("comments", []):
+        match = filter_pattern.search(line)
+        if match:
+            return match.group(1).strip()
+
+    return None
 
 
 def _recover_lc_colnames(table):
@@ -998,12 +1059,21 @@ def _recover_lc_colnames(table):
     Returns:
         astropy.table.Table: The renamed table.
     """
-    comments = table.meta.get('comments', [])
+    comments = table.meta.get('comments', []) or []
     num_cols = len(table.colnames)
+    generic_cols = any(
+        re.match(r"^col\d+$", name, re.IGNORECASE) for name in table.colnames
+    )
+    broken_header = "=" in table.colnames
+    if not generic_cols and not broken_header:
+        return table
+
     found_header = None
 
     # Look into the comments
     for line in comments:
+        if _is_dat_metadata_comment_line(line):
+            continue
         # Remove #, strip, and split into words
         parts = line.strip().lstrip('#').strip().split()
 
@@ -1016,7 +1086,7 @@ def _recover_lc_colnames(table):
     for i, colname in enumerate(table.colnames):
         if found_header:
             new_name = found_header[i]
-        else:
+        elif generic_cols or broken_header:
             # RIGID POSITIONAL FALLBACK
             if i == 0:
                 new_name = 'obs_time'
@@ -1026,10 +1096,81 @@ def _recover_lc_colnames(table):
                 new_name = 'mag_err'
             else:
                 new_name = f'col{i + 1}'
+        else:
+            continue
 
         if colname != new_name:
             table.rename_column(colname, new_name)
     return table
+
+
+def apply_non_votable_heuristics(volc: "VOLightCurve") -> None:
+    """Apply column promotion and comment-header metadata for non-VOTable tables.
+
+    Mutates ``volc.table``, ``volc.timesys``, and ``volc.photdms`` in place.
+    Comment-line conventions (primarily ``.dat`` uploads) include ``JD0=`` (default 0),
+    ``MAG0=``, ``PERIOD=``, ``EPOCH=``, and ``FILTER=`` / ``BAND=``.
+
+    Args:
+        volc (VOLightCurve): Parsed instance with ``table`` already assigned.
+    """
+    volc.table = _recover_lc_colnames(volc.table)
+    volc.table = _promote_to_vo_standards(volc.table)
+    volc.timesys.timeorigin = _pickup_jd0_from_table(volc.table)
+    if volc.table.meta is None:
+        volc.table.meta = {}
+    period = _pickup_period_from_table(volc.table)
+    if period is not None:
+        volc.table.meta["period"] = period
+    epoch = _pickup_epoch_from_table(volc.table)
+    if epoch is not None:
+        volc.table.meta["epoch"] = epoch
+    heur_filter_id = _pickup_filter_from_table(volc.table)
+    if heur_filter_id:
+        volc.table.meta["filter"] = heur_filter_id
+    heur_mag0 = _pickup_mag0_from_table(volc.table)
+    mag0_in_comments = _mag0_declared_in_comments(volc.table)
+
+    for colname in volc.get_flux_colnames() + volc.get_mag_colnames():
+        photdm = volc.photdms.get(colname, None)
+
+        if photdm is None:
+            new_filter = (
+                PhotometryFilter(filter_id=heur_filter_id)
+                if heur_filter_id
+                else PhotometryFilter()
+            )
+            if mag0_in_comments:
+                photcal = PhotCal(
+                    zp_flux=1.0,
+                    zp_flux_unit=None,
+                    zp_mag=heur_mag0,
+                    zp_mag_unit="mag",
+                )
+            else:
+                photcal = None
+            volc.photdms[colname] = PhotDM(photcal=photcal, photometry_filter=new_filter)
+        else:
+            if heur_filter_id and photdm.filter_id is None:
+                photdm.filter_id = heur_filter_id
+            if mag0_in_comments:
+                photdm.mag0 = heur_mag0
+                if photdm.photcal is None:
+                    photdm.photcal = PhotCal(
+                        zp_flux=1.0,
+                        zp_flux_unit=None,
+                        zp_mag=heur_mag0,
+                        zp_mag_unit="mag",
+                    )
+
+
+def _mag0_declared_in_comments(table) -> bool:
+    """Return True when a ``MAG0=`` assignment appears in table comment metadata."""
+    pattern = re.compile(r"MAG0\s*=\s*([+-]?\d*\.?\d+)")
+    for line in table.meta.get("comments", []):
+        if pattern.search(line.upper()):
+            return True
+    return False
 
 
 class VOLightCurve:
@@ -1109,6 +1250,32 @@ class VOLightCurve:
         if not self.timesys.timeorigin:
             self.timesys.timeorigin = _pickup_jd0_from_table(self.table)
 
+    @classmethod
+    def from_table(cls, table):
+        """Build a ``VOLightCurve`` from an already parsed Astropy table.
+
+        Applies the same non-VOTable heuristics as file ingest (column promotion,
+        ``.dat`` comment metadata, PhotDM stubs).
+
+        Args:
+            table (astropy.table.Table): Tabular lightcurve data.
+
+        Returns:
+            VOLightCurve: Instance with ``table``, ``timesys``, and ``photdms`` populated.
+        """
+        instance = cls.__new__(cls)
+        instance.file_path = None
+        instance.table = table
+        instance.timesys = TimeSys()
+        instance.timesys_by_id = {}
+        instance.field_timesys_ref = {}
+        instance.param_timesys_ref = {}
+        instance.coosys = None
+        instance.photdms = {}
+        instance._table_id = None
+        apply_non_votable_heuristics(instance)
+        return instance
+
     def _ingest(self, file_path, *, table_id: str | int | None = None):
         """Main ingestion flow that loads and processes the input file.
 
@@ -1144,38 +1311,7 @@ class VOLightCurve:
             self.table = ascii.read(file_path)
             self.table = _recover_lc_colnames(self.table)
 
-        # Post-process: Tag columns with UCDs/Units
-        self.table = _promote_to_vo_standards(self.table)
-        # Try to extract metadata
-        self.timesys.timeorigin = _pickup_jd0_from_table(self.table)
-        heur_filter_id = _pickup_filter_from_table(self.table)
-        heur_mag0 = _pickup_mag0_from_table(self.table)
-
-        # put this filter into the photcal and attach photCal to any mag/flux columns
-        for colname in self.get_flux_colnames() + self.get_mag_colnames():
-            photdm = self.photdms.get(colname, None)
-
-            # todo: sanitise this defaults/zeros/None logic
-            if photdm is None:
-                new_filter = PhotometryFilter(filter_id=heur_filter_id)
-                if heur_mag0:
-                    photcal = PhotCal(zp_mag=heur_mag0, zp_mag_unit='mag')
-                else:
-                    photcal = None
-                self.photdms[colname] = PhotDM(photcal=photcal, photometry_filter=new_filter)
-            else:
-                # If it already existed but had no filter name, update it
-                if photdm.filter_id is None:
-                    photdm.filter_id = heur_filter_id
-                if heur_mag0 is not None:
-                    photdm.mag0 = heur_mag0
-
-        # Ensure we have photcal objects for every mag/flux column (even if dummy)
-        # self._fill_missing_calibrations()
-
-        # # Update table metadata for storage
-        # self.table.meta['jd0'] = self.timesys.jd0
-        # self.table.meta['timesys'] = vars(self.timesys)
+        apply_non_votable_heuristics(self)
 
     def __repr__(self):
         return f"<VOLightCurve: {len(self.table)} rows, {len(self.photdms)} PhotCals, jd0={self.jd0}>"

@@ -18,6 +18,9 @@ TIME_OFFSET_ABSOLUTE_JD_THRESHOLD = JD_TO_MJD
 # Display epoch for relative JD axes (jd - DEFAULT_EPOCH_JD).
 DEFAULT_EPOCH_JD = JD_TO_MJD
 
+# Serialised TIMESYS envelope on ``CurveDash.metadata`` (see ``lc_bridge``).
+METADATA_KEY_VO_ENVELOPE = "vo_envelope"
+
 
 def resolve_catalog_epoch(epoch) -> float | None:
     """Normalises a catalogue folding epoch for ``CurveDash`` ingestion.
@@ -65,6 +68,50 @@ def display_epoch_offset(
         return 0.0
     return float(resolved) - float(display_epoch)
 
+
+def absolute_jd_from_display_epoch(
+    display_value,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+) -> float | None:
+    """Converts a UI epoch offset to absolute Julian Date for ``CurveDash``.
+
+    Pages that label the fold control ``Epoch-{display_epoch}`` and use
+    ``display_epoch`` on the time axis (for example TESS MJD) store user input
+    as an offset from ``display_epoch``. File metadata and ``CurveDash.epoch``
+    remain absolute JD; populate inputs with ``display_epoch_offset`` and apply
+    user corrections with this helper before folding or export.
+
+    A display offset of ``0.0`` is valid (reference epoch at ``display_epoch``).
+
+    Args:
+        display_value: User-entered offset relative to ``display_epoch``.
+        display_epoch (float): Same reference as the axis and input label.
+
+    Returns:
+        float or None: Absolute JD, or ``None`` when the input is missing/invalid.
+    """
+    if display_value is None:
+        return None
+    try:
+        offset = float(display_value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(offset):
+        return None
+    return offset + float(display_epoch)
+
+
+# Canonical time model
+# --------------------
+# * Ingest: column offsets and ``EPOCH`` use the file ``TIMESYS/@timeorigin`` (``.dat``
+#   ``JD0=`` is the same role). Both are converted to **absolute Julian Date** on
+#   ``CurveDash.jd`` and ``metadata['epoch']`` using the **same** origin per product.
+# * Storage: absolute JD only (single internal scale). ``vo_envelope['source_timeorigin']``
+#   records the file origin for export provenance, not for mixed UI frames.
+# * Display (MJD lightcurve pages): time axis **and** epoch fold input both use
+#   ``DEFAULT_EPOCH_JD`` (``JD - 2400000.5``). Never a different origin for epoch than for time.
+
+
 # Time-axis display modes for lightcurve plots (time view only).
 TIME_AXIS_MJD = "mjd"
 TIME_AXIS_DATE = "date"
@@ -101,9 +148,6 @@ PHOTCAL_KEY_ZP_FLUX_UNIT = "zp_flux_unit"
 PHOTCAL_KEY_ZP_MAG = "zp_mag"
 PHOTCAL_KEY_ZP_MAG_UNIT = "zp_mag_unit"
 PHOTCAL_KEY_MAG_SYS = "mag_sys"
-
-# Serialised TIMESYS / VOTable envelope restored at ingest for mission-blind export.
-METADATA_KEY_VO_ENVELOPE = "vo_envelope"
 
 # Keys inside ``metadata['vo_envelope']`` (mission-blind round-trip).
 VO_ENVELOPE_KEY_LIGHTCURVE_TITLE = "lightcurve_title"

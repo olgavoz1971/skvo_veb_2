@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import io
 
+import json
+
 import pytest
 
-from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
+from skvo_veb.utils.lc_bridge import export_curvedash, pack_volc_to_json, volc_to_curvedash
 from skvo_veb.utils.lc_config import JD_TO_MJD, VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
@@ -91,6 +93,14 @@ def test_volightcurve_ingest_uses_gavo_timesys_registry():
     assert set(volc.timesys_by_id) == {"ts", "ts2"}
     assert volc.field_timesys_ref["obs_time"] == "ts"
     assert volc.timesys.timeorigin == pytest.approx(2455197.5)
+
+
+def test_pack_volc_to_json_carries_timesys_meta():
+    """GP/Dash transport JSON must expose TIMESYS for honest axis labels."""
+    volc = VOLightCurve(io.BytesIO(_gaia_style_votable()))
+    packet = json.loads(pack_volc_to_json(volc))
+    assert packet["meta"]["timescale"] == "TCB"
+    assert packet["meta"]["refposition"] == "BARYCENTER"
 
 
 def test_time_offset_roundtrip_helpers():

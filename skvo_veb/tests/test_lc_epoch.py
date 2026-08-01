@@ -3,6 +3,7 @@
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
+    absolute_jd_from_display_epoch,
     display_epoch_offset,
     resolve_catalog_epoch,
 )
@@ -30,6 +31,18 @@ def test_display_epoch_offset_for_missing_epoch():
 def test_display_epoch_offset_for_catalog_epoch():
     """Valid catalogue epoch is shown relative to the display reference."""
     assert display_epoch_offset(2459000.25) == 2459000.25 - DEFAULT_EPOCH_JD
+
+
+def test_absolute_jd_from_display_epoch_round_trip():
+    """UI offset and absolute JD conversions use the same display reference."""
+    absolute = 24525200.5
+    offset = display_epoch_offset(absolute, DEFAULT_EPOCH_JD)
+    assert absolute_jd_from_display_epoch(offset, DEFAULT_EPOCH_JD) == absolute
+
+
+def test_absolute_jd_from_display_epoch_accepts_zero_offset():
+    """Offset zero is a valid user epoch at the display reference."""
+    assert absolute_jd_from_display_epoch(0.0, DEFAULT_EPOCH_JD) == DEFAULT_EPOCH_JD
 
 
 def test_curvedash_defaults_missing_epoch_to_display_reference():

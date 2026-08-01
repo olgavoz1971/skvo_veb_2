@@ -55,13 +55,17 @@ from skvo_veb.utils.lc_bridge import (
 )
 from skvo_veb.utils.mission_config.tess import apply_tess_phot_domain_view
 from skvo_veb.utils.lc_config import (
+    DEFAULT_EPOCH_JD,
     DEFAULT_EXPORT_FORMAT,
     EXPORT_FORMAT_OPTIONS,
     DOMAIN_MAG,
     DOMAIN_FLUX,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
+    absolute_jd_from_display_epoch,
+    display_epoch_offset,
     is_votable_export_format,
+    resolve_catalog_epoch,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import (
@@ -76,7 +80,8 @@ from skvo_veb.utils.tess_lc_builder import (
 )
 from skvo_veb.utils.tess_flux_column_registry import FLUX_METHOD_DEFAULT
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
+
+jd0 = DEFAULT_EPOCH_JD
 from skvo_veb.utils.my_tools import (
     safe_none,
     safe_float,
@@ -905,7 +910,8 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
     try:
         epoch = safe_float(epoch, 0)
         period = safe_float(period)
-        epoch = epoch + jd0 if epoch else epoch
+        epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
+        epoch = epoch_abs if epoch_abs is not None else epoch
         flux_method = effective_flux_method_for_selection(
             selected_rows, table_data, flux_method
         )
@@ -949,7 +955,9 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         if lcd.lightcurve is None:
             raise PipeException('shift_to_minimum: Please, download curves first')
         lcd.period = period
-        lcd.epoch = epoch + jd0
+        epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
+        if epoch_abs is not None:
+            lcd.epoch = epoch_abs
         # phi_min = lcd.find_phase_of_min_simple()
         phi_min = lcd.find_phase_of_min_gauss()
         logger.info(f'{phi_min=}')
@@ -959,7 +967,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         write_user_data_to_cache(lcd.serialize(), user_tab_id)
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
-        return dummy_lc, new_epoch - jd0
+        return dummy_lc, display_epoch_offset(new_epoch, jd0)
     except Exception as e:
         logger.warning(f'lightcurve_tess.shift_to_minimum: {e}')
         alert_message = message.warning_alert(e)
@@ -1056,8 +1064,9 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
             lcd.period = period
             period_unit = 'd'
             lcd.period_unit = period_unit
-        if epoch:
-            lcd.epoch = epoch + jd0
+        epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
+        if epoch_abs is not None:
+            lcd.epoch = epoch_abs
 
         lcd.recalc_phase()
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
@@ -1559,7 +1568,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
             lcd.period = period_val
             lcd.period_unit = 'd'
         if epoch_val is not None:
-            lcd.epoch = epoch_val + jd0
+            lcd.epoch = absolute_jd_from_display_epoch(epoch_val, jd0) or lcd.epoch
             
         lcd = prepare_lcd_for_export(
             lcd,
@@ -1761,9 +1770,12 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         output['message_results'] = 'Success, switch to the next Tab'
         
         period = lcd.metadata.get('period')
-        epoch = lcd.metadata.get('epoch')
+        epoch = resolve_catalog_epoch(lcd.metadata.get('epoch'))
         output['period_val'] = period if period is not None else dash.no_update
-        output['epoch_val'] = epoch if epoch is not None else dash.no_update
+        if epoch is not None:
+            output['epoch_val'] = display_epoch_offset(epoch, jd0)
+        else:
+            output['epoch_val'] = dash.no_update
         set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
     except Exception as e:
         logger.warning(f'lightcurve_tess.handle_upload {e}')
