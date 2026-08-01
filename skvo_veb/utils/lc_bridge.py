@@ -581,6 +581,43 @@ def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: f
     return intervals
 
 
+def phase_vrect_bounds_for_jd_interval(
+    jd_min: float,
+    jd_max: float,
+    epoch_jd: float,
+    period: float,
+) -> list[tuple[float, float]]:
+    """Maps a stored absolute-JD interval to phase-axis vrect bounds for display only.
+
+    Does not modify the interval. Uses the same folding convention as the GP prep plot:
+    ``phase = ((JD - epoch) / period) % 1``.
+
+    Args:
+        jd_min (float): Interval start in absolute Julian Date.
+        jd_max (float): Interval end in absolute Julian Date.
+        epoch_jd (float): Folding epoch (absolute JD).
+        period (float): Fold period in days.
+
+    Returns:
+        list[tuple[float, float]]: One or two ``(x0, x1)`` pairs on ``[0, 1]`` (wrap splits).
+    """
+    if period <= 0 or not np.isfinite(period):
+        return []
+    start = float(min(jd_min, jd_max))
+    end = float(max(jd_min, jd_max))
+    if end <= start:
+        return []
+
+    phi0 = ((start - epoch_jd) / period) % 1.0
+    phi1 = ((end - epoch_jd) / period) % 1.0
+
+    if (end - start) >= period:
+        return [(0.0, 1.0)]
+    if phi0 <= phi1:
+        return [(phi0, phi1)]
+    return [(phi0, 1.0), (0.0, phi1)]
+
+
 def pretty_print_lc_json(json_str: str, max_rows: int = 5):
     """Parses a lightcurve JSON transport package and prints a clean, human-readable summary.
 

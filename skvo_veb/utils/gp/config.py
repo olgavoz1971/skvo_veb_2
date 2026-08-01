@@ -26,6 +26,12 @@ AMPLITUDE_MAX = 20.0
 
 LEN_MIN = 5
 
+# Number of GP fit cards shown at once in Review and Export (two columns per row).
+GP_REVIEW_PAGE_SIZE = 6
+
+# GP Processing View: live grid while fitting (two columns per row; independent of review).
+GP_LIVE_PAGE_SIZE = 6
+
 # Reference magnitude for mag-to-instrumental-flux conversion when upload metadata
 # lacks a complete PhotCal pair (legacy VSNET-style files). Paired with
 # GP_ZP_FLUX_DIMENSIONLESS via volightcurve.PhotCal (Pogson relation).

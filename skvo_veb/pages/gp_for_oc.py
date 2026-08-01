@@ -219,7 +219,8 @@ Specifically the `GaussianProcessRegressor` module.
 
 import dash
 # import diskcache
-from dash import dcc, html, Input, Output, State, ALL, callback_context, callback
+from dash import dcc, html, Input, Output, State, ALL, callback_context, callback, no_update
+from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
 
@@ -230,8 +231,9 @@ import numpy as np
 
 import traceback
 import logging
+import uuid
 
-from skvo_veb.utils.lc_bridge import get_intervals_from_phase
+from skvo_veb.utils.lc_bridge import get_intervals_from_phase, phase_vrect_bounds_for_jd_interval
 
 from skvo_veb.utils.gp import (
     GUESS_SIGMA, LEN_MIN,
@@ -244,6 +246,27 @@ from skvo_veb.utils.gp import (
     get_gp_flux_fragment,
     figure_from_gp_result,
     format_intervals_download,
+)
+from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
+from skvo_veb.utils.gp.review_page import (
+    badges_from_specs,
+    build_review_store_payload,
+    render_review_page,
+    review_page_label,
+    serialise_review_entry,
+    success_badge_specs,
+)
+from skvo_veb.utils.gp.config import GP_LIVE_PAGE_SIZE
+from skvo_veb.utils.gp.run_control import (
+    clear_gp_batch_stop,
+    gp_batch_stop_requested,
+    request_gp_batch_stop,
+)
+from skvo_veb.utils.gp.live_page import (
+    build_live_page_slot_children,
+    live_progress_label,
+    live_slot_waiting,
+    live_visible_page_for_done_count,
 )
 from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
 from skvo_veb.utils.lc_config import (
@@ -263,6 +286,11 @@ from skvo_veb.utils.lc_interaction import plot_x_to_jd
 jd0 = DEFAULT_EPOCH_JD
 
 logger = logging.getLogger(__name__)
+
+_LIVE_SLOT_PROGRESS_OUTPUTS = [
+    Output({"type": "gp-live-slot", "index": i}, "children")
+    for i in range(GP_LIVE_PAGE_SIZE)
+]
 # Gaia Eclipsing Binary Catalog - IGEBC
 dash.register_page(__name__, name='GP',
                    order=7,
@@ -276,6 +304,136 @@ params_float = DEFAULT_FLOAT_PARAMS
 # # Initialize diskcache for background callbacks
 # cache = diskcache.Cache("./cache")
 # background_callback_manager = DiskcacheManager(cache)
+
+
+def _gp_click_help(help_id: str, title: str, body, *, placement: str = "bottom"):
+    """Builds a click-triggered ``?`` control and its popover (GP page).
+
+    Args:
+        help_id (str): Short slug for unique component ids.
+        title (str): Popover header text.
+        body: Popover body as a string or sequence of Dash components.
+        placement (str): Bootstrap popover placement.
+
+    Returns:
+        tuple: ``(help_button, popover)`` components.
+    """
+    btn_id = f"gp_page_help_{help_id}_btn"
+    pop_id = f"gp_page_help_{help_id}_popover"
+    if not isinstance(body, (list, tuple)):
+        body = [html.P(body, className="mb-0")]
+    button = html.Strong(
+        "?",
+        id=btn_id,
+        role="button",
+        tabIndex=0,
+        className="lc-discovery-help-btn",
+        **{"aria-label": f"Help: {title}"},
+    )
+    popover = dbc.Popover(
+        [
+            dbc.PopoverHeader(title),
+            dbc.PopoverBody(body),
+        ],
+        id=pop_id,
+        target=btn_id,
+        trigger="legacy",
+        placement=placement,
+        className="lc-discovery-help-popover",
+    )
+    return button, popover
+
+
+def _gp_upload_error_ui(
+    filename: str,
+    help_slug: str,
+    popover_title: str,
+    popover_body: str,
+    *,
+    icon_class: str = "bi-exclamation-triangle-fill",
+) -> html.Div:
+    """Upload error row with click ``?`` help instead of a hover tooltip.
+
+    Args:
+        filename (str): Uploaded file name shown in the row.
+        help_slug (str): Unique slug for ``_gp_click_help`` ids.
+        popover_title (str): Popover header.
+        popover_body (str): Popover body (former tooltip text).
+        icon_class (str): Bootstrap icon class suffix.
+
+    Returns:
+        html.Div: Error message and help control.
+    """
+    help_btn, help_pop = _gp_click_help(
+        help_slug, popover_title, popover_body, placement="right"
+    )
+    return html.Div(
+        [
+            html.I(className=f"bi {icon_class} me-2", style={"color": "#dc3545"}),
+            html.Span(
+                [html.B("Error: "), filename],
+                style={"color": "#dc3545", "fontSize": "0.85rem"},
+            ),
+            html.Div(help_btn, className="lc-discovery-field-help ms-1"),
+            help_pop,
+        ],
+        className="d-flex align-items-center flex-wrap",
+    )
+
+
+(
+    _add_interval_help_btn,
+    _add_interval_help_pop,
+) = _gp_click_help(
+    "add_interval",
+    "Add Interval",
+    "Register selected JD interval as a target for extremum analysis",
+)
+(
+    _guess_sigma_help_btn,
+    _guess_sigma_help_pop,
+) = _gp_click_help(
+    "guess_sigma",
+    "Guess sigma",
+    "Auto-estimate noise (ignore provided uncertainties)",
+)
+(
+    _noise_divisor_help_btn,
+    _noise_divisor_help_pop,
+) = _gp_click_help(
+    "noise_divisor",
+    "Noise divisor",
+    "Empirical noise correction (↑ wiggly, ↓ smooth)"
+    "Allows not quite fair to tweak uncertainties",
+)
+(
+    _kernel_type_help_btn,
+    _kernel_type_help_pop,
+) = _gp_click_help(
+    "kernel_type",
+    "Kernel Smoothness Type",
+    "Matern (nu=2.5): twice differentiable, physically realistic"
+    "RBF (Radial Basis Function): infinitely differentiable, extremely smooth)",
+)
+(
+    _length_scale_help_btn,
+    _length_scale_help_pop,
+) = _gp_click_help(
+    "length_scale",
+    "Length Scale (Min / Init / Max)",
+    "GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
+    "decrease if it misses structure.",
+)
+(
+    _amplitude_help_btn,
+    _amplitude_help_pop,
+) = _gp_click_help(
+    "signal_amplitude",
+    "Signal Amplitude (Min / Init / Max)",
+    "GP vertical scale (y-axis). Sets the 'headroom' for peak height. "
+    "Since flux is normalised to 1.0, values between 0.1 and 10.0 are usually safe. "
+    "Best left alone unless the model is failing to reach the top of your peak!",
+)
 
 
 def LegendItem(color, label, mode='line'):
@@ -320,8 +478,7 @@ def LegendItem(color, label, mode='line'):
 
 sidebar_lc = html.Div([
     # 1. PHASE FOLDING CONTROLS
-    html.Label("Phase Folding", className="fw-bold", id='phase-folding-label'),
-    dbc.Tooltip('Out of operation', target="phase-folding-label"),
+    html.Label("Phase Folding", className="fw-bold", id="phase-folding-label"),
     dbc.Checklist(
         options=[{"label": "Fold", "value": 1}],  # type: ignore
         value=[],
@@ -342,7 +499,6 @@ sidebar_lc = html.Div([
 
     # 2. VIEW SETTINGS
     html.Label("View Settings", className="fw-bold", id="view-settings-label"),
-    dbc.Tooltip('Out of operation', target="view-settings-label"),
     dbc.RadioItems(
         id="gp_time_axis_switch",
         options=[
@@ -369,12 +525,17 @@ sidebar_lc = html.Div([
     html.Hr(),
 
     #  3. ACTION BUTTONS
-    html.Label("Interval control", className="fw-bold"),
+    html.Div(
+        [
+            html.Label("Interval control", className="fw-bold mb-0"),
+            html.Div(_add_interval_help_btn, className="lc-discovery-field-help ms-1"),
+        ],
+        className="d-flex align-items-center mb-2",
+    ),
     dbc.Button(
         [html.I(className="bi bi-plus-circle me-2"), "Add Interval"],
         id="btn-add-interval", color="primary", className="w-100 mb-2"
     ),
-    dbc.Tooltip('Register selected JD interval as a target for extremum analysis', target="btn-add-interval"),
     # CLEAR button
     dbc.Button(
         [html.I(className="bi bi-trash3 me-2"), "Clear All Intervals"],
@@ -405,7 +566,8 @@ sidebar_lc = html.Div([
         className="w-100 mb-2",
         size="sm"
     ),
-    dcc.Download(id="download-intervals-file")
+    dcc.Download(id="download-intervals-file"),
+    _add_interval_help_pop,
 ], className="p-3 bg-light border rounded shadow-sm")
 
 graph_lc = html.Div([
@@ -483,7 +645,7 @@ sidebar_gp = html.Div([
     # 2. PRIMARY ACTION BUTTONS
     dbc.Row([
         dbc.Col(dbc.Button("Run GP", id="run-btn", color="primary", className="w-100"), width=7),
-        dbc.Col(dbc.Button("Cancel", id="cancel-btn", color="danger", outline=True, className="w-100"), width=5),
+        dbc.Col(dbc.Button("Stop", id="stop-btn", color="danger", outline=True, className="w-100"), width=5),
     ], className="g-2 mb-3"),
 
     # 3. GLOBAL MODEL SETTINGS
@@ -503,13 +665,28 @@ sidebar_gp = html.Div([
     ], className="g-2 mb-2"),
 
     dbc.Row([
-        dbc.Col([html.Label("Guess sigma", className="small fw-bold",
-                            id='guess-sigma-label')], width=6),
-        dbc.Col([html.Label("Noise divisor", className="small fw-bold",
-                            id='noise-divisor-label')], width=6),
-        dbc.Tooltip("Empirical noise correction (↑ wiggly, ↓ smooth)"
-                    "Allows not quite fair to tweak uncertainties", target='noise-divisor-label'),
-        dbc.Tooltip("Auto-estimate noise (ignore provided uncertainties)", target='guess-sigma-label')
+        dbc.Col([
+            html.Div(
+                [
+                    html.Label(
+                        "Guess sigma", className="small fw-bold mb-0", id="guess-sigma-label"
+                    ),
+                    html.Div(_guess_sigma_help_btn, className="lc-discovery-field-help ms-1"),
+                ],
+                className="d-flex align-items-center",
+            ),
+        ], width=6),
+        dbc.Col([
+            html.Div(
+                [
+                    html.Label(
+                        "Noise divisor", className="small fw-bold mb-0", id="noise-divisor-label"
+                    ),
+                    html.Div(_noise_divisor_help_btn, className="lc-discovery-field-help ms-1"),
+                ],
+                className="d-flex align-items-center",
+            ),
+        ], width=6),
     ]),
 
     dbc.Row([
@@ -531,10 +708,15 @@ sidebar_gp = html.Div([
 
     # 4. KERNEL PARAMETERS (Compact Triples)
     # Kernel Selection
-    html.Label("Kernel Smoothness Type", className="small fw-bold", id="kernel-type-label"),
-    dbc.Tooltip("Matern (nu=2.5): twice differentiable, physically realistic"
-                "RBF (Radial Basis Function): infinitely differentiable, extremely smooth)",
-                target='kernel-type-label'),
+    html.Div(
+        [
+            html.Label(
+                "Kernel Smoothness Type", className="small fw-bold mb-0", id="kernel-type-label"
+            ),
+            html.Div(_kernel_type_help_btn, className="lc-discovery-field-help ms-1"),
+        ],
+        className="d-flex align-items-center mb-1",
+    ),
     dbc.RadioItems(
         id='kernel-type',
         options=[  # type: ignore
@@ -568,10 +750,15 @@ sidebar_gp = html.Div([
     # ]),
 
     # Length Scale Inputs
-    html.Label("Length Scale (Min / Init / Max)", className="small fw-bold", id='ls-label'),
-    dbc.Tooltip("GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
-                "decrease if it misses structure.", target='ls-label'),
-    # lll
+    html.Div(
+        [
+            html.Label(
+                "Length Scale (Min / Init / Max)", className="small fw-bold mb-0", id="ls-label"
+            ),
+            html.Div(_length_scale_help_btn, className="lc-discovery-field-help ms-1"),
+        ],
+        className="d-flex align-items-center mb-1",
+    ),
     dbc.Row([
         dbc.Col(dbc.Input(
             id={'type': 'float-input', 'index': "length_scale_min"},
@@ -594,12 +781,16 @@ sidebar_gp = html.Div([
             value=params_float["length_scale_max"]), width=4),
     ], className="g-1 mb-3"),
 
-    html.Label("Signal Amplitude (Min / Init / Max)", className="small fw-bold", id='amp-label'),
-    dbc.Tooltip(
-        "GP vertical scale (y-axis). Sets the 'headroom' for peak height. "
-        "Since flux is normalised to 1.0, values between 0.1 and 10.0 are usually safe. "
-        "Best left alone unless the model is failing to reach the top of your peak!",
-        target='amp-label'
+    html.Div(
+        [
+            html.Label(
+                "Signal Amplitude (Min / Init / Max)",
+                className="small fw-bold mb-0",
+                id="amp-label",
+            ),
+            html.Div(_amplitude_help_btn, className="lc-discovery-field-help ms-1"),
+        ],
+        className="d-flex align-items-center mb-1",
     ),
 
     dbc.Row([
@@ -626,23 +817,50 @@ sidebar_gp = html.Div([
 
     dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="w-100 mt-2"),
 
+    _guess_sigma_help_pop,
+    _noise_divisor_help_pop,
+    _kernel_type_help_pop,
+    _length_scale_help_pop,
+    _amplitude_help_pop,
+
 ], className="p-3 bg-light border rounded shadow-sm")
+
+
+def _live_processing_layout():
+    """Fixed-slot grid for GP Processing View (see ``GP_LIVE_PAGE_SIZE``)."""
+    return dbc.Row(
+        [
+            dbc.Col(
+                html.Div(
+                    id={"type": "gp-live-slot", "index": slot_idx},
+                    children=live_slot_waiting(),
+                ),
+                width=6,
+                className="px-1 mb-2",
+            )
+            for slot_idx in range(GP_LIVE_PAGE_SIZE)
+        ],
+        id="live-graphs-container",
+        className="g-2",
+    )
+
 
 # =====================  LAYOUT ==================================================
 graph_gp = html.Div([
     html.Div(id='finished-signal', style={'display': 'none'}),
     # signal for gp status, Allowed: "WAITING" and "FINISHED"
 
-    # 1. DYNAMIC HEADER: Changes based on state
+    # 1. DYNAMIC HEADER: title row + live progress (progress does not sit in the grid)
     html.Div(id='gp-header-area', children=[
         html.Div([
             html.H5("GP Processing View", className="fw-bold mb-0"),
             dbc.Badge("Waiting for Run", color="secondary", id='gp-view-badge', className="ms-2")
-        ], className="d-flex align-items-center mb-3")
-    ]),
+        ], className="d-flex align-items-center"),
+    ], className="mb-1"),
+    html.Div(id="gp-live-progress-label", className="small text-muted mb-3"),
 
-    # 1. LIVE VIEW: Shows only graphs, no interactivity
-    dbc.Row(id='live-graphs-container', style={'display': 'flex'}, className="g-2"),
+    # 1. LIVE VIEW: fixed grid, updated per finished extremum
+    _live_processing_layout(),
 
     # 3. FINAL REVIEW
     html.Div(id='final-review-container', style={'display': 'none'}, children=[
@@ -653,6 +871,12 @@ graph_gp = html.Div([
                     dbc.Col(html.H6("Review and Export", className="mb-0 fw-bold"), width="auto"),
                     dbc.Col(dbc.Button("Select All", id="select-all-btn", size="sm", color="link"), width="auto"),
                     dbc.Col(dbc.Button("Unselect All", id="unselect-all-btn", size="sm", color="link"), width="auto"),
+
+                    dbc.Col([
+                        dbc.Button("Previous page", id="gp-review-prev", size="sm", outline=True, color="secondary"),
+                        html.Span(id="gp-review-page-label", className="mx-2 small text-muted align-middle"),
+                        dbc.Button("Next page", id="gp-review-next", size="sm", outline=True, color="secondary"),
+                    ], width="auto", className="d-flex align-items-center"),
 
                     # Compact Filename + Download Group
                     dbc.Col([
@@ -990,19 +1214,37 @@ def update_prep_graph(
 
     apply_time_xaxis_format(fig, phase_view=phase_view, time_axis_mode=axis_mode)
 
-    # Mark selected intervals (stored as absolute JD)
-    if intervals_data and not phase_view:
-        ts = lc.get("timescale")
-        for interval in intervals_data:
-            x0, x1 = absolute_jd_to_plot_x(
-                [interval[0], interval[1]], axis_mode, jd0, timescale=ts
-            )
-            fig.add_vrect(
-                x0=x0, x1=x1,
-                fillcolor="green", opacity=0.15,
-                layer="below", line_width=1,
-                line_color="green",
-            )
+    # Mark selected intervals (stored as absolute JD; display only in current axis)
+    if intervals_data:
+        if phase_view:
+            t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
+            if t0_abs is None:
+                t0_abs = float(np.nanmin(x_jd))
+            for interval in intervals_data:
+                for x0, x1 in phase_vrect_bounds_for_jd_interval(
+                    interval[0], interval[1], t0_abs, float(period)
+                ):
+                    fig.add_vrect(
+                        x0=x0,
+                        x1=x1,
+                        fillcolor="green",
+                        opacity=0.15,
+                        layer="below",
+                        line_width=1,
+                        line_color="green",
+                    )
+        else:
+            ts = lc.get("timescale")
+            for interval in intervals_data:
+                x0, x1 = absolute_jd_to_plot_x(
+                    [interval[0], interval[1]], axis_mode, jd0, timescale=ts
+                )
+                fig.add_vrect(
+                    x0=x0, x1=x1,
+                    fillcolor="green", opacity=0.15,
+                    layer="below", line_width=1,
+                    line_color="green",
+                )
 
     return fig
 
@@ -1055,22 +1297,15 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
         logger.error("Failed to process file: %s", filename)
         logger.error(traceback.format_exc())
 
+        help_slug = "upload_lc_" + filename.replace(".", "-").replace(" ", "-")
         return (
             dash.no_update,
-            html.Div([
-                html.I(className="bi bi-exclamation-triangle-fill me-2", style={"color": "#dc3545"}),
-                html.Span(
-                    [html.B("Error: "), filename],
-                    id=f"err-target-{filename.replace('.', '-')}",
-                    style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
-                ),
-                dbc.Tooltip(
-                    f"Traceback: {str(e)}",
-                    target=f"err-target-{filename.replace('.', '-')}",
-                    placement="right",
-                    style={"fontSize": "0.75rem"}
-                ),
-            ]),
+            _gp_upload_error_ui(
+                filename,
+                help_slug,
+                "Upload error",
+                f"Traceback: {str(e)}",
+            ),
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -1131,18 +1366,14 @@ def upload_intervals(contents, filename):
         logging.error(f"Error processing interval file {filename}:")
         logging.error(traceback.format_exc())
 
-        # 2. Terse UI for sidebar_gp with hover details
-        # We replace dots/spaces with hyphens for a valid HTML ID
-        safe_id = f"err-int-{filename.replace('.', '-').replace(' ', '-')}"
-        error_ui = html.Div([
-            html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
-            html.Span(
-                [html.B("Error: "), filename],
-                id=safe_id,
-                style={"color": "#dc3545", "fontSize": "0.85rem", "cursor": "help"}
-            ),
-            dbc.Tooltip(f"Interval Load Error: {str(e)}", target=safe_id)
-        ])
+        help_slug = "upload_int_" + filename.replace(".", "-").replace(" ", "-")
+        error_ui = _gp_upload_error_ui(
+            filename,
+            help_slug,
+            "Interval load error",
+            f"Interval Load Error: {str(e)}",
+            icon_class="bi-exclamation-octagon-fill",
+        )
         return dash.no_update, error_ui
         # return dash.no_update, html.Div([
         #     html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
@@ -1418,15 +1649,24 @@ def delete_interval(n_clicks_list, current_intervals):
 # ================= GP callbacks ===================
 
 @callback(
+    Input("stop-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def gp_request_batch_stop(_n_clicks):
+    """Cooperative stop: finish the current fit, then exit the batch loop."""
+    request_gp_batch_stop()
+
+
+@callback(
     # region unfold
     Output('gp-header-area', 'children'),
     Input('run-btn', 'n_clicks'),  # User clicks Run
-    Input('cancel-btn', 'n_clicks'),  # we can not send relevant "cancelled" signal when cancel background callback
+    Input('stop-btn', 'n_clicks'),
     Input('finished-signal', 'children'),  # The Monster finishes
     prevent_initial_call=True
     # endregion
 )
-def update_gp_status_ui(run_clicks, cancel_clicks, signal_status):
+def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
     ctx = dash.callback_context
     if not ctx.triggered:
         return dash.no_update
@@ -1443,14 +1683,14 @@ def update_gp_status_ui(run_clicks, cancel_clicks, signal_status):
             ], color="warning", className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
-    # 2. THE INTERRUPTION: User clicks Cancel
-    if trigger_id == 'cancel-btn' and cancel_clicks > 0:
+    # 2. User clicks Stop (current fit finishes, then review partial results)
+    if trigger_id == 'stop-btn' and stop_clicks > 0:
         return html.Div([
             html.H5("GP Processing View", className="fw-bold mb-0"),
             dbc.Badge([
-                html.I(className="bi bi-x-circle me-2"),
-                "CANCELLED BY USER"
-            ], color="danger", className="ms-2")
+                html.I(className="bi bi-pause-circle me-2"),
+                "STOPPING — finishing current fit…"
+            ], color="warning", className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
     # 3. THE INTERMEDIATE: Plotting has started but isn't over
@@ -1464,13 +1704,20 @@ def update_gp_status_ui(run_clicks, cancel_clicks, signal_status):
         ], className="d-flex align-items-center mb-3")
 
     # 4. THE END: Only show the "Finished" badge for the explicit final signal
-    if trigger_id == 'finished-signal' and signal_status == "FINISHED":
+    if trigger_id == 'finished-signal' and signal_status in ("FINISHED", "FINISHED_STOPPED"):
+        stopped = signal_status == "FINISHED_STOPPED"
+        badge_text = (
+            "STOPPED — review completed fits"
+            if stopped
+            else "FINISHED"
+        )
+        badge_color = "warning" if stopped else "success"
         return html.Div([
             html.H5("Results: Normalised flux vs JD", className="fw-bold mb-0"),
             dbc.Badge([
                 html.I(className="bi bi-check-all me-2"),
-                "FINISHED"
-            ], color="success", className="ms-2")
+                badge_text
+            ], color=badge_color, className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
     return dash.no_update
@@ -1512,7 +1759,8 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     # region unfold me
     Output('graphs-container', 'children', allow_duplicate=True),
     Output('finished-signal', 'children', allow_duplicate=True),  # Final signal
-    Output('store-results-data', 'data'),  # this data will be downloaded by user
+    Output('store-results-data', 'data'),  # Export metadata and include flags
+    Output('gp-review-page-label', 'children'),
     Input('run-btn', 'n_clicks'),
     State('store-lc-data', 'data'),
     State('store-intervals-data', 'data'),
@@ -1522,20 +1770,31 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
     background=True,
-    cancel=[Input("cancel-btn", "n_clicks")],
     running=[
         (Output("run-btn", "disabled"), True, False),
-        (Output("cancel-btn", "disabled"), False, True),
+        (Output("stop-btn", "disabled"), False, True),
     ],
-    progress=[Output("live-graphs-container", "children"),
-              Output("finished-signal", "children")],  # Updates UI during execution
+    progress=[
+        Output("gp-live-progress-label", "children"),
+        *_LIVE_SLOT_PROGRESS_OUTPUTS,
+        Output("finished-signal", "children"),
+    ],
     # this is why we place set_progress between input arguments
     prevent_initial_call=True
     # endregion
 )
 def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, kernel_type, ids,
            float_values):
-    set_progress(([], "WAITING"))
+    def _push_live(stored_entries: list, total_work: int) -> None:
+        done = len(stored_entries)
+        visible_page = live_visible_page_for_done_count(done)
+        slots = build_live_page_slot_children(stored_entries, visible_page)
+        label = live_progress_label(done, total_work)
+        set_progress((label, *slots, "WAITING"))
+
+    empty_slots = build_live_page_slot_children([], 0)
+    set_progress((live_progress_label(0, 0), *empty_slots, "WAITING"))
+    clear_gp_batch_stop()
     logger.debug("run_gp started")
     # print(f'{ids=}')
     # print(f'{float_values=}')
@@ -1559,28 +1818,37 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     # 1. Validation: Ensure files are loaded
     if not lc_json_string or not intervals:
         error_alert = dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
-        return error_alert, "FINISHED", None
+        return error_alert, "FINISHED", None, ""
         # return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
     # di = json.loads(lc_json_string)
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
-    results_for_storage = []  # We now store EVERYTHING here
-    live_figs = []
-
-    for i, piece in enumerate(intervals):
+    work_items = []
+    for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
         frag = get_gp_flux_fragment(lc_json_string, jd_min, jd_max)
-        logging.info(f'{len(frag)=}')
-        # frag = select_jd_interval(df_lc, jd_min, jd_max)
+        if len(frag) >= LEN_MIN:
+            work_items.append((jd_min, jd_max, frag))
 
-        if len(frag) < LEN_MIN:
-            continue
+    total_work = len(work_items)
+    _push_live([], total_work)
+
+    stored_entries: list[dict] = []
+    stopped_early = False
+
+    for jd_min, jd_max, frag in work_items:
+        if gp_batch_stop_requested():
+            stopped_early = True
+            logger.info("GP batch stopped before extremum (%s done)", len(stored_entries))
+            break
+
+        logging.info(f'{len(frag)=}')
 
         res_entry = {'jd_min': jd_min, 'jd_max': jd_max, 'is_fail': False}
 
         try:
             gp_res = gp_peak_pipeline(frag, params=p)
-            fig = figure_from_gp_result(gp_res)
+            fig = figure_from_gp_result(gp_res, display_epoch=jd0)
 
             # Extract kernel params for badges
             # optimized_params = gp_res['gp'].kernel_.get_params()
@@ -1604,72 +1872,64 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
             # If amplitude hits the "Goldilocks" bounds,
             # maybe colour it yellow to warn the user
             amp_color = "info" if (0.01 < opt_ampl < 10.0) else "warning"
-            # w_color = "danger" if (opt_w <= p['white_noise_level_min'] * 1.01 or opt_w >= p[
-            #     'white_noise_level_max'] * 0.99) else "info"
 
-            badges = [
-                dbc.Badge(f"Kernel: {kernel_type.upper()}", color="dark", className="me-1"),
-                dbc.Badge(f"Scale: {opt_l:.4f}", color=l_color, className="me-1"),
-                dbc.Badge(f"Amp: {opt_ampl:.3f}", color=amp_color, className="me-1"),
-                # dbc.Badge(f"White Noise: {opt_w:.4f}", color=w_color, className="me-1"),
-                dbc.Badge(f"σ_t: {gp_res['jd_peak_std']:.4f}", color="secondary"),
-            ]
+            badge_specs = success_badge_specs(
+                kernel_type, opt_l, l_color, opt_ampl, amp_color, gp_res["jd_peak_std"]
+            )
+            badges = badges_from_specs(badge_specs)
 
-            content = dcc.Graph(figure=fig,
-                                config={'displaylogo': False}  # type: ignore
-                                )
-
-            # Fill result for Review Phase
             res_entry.update({
                 'jd_peak': gp_res["jd_peak"],
                 'jd_peak_std': gp_res["jd_peak_std"],
-                'figure': fig,
-                'badges': badges
+                'badge_specs': badge_specs,
             })
 
         except Exception as e:
-            err_id = f"err-gp-{str(jd_min).replace('.', '')}"
-            badges = [dbc.Badge("FAILED", color="danger")]
-            content = html.Div([
-                dbc.Alert([
-                    html.B("GP Fit Failed"),
-                    html.Div(f"Range: {jd_min:.2f}-{jd_max:.2f}", style={"fontSize": "0.7rem"}),
-                    html.Hr(),
-                    html.Div("Hover for error", id=err_id, style={"cursor": "help", "fontSize": "0.8rem"})
-                ], color="danger", className="m-0"),
-                dbc.Tooltip(str(e), target=err_id)
-            ])
-
-            res_entry.update({'is_fail': True, 'error': str(e), 'badges': badges, 'content': content})
-
-        # Append to Live View
-        live_figs.append(create_interval_card(content, badges, is_fail=res_entry['is_fail']))
-        results_for_storage.append(res_entry)
-        set_progress((live_figs, "WAITING"))
-
-    # --- FINAL PHASE (Review) ---
-    review_figs = []
-    numeric_data = []
-
-    for i, res in enumerate(results_for_storage):
-        if res['is_fail']:
-            card = create_interval_card(res['content'], res['badges'], is_fail=True,
-                                        checkbox_id={'type': 'fit-selector', 'index': i})
-        else:
-            graph = dcc.Graph(figure=res['figure'],
-                              config={'displaylogo': False}  # type: ignore
-                              )
-            card = create_interval_card(graph, res['badges'], is_fail=False,
-                                        checkbox_id={'type': 'fit-selector', 'index': i})
-
-            numeric_data.append({
-                'jd_peak': res['jd_peak'],
-                'jd_peak_std': res['jd_peak_std']
+            res_entry.update({
+                'is_fail': True,
+                'error': str(e),
+                'badge_specs': [{"label": "FAILED", "color": "danger"}],
             })
 
-        review_figs.append(card)
+        figure_json = None
+        if not res_entry["is_fail"]:
+            figure_json = fig.to_plotly_json()
+        stored_entries.append(
+            serialise_review_entry(res_entry, figure_json=figure_json)
+        )
+        _push_live(stored_entries, total_work)
 
-    return review_figs, "FINISHED", numeric_data
+        if gp_batch_stop_requested():
+            stopped_early = True
+            logger.info("GP batch stopped after %s fits", len(stored_entries))
+            break
+
+    if not stored_entries:
+        msg = (
+            "No fits completed before stop."
+            if stopped_early
+            else "No fits to review."
+        )
+        return (
+            dbc.Alert(msg, color="warning"),
+            "FINISHED_STOPPED" if stopped_early else "FINISHED",
+            None,
+            "",
+        )
+
+    # --- FINAL PHASE (Review): one page of cards; full list on server cache ---
+    run_id = uuid.uuid4().hex
+    save_gp_review_run(run_id, stored_entries)
+    store_payload = build_review_store_payload(
+        run_id, stored_entries, stopped_early=stopped_early
+    )
+    page_children = render_review_page(
+        stored_entries, 0, store_payload["include"]
+    )
+    page_label = review_page_label(0, len(stored_entries))
+
+    finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
+    return page_children, finish_signal, store_payload, page_label
 
 
 @callback(
@@ -1730,36 +1990,126 @@ def update_default_filename(filename):
     Output("download-results", "data"),
     Input("save-file-btn", "n_clicks"),
     State("export-filename", "value"),
-    State({'type': 'fit-selector', 'index': ALL}, 'value'),
     State('store-results-data', 'data'),
     State('extrema-mode', 'value'),
     prevent_initial_call=True
     # endregion
 )
-def trigger_download(n_clicks, filename_input, selection_mask, results, extrema_mode):
+def trigger_download(n_clicks, filename_input, store, extrema_mode):
     logger.debug("GP download: filename=%s", filename_input)
-    if not n_clicks or not results:
-        return dash.no_update
+    if not n_clicks or not store:
+        return no_update
+
+    rows = store.get("rows") or []
+    include = store.get("include") or []
+    if len(include) != len(rows):
+        return no_update
 
     mode_label = "Minimum" if extrema_mode == 'min' else "Maximum"
 
     final_filename = filename_input if filename_input else f"gp_results_{extrema_mode}.dat"
 
-    # 3. Build the content with mode-aware headers
-    # We use \t for easy import into Excel/Topcat/Python
     lines = [
         f"# GP {mode_label} Results\n",
         f"# JD_{mode_label}\tJD_Std\n"
     ]
 
-    # Filter by user checkboxes
-    # Note: we use row['jd_peak'] by historical reasons
-    for is_selected, row in zip(selection_mask, results):
-        if is_selected:
-            lines.append(f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n")
+    for is_selected, row in zip(include, rows):
+        if is_selected and not row.get("is_fail"):
+            lines.append(
+                f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n"
+            )
 
-    # Send as a downloadable text file
     return dcc.send_string("".join(lines), final_filename)
+
+
+@callback(
+    Output('graphs-container', 'children', allow_duplicate=True),
+    Output('store-results-data', 'data', allow_duplicate=True),
+    Output('gp-review-page-label', 'children', allow_duplicate=True),
+    Input('gp-review-prev', 'n_clicks'),
+    Input('gp-review-next', 'n_clicks'),
+    State('store-results-data', 'data'),
+    prevent_initial_call=True,
+)
+def change_gp_review_page(prev_clicks, next_clicks, store):
+    """Shows the previous or next page of fit cards in Review and Export."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    if triggered not in ("gp-review-prev", "gp-review-next"):
+        raise PreventUpdate
+
+    page = int(store.get("page", 0))
+    total = len(store.get("include") or [])
+    if total == 0:
+        raise PreventUpdate
+
+    from skvo_veb.utils.gp.config import GP_REVIEW_PAGE_SIZE
+    import math
+
+    total_pages = max(1, math.ceil(total / GP_REVIEW_PAGE_SIZE))
+    if triggered == "gp-review-prev":
+        page = max(0, page - 1)
+    else:
+        page = min(total_pages - 1, page + 1)
+
+    entries = load_gp_review_run(store["run_id"])
+    children = render_review_page(entries, page, store["include"])
+    label = review_page_label(page, total)
+    new_store = {**store, "page": page}
+    return children, new_store, label
+
+
+@callback(
+    Output('store-results-data', 'data', allow_duplicate=True),
+    Output('graphs-container', 'children', allow_duplicate=True),
+    Input('select-all-btn', 'n_clicks'),
+    Input('unselect-all-btn', 'n_clicks'),
+    State('store-results-data', 'data'),
+    prevent_initial_call=True,
+)
+def gp_review_select_all(select_clicks, unselect_clicks, store):
+    """Toggles include-in-export flags for every fit, then refreshes the current page."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    rows = store.get("rows") or []
+    n = len(rows)
+    if n == 0:
+        raise PreventUpdate
+
+    if triggered == "unselect-all-btn":
+        include = [False] * n
+    else:
+        include = [not row.get("is_fail") for row in rows]
+
+    page = int(store.get("page", 0))
+    entries = load_gp_review_run(store["run_id"])
+    children = render_review_page(entries, page, include)
+    return {**store, "include": include}, children
+
+
+@callback(
+    Output('store-results-data', 'data', allow_duplicate=True),
+    Input({'type': 'fit-selector', 'index': ALL}, 'value'),
+    State({'type': 'fit-selector', 'index': ALL}, 'id'),
+    State('store-results-data', 'data'),
+    prevent_initial_call=True,
+)
+def gp_review_sync_include_checkbox(values, ids, store):
+    """Persists include-in-export toggles for fits on the visible review page."""
+    if not store or not ids:
+        raise PreventUpdate
+
+    include = list(store.get("include") or [])
+    for val, comp_id in zip(values, ids):
+        idx = comp_id["index"]
+        if 0 <= idx < len(include):
+            include[idx] = bool(val)
+    return {**store, "include": include}
 
 
 # -------------- Graphs with fits ---- two containers: Working and Final -----
@@ -1768,6 +2118,7 @@ def trigger_download(n_clicks, filename_input, selection_mask, results, extrema_
     # region unfold me
     Output('final-review-container', 'style'),
     Output('live-graphs-container', 'style'),
+    Output('gp-live-progress-label', 'style'),
     Input('finished-signal', 'children'),  # this is a swithch-modes-trigger
     prevent_initial_call=True
     # endregion
@@ -1775,31 +2126,6 @@ def trigger_download(n_clicks, filename_input, selection_mask, results, extrema_
 def switch_modes(signal):
     logger.debug("switch_modes signal=%s", signal)
     # helper callback to toggle the visibility working and review modes (once run_gp finishes).
-    if signal == "FINISHED":
-        return {'display': 'block'}, {'display': 'none'}
-    return {'display': 'none'}, {'display': 'flex'}
-
-
-@callback(
-    # region unfold me
-    Output({'type': 'fit-selector', 'index': ALL}, 'value'),
-    Input('select-all-btn', 'n_clicks'),
-    Input('unselect-all-btn', 'n_clicks'),
-    State({'type': 'fit-selector', 'index': ALL}, 'value'),
-    prevent_initial_call=True
-    # endregion
-)
-def bulk_toggle_fits(select_clicks, unselect_clicks, current_values):
-    # This is one of the magic Multi-Selection Callbacks
-    # Check which button was actually pressed
-    ctx = callback_context
-    if not ctx.triggered:
-        return current_values
-
-    trigger_id = ctx.triggered[0]['prop_id']
-
-    # We return a list of booleans the same length as the number of checkboxes
-    if 'unselect-all-btn' in trigger_id:
-        return [False] * len(current_values)
-    else:
-        return [True] * len(current_values)
+    if signal in ("FINISHED", "FINISHED_STOPPED"):
+        return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}
+    return {'display': 'none'}, {'display': 'flex'}, {'display': 'block'}
