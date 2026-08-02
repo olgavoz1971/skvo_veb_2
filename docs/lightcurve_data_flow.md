@@ -4,6 +4,8 @@ This document describes how lightcurve data is ingested, processed, serialised, 
 
 **Planned extension:** multi-mission archive adapters (search + fetch) are specified in [mission_lightcurve_providers.md](mission_lightcurve_providers.md). Fetch from missions returns `VOLightCurve`; conversion to `CurveDash` remains in this document's pipeline.
 
+**TESS background (SPOC / QLP / cutout):** see [tess_background_lightkurve.md](tess_background_lightkurve.md).
+
 **Last updated:** 2026-07-23 — VOTable ingest split (Astropy data + GAVO metadata-only parse); diagnostic trace scripts.
 
 ---
