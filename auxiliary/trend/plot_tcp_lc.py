@@ -8,13 +8,18 @@ import numpy as np
 import pandas as pd
 import lightkurve as lk
 from astropy.io.votable import parse
-from astropy.stats import biweight_location
-from scipy.interpolate import CubicSpline, LSQUnivariateSpline, UnivariateSpline
+from astropy.stats import biweight, biweight_location
+from scipy.interpolate import BSpline, CubicSpline, LSQUnivariateSpline, UnivariateSpline
 from scipy.signal import savgol_filter
 
+DETREND_MODE: Literal["mag", "flux"] = "flux"
 SplineKind = Literal["smoothing", "cubic_interp", "lsq"]
+Method = Literal["SG", "LK", "biweght", "spline", "pspline"]
 
 DATA_FILE = Path(__file__).resolve().parent / "data" / "tcp.vot"
+# DATA_FILE = Path(__file__).resolve().parent / "data" / "detrended_spline.csv"
+
+
 TIME_COLUMN = "obs_time"
 PHOT_COLUMN = "phot"
 PHOT_ERR_COLUMN = "flux_error"
@@ -26,7 +31,8 @@ SPLINE_TREND_COLUMN = "spline_trend"
 MAG_ZERO_POINT = 20.0
 
 JD_MIN = None
-JD_MAX = None
+# JD_MAX = None
+JD_MAX = 59860.1
 
 # Full width of the centred median window, in the same time unit as ``obs_time`` (d).
 MEDIAN_WINDOW_DAYS = 2.0
@@ -39,7 +45,6 @@ ESTIMATE_N_POINTS_WINDOW = False
 WINDOW_ESTIMATE_T_LEFT = 59855.0
 WINDOW_ESTIMATE_T_RIGHT = 59858.0
 # How to remove the trend from the observed curve (passed explicitly to detrending).
-DETREND_MODE: Literal["mag", "flux"] = "mag"
 
 # Segment splines (after ``BREAK_TOLERANCE`` split).
 # SPLINE_KIND: "smoothing" | "cubic_interp" | "lsq"
@@ -49,10 +54,25 @@ SPLINE_SMOOTHING_S: float | None = None
 SPLINE_SMOOTHING_REL = 0.05
 SPLINE_LSQ_INTERIOR_KNOTS = 8
 
+# P-spline: equispaced B-spline segments + penalty ``lambda * ||D^2 c||^2`` on coefficients.
+PSPLINE_PENALTY_LAMBDA = 1.0e4
+PSPLINE_N_SEGMENTS = 40
+PSPLINE_TREND_COLUMN = "pspline_trend"
+
 FIGSIZE = (20, 12)
 FONT_SIZE = 20
 DETREND_LK_CSV = Path(__file__).resolve().parent / "data" / "detrended_lk.csv"
 DETREND_SPLINE_CSV = Path(__file__).resolve().parent / "data" / "detrended_spline.csv"
+
+
+def load_detrended_csv(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(
+        path,
+        comment="#",
+        skiprows=1, # ignore column names
+        names=["obs_time", "phot", "flux_error"]
+    )
+    return df
 
 
 def load_tcp_vot(path: Path) -> pd.DataFrame:
@@ -153,6 +173,54 @@ def add_magnitudes(
     return out
 
 
+def detrend_observed(
+    observed: np.ndarray,
+    trend: np.ndarray,
+    mode: Literal["mag", "flux"],
+) -> np.ndarray:
+    """Apply magnitude subtraction or flux division detrending."""
+    observed = np.asarray(observed, dtype=float)
+    trend = np.asarray(trend, dtype=float)
+    if mode == "mag":
+        return observed - trend
+    if mode == "flux":
+        if np.any(trend <= 0):
+            raise ValueError("flux trend must be strictly positive for division")
+        return observed / trend
+    raise ValueError(f"mode must be 'mag' or 'flux', got {mode!r}")
+
+
+def detrended_standard_error(
+    observed: np.ndarray,
+    trend: np.ndarray,
+    obs_err: np.ndarray,
+    mode: Literal["mag", "flux"],
+) -> np.ndarray:
+    """Propagate measurement error to detrended values (trend treated as exact).
+
+    Magnitude subtraction: ``sigma_detrended = sigma_obs``.
+    Flux division for ``detrended = obs / trend``: ``sigma_detrended = sigma_obs / trend``.
+    """
+    observed = np.asarray(observed, dtype=float)
+    trend = np.asarray(trend, dtype=float)
+    obs_err = np.asarray(obs_err, dtype=float)
+    sigma = np.full(observed.shape, np.nan, dtype=float)
+    good = (
+        np.isfinite(observed)
+        & np.isfinite(trend)
+        & np.isfinite(obs_err)
+        & (obs_err > 0)
+    )
+    if mode == "mag":
+        sigma[good] = obs_err[good]
+    elif mode == "flux":
+        good &= trend > 0
+        sigma[good] = obs_err[good] / trend[good]
+    else:
+        raise ValueError(f"mode must be 'mag' or 'flux', got {mode!r}")
+    return sigma
+
+
 def contiguous_segment_bounds(
     times_sorted: np.ndarray,
     break_tolerance: float | None,
@@ -225,6 +293,7 @@ def _trend_cubic_interpolating_spline_on_segment(
     return spline(t_segment)
 
 
+# lll
 def _trend_least_squares_spline_on_segment(
     t_segment: np.ndarray,
     y_segment: np.ndarray,
@@ -243,10 +312,76 @@ def _trend_least_squares_spline_on_segment(
         return np.full(n, np.nanmedian(y_segment), dtype=float)
 
     knots = np.linspace(t_segment[0], t_segment[-1], n_use + 2)[1:-1]
+    # knots = np.array([59853.66092207, 59854.4631498 , 
+        # 59855.26537753, 59856.06760526, 59856.869833, 
+        # 59857.67206073, 59858.47428846, 59859.2765162])
+    knots = np.array([
+        59853.20250622, 
+        59853.5463181 , 
+        59853.89012999, 
+        59854.23394187,
+        59854.5,
+        59854.6,
+        59854.7,
+        59854.8,
+        59854.9,
+        59855.0,
+        59855.26537753, 59855.60918942,
+        59855.9530013 , 59856.29681319, 
+        59856.4,
+        59856.5,
+        59856.6,
+        59856.7,
+        59856.8,
+        59856.9,
+        59857.0,
+        59857.1,
+        59857.2,
+        59857.3,
+        59857.4,
+        59857.5,
+        59857.6,
+        59857.7,
+        59857.8,
+        59858.01587262, 59858.3596845 ,
+        59858.70349639, 59859.04730827, 59859.39112016, 59859.73493204
+       ])
+    # knots = np.array([
+    #     59854.0,
+    #     59854.5,
+    #     59854.6,
+    #     59854.7,
+    #     59854.8,
+    #     59854.9,
+    #     59855.0,
+    #     59855.06,
+    #     59855.26537753,
+    #     59856.06760526,
+    #     59856.4,
+    #     59856.5,
+    #     59856.6,
+    #     59856.7,
+    #     59856.8,
+    #     59856.9,
+    #     59857.0,
+    #     59857.1,
+    #     59857.2,
+    #     59857.3,
+    #     59857.4,
+    #     59857.5,
+    #     59857.6,
+    #     59857.7,
+    #     59857.8,
+    #     59858.47428846,
+    #     59858.7,
+    #     59859.2765162,
+    #     59859.5])
+    # k is a spline degree
     spline = LSQUnivariateSpline(t_segment, y_segment, knots, k=3)
     return spline(t_segment)
 
 
+# llll
 def segment_trend_by_spline_kind(
     t_segment: np.ndarray,
     y_segment: np.ndarray,
@@ -267,15 +402,16 @@ def segment_trend_by_spline_kind(
         )
     if kind == "cubic_interp":
         return _trend_cubic_interpolating_spline_on_segment(t_segment, y_segment)
+    n_interior_knots=20
     if kind == "lsq":
         return _trend_least_squares_spline_on_segment(
             t_segment,
             y_segment,
-            SPLINE_LSQ_INTERIOR_KNOTS,
+            n_interior_knots=n_interior_knots,
         )
     raise ValueError(f"unknown spline kind {kind!r}")
 
-
+# lll
 def spline_trend_by_segments(
     times: np.ndarray,
     values: np.ndarray,
@@ -682,6 +818,149 @@ def trend_lightkurve_flatten(
     )
     return out
 
+# lll
+def _pspline_second_difference_matrix(n_coeffs: int) -> np.ndarray:
+    """Matrix ``D`` so ``||D c||^2`` penalises second differences of B-spline coefficients."""
+    if n_coeffs <= 2:
+        return np.zeros((0, n_coeffs))
+    return np.diff(np.eye(n_coeffs), n=2, axis=0)
+
+
+def p_spline_trend(
+    t: np.ndarray,
+    y: np.ndarray,
+    penalty_lambda: float,
+    n_segments: int,
+    spline_degree: int = 3,
+) -> np.ndarray:
+    """P-spline trend for one contiguous segment (times need not be sorted).
+
+    Args:
+        t: Observation times.
+        y: Flux or magnitudes.
+        penalty_lambda: Roughness penalty (larger -> smoother trend).
+        n_segments: Number of equispaced intervals on ``[min(t), max(t)]`` for B-spline knots.
+        spline_degree: B-spline degree (default cubic).
+
+    Returns:
+        Trend aligned with the input ``t`` / ``y`` order.
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if penalty_lambda < 0:
+        raise ValueError("penalty_lambda must be non-negative")
+    if n_segments < 1:
+        raise ValueError("n_segments must be at least 1")
+
+    order = np.argsort(t)
+    t_sorted = t[order]
+    y_sorted = y[order]
+    n = len(t_sorted)
+
+    if n <= spline_degree + 1:
+        trend_sorted = np.full(n, np.nanmedian(y_sorted), dtype=float)
+    else:
+        t_min = float(t_sorted[0])
+        t_max = float(t_sorted[-1])
+        if t_max <= t_min:
+            trend_sorted = np.full(n, float(y_sorted[0]), dtype=float)
+        else:
+            internal = np.linspace(t_min, t_max, n_segments + 2)[1:-1]
+            knots = np.r_[
+                [t_min] * (spline_degree + 1),
+                internal,
+                [t_max] * (spline_degree + 1),
+            ]
+            design = BSpline.design_matrix(t_sorted, knots, spline_degree)
+            x_mat = design.toarray() if hasattr(design, "toarray") else np.asarray(design)
+            n_coeffs = x_mat.shape[1]
+            diff = _pspline_second_difference_matrix(n_coeffs)
+            if diff.shape[0] == 0:
+                coef = np.linalg.lstsq(x_mat, y_sorted, rcond=None)[0]
+            else:
+                normal = x_mat.T @ x_mat + penalty_lambda * (diff.T @ diff)
+                rhs = x_mat.T @ y_sorted
+                coef = np.linalg.solve(normal, rhs)
+            trend_sorted = x_mat @ coef
+
+    trend = np.empty(n, dtype=float)
+    trend[order] = trend_sorted
+    return trend
+
+
+def fit_pspline_lightcurve_segment(
+    df: pd.DataFrame,
+    penalty_lambda: float,
+    n_segments: int,
+    detrend_mode: Literal["mag", "flux"],
+    invert_y: bool,
+) -> pd.DataFrame:
+    """Fit P-spline trend on ``df`` (single segment), plot trend and detrended residual.
+
+    Does not split on gaps; ``df`` must already be the intended segment.
+
+    Args:
+        df: Light curve with ``TIME_COLUMN`` and ``PHOT_COLUMN``.
+        penalty_lambda: P-spline roughness penalty.
+        n_segments: Equispaced B-spline segment count on the time span.
+        detrend_mode: ``"mag"`` subtracts trend; ``"flux"`` divides by trend.
+        invert_y: Invert y-axis on magnitude plots.
+
+    Returns:
+        Copy of ``df`` with ``PSPLINE_TREND_COLUMN`` set.
+    """
+    times = df[TIME_COLUMN].to_numpy(dtype=float)
+    observed = df[PHOT_COLUMN].to_numpy(dtype=float)
+    trend = p_spline_trend(times, observed, penalty_lambda, n_segments)
+
+    out = df.copy()
+    out[PSPLINE_TREND_COLUMN] = trend
+
+    plot_lightcurve_with_trend(
+        out,
+        trend,
+        PHOT_COLUMN,
+        title=(
+            f"P-spline trend (lambda = {penalty_lambda:g}, "
+            f"n_segments = {n_segments})"
+        ),
+        invert_y=invert_y,
+        trend_label="P-spline trend",
+    )
+
+    if detrend_mode == "mag":
+        detrended = detrend_observed(observed, trend, "mag")
+        ylabel = r"$\Delta$mag (obs $-$ trend)"
+        detrend_title = "P-spline detrended (magnitude subtraction)"
+        det_invert = True
+    elif detrend_mode == "flux":
+        detrended = detrend_observed(observed, trend, "flux")
+        ylabel = "flux / trend"
+        detrend_title = "P-spline detrended (flux division)"
+        det_invert = False
+    else:
+        raise ValueError(f"detrend_mode must be 'mag' or 'flux', got {detrend_mode!r}")
+
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    ax.plot(
+        out[TIME_COLUMN],
+        detrended,
+        ".",
+        markersize=10,
+        alpha=0.5,
+        label="detrended",
+    )
+    ax.set_xlabel("obs_time (d)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(detrend_title)
+    if det_invert:
+        ax.invert_yaxis()
+    ax.legend()
+    fig.tight_layout()
+    plt.show()
+
+    return out
+
 
 def trend_spline_segments(
     df: pd.DataFrame,
@@ -735,15 +1014,13 @@ def detrend_and_plot(
     if len(observed) != len(trend):
         raise ValueError("observed and trend must have the same length")
 
+    detrended = detrend_observed(observed, trend, mode)
+
     if mode == "mag":
-        detrended = observed - trend
         ylabel = r"$\Delta$mag (obs $-$ trend)"
         invert_y = True
         title = "Detrended light curve (magnitude subtraction)"
     elif mode == "flux":
-        if np.any(trend <= 0):
-            raise ValueError("flux trend must be strictly positive for division")
-        detrended = observed / trend
         ylabel = "flux / trend"
         invert_y = False
         title = "Detrended light curve (flux division)"
@@ -751,14 +1028,6 @@ def detrend_and_plot(
         raise ValueError(f"mode must be 'mag' or 'flux', got {mode!r}")
 
     if save is not None:
-        # export = pd.DataFrame(
-        #     {
-        #         TIME_COLUMN: df[TIME_COLUMN].to_numpy(),
-        #         PHOT_COLUMN: observed,
-        #         "trend": trend,
-        #         "detrended": detrended,
-        #     }
-        # )
         export = pd.DataFrame(
             {
                 TIME_COLUMN: df[TIME_COLUMN].to_numpy(),
@@ -766,7 +1035,12 @@ def detrend_and_plot(
             }
         )
         if PHOT_ERR_COLUMN in df.columns:
-            export[PHOT_ERR_COLUMN] = df[PHOT_ERR_COLUMN].to_numpy()
+            export[PHOT_ERR_COLUMN] = detrended_standard_error(
+                observed,
+                trend,
+                df[PHOT_ERR_COLUMN].to_numpy(dtype=float),
+                mode,
+            )
         export.to_csv(Path(save), index=False)
 
     fig, ax = plt.subplots(figsize=FIGSIZE)
@@ -804,7 +1078,13 @@ def _apply_plot_style() -> None:
 
 def main() -> None:
     _apply_plot_style()
-    df = load_tcp_vot(DATA_FILE)
+    
+    path_to_data = DATA_FILE
+    if path_to_data.suffix.lower() == ".vot":
+        df = load_tcp_vot(path_to_data)
+    elif path_to_data.suffix.lower() == ".csv":
+        df = load_detrended_csv(path_to_data)
+    
     df = cut_by_time_limits(df, TIME_COLUMN, JD_MIN, JD_MAX)
 
     n_points_window = None
@@ -828,39 +1108,62 @@ def main() -> None:
         df[PHOT_COLUMN] = df[MAG_COLUMN]
         df[PHOT_ERR_COLUMN] = df['mag_err']
     
-    # trend = trend_sliding_biweight(
-    trend = trend_savitzky_golay(
-        df=df, 
-        n_points=N_POINTS, 
-        polyorder=SG_POLYORDER, 
-        invert_y=DETREND_MODE=="mag",
-        break_tolerance=BREAK_TOLERANCE,
-    )
-    detrend_and_plot(df, trend, DETREND_MODE,
-        save=DETREND_LK_CSV)
+    method: Method      
+    method = 'spline'
+    # method = 'pspline'
+    if method == 'biweight':
+        trend = trend_sliding_biweight(
+            df=df, 
+            n_points=N_POINTS,
+            invert_y=DETREND_MODE == "mag",
+            break_tolerance=BREAK_TOLERANCE)
+    elif method == 'SG':
+        trend = trend_savitzky_golay(
+            df=df, 
+            n_points=N_POINTS, 
+            polyorder=SG_POLYORDER, 
+            invert_y=DETREND_MODE=="mag",
+            break_tolerance=BREAK_TOLERANCE,
+        )
+        detrend_and_plot(df, trend, DETREND_MODE, save=DETREND_LK_CSV)
+    
+    elif method == "LK":
+        df = trend_lightkurve_flatten(
+            df=df,
+            n_points=N_POINTS,
+            polyorder=SG_POLYORDER,
+            break_tolerance=BREAK_TOLERANCE,
+            invert_y=DETREND_MODE == "mag")
+        
+        detrend_and_plot(
+            df,
+            df[TREND_COLUMN].to_numpy(),
+            DETREND_MODE,
+            save=None
+            )
 
-    df = trend_lightkurve_flatten(
-        df,
-        N_POINTS,
-        SG_POLYORDER,
-        BREAK_TOLERANCE,
-        invert_y=DETREND_MODE == "mag",
-    )
-    detrend_and_plot(
-        df,
-        df[TREND_COLUMN].to_numpy(),
-        DETREND_MODE,
-        save=None,
-    )
+    elif method == 'spline':
+        # SplineKind = Literal["smoothing", "cubic_interp", "lsq"]
+        # do not use cubic_interp -- it tryis to pass throgh all points
+        spline_kind = "lsq"
+        # spline_kind = "smoothing"
+        df = trend_spline_segments(
+            df=df,
+            spline_kind=spline_kind,
+            break_tolerance=BREAK_TOLERANCE,
+            invert_y=DETREND_MODE == "mag",
+        )
+        detrend_and_plot(df, df[SPLINE_TREND_COLUMN].to_numpy(), 
+            DETREND_MODE, save=DETREND_SPLINE_CSV)
 
-    df = trend_spline_segments(
-        df,
-        SPLINE_KIND,
-        BREAK_TOLERANCE,
-        invert_y=DETREND_MODE == "mag",
-    )
-    detrend_and_plot(df, df[SPLINE_TREND_COLUMN].to_numpy(), 
-    DETREND_MODE, save=DETREND_SPLINE_CSV)
+    elif method == 'pspline':
+        fit_pspline_lightcurve_segment(
+            df,
+            PSPLINE_PENALTY_LAMBDA,
+            PSPLINE_N_SEGMENTS,
+            DETREND_MODE,
+            invert_y=DETREND_MODE == "mag",
+        )
 
 
 if __name__ == "__main__":

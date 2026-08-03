@@ -2,12 +2,16 @@
 
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+from matplotlib import cm
 import numpy as np
 import pandas as pd
 
-DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_lk.csv"
+# DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_lk.csv"
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_spline.csv"
+DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "shug.dat"
+
 TIME_COLUMN = "obs_time"
 DETRENDED_COLUMN = "detrended"
 ERR_COLUMN = "flux_error"
@@ -17,19 +21,48 @@ P0 = 0.0601828
 PERIOD_SLOPE = 0.0
 
 # Phase ephemeris: cycle count referenced to T_EPOCH.
-T_EPOCH = 0.06012
+T_EPOCH = 59866.4533
 # Local stack centre and half-width in cycles (window spans 2 * K_CYCLES * P).
 K_CYCLES = 3
 # Step between successive fold anchors along the light curve (days).
-T_ANCHOR_STEP = 3 * P0
+T_ANCHOR_STEP = 6 * P0
 
 FIGSIZE = (20, 12)
+FIGSIZE_FOLD_VIEW = (20, 20)
 FONT_SIZE = 20
+
+
+def _discrete_cycle_colormap(cycle_ids: np.ndarray) -> tuple[cm.ScalarMappable, np.ndarray]:
+    """Build a discrete normalisation and colormap for integer ``cycle_id`` values."""
+    unique_ids = np.sort(np.unique(cycle_ids.astype(int)))
+    n = len(unique_ids)
+    base = plt.get_cmap("tab10" if n <= 10 else "tab20")
+    colors = [base(i % base.N) for i in range(n)]
+    cmap = mcolors.ListedColormap(colors)
+    bounds = np.arange(unique_ids[0], unique_ids[-1] + 2, dtype=float) - 0.5
+    norm = mcolors.BoundaryNorm(bounds, cmap.N)
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    return sm, unique_ids
 
 
 def load_detrended_csv(path: Path) -> pd.DataFrame:
     """Load detrended light curve export written by ``plot_tcp_lc.detrend_and_plot``."""
-    return pd.read_csv(path)
+
+    if path.suffix.lower() == ".csv":
+        df = pd.read_csv(path)
+    
+    elif path.suffix.lower() == ".dat":
+        df = pd.read_csv(
+            path,
+            sep=r"\s+",
+            comment="#",
+            names=["obs_time", "detrended", "flux_error"]
+        )
+        df['obs_time'] = df['obs_time'] - 0.5       # to mjd
+    else:
+        raise ValueError(f"unsupported file type: {path.suffix}")
+    return df
 
 
 def instantaneous_period(t: np.ndarray | float, p0: float, period_slope: float) -> np.ndarray:
@@ -121,15 +154,26 @@ def anchor_times_for_lightcurve(
 
 
 def plot_detrended_lightcurve(df: pd.DataFrame) -> None:
-    """Scatter plot of the detrended series."""
+    """Scatter plot of the detrended series with flux errors when available."""
     plt.rcParams.update({"font.size": FONT_SIZE})
     fig, ax = plt.subplots(figsize=FIGSIZE)
-    ax.plot(
-        df[TIME_COLUMN],
-        df[DETRENDED_COLUMN],
-        ".",
+    x = df[TIME_COLUMN].to_numpy(dtype=float)
+    y = df[DETRENDED_COLUMN].to_numpy(dtype=float)
+    yerr = None
+    if ERR_COLUMN in df.columns:
+        err = df[ERR_COLUMN].to_numpy(dtype=float)
+        if np.any(np.isfinite(err) & (err > 0)):
+            yerr = err
+
+    ax.errorbar(
+        x,
+        y,
+        yerr=yerr,
+        fmt=".",
         markersize=6,
         alpha=0.5,
+        elinewidth=0.6,
+        capsize=0,
         label="detrended",
     )
     ax.set_xlabel("obs_time (d)")
@@ -140,26 +184,118 @@ def plot_detrended_lightcurve(df: pd.DataFrame) -> None:
     plt.show()
 
 
-def plot_local_phase_stack(stack: pd.DataFrame, t_anchor: float, p0: float) -> None:
-    """Plot locally folded points: phase vs detrended, coloured by cycle index."""
+def plot_local_phase_stack(
+    df: pd.DataFrame,
+    stack: pd.DataFrame,
+    t_anchor: float,
+    p0: float,
+) -> None:
+    """Three-panel fold view: phase fold, stack window only, full light curve."""
+    if stack.empty:
+        t_lo = float(df[TIME_COLUMN].min())
+        t_hi = float(df[TIME_COLUMN].max())
+        raise ValueError(
+            f"empty stack at t_anchor={t_anchor}: no points in the fold window "
+            f"(light curve spans {t_lo:.4f} to {t_hi:.4f} d)"
+        )
+
     plt.rcParams.update({"font.size": FONT_SIZE})
-    fig, ax = plt.subplots(figsize=FIGSIZE)
-    sc = ax.scatter(
-        stack["phi_local"],
-        stack[DETRENDED_COLUMN],
-        c=stack["cycle_id"],
-        s=40,
-        alpha=0.7,
-        cmap="viridis",
+    fig, (ax_phase, ax_zoom, ax_time) = plt.subplots(
+        3,
+        1,
+        figsize=FIGSIZE_FOLD_VIEW,
+        sharex=False,
+        gridspec_kw={"height_ratios": [1, 0.85, 1.15]},
     )
-    ax.set_xlabel("phase (centred)")
-    ax.set_ylabel("flux / trend")
-    ax.set_title(
+
+    cycle_ids = stack["cycle_id"].to_numpy(dtype=int)
+    sm, _ = _discrete_cycle_colormap(cycle_ids)
+    k_cycles = int(stack["k_cycles"].iloc[0])
+
+    phi = stack["phi_local"].to_numpy(dtype=float)
+    y_fold = stack[DETRENDED_COLUMN].to_numpy(dtype=float)
+    # Extend phase axis to [-0.5, 1.5) by copying the [-0.5, 0.5) fold shifted by +1.
+    phi_plot = np.concatenate([phi, phi + 1.0])
+    y_plot = np.concatenate([y_fold, y_fold])
+    c_plot = np.concatenate([cycle_ids, cycle_ids])
+
+    ax_phase.scatter(
+        phi_plot,
+        y_plot,
+        c=c_plot,
+        cmap=sm.cmap,
+        norm=sm.norm,
+        s=80,
+        alpha=0.85,
+        edgecolors="k",
+        linewidths=0.3,
+    )
+    ax_phase.set_xlim(-0.5, 1.5)
+    ax_phase.set_xlabel("phase (centred)")
+    ax_phase.set_ylabel("flux / trend")
+    ax_phase.set_title(
         f"Local fold at t_anchor = {t_anchor:.4f} d "
-        f"({stack['k_cycles'].iloc[0]} cycles each side, P0 = {p0} d)"
+        f"({k_cycles} cycles each side, P0 = {p0} d)"
     )
-    fig.colorbar(sc, ax=ax, label="cycle_id (relative to anchor)")
-    ax.axvline(0.0, color="k", linewidth=0.8, alpha=0.4)
+    ax_phase.axvline(0.0, color="k", linewidth=0.8, alpha=0.4)
+
+    p_anchor = float(instantaneous_period(t_anchor, p0, PERIOD_SLOPE))
+    half_span = k_cycles * p_anchor
+    t_window_lo = t_anchor - half_span
+    t_window_hi = t_anchor + half_span
+
+    in_stack = df.index.isin(stack.index)
+    bg = df.loc[~in_stack]
+    hi = df.loc[in_stack]
+    hi_cycle = hi.join(stack[["cycle_id"]], how="left")
+    hi_colors = hi_cycle["cycle_id"].to_numpy(dtype=int)
+
+    ax_zoom.scatter(
+        hi_cycle[TIME_COLUMN],
+        hi_cycle[DETRENDED_COLUMN],
+        c=hi_colors,
+        cmap=sm.cmap,
+        norm=sm.norm,
+        s=120,
+        alpha=0.95,
+        edgecolors="k",
+        linewidths=0.4,
+    )
+    ax_zoom.axvline(t_anchor, color="C1", linewidth=1.2, linestyle="--", alpha=0.8)
+    pad = 0.02 * max(t_window_hi - t_window_lo, 1e-9)
+    ax_zoom.set_xlim(t_window_lo - pad, t_window_hi + pad)
+    ax_zoom.set_xlabel("obs_time (d)")
+    ax_zoom.set_ylabel("flux / trend")
+    ax_zoom.set_title("Stack interval only (coloured by cycle_id)")
+
+    ax_time.plot(
+        bg[TIME_COLUMN],
+        bg[DETRENDED_COLUMN],
+        ".",
+        markersize=4,
+        alpha=0.25,
+        color="0.55",
+        label="outside stack",
+    )
+    ax_time.scatter(
+        hi_cycle[TIME_COLUMN],
+        hi_cycle[DETRENDED_COLUMN],
+        c=hi_colors,
+        cmap=sm.cmap,
+        norm=sm.norm,
+        s=120,
+        alpha=0.95,
+        edgecolors="k",
+        linewidths=0.4,
+        label="in stack",
+        zorder=3,
+    )
+    ax_time.axvspan(t_window_lo, t_window_hi, color="C1", alpha=0.12, label="fold window")
+    ax_time.axvline(t_anchor, color="C1", linewidth=1.2, linestyle="--", alpha=0.8, label="anchor")
+    ax_time.set_xlabel("obs_time (d)")
+    ax_time.set_ylabel("flux / trend")
+    ax_time.set_title("Full detrended light curve (stack interval highlighted)")
+    ax_time.legend(loc="upper right", fontsize=FONT_SIZE * 0.55)
     fig.tight_layout()
     plt.show()
 
@@ -168,16 +304,31 @@ def main() -> None:
     df = load_detrended_csv(DETRENDED_CSV)
     plot_detrended_lightcurve(df)
     
-    t_anchor = 59860
+    t_anchor = 59856.5
+    p0 = 0.0591
     stack = local_stack_at_anchor(
             df,
-            float(t_anchor),
-            K_CYCLES,
-            P0,
-            PERIOD_SLOPE,
-            T_EPOCH,
+            t_anchor=t_anchor,
+            k_cycles=K_CYCLES,
+            p0=p0,
+            period_slope=PERIOD_SLOPE,
+            t_epoch=T_EPOCH,
         )
-    plot_local_phase_stack(stack, float(t_anchor), P0)
+    if not stack.empty:
+        plot_local_phase_stack(df, stack, t_anchor, p0)
+
+    t_anchor = 59866.5
+    p0 = 0.06066
+    stack = local_stack_at_anchor(
+            df,
+            t_anchor=t_anchor,
+            k_cycles=7,
+            p0=p0,
+            period_slope=PERIOD_SLOPE,
+            t_epoch=T_EPOCH,
+        )
+    if not stack.empty:
+        plot_local_phase_stack(df, stack, t_anchor, p0)
 
     anchors = anchor_times_for_lightcurve(
         df, K_CYCLES, P0, PERIOD_SLOPE, T_ANCHOR_STEP
@@ -193,7 +344,7 @@ def main() -> None:
         )
         if stack.empty:
             continue
-        plot_local_phase_stack(stack, float(t_anchor), P0)
+        plot_local_phase_stack(df, stack, float(t_anchor), P0)
 
 
 if __name__ == "__main__":
