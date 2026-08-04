@@ -1689,7 +1689,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
             html.H5("GP Processing View", className="fw-bold mb-0"),
             dbc.Badge([
                 html.I(className="bi bi-pause-circle me-2"),
-                "STOPPING — finishing current fit…"
+                "STOPPING - finishing current fit…"
             ], color="warning", className="ms-2")
         ], className="d-flex align-items-center mb-3")
 
@@ -1707,7 +1707,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
     if trigger_id == 'finished-signal' and signal_status in ("FINISHED", "FINISHED_STOPPED"):
         stopped = signal_status == "FINISHED_STOPPED"
         badge_text = (
-            "STOPPED — review completed fits"
+            "STOPPED - review completed fits"
             if stopped
             else "FINISHED"
         )

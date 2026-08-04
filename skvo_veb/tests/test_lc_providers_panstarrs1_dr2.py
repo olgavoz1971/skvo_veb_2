@@ -10,13 +10,24 @@ from skvo_veb.lc_providers.panstarrs1_dr2 import config
 from skvo_veb.lc_providers.panstarrs1_dr2.build_volightcurve import build_volightcurve_from_detections
 from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_catalog import map_mean_object_table_to_catalog
 from skvo_veb.lc_providers.panstarrs1_dr2.provider import Panstarrs1Dr2Provider
-from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import parse_ps1_obj_id
+from skvo_veb.lc_providers.discovery_fetch_context import (
+    DiscoveryFetchContext,
+    SEARCH_MODE_SIMBAD_CONE,
+)
+from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name, parse_ps1_obj_id
 
 
 @pytest.fixture
 def provider():
     """Returns a Pan-STARRS1 DR2 provider instance."""
     return Panstarrs1Dr2Provider()
+
+
+def test_format_ps1_object_name():
+    """Display label is PS1 prefix plus normalised objID."""
+    assert format_ps1_object_name(123456) == "PS1 123456"
+    assert format_ps1_object_name("165243463579570976") == "PS1 165243463579570976"
 
 
 def test_parse_ps1_obj_id_digits():
@@ -67,8 +78,8 @@ def test_map_mean_object_expands_bands_with_detections():
         centre_dec_deg=20.0,
     )
     assert len(catalog) == 2
-    assert set(catalog["filter_name"]) == {"PS1 g", "PS1 r"}
-    assert catalog["object_name"][0] == "999"
+    assert set(catalog["filter_name"]) == {"g", "r"}
+    assert catalog["object_name"][0] == "PS1 999"
     assert catalog["provider_note"][0] == config.DISCOVERY_CATALOG_PROVIDER_NOTE
 
 
@@ -93,25 +104,38 @@ def test_map_mean_object_sorts_by_separation():
         centre_dec_deg=20.0,
     )
     assert len(catalog) == 2
-    assert catalog["object_name"][0] == "1"
-    assert catalog["object_name"][1] == "2"
+    assert catalog["object_name"][0] == "PS1 1"
+    assert catalog["object_name"][1] == "PS1 2"
     assert catalog["distance_arcsec"][0] < catalog["distance_arcsec"][1]
+
+
+def test_adql_detection_joins_mean_object_for_epoch():
+    """Lightcurve ADQL joins MeanObjectView for per-object epochMean."""
+    adql = config.adql_detection_lightcurve(obj_id=999, filter_name="g")
+    assert "m.epochMean" in adql
+    assert "MeanObjectView" in adql
+    assert "m.objID" in adql or "d.objID = m.objID" in adql
 
 
 def test_build_volightcurve_from_detections():
     """Detection table builds flux-native VOLightCurve."""
+    from astropy.time import Time
+
+    epoch_mean_mjd = 58000.0
+    expected_coosys = round(Time(epoch_mean_mjd, format="mjd").decimalyear, 1)
     det = Table(
         {
             "obsTime": [58000.1, 58001.2],
             "psfFlux": [1e-3, 1.1e-3],
             "psfFluxErr": [1e-4, 1.2e-4],
             "psfQfPerfect": [0.95, 0.99],
+            "epochMean": [epoch_mean_mjd, epoch_mean_mjd],
         }
     )
     volc = build_volightcurve_from_detections(
         det,
         obj_id=999,
-        filter_code="r",
+        filter_name="r",
         ra_deg=10.0,
         dec_deg=20.0,
         object_name="999",
@@ -119,6 +143,7 @@ def test_build_volightcurve_from_detections():
     assert len(volc) == 2
     assert "phot" in volc.colnames
     assert "label" not in volc.colnames
+    assert volc.table.meta["coosys_epoch"] == pytest.approx(expected_coosys)
 
 
 def test_resolve_target_name_long_obj_id(provider):
@@ -161,7 +186,7 @@ def test_search_catalog_by_obj_id_object_name(monkeypatch, provider):
     catalog = provider.search_catalog(object_name="608067000000000000")
     assert "objID = 608067000000000000" in captured["adql"]
     assert "objname" not in captured["adql"]
-    assert catalog["object_name"][0] == "608067000000000000"
+    assert catalog["object_name"][0] == "PS1 608067000000000000"
 
 
 def test_search_catalog_cone_sorted_by_separation(monkeypatch, provider):
@@ -185,7 +210,7 @@ def test_search_catalog_cone_sorted_by_separation(monkeypatch, provider):
     )
 
     catalog = provider.search_catalog(ra_deg=10.0, dec_deg=20.0, radius_arcsec=15.0)
-    assert list(catalog["object_name"]) == ["100", "200"]
+    assert list(catalog["object_name"]) == ["PS1 100", "PS1 200"]
     assert catalog["distance_arcsec"][0] <= catalog["distance_arcsec"][1]
 
 
@@ -225,6 +250,7 @@ def test_fetch_lightcurve_mocked(monkeypatch, provider):
             "psfFlux": [2e-3],
             "psfFluxErr": [2e-4],
             "psfQfPerfect": [1.0],
+            "epochMean": [57123.45],
         }
     )
     key = map_mean_object_table_to_catalog(
@@ -251,3 +277,50 @@ def test_fetch_lightcurve_mocked(monkeypatch, provider):
     volc = provider.fetch_lightcurve(key)
     assert len(volc) == 1
     assert volc.table.meta.get("mission") == config.PROVIDER_ID
+
+
+def test_detection_description_uses_psf_and_obj_id_only():
+    """objID label matches format_ps1_object_name; PSF type comes from config."""
+    text = config.detection_lightcurve_description(obj_id=165243463579570976, filter_name="z")
+    assert "PSF photometry" in text
+    assert "PS1 165243463579570976" in text
+    assert "objID 165243463579570976" in text
+    assert "filter=z" in text
+    assert "(objID=" not in text
+
+
+def test_enrich_applies_simbad_lookup_within_tau():
+    """Simbad cone rows within tau inherit lookup name on title and description."""
+    det = Table(
+        {
+            "obsTime": [58000.5],
+            "psfFlux": [2e-3],
+            "psfFluxErr": [2e-4],
+            "psfQfPerfect": [1.0],
+            "epochMean": [57123.45],
+        }
+    )
+    volc = build_volightcurve_from_detections(
+        det,
+        obj_id=165243463579570976,
+        filter_name="i",
+        ra_deg=10.0,
+        dec_deg=20.0,
+    )
+    ctx = DiscoveryFetchContext(
+        search_mode=SEARCH_MODE_SIMBAD_CONE,
+        user_target="AA And",
+        simbad_main_id="AA And",
+        radius_arcsec=30.0,
+        distance_arcsec=2.0,
+    )
+    enrich_fetched_volightcurve(
+        volc,
+        obj_id=165243463579570976,
+        filter_name="i",
+        discovery_context=ctx,
+    )
+    meta = volc.table.meta
+    assert meta["lookup_name"] == "AA And"
+    assert meta["lightcurve_title"].startswith("AA And - PS1 165243463579570976 filter=i")
+    assert "Associated with lookup name AA And" in meta["description"]

@@ -246,7 +246,7 @@ class MissionLightcurveProvider(ABC):
         catalog.meta[DISCOVERY_META_MAY_BE_TRUNCATED] = True
         catalog.meta[DISCOVERY_META_TRUNCATION_DETAIL] = (
             f"Results may be truncated: the cone search returned {cone_query_row_count} "
-            f"{entity}. More matches may exist — try a smaller "
+            f"{entity}. More matches may exist - try a smaller "
             "radius or a more specific target."
         )
         logger.info(

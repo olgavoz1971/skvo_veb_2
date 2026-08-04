@@ -10,7 +10,9 @@ from astropy import units as u
 from astropy.table import Table
 
 from skvo_veb.lc_providers.panstarrs1_dr2 import config
-from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name
+from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_epoch import (
+    coosys_epoch_year_from_detection_table,
+)
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from skvo_veb.volightcurve import VOLightCurve
@@ -56,7 +58,7 @@ def build_volightcurve_from_detections(
     detection_table: Table,
     *,
     obj_id: int,
-    filter_code: str,
+    filter_name: str,
     ra_deg: float,
     dec_deg: float,
     object_name: str = "",
@@ -66,7 +68,7 @@ def build_volightcurve_from_detections(
     Args:
         detection_table (astropy.table.Table): TAP ``Detection`` rows.
         obj_id (int): Pan-STARRS mean object identifier.
-        filter_code (str): Filter code ``g``, ``r``, ``i``, ``z``, or ``y``.
+        filter_name (str): PS1 filter ``g``, ``r``, ``i``, ``z``, or ``y``.
         ra_deg (float): ICRS right ascension in degrees (mean object).
         dec_deg (float): ICRS declination in degrees (mean object).
         object_name (str): Optional IAU name for descriptions.
@@ -80,11 +82,15 @@ def build_volightcurve_from_detections(
     if detection_table is None or len(detection_table) == 0:
         raise PipeException(
             f"{config.DISPLAY_NAME}: no detection epochs for objID={obj_id} "
-            f"filter={filter_code!r} after quality cuts."
+            f"filter={filter_name!r} after quality cuts."
         )
 
-    band = config.band_spec_for_code(filter_code)
+    band = config.band_spec_for_filter_name(filter_name)
     columns = _column_map(detection_table)
+    coosys_epoch = coosys_epoch_year_from_detection_table(
+        detection_table,
+        column_map=columns,
+    )
     time_col = _require_column(columns, "obsTime")
     flux_col = _require_column(columns, "psfFlux")
     err_col = _require_column(columns, "psfFluxErr")
@@ -101,7 +107,7 @@ def build_volightcurve_from_detections(
     )
     if not np.any(valid):
         raise PipeException(
-            f"{config.DISPLAY_NAME}: no finite epochs for objID={obj_id} filter={filter_code!r}."
+            f"{config.DISPLAY_NAME}: no finite epochs for objID={obj_id} filter={filter_name!r}."
         )
 
     obs_mjd = obs_mjd[valid]
@@ -117,10 +123,9 @@ def build_volightcurve_from_detections(
     table["phot"] = flux
     table["flux_error"] = flux_err
 
-    name_bit = format_ps1_object_name(obj_id)
-    description = (
-        f"Pan-STARRS1 DR2 lightcurve for {name_bit} (objID={obj_id}) "
-        f"in {band.filter_name} filter."
+    description = config.detection_lightcurve_description(
+        obj_id=obj_id,
+        filter_name=band.filter_name,
     )
     wavelength_m = band.effective_wavelength_angstrom * 1e-10
 
@@ -128,7 +133,7 @@ def build_volightcurve_from_detections(
     write_vo_lightcurve(
         buffer,
         table,
-        table_name=sanitize_filename(f"PS1_{obj_id}_{band.filter_code}"),
+        table_name=sanitize_filename(f"PS1_{obj_id}_{band.filter_name}"),
         filter_identifier=band.filter_identifier,
         filter_name=band.filter_name,
         refposition=config.REFPOSITION,
@@ -149,7 +154,7 @@ def build_volightcurve_from_detections(
         binary=True,
         coosys_id="system",
         coosys_system=config.COOSYS_SYSTEM,
-        coosys_epoch=config.COOSYS_EPOCH,
+        coosys_epoch=coosys_epoch,
         publication_id=config.PUBLICATION_BIBCODE,
         facility_name=config.FACILITY_NAME,
         instrument_name=config.INSTRUMENT_NAME,
@@ -158,21 +163,23 @@ def build_volightcurve_from_detections(
     volc = VOLightCurve(buffer)
     meta = volc.table.meta
     meta["obj_id"] = int(obj_id)
-    meta["filter"] = band.filter_code
+    meta["filter"] = band.filter_name
     meta["mission"] = config.PROVIDER_ID
     meta["facility_name"] = config.FACILITY_NAME
     meta["instrument_name"] = config.INSTRUMENT_NAME
     meta["publication_id"] = config.PUBLICATION_BIBCODE
     meta["bibcode"] = config.PUBLICATION_BIBCODE
     meta["photcal"] = config.photcal_dict_for_band(band)
+    meta["coosys_epoch"] = coosys_epoch
     meta["table_description"] = description
     meta["description"] = description
     meta["lightcurve_title"] = description
     logger.info(
-        "%s built VOLightCurve obj_id=%s filter=%s n_points=%s",
+        "%s built VOLightCurve obj_id=%s filter=%s coosys_epoch=%.6f n_points=%s",
         config.DISPLAY_NAME,
         obj_id,
-        band.filter_code,
+        band.filter_name,
+        coosys_epoch,
         len(volc),
     )
     return volc

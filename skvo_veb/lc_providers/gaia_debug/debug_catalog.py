@@ -184,7 +184,7 @@ AA_AND = GaiaDr3DebugSource(
         epoch_mjd=57120.0,
     ),
     provider_note=(
-        "Gaia DR3 debug source 1936512041221649536 — synthetic sinusoidal "
+        "Gaia DR3 debug source 1936512041221649536 - synthetic sinusoidal "
         "epoch photometry in G/BP/RP (periods declared per band)."
     ),
 )
@@ -206,7 +206,7 @@ AB_AND = GaiaDr3DebugSource(
         epoch_mjd=57220.0,
     ),
     provider_note=(
-        "Gaia DR3 debug source 1916588203329221632 — synthetic sinusoidal "
+        "Gaia DR3 debug source 1916588203329221632 - synthetic sinusoidal "
         "epoch photometry in G/BP/RP (periods declared per band)."
     ),
 )
@@ -225,7 +225,7 @@ V433_AQL = GaiaDr3DebugSource(
         epoch_mjd=57320.0,
     ),
     provider_note=(
-        "Gaia DR3 debug source 1807917937254374144 — synthetic non-periodic "
+        "Gaia DR3 debug source 1807917937254374144 - synthetic non-periodic "
         "epoch photometry in G/BP/RP."
     ),
 )

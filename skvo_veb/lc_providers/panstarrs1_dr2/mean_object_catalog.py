@@ -190,7 +190,7 @@ def map_mean_object_table_to_catalog(
                 provider_id,
                 {
                     "obj_id": str(obj_id_int),
-                    "filter": band.filter_code,
+                    "filter": band.filter_name,
                     "ra_deg": float(ra_val),
                     "dec_deg": float(dec_val),
                     "object_name": object_name,

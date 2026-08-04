@@ -6,7 +6,8 @@ import logging
 
 from skvo_veb.lc_providers.discovery_fetch_context import (
     DiscoveryFetchContext,
-    lookup_label_from_context,
+    effective_lookup_association_arcsec as _shared_effective_lookup_association_arcsec,
+    resolve_lookup_name_for_discovery_fetch,
 )
 from skvo_veb.lc_providers.ztf import config
 from skvo_veb.utils.my_tools import PipeException
@@ -26,21 +27,10 @@ def resolve_lookup_name_for_fetch(
     Returns:
         str or None: Lookup label or ``None`` when association does not apply.
     """
-    if context is None:
-        return None
-    lookup = lookup_label_from_context(context)
-    if lookup is None:
-        return None
-    if context.distance_arcsec is None:
-        return None
-    tau = config.effective_lookup_association_arcsec(context.radius_arcsec)
-    try:
-        distance = float(context.distance_arcsec)
-    except (TypeError, ValueError):
-        return None
-    if distance > tau:
-        return None
-    return lookup
+    return resolve_lookup_name_for_discovery_fetch(
+        context,
+        max_association_arcsec=config.LOOKUP_ASSOCIATION_MAX_ARCSEC,
+    )
 
 
 def enrich_fetched_volightcurve(

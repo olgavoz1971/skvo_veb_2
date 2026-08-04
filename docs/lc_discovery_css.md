@@ -3,7 +3,8 @@
 Simple guide for adjusting look and layout on the **Lightcurve Discovery** page (`/lc_discovery`).
 
 **Main file:** `skvo_veb/assets/lc_discovery.css`  
-**Page layout:** `skvo_veb/pages/lightcurve_discovery.py` (class names only — sizes live in CSS)
+**Page layout:** `skvo_veb/pages/lightcurve_discovery.py` (class names only — sizes live in CSS)  
+**Messages / alerts:** [lc_discovery_messages.md](lc_discovery_messages.md)
 
 After editing CSS, hard-refresh the browser (**Ctrl+Shift+R**) to avoid stale cached styles.
 

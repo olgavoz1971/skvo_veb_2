@@ -189,8 +189,8 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
 
         payload = decode_lc_key(lc_key)["payload"]
         obj_id_raw = payload.get("obj_id")
-        filter_code = payload.get("filter")
-        if obj_id_raw is None or filter_code is None:
+        filter_name = payload.get("filter")
+        if obj_id_raw is None or filter_name is None:
             raise PipeException(f"{self.display_name}: lc_key payload missing obj_id or filter.")
 
         try:
@@ -206,15 +206,18 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
             "%s fetch obj_id=%s filter=%s force_refresh=%s",
             self.display_name,
             obj_id,
-            filter_code,
+            filter_name,
             force_refresh,
         )
 
-        detection_table = fetch_detection_table(obj_id=obj_id, filter_code=str(filter_code))
+        detection_table = fetch_detection_table(
+            obj_id=obj_id,
+            filter_name=str(filter_name),
+        )
         volc = build_volightcurve_from_detections(
             detection_table,
             obj_id=obj_id,
-            filter_code=str(filter_code),
+            filter_name=str(filter_name),
             ra_deg=ra_deg,
             dec_deg=dec_deg,
             object_name=object_name,
@@ -222,7 +225,7 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
         return enrich_fetched_volightcurve(
             volc,
             obj_id=obj_id,
-            filter_code=str(filter_code),
+            filter_name=str(filter_name),
             object_name=object_name,
             discovery_context=discovery_context,
         )

@@ -16,6 +16,9 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
 )
+from skvo_veb.lc_providers.discovery_fetch_context import (
+    effective_lookup_association_arcsec as _shared_effective_lookup_association_arcsec,
+)
 
 PROVIDER_ID = "ztf_dr24"
 DISPLAY_NAME = "ZTF DR24"
@@ -140,16 +143,10 @@ def effective_lookup_association_arcsec(radius_arcsec: float | None) -> float:
     Returns:
         float: Association threshold in arcseconds.
     """
-    cap = float(LOOKUP_ASSOCIATION_MAX_ARCSEC)
-    if radius_arcsec is None:
-        return cap
-    try:
-        radius = float(radius_arcsec)
-    except (TypeError, ValueError):
-        return cap
-    if radius <= 0:
-        return cap
-    return min(radius, cap)
+    return _shared_effective_lookup_association_arcsec(
+        radius_arcsec,
+        max_arcsec=LOOKUP_ASSOCIATION_MAX_ARCSEC,
+    )
 
 
 def format_ztf_oid_name(oid: int | str) -> str:

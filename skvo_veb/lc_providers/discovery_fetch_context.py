@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 SEARCH_MODE_SIMBAD_CONE = "simbad_cone"
 
+LOOKUP_ASSOCIATION_MAX_ARCSEC = 5.0
+
 
 def _radius_to_arcsec(radius_value: float, radius_unit: str) -> float:
     """Converts a UI radius to arcseconds without importing the orchestrator module.
@@ -107,3 +109,61 @@ def lookup_label_from_context(context: DiscoveryFetchContext | None) -> str | No
         if candidate and str(candidate).strip():
             return str(candidate).strip()
     return None
+
+
+def effective_lookup_association_arcsec(
+    radius_arcsec: float | None,
+    *,
+    max_arcsec: float = LOOKUP_ASSOCIATION_MAX_ARCSEC,
+) -> float:
+    """Computes τ_eff = min(cone radius, association cap) in arcseconds.
+
+    Args:
+        radius_arcsec (float, optional): Discovery cone radius in arcseconds.
+        max_arcsec (float): Provider cap on positional lookup association.
+
+    Returns:
+        float: Separation threshold for inheriting a Simbad lookup label.
+    """
+    cap = float(max_arcsec)
+    if radius_arcsec is None:
+        return cap
+    try:
+        radius = float(radius_arcsec)
+    except (TypeError, ValueError):
+        return cap
+    if radius <= 0:
+        return cap
+    return min(radius, cap)
+
+
+def resolve_lookup_name_for_discovery_fetch(
+    context: DiscoveryFetchContext | None,
+    *,
+    max_association_arcsec: float = LOOKUP_ASSOCIATION_MAX_ARCSEC,
+) -> str | None:
+    """Returns a lookup label when a Simbad-centred cone row is close enough.
+
+    Args:
+        context (DiscoveryFetchContext, optional): Discovery session context.
+        max_association_arcsec (float): Positional association cap in arcseconds.
+
+    Returns:
+        str or None: Simbad or user lookup label, or ``None`` when not applicable.
+    """
+    lookup = lookup_label_from_context(context)
+    if lookup is None or context is None:
+        return None
+    if context.distance_arcsec is None:
+        return None
+    tau = effective_lookup_association_arcsec(
+        context.radius_arcsec,
+        max_arcsec=max_association_arcsec,
+    )
+    try:
+        distance = float(context.distance_arcsec)
+    except (TypeError, ValueError):
+        return None
+    if distance > tau:
+        return None
+    return lookup

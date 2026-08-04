@@ -14,16 +14,22 @@ _PS1_OBJID_PREFIX_PATTERN = re.compile(
 )
 
 
+_PS1_OBJECT_LABEL_PREFIX = "PS1"
+
+
 def format_ps1_object_name(obj_id: int | str) -> str:
     """Returns the catalogue display label for a Pan-STARRS mean object.
 
     Args:
-        obj_id (int or str): Pan-STARRS ``objID``.
+        obj_id (int or str): Pan-STARRS ``objID`` (may arrive as numpy scalar or str).
 
     Returns:
-        str: String form of ``objID`` for AgGrid ``object_name``.
+        str: Human-readable label such as ``PS1 165243463579570976`` for AgGrid
+        ``object_name`` and lightcurve titles.
     """
-    return str(int(obj_id))
+    # Normalise to a plain integer: TAP may return int64; lc_key may store str digits.
+    canonical_id = int(obj_id)
+    return f"{_PS1_OBJECT_LABEL_PREFIX} {canonical_id}"
 
 
 def parse_ps1_obj_id(text: str | None) -> int | None:

@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import io
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+import requests
 from astropy.table import Table
 
 from skvo_veb.lc_providers.asassn import config
 from skvo_veb.lc_providers.asassn.build_volightcurve import build_volightcurve_from_band_table
 from skvo_veb.lc_providers.asassn.catalog import map_metadata_table_to_catalog
 from skvo_veb.lc_providers.asassn.provider import AsassnProvider
+from skvo_veb.lc_providers.asassn.skypatrol_fetch import fetch_discovery_cone
 from skvo_veb.lc_providers.catalog_schema import read_discovery_truncation_meta
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
+from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.volightcurve import VOLightCurve
 
 
@@ -248,3 +252,24 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
     assert volc.table.meta.get("mission") == config.PROVIDER_ID
     assert volc.table.meta.get("period") == pytest.approx(0.46)
     assert list(volc["label"]) == ["bs", "br"]
+
+
+def test_fetch_discovery_cone_maps_http_error_to_pipe_exception():
+    """Sky Patrol HTTP failures surface as PipeException for the Discovery UI."""
+
+    class _FailingClient:
+        def cone_search(self, *args, **kwargs):
+            response = MagicMock()
+            response.status_code = 500
+            raise requests.HTTPError(
+                "500 Server Error: INTERNAL SERVER ERROR",
+                response=response,
+            )
+
+    with pytest.raises(PipeException, match="HTTP 500"):
+        fetch_discovery_cone(
+            ra_deg=1.0,
+            dec_deg=0.0,
+            radius_arcsec=10.0,
+            client=_FailingClient(),
+        )

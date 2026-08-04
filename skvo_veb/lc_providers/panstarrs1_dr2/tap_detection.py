@@ -13,21 +13,24 @@ from skvo_veb.utils.my_tools import PipeException
 logger = logging.getLogger(__name__)
 
 
-def fetch_detection_table(*, obj_id: int, filter_code: str) -> Table:
+def fetch_detection_table(*, obj_id: int, filter_name: str) -> Table:
     """Downloads epoch photometry for one object and filter.
 
     Args:
         obj_id (int): Pan-STARRS mean object identifier.
-        filter_code (str): Filter code ``g``, ``r``, ``i``, ``z``, or ``y``.
+        filter_name (str): PS1 filter ``g``, ``r``, ``i``, ``z``, or ``y``.
 
     Returns:
         astropy.table.Table: Detection rows (possibly empty).
 
     Raises:
-        PipeException: When TAP fails or the filter code is invalid.
+        PipeException: When TAP fails or the filter name is invalid.
     """
-    band = config.band_spec_for_code(filter_code)
-    adql = config.adql_detection_lightcurve(obj_id=int(obj_id), filter_type=band.filter_type)
+    band = config.band_spec_for_filter_name(filter_name)
+    adql = config.adql_detection_lightcurve(
+        obj_id=int(obj_id),
+        filter_name=band.filter_name,
+    )
     try:
         table = run_tap_sync_query(
             config.TAP_URL,
@@ -41,7 +44,7 @@ def fetch_detection_table(*, obj_id: int, filter_code: str) -> Table:
             "%s detection TAP failed obj_id=%s filter=%s: %s",
             config.DISPLAY_NAME,
             obj_id,
-            filter_code,
+            filter_name,
             exc,
         )
         raise PipeException(
@@ -51,7 +54,7 @@ def fetch_detection_table(*, obj_id: int, filter_code: str) -> Table:
         "%s detection fetch obj_id=%s filter=%s rows=%s",
         config.DISPLAY_NAME,
         obj_id,
-        filter_code,
+        filter_name,
         len(table),
     )
     return table

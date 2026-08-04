@@ -189,7 +189,7 @@ def describe_gavo_walkers(gavo_tree: Any, *, label: str) -> None:
     phot_map = extract_photdm(gavo_tree)
 
     _json_block(
-        f"{label} — TIMESYS registry",
+        f"{label} - TIMESYS registry",
         {
             ts_id: {
                 "timescale": ts.timescale,
@@ -199,9 +199,9 @@ def describe_gavo_walkers(gavo_tree: Any, *, label: str) -> None:
             for ts_id, ts in ts_meta.registry.items()
         },
     )
-    _json_block(f"{label} — FIELD TIMESYS refs", ts_meta.field_refs)
+    _json_block(f"{label} - FIELD TIMESYS refs", ts_meta.field_refs)
 
-    print(f"\n{label} — extract_photdm ({len(phot_map)} columns):")
+    print(f"\n{label} - extract_photdm ({len(phot_map)} columns):")
     for colname, photdm in phot_map.items():
         filt = photdm.filter.filter_id if photdm.filter else None
         zp_flux = photdm.photcal.zp_flux if photdm.photcal else None
@@ -224,10 +224,10 @@ def run_spike(*, fixture: Path) -> int:
     print(f"Path: {fixture}")
     print(f"Size: {len(payload)} bytes")
 
-    _banner("Astropy structure (reference — no PARAMref resolution)")
+    _banner("Astropy structure (reference - no PARAMref resolution)")
     describe_astropy_photcal(payload)
 
-    _banner("GAVO readRaw — full parse (current _ingest path)")
+    _banner("GAVO readRaw - full parse (current _ingest path)")
     full_tree, full_error = gavo_readraw(payload)
     if full_error:
         print(f"FAILED: {full_error}")
@@ -235,7 +235,7 @@ def run_spike(*, fixture: Path) -> int:
         print("OK")
         describe_gavo_walkers(full_tree, label="readRaw")
 
-    _banner("GAVO parse — metadata-only (skip Rows, watchset={VOTABLE})")
+    _banner("GAVO parse - metadata-only (skip Rows, watchset={VOTABLE})")
     meta_tree, meta_error, meta_stats = gavo_metadata_tree(
         payload,
         watchset={V.VOTABLE},
@@ -248,7 +248,7 @@ def run_spike(*, fixture: Path) -> int:
         print(f"Last node type: {type(meta_tree).__name__ if meta_tree else None}")
         describe_gavo_walkers(meta_tree, label="metadata-only")
 
-    _banner("GAVO parse — break at Rows (watchset={VOTABLE, TABLE})")
+    _banner("GAVO parse - break at Rows (watchset={VOTABLE, TABLE})")
     break_tree, break_error, break_stats = gavo_metadata_tree(
         payload,
         watchset={V.VOTABLE, V.TABLE},
@@ -259,7 +259,7 @@ def run_spike(*, fixture: Path) -> int:
         print(f"FAILED: {break_error}")
     else:
         print(f"Last node type: {type(break_tree).__name__ if break_tree else None}")
-        print("(Breaking early usually leaves no VOTABLE — expected.)")
+        print("(Breaking early usually leaves no VOTABLE - expected.)")
 
     _banner("Conclusion")
     print(

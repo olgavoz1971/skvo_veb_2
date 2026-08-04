@@ -126,6 +126,8 @@ LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD = 'Latest MJD (optional)'
 _LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves'
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN = {'display': 'none'}
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE = {'display': 'block'}
+_LC_DISCOVERY_ALERT_STYLE_HIDDEN = {'display': 'none'}
+_LC_DISCOVERY_ALERT_CLEARED = (None, _LC_DISCOVERY_ALERT_STYLE_HIDDEN)
 _LC_DISCOVERY_ALADIN_WIDTH = 400
 _LC_DISCOVERY_ALADIN_HEIGHT = 400
 
@@ -476,10 +478,6 @@ def _search_tools_panel():
             time_min_help,
             time_max_help,
             _resolved_target_card(),
-            html.Div(
-                id='lc_discovery_search_tools_alert',
-                style={'display': 'none', 'marginTop': '8px'},
-            ),
             html.Hr(className='my-2'),
             html.Details(
                 [
@@ -673,13 +671,8 @@ def _search_results_panel():
                 ],
                 id='lc_discovery_catalog_row',
             ),
-            html.Div(id='lc_discovery_search_alert', style={'display': 'none'}),
-            dbc.Label(
-                id='lc_discovery_fetch_status',
-                children='',
-                style={'color': 'green', 'text-align': 'center'},
-            ),
-            html.Div(id='lc_discovery_fetch_alert', style={'display': 'none'}),
+            html.Div(id='lc_discovery_search_alert', style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN),
+            html.Div(id='lc_discovery_fetch_alert', style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN),
             catalog_help_pop,
         ],
         lg=9,
@@ -1022,49 +1015,6 @@ def layout():
 
 
 @callback(
-    Output('lc_discovery_catalog_table', 'rowData'),
-    Output('lc_discovery_catalog_table', 'columnDefs'),
-    Output('lc_discovery_catalog_header', 'children'),
-    Output('lc_discovery_catalog_truncation_notice', 'children'),
-    Output('lc_discovery_catalog_truncation_notice', 'style'),
-    Output('lc_discovery_object_card_markdown', 'children'),
-    Output('lc_discovery_object_card', 'style'),
-    Output('lc_discovery_search_status', 'children'),
-    Output('lc_discovery_search_status', 'style'),
-    Output('lc_discovery_search_alert', 'children'),
-    Output('lc_discovery_search_alert', 'style'),
-    Output('store_lc_discovery_catalog', 'data'),
-    Output('store_lc_discovery_resolved_target', 'data'),
-    Output('store_lc_discovery_highlight_name', 'data'),
-    Input('lc_discovery_mission_switch', 'value'),
-    prevent_initial_call=True,
-)
-def clear_catalog_on_mission_change(mission_id):
-    """Clears search results when the mission changes; keeps the Target field text.
-
-    Returns:
-        tuple: Empty catalogue outputs and cleared stores.
-    """
-    column_defs = _discovery_catalog_column_defs(mission_id)
-    return (
-        [],
-        column_defs,
-        _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
-        '',
-        {'display': 'none'},
-        '',
-        {'display': 'none'},
-        '',
-        _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
-        None,
-        {'display': 'none'},
-        None,
-        None,
-        None,
-    )
-
-
-@callback(
     Output('lc_discovery_catalog_table', 'rowData', allow_duplicate=True),
     Output('lc_discovery_catalog_table', 'columnDefs', allow_duplicate=True),
     Output('lc_discovery_catalog_header', 'children', allow_duplicate=True),
@@ -1076,6 +1026,8 @@ def clear_catalog_on_mission_change(mission_id):
     Output('lc_discovery_search_status', 'style', allow_duplicate=True),
     Output('lc_discovery_search_alert', 'children', allow_duplicate=True),
     Output('lc_discovery_search_alert', 'style', allow_duplicate=True),
+    Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
+    Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
     Output('store_lc_discovery_catalog', 'data', allow_duplicate=True),
     Output('store_lc_discovery_resolved_target', 'data', allow_duplicate=True),
     Input('lc_discovery_submit_query_button', 'n_clicks'),
@@ -1136,6 +1088,14 @@ def submit_catalog_search(
 
     set_props('lc_discovery_object_card', {'style': {'display': 'none'}})
     set_props('lc_discovery_object_card_markdown', {'children': ''})
+    set_props(
+        'lc_discovery_search_alert',
+        {'children': None, 'style': _LC_DISCOVERY_ALERT_STYLE_HIDDEN},
+    )
+    set_props(
+        'lc_discovery_fetch_alert',
+        {'children': None, 'style': _LC_DISCOVERY_ALERT_STYLE_HIDDEN},
+    )
 
     def _update_search_status(message: str) -> None:
         """Replaces the Discovery status bar with the current search step.
@@ -1157,7 +1117,8 @@ def submit_catalog_search(
         time_max_text,
         time_max_format,
     )
-    empty_alert = (None, {'display': 'none'})
+    empty_alert = _LC_DISCOVERY_ALERT_CLEARED
+    fetch_alert_cleared = _LC_DISCOVERY_ALERT_CLEARED
     column_defs = _discovery_catalog_column_defs(mission_id)
     try:
         time_bounds = parse_discovery_time_bounds(
@@ -1188,6 +1149,25 @@ def submit_catalog_search(
             _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
             message.warning_alert(exc),
             {'display': 'block'},
+            *fetch_alert_cleared,
+            None,
+            None,
+        )
+    except Exception as exc:
+        logger.exception("Discovery search failed with an unexpected error.")
+        return (
+            [],
+            column_defs,
+            _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
+            '',
+            {'display': 'none'},
+            '',
+            {'display': 'none'},
+            '',
+            _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
+            message.warning_alert(str(exc)),
+            {'display': 'block'},
+            *fetch_alert_cleared,
             None,
             None,
         )
@@ -1211,6 +1191,7 @@ def submit_catalog_search(
         '',
         _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
         *empty_alert,
+        *fetch_alert_cleared,
         row_data,
         outcome.to_store_dict(),
     )
@@ -1435,7 +1416,6 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         epoch_val=Output('lc_discovery_epoch_input', 'value', allow_duplicate=True),
         mag_switch=Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
         fold_switch=Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
-        fetch_status=Output('lc_discovery_fetch_status', 'children', allow_duplicate=True),
         fetch_alert_message=Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
         fetch_alert_style=Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
         plot_tab_disabled=Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
@@ -1508,7 +1488,6 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_status='',
             fetch_alert_message=message.warning_alert(
                 'Selected row is no longer in the catalogue table.'
             ),
@@ -1529,7 +1508,6 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_status='',
             fetch_alert_message=message.warning_alert(
                 'Selected row does not match the current mission.'
             ),
@@ -1571,7 +1549,8 @@ def fetch_lc_discovery_lightcurve(
         if filter_label:
             status_line = f'{status_line} ({filter_label})'
         if force_refresh:
-            status_line = f'reDownload complete — {status_line}'
+            status_line = f'reDownload complete - {status_line}'
+        logger.info("Discovery lightcurve fetch succeeded: %s", status_line)
 
         return dict(
             plot_alert_style={'display': 'none'},
@@ -1584,9 +1563,8 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=_display_epoch_value(lcd),
             mag_switch=lcd.active_domain == DOMAIN_MAG,
             fold_switch=lcd.folded_view,
-            fetch_status=status_line,
-            fetch_alert_message=message.info_alert(f'{status_line}. Switch to the Light curve tab.'),
-            fetch_alert_style={'display': 'block'},
+            fetch_alert_message=None,
+            fetch_alert_style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN,
             plot_tab_disabled=False,
             active_tab='lc_discovery_plot_tab',
         )
@@ -1603,7 +1581,6 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_status='',
             fetch_alert_message=message.warning_alert(exc),
             fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,

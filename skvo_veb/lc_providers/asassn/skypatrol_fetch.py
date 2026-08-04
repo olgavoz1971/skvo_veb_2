@@ -3,18 +3,74 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import numpy as np
 import pandas as pd
+import requests
 from numpy import isnan
 
 from skvo_veb.lc_providers.asassn import config
 from skvo_veb.lc_providers.asassn.skypatrol_client import create_skypatrol_client
+from skvo_veb.lc_providers.asassn.skypatrol_cone_url import skypatrol_cone_centre_for_lookup_url
 from skvo_veb.utils.lc_config import resolve_catalog_epoch
 from skvo_veb.utils.my_tools import PipeException
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _raise_skypatrol_pipe_error(context: str, exc: Exception) -> None:
+    """Maps Sky Patrol client failures to a user-facing ``PipeException``.
+
+    Args:
+        context (str): Short operation label (for example ``cone search``).
+        exc (Exception): Failure raised by ``pyasassn`` or ``requests``.
+
+    Raises:
+        PipeException: Always; never returns.
+    """
+    if isinstance(exc, requests.HTTPError):
+        response = exc.response
+        status = response.status_code if response is not None else "unknown"
+        logger.error(
+            "%s Sky Patrol %s HTTP %s: %s",
+            config.DISPLAY_NAME,
+            context,
+            status,
+            exc,
+        )
+        raise PipeException(
+            f"{config.DISPLAY_NAME}: Sky Patrol {context} failed (HTTP {status}). "
+            "The service may be overloaded or reject this query - try again later "
+            "or use a smaller search radius."
+        ) from exc
+    logger.error("%s Sky Patrol %s failed: %s", config.DISPLAY_NAME, context, exc)
+    raise PipeException(
+        f"{config.DISPLAY_NAME}: Sky Patrol {context} failed: {exc}"
+    ) from exc
+
+
+def _skypatrol_call(context: str, operation: Callable[[], _T]) -> _T:
+    """Runs a Sky Patrol client call and converts failures to ``PipeException``.
+
+    Args:
+        context (str): Short operation label for error messages.
+        operation (callable): Zero-argument callable invoking the client.
+
+    Returns:
+        object: Return value from ``operation``.
+
+    Raises:
+        PipeException: When the client or HTTP layer fails.
+    """
+    try:
+        return operation()
+    except PipeException:
+        raise
+    except Exception as exc:
+        _raise_skypatrol_pipe_error(context, exc)
 
 
 def _ensure_dataframe(result: Any, *, context: str) -> pd.DataFrame:
@@ -63,14 +119,18 @@ def fetch_discovery_cone(
         pandas.DataFrame: Source metadata including ``pstarrs_g_mag``.
     """
     sp = client or create_skypatrol_client()
-    result = sp.cone_search(
-        float(ra_deg),
-        float(dec_deg),
-        float(radius_arcsec),
-        units="arcsec",
-        catalog=config.STELLAR_MAIN_CATALOG,
-        cols=_discovery_column_list(),
-        download=False,
+    ra_api, dec_api = skypatrol_cone_centre_for_lookup_url(ra_deg, dec_deg)
+    result = _skypatrol_call(
+        "cone search",
+        lambda: sp.cone_search(
+            ra_api,
+            dec_api,
+            float(radius_arcsec),
+            units="arcsec",
+            catalog=config.STELLAR_MAIN_CATALOG,
+            cols=_discovery_column_list(),
+            download=False,
+        ),
     )
     return _ensure_dataframe(result, context="cone_search")
 
@@ -91,12 +151,15 @@ def fetch_discovery_by_gaia_id(
     """
     sp = client or create_skypatrol_client()
     gid = int(gaia_id)
-    result = sp.query_list(
-        [gid],
-        id_col="gaia_id",
-        catalog=config.STELLAR_MAIN_CATALOG,
-        cols=_discovery_column_list(),
-        download=False,
+    result = _skypatrol_call(
+        "Gaia id lookup",
+        lambda: sp.query_list(
+            [gid],
+            id_col="gaia_id",
+            catalog=config.STELLAR_MAIN_CATALOG,
+            cols=_discovery_column_list(),
+            download=False,
+        ),
     )
     return _ensure_dataframe(result, context="query_list(gaia_id)")
 
@@ -117,12 +180,15 @@ def fetch_discovery_by_asas_sn_id(
     """
     sp = client or create_skypatrol_client()
     sid = int(asas_sn_id)
-    result = sp.query_list(
-        [sid],
-        id_col="asas_sn_id",
-        catalog=config.STELLAR_MAIN_CATALOG,
-        cols=_discovery_column_list(),
-        download=False,
+    result = _skypatrol_call(
+        "ASAS-SN id lookup",
+        lambda: sp.query_list(
+            [sid],
+            id_col="asas_sn_id",
+            catalog=config.STELLAR_MAIN_CATALOG,
+            cols=_discovery_column_list(),
+            download=False,
+        ),
     )
     return _ensure_dataframe(result, context="query_list(asas_sn_id)")
 
@@ -145,7 +211,10 @@ def fetch_discovery_by_simbad_name(
         PipeException: When Simbad lookup fails or returns no ``asas_sn_id``.
     """
     sp = client or create_skypatrol_client()
-    lookup = sp.simbad_lookup(str(name).strip(), download=False)
+    lookup = _skypatrol_call(
+        "Simbad lookup",
+        lambda: sp.simbad_lookup(str(name).strip(), download=False),
+    )
     lookup_df = _ensure_dataframe(lookup, context="simbad_lookup")
     if len(lookup_df) == 0:
         return lookup_df
@@ -243,23 +312,15 @@ def fetch_photometry_by_asas_sn_id(
     """
     sp = client or create_skypatrol_client()
     sid = int(asas_sn_id)
-    try:
-        result = sp.query_list(
+    result = _skypatrol_call(
+        "photometry download",
+        lambda: sp.query_list(
             [sid],
             id_col="asas_sn_id",
             catalog=config.STELLAR_MAIN_CATALOG,
             download=True,
-        )
-    except Exception as exc:
-        logger.warning(
-            "%s photometry download failed asas_sn_id=%s: %s",
-            config.DISPLAY_NAME,
-            sid,
-            exc,
-        )
-        raise PipeException(
-            f"{config.DISPLAY_NAME}: failed to download lightcurve for asas_sn_id={sid}."
-        ) from exc
+        ),
+    )
     frame = _photometry_dataframe(result)
     if frame.empty:
         raise PipeException(

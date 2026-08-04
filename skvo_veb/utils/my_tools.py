@@ -15,8 +15,9 @@ positive_integer_pattern = r"^[1-9]\d*$"
 def sanitize_filename(name: str) -> str:
     """Returns a filesystem-safe stem from a human-readable label.
 
-    Parentheses are removed. Other forbidden characters become underscores;
-    consecutive underscores are collapsed to one.
+    Parentheses are removed. Other forbidden characters (including ``=`` and ``-``)
+    become underscores; consecutive underscores are collapsed to one. Unicode en/em
+    dashes are normalised to underscores.
 
     Args:
         name (str): Raw title or label text.
@@ -25,7 +26,8 @@ def sanitize_filename(name: str) -> str:
         str: Sanitised filename stem.
     """
     without_parens = re.sub(r"[()]", "", name)
-    cleaned = re.sub(r'[<>:"/\\|?*, ]', "_", without_parens)
+    cleaned = re.sub(r'[<>:"/\\|?*,= \-]', "_", without_parens)
+    cleaned = cleaned.replace("\u2014", "_").replace("\u2013", "_")
     return re.sub(r"_+", "_", cleaned)
 
 
