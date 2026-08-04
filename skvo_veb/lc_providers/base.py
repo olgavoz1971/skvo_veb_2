@@ -35,6 +35,8 @@ class MissionCapabilities:
     supports_force_refresh: bool = False
     provides_catalog_epoch_period: bool = False
     supports_discovery_time_filter: bool = True
+    discovery_catalog_includes_object_class: bool = False
+    discovery_catalog_includes_n_points: bool = False
 
 
 @dataclass(frozen=True)

@@ -41,6 +41,8 @@ class PersonalTsProvider(MissionLightcurveProvider):
         supports_name_resolve=True,
         supports_id_lookup=True,
         supports_force_refresh=True,
+        discovery_catalog_includes_object_class=True,
+        discovery_catalog_includes_n_points=True,
     )
     is_mock = False
 

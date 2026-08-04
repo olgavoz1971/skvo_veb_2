@@ -46,6 +46,7 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         supports_force_refresh=True,
         provides_catalog_epoch_period=False,
         supports_discovery_time_filter=False,
+        discovery_catalog_includes_object_class=True,
     )
     is_mock = False
 

@@ -39,6 +39,7 @@ class ZtfDr24Provider(MissionLightcurveProvider):
         supports_force_refresh=True,
         provides_catalog_epoch_period=False,
         supports_discovery_time_filter=False,
+        discovery_catalog_includes_n_points=True,
     )
     is_mock = False
 

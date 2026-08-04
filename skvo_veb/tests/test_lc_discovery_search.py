@@ -314,8 +314,8 @@ def test_run_catalog_search_applies_optional_time_bounds():
     assert outcome.time_end_mjd == pytest.approx(57260.0)
 
 
-def test_catalog_rows_for_aggrid_formats_display_columns():
-    """AgGrid rows round separation and ObsCore time columns for display."""
+def test_catalog_rows_for_aggrid_keeps_full_precision_numeric_fields():
+    """AgGrid rowData retains catalogue numeric values for grid formatters."""
     provider = GaiaDr3Provider()
     table = provider.search_catalog(
         ra_deg=AA_AND.ra_deg,
@@ -323,13 +323,11 @@ def test_catalog_rows_for_aggrid_formats_display_columns():
         radius_arcsec=10.0,
     )
     rows = catalog_rows_for_aggrid(table)
-    assert rows[0]["t_min"] == 57100
-    assert rows[0]["t_max"] == 57180
-    assert all(isinstance(row["t_min"], int) for row in rows)
-    assert all(isinstance(row["t_max"], int) for row in rows)
+    assert rows[0]["t_min"] == pytest.approx(float(table["t_min"][0]))
+    assert rows[0]["t_max"] == pytest.approx(float(table["t_max"][0]))
+    assert rows[0]["ra_deg"] == pytest.approx(float(table["ra_deg"][0]))
     for row in rows:
-        sep = row["distance_arcsec"]
-        assert sep == round(sep, 1)
+        assert "aladin_name" in row
 
 
 def test_run_catalog_search_for_mission_unknown():

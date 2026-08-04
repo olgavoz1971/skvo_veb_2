@@ -110,6 +110,9 @@ def validate_catalog_table(table: Table) -> Table:
 def sort_catalog_by_distance(table: Table) -> Table:
     """Sorts catalogue rows by ascending ``distance_arcsec`` (masked last).
 
+    Tie-breakers: ``object_name``, then ``filter_name``, for stable separation
+    ordering when several bands share the same sky position.
+
     Args:
         table (astropy.table.Table): Standardised discovery catalogue.
 
@@ -121,9 +124,10 @@ def sort_catalog_by_distance(table: Table) -> Table:
     distances = np.asarray(table["distance_arcsec"], dtype=np.float64)
     if np.ma.isMaskedArray(distances):
         fill = np.nanmax(distances.filled(np.nan)) + 1.0 if len(distances) else 0.0
-        order = np.argsort(distances.filled(fill))
-    else:
-        order = np.argsort(distances, kind="stable")
+        distances = distances.filled(fill)
+    object_names = np.asarray(table["object_name"]).astype(str) if "object_name" in table.colnames else np.zeros(len(table), dtype=str)
+    filter_names = np.asarray(table["filter_name"]).astype(str) if "filter_name" in table.colnames else np.zeros(len(table), dtype=str)
+    order = np.lexsort((filter_names, object_names, distances))
     return table[order]
 
 

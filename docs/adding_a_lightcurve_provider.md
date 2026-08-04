@@ -101,7 +101,14 @@ Each search result row **must** include at least:
 Optional standard columns include `t_min`, `t_max`, `n_points`, `period`, and others listed in
 `catalog_schema.py`. Populate time coverage when the archive provides it cheaply at search time.
 Set `MissionCapabilities.supports_discovery_time_filter=False` when discovery cannot honour the
-UI earliest/latest time fields (Gaia DR3 AIP fetches epoch photometry only on row load).
+UI earliest/latest time fields (Gaia DR3 AIP fetches epoch photometry only on row load). The
+Discovery results table hides ``t_min`` / ``t_max`` when this flag is false.
+
+Set `discovery_catalog_includes_object_class=True` when the discovery query returns a
+classification or object type column (SSA ``dataproduct_type``, Gaia variability class, etc.).
+
+Set `discovery_catalog_includes_n_points=True` when the discovery catalogue includes per-row
+epoch counts (``ssa_length``, ``nobsrel``, detection counts, etc.).
 
 Use helpers from `lc_providers/catalog_schema.py`:
 

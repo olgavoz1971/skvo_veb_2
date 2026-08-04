@@ -11,6 +11,7 @@ from skvo_veb.lc_providers.gaia_dr3_ari import GaiaDr3AriProvider
 from skvo_veb.lc_providers.gaia_dr3_aip import GaiaDr3AipProvider
 from skvo_veb.lc_providers.gaia_dr3_veb import GaiaDr3VebProvider
 from skvo_veb.lc_providers.ogle_ocvs import OgleOcvsProvider
+from skvo_veb.lc_providers.panstarrs1_dr2 import Panstarrs1Dr2Provider
 from skvo_veb.lc_providers.personal_ts import PersonalTsProvider
 from skvo_veb.lc_providers.upjs_ts import UpjsTsProvider
 from skvo_veb.lc_providers.ztf import ZtfDr24Provider
@@ -28,6 +29,7 @@ PROVIDERS: dict[str, MissionLightcurveProvider] = {
     PersonalTsProvider.mission_id: PersonalTsProvider(),
     UpjsTsProvider.mission_id: UpjsTsProvider(),
     ZtfDr24Provider.mission_id: ZtfDr24Provider(),
+    Panstarrs1Dr2Provider.mission_id: Panstarrs1Dr2Provider(),
 }
 
 

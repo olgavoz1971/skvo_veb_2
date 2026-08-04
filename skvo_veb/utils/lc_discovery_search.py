@@ -865,6 +865,9 @@ def run_catalog_search_for_mission(
 def catalog_rows_for_aggrid(catalog: Table) -> list[dict]:
     """Converts a provider catalogue table to AgGrid ``rowData``.
 
+    Numeric fields are passed through at full precision; the Discovery AgGrid
+    applies per-column ``valueFormatter`` functions for display.
+
     Args:
         catalog (astropy.table.Table): Validated catalogue table.
 
@@ -877,21 +880,6 @@ def catalog_rows_for_aggrid(catalog: Table) -> list[dict]:
         display_row = {
             key: value for key, value in row.items() if key != "#"
         }
-        separation = display_row.get("distance_arcsec")
-        if separation is not None:
-            try:
-                if separation == separation:
-                    display_row["distance_arcsec"] = round(float(separation), 1)
-            except (TypeError, ValueError):
-                pass
-        for time_key in ("t_min", "t_max"):
-            time_value = display_row.get(time_key)
-            if time_value is not None:
-                try:
-                    if time_value == time_value:
-                        display_row[time_key] = int(round(float(time_value)))
-                except (TypeError, ValueError):
-                    pass
         object_name = str(display_row.get("object_name") or "object")
         filter_name = str(display_row.get("filter_name") or "")
         if filter_name:

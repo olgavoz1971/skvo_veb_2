@@ -32,8 +32,8 @@ MAG_ZERO_POINT = 20.0
 
 JD_MIN = None
 # JD_MAX = None
-JD_MAX = 59860.1
-
+# JD_MAX = 59860.1
+JD_MAX = 59863
 # Full width of the centred median window, in the same time unit as ``obs_time`` (d).
 MEDIAN_WINDOW_DAYS = 2.0
 N_POINTS = 301

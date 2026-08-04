@@ -47,6 +47,11 @@ from skvo_veb.utils.lc_discovery_load import (
     discovery_export_basename,
     mission_id_from_lc_key,
 )
+from skvo_veb.lc_providers.base import MissionCapabilities
+from skvo_veb.utils.lc_discovery_catalog_columns import (
+    catalog_column_defs_for_capabilities,
+    catalog_column_defs_for_mission,
+)
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
     catalog_truncation_notice,
@@ -90,96 +95,6 @@ row_class_name = 'd-flex g-2 justify-content-end align-items-end'
 
 LC_DISCOVERY_PAGE_NAMESPACE = 'lc_discovery'
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
-
-LC_DISCOVERY_CATALOG_COLUMNS = [
-    {
-        'field': 'distance_arcsec',
-        'headerName': 'Sep (″)',
-        'type': 'numericColumn',
-        'sortable': True,
-        'minWidth': 55,
-        'maxWidth': 100,
-        # 'suppressSizeToFit': True,
-    },
-    {
-        'field': 'object_name',
-        'headerName': 'Object',
-        'sortable': True,
-        'minWidth': 100,
-        'width': 200,
-    },
-    {
-        'field': 'filter_name',
-        'headerName': 'Filter',
-        'sortable': True,
-        'minWidth': 80,
-        # 'maxWidth': 96,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 'object_class',
-        'headerName': 'Type',
-        'sortable': True,
-        'minWidth': 64,
-        'maxWidth': 96,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 'ra_deg',
-        'headerName': 'RA',
-        'type': 'numericColumn',
-        'sortable': True,
-        # 'width': 88,
-        'minWidth': 90,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 'dec_deg',
-        'headerName': 'Dec',
-        'type': 'numericColumn',
-        'sortable': True,
-        # 'width': 88,
-        'minWidth': 90,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 't_min',
-        'headerName': 't_min',
-        'type': 'numericColumn',
-        'sortable': True,
-        'width': 68,
-        'minWidth': 68,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 't_max',
-        'headerName': 't_max',
-        'type': 'numericColumn',
-        'sortable': True,
-        'width': 68,
-        'minWidth': 68,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 'mag',
-        'headerName': '⟨mag⟩',
-        'type': 'numericColumn',
-        'sortable': True,
-        'minWidth': 64,
-        'maxWidth': 80,
-        'suppressSizeToFit': True,
-    },
-    {
-        'field': 'n_points',
-        'headerName': 'N',
-        'type': 'numericColumn',
-        'sortable': True,
-        'width': 52,
-        'maxWidth': 60,
-        'suppressSizeToFit': True,
-    },
-    
-]
 
 LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF = {
     'filter': False,
@@ -288,6 +203,21 @@ def _default_mission_id():
     """
     missions = list_missions()
     return missions[0].mission_id if missions else ''
+
+
+def _discovery_catalog_column_defs(mission_id: str | None) -> list[dict]:
+    """Builds AgGrid column definitions for the selected discovery mission.
+
+    Args:
+        mission_id (str, optional): Registry mission slug from the UI.
+
+    Returns:
+        list[dict]: Column definitions aligned with provider catalogue capabilities.
+    """
+    slug = str(mission_id or '').strip() or _default_mission_id()
+    if not slug:
+        return catalog_column_defs_for_capabilities(MissionCapabilities())
+    return catalog_column_defs_for_mission(slug)
 
 
 def _click_help(help_id: str, title: str, body, *, placement: str = 'bottom'):
@@ -679,7 +609,9 @@ def _search_results_panel():
                                 html.Div(
                                     dag.AgGrid(
                                         id='lc_discovery_catalog_table',
-                                        columnDefs=LC_DISCOVERY_CATALOG_COLUMNS,
+                                        columnDefs=_discovery_catalog_column_defs(
+                                            _default_mission_id()
+                                        ),
                                         rowData=[],
                                         columnSize='autoSize',
                                         defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
@@ -699,7 +631,7 @@ def _search_results_panel():
                                             'suppressHorizontalScroll': False,
                                             # 'alwaysShowHorizontalScroll': True,
                                             'enableCellTextSelection': True,
-                                            # 'ensureDomOrder': True,
+                                            'ensureDomOrder': True,
                                             'getRowId': {
                                                 'function': 'params.data.lc_key'
                                             },
@@ -1091,6 +1023,7 @@ def layout():
 
 @callback(
     Output('lc_discovery_catalog_table', 'rowData'),
+    Output('lc_discovery_catalog_table', 'columnDefs'),
     Output('lc_discovery_catalog_header', 'children'),
     Output('lc_discovery_catalog_truncation_notice', 'children'),
     Output('lc_discovery_catalog_truncation_notice', 'style'),
@@ -1106,14 +1039,16 @@ def layout():
     Input('lc_discovery_mission_switch', 'value'),
     prevent_initial_call=True,
 )
-def clear_catalog_on_mission_change(_mission_id):
+def clear_catalog_on_mission_change(mission_id):
     """Clears search results when the mission changes; keeps the Target field text.
 
     Returns:
         tuple: Empty catalogue outputs and cleared stores.
     """
+    column_defs = _discovery_catalog_column_defs(mission_id)
     return (
         [],
+        column_defs,
         _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
         '',
         {'display': 'none'},
@@ -1131,6 +1066,7 @@ def clear_catalog_on_mission_change(_mission_id):
 
 @callback(
     Output('lc_discovery_catalog_table', 'rowData', allow_duplicate=True),
+    Output('lc_discovery_catalog_table', 'columnDefs', allow_duplicate=True),
     Output('lc_discovery_catalog_header', 'children', allow_duplicate=True),
     Output('lc_discovery_catalog_truncation_notice', 'children', allow_duplicate=True),
     Output('lc_discovery_catalog_truncation_notice', 'style', allow_duplicate=True),
@@ -1222,6 +1158,7 @@ def submit_catalog_search(
         time_max_format,
     )
     empty_alert = (None, {'display': 'none'})
+    column_defs = _discovery_catalog_column_defs(mission_id)
     try:
         time_bounds = parse_discovery_time_bounds(
             time_min_text,
@@ -1241,6 +1178,7 @@ def submit_catalog_search(
         logger.warning("Discovery search failed: %s", exc)
         return (
             [],
+            column_defs,
             _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
             '',
             {'display': 'none'},
@@ -1264,6 +1202,7 @@ def submit_catalog_search(
     )
     return (
         row_data,
+        column_defs,
         catalog_results_header(outcome),
         truncation_text,
         truncation_style,
