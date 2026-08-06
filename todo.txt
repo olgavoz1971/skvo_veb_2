@@ -1,9 +1,64 @@
 Discovey page:
 Add
-ZTF
-Panstarrs
+	-ZTF - ready	!!! Attention! Do they use luptitudes?????? 
+	- Panstarrs -ready
 AAVSO???
-ATLAS
+
+Forced photometry page: help + "promote to standard", photometric column
+selection?
+--------------- ATLAS
+https://fallingstar-data.com/forcedphot/queue/
+
+- ASAS-SN
+https://fallingstar-data.com/forcedphot/queue/
+https://www.astronomy.ohio-state.edu/asassn/public/
+
+--------------- ZTF
+API? Page?
+have a look at 
+https://github.com/BrightTransientSurvey/ztf_forced_phot
+
+https://ui.adsabs.harvard.edu/abs/2023arXiv230516279M/abstract
+(docs/ztf_fp.pdf)
+
+Python Wrappers: Tools like (?)
+ztfquery, 
+ztflc, and 
+fpbot automate querying the IPAC service, downloading the resulting light curves, and performing flux calibration.
+
+
+------------ Panstarrs???
+Pan-STARRS: STScI MAST provides the Pan-STARRS Image Cutout Service.
+you can retrieve FITS stamps programmatically via astroquery.mast to perform forced aperture/PSF photometry across multi-epoch exposures.
+
+------------ DESI ?
+The DESI Legacy Surveys:
+https://www.legacysurvey.org/
+They use Tractor photometry pipeline:
+https://thetractor.readthedocs.io/en/latest/intro.html#:~:text=Given%20a%20noise%20model%20of%20the%20instrument,objects%20describing%20the%20astronomical%20sources%20of%20interest.
+
+------------ Rubin Observatory (!)
+https://rubinobservatory.org/for-scientists/data-products/planned-data-products
+https://rubinobservatory.org/for-scientists/data-products/recent-data-releases
+
+Alert's lightcurves -- are pulicly accesble via brokers: Fink, ALeRCE, ANTARES, and Lasair
+DIA light curve: Difference Image Analysis (DIA) flux and magnitude for that epoch. Up to 12 months of previous DIA history (forced/difference flux at that position on prior visits).
+https://www.astro.sk/caosp/Eedition/FullTexts/vol55no2/pp95-105.pdf#:~:text=LSST%20makes%20a%20distinc%2D%20tion%20between%20a,ALeRCE%2C%20AMPEL%2C%20ANTARES%2C%20Babamul%2C%20Fink%2C%20Lasair%2C%20Pitt%2DGoogle.
+"An overview of astronomical transient brokers in Rubin era"
+
+------------ WISE / NEOWISE (unWISE)
+2012-2024 
+have a look at ready-made timeseries 
+
+forced photometry: ???
+https://aws.amazon.com/marketplace/pp/prodview-osccichv5iolo#:~:text=unWISE%20is%20a%20reprocessing%20of%20Wide%2Dfield%20Infrared,imaging%20in%20W1%20and%20W2%20until%202024
+
+Other?
+
+
+
+Promote 
+https://sky.esa.int/esasky
 
 
 VO loghtcurve stabndards

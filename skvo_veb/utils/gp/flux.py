@@ -108,3 +108,26 @@ def get_gp_flux_fragment(json_str: str, jd_min: float, jd_max: float) -> pd.Data
     mask = (df["jd"] >= jd_min) & (df["jd"] <= jd_max)
     frag = df.loc[mask].dropna(subset=["jd", "flux"]).copy()
     return frag
+
+
+def empty_interval_indices(intervals: list, lc_json_string: str) -> list[int]:
+    """Returns indices of intervals that contain no lightcurve points.
+
+    Uses the same JD slicing as ``get_gp_flux_fragment`` so emptiness matches GP
+    data selection.
+
+    Args:
+        intervals (list): ``[[jd_start, jd_end], ...]`` in absolute JD.
+        lc_json_string (str): Serialised lightcurve transport JSON.
+
+    Returns:
+        list[int]: Indices with zero points in ``[jd_start, jd_end]``.
+    """
+    if not intervals or not lc_json_string:
+        return []
+    empty: list[int] = []
+    for index, piece in enumerate(intervals):
+        jd_min, jd_max = float(piece[0]), float(piece[1])
+        if len(get_gp_flux_fragment(lc_json_string, jd_min, jd_max)) == 0:
+            empty.append(index)
+    return empty

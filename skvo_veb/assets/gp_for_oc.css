@@ -1,0 +1,37 @@
+/* GP page uploads: drop zone width; ? help sits beside the box only */
+
+:root {
+    --gp-upload-box-min-width: 18rem;
+}
+
+.gp-upload-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    width: 100%;
+}
+
+.gp-upload-box {
+    flex: 1 1 var(--gp-upload-box-min-width);
+    min-width: var(--gp-upload-box-min-width);
+    max-width: 100%;
+    cursor: pointer;
+    font-size: 0.85rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gp-upload-help-slot {
+    flex: 0 0 auto;
+    align-self: center;
+    min-width: 1.25em;
+}
+
+.gp-upload-help-slot:empty {
+    min-width: 0;
+}
+
+.gp-prep-mark-mode .js-plotly-plot {
+    cursor: crosshair !important;
+}

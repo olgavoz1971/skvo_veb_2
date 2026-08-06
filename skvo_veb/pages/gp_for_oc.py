@@ -219,7 +219,19 @@ Specifically the `GaussianProcessRegressor` module.
 
 import dash
 # import diskcache
-from dash import dcc, html, Input, Output, State, ALL, callback_context, callback, no_update
+from dash import (
+    dcc,
+    html,
+    Input,
+    Output,
+    State,
+    ALL,
+    callback_context,
+    callback,
+    no_update,
+    clientside_callback,
+    ClientsideFunction,
+)
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import plotly.graph_objects as go
@@ -234,6 +246,11 @@ import logging
 import uuid
 
 from skvo_veb.utils.lc_bridge import get_intervals_from_phase, phase_vrect_bounds_for_jd_interval
+from skvo_veb.utils.gp.prep_interval_bands import (
+    build_unfolded_interval_pick_payload,
+    interval_shape_name,
+    intervals_without_marked_indices,
+)
 
 from skvo_veb.utils.gp import (
     GUESS_SIGMA, LEN_MIN,
@@ -247,6 +264,7 @@ from skvo_veb.utils.gp import (
     figure_from_gp_result,
     format_intervals_download,
 )
+from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
 from skvo_veb.utils.gp.review_page import (
     badges_from_specs,
@@ -344,29 +362,20 @@ def _gp_click_help(help_id: str, title: str, body, *, placement: str = "bottom")
     return button, popover
 
 
-def _gp_upload_error_ui(
+def _gp_upload_error_message(
     filename: str,
-    help_slug: str,
-    popover_title: str,
-    popover_body: str,
     *,
     icon_class: str = "bi-exclamation-triangle-fill",
 ) -> html.Div:
-    """Upload error row with click ``?`` help instead of a hover tooltip.
+    """Upload error label shown inside the dashed upload box (no help control).
 
     Args:
-        filename (str): Uploaded file name shown in the row.
-        help_slug (str): Unique slug for ``_gp_click_help`` ids.
-        popover_title (str): Popover header.
-        popover_body (str): Popover body (former tooltip text).
+        filename (str): Uploaded file name.
         icon_class (str): Bootstrap icon class suffix.
 
     Returns:
-        html.Div: Error message and help control.
+        html.Div: Icon and error line for ``upload-*-text`` children.
     """
-    help_btn, help_pop = _gp_click_help(
-        help_slug, popover_title, popover_body, placement="right"
-    )
     return html.Div(
         [
             html.I(className=f"bi {icon_class} me-2", style={"color": "#dc3545"}),
@@ -374,10 +383,32 @@ def _gp_upload_error_ui(
                 [html.B("Error: "), filename],
                 style={"color": "#dc3545", "fontSize": "0.85rem"},
             ),
-            html.Div(help_btn, className="lc-discovery-field-help ms-1"),
-            help_pop,
         ],
-        className="d-flex align-items-center flex-wrap",
+        className="d-flex align-items-center justify-content-center flex-wrap",
+    )
+
+
+def _gp_upload_traceback_help(
+    help_slug: str,
+    popover_title: str,
+    popover_body: str,
+) -> html.Div:
+    """Side-mounted ``?`` popover for upload tracebacks (outside the drop zone).
+
+    Args:
+        help_slug (str): Unique slug for ``_gp_click_help`` ids.
+        popover_title (str): Popover header.
+        popover_body (str): Popover body text.
+
+    Returns:
+        html.Div: Help button and popover for ``upload-*-help`` slot.
+    """
+    help_btn, help_pop = _gp_click_help(
+        help_slug, popover_title, popover_body, placement="right"
+    )
+    return html.Div(
+        [html.Div(help_btn, className="lc-discovery-field-help"), help_pop],
+        className="gp-upload-help",
     )
 
 
@@ -536,11 +567,38 @@ sidebar_lc = html.Div([
         [html.I(className="bi bi-plus-circle me-2"), "Add Interval"],
         id="btn-add-interval", color="primary", className="w-100 mb-2"
     ),
+    dbc.Switch(
+        id="gp-interval-mark-mode",
+        label="Mark bands: double-click plot (unfolded only)",
+        value=False,
+        className="mb-2",
+    ),
     # CLEAR button
     dbc.Button(
         [html.I(className="bi bi-trash3 me-2"), "Clear All Intervals"],
         id="btn-clear-intervals", color="outline-danger",
         className="w-100", size="sm"
+    ),
+    dbc.Button(
+        [html.I(className="bi bi-x-circle me-2"), "Remove marked intervals"],
+        id="btn-remove-marked-intervals",
+        color="warning",
+        className="w-100 mt-2",
+        size="sm",
+    ),
+    dbc.Button(
+        [html.I(className="bi bi-filter-circle me-2"), "Remove empty intervals"],
+        id="btn-remove-empty-intervals",
+        color="secondary",
+        className="w-100 mt-2",
+        size="sm",
+    ),
+    dbc.Button(
+        "Clear marks",
+        id="btn-clear-interval-marks",
+        color="link",
+        className="w-100 p-0 small text-muted",
+        size="sm",
     ),
 
     html.Hr(),
@@ -571,27 +629,48 @@ sidebar_lc = html.Div([
 ], className="p-3 bg-light border rounded shadow-sm")
 
 graph_lc = html.Div([
-    dcc.Graph(
-        id='prep-graph',
-        config={  # type: ignore
-            'scrollZoom': True,
-            'displaylogo': False,
-            'modeBarButtonsToRemove': [
-                'zoomIn2d',  # Hide Zoom In
-                'zoomOut2d',  # Hide Zoom Out
-                'lasso2d',  # Hide Lasso
-                # 'select2d'  # Hide the default box-select (if you only want 'drawrect')
-            ],
-            'modeBarButtonsToAdd': ['drawrect', 'eraseshape'],
-            # 'showAxisDragHandles': True,
-            # 'showAxisRangeEntryBoxes': True,
-        },
-        # responsive=True,  # This tells Plotly to watch the container
-        style={'height': '600px'}
+    html.Div(
+        dcc.Graph(
+            id='prep-graph',
+            config={  # type: ignore
+                'scrollZoom': True,
+                'displaylogo': False,
+                'doubleClick': False,
+                'modeBarButtonsToRemove': [
+                    'zoomIn2d',  # Hide Zoom In
+                    'zoomOut2d',  # Hide Zoom Out
+                    'lasso2d',  # Hide Lasso
+                    # 'select2d'  # Hide the default box-select (if you only want 'drawrect')
+                ],
+                'modeBarButtonsToAdd': ['drawrect', 'eraseshape'],
+            },
+            style={'height': '600px'},
+        ),
+        id="prep-graph-shell",
     ),
     dbc.Alert(
-        "Tip: Use the 'Box Select' tool to highlight a region for the GP fit.",
-        color="info", className="mt-2 py-1 small"
+        html.Span(
+            [
+                html.Strong("Tip: "),
+                "If the period is known, you can add all intervals at once: "
+                "box-select an interval on the folded light curve and click ",
+                html.Strong("Add Interval"),
+                ". Matching intervals from all cycles are added automatically; "
+                "you can then unfold the curve. "
+                "To mark intervals for removal, enable ",
+                html.Strong("Mark bands"),
+                " and double-click on or very near a photometry point inside a "
+                "green band (clicks in the strip but far from any point have no effect). "
+                "Double-click again to unmark. Use ",
+                html.Strong("Remove marked intervals"),
+                " or ",
+                html.Strong("Remove empty intervals"),
+                " as needed.",
+            ],
+            className="mb-0",
+        ),
+        color="info",
+        className="mt-2 py-1 small",
     )
 ], className="border rounded p-2 bg-white")
 
@@ -928,6 +1007,9 @@ def layout():
 
         dcc.Store(id='store-lc-data'),
         dcc.Store(id='store-intervals-data'),
+        dcc.Store(id='store-gp-interval-pick-bands'),
+        dcc.Store(id='store-gp-intervals-marked', data=[]),
+        dcc.Store(id='store-gp-prep-dblclick-pending'),
         dcc.Store(id='store-active-intervals-name', data="Drag or Select"),
         dcc.Store(id='scale-calc-trigger', data=0),  # A simple counter, trigger for scale recalculation
 
@@ -939,25 +1021,54 @@ def layout():
                 dbc.Row([
                     # Lightcurve Upload
                     dbc.Col([
-                        html.Label("Lightcurve", className="small fw-bold"),
-                        dcc.Upload(
-                            id='upload-lc',
-                            children=html.Div(['Drag or ', html.A('Select')], id='upload-lc-text'),
-                            className="upload-box",  # We style this in the local style.css
-                            style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px',
-                                   'textAlign': 'center'},
+                        html.Label("Lightcurve", className="small fw-bold d-block mb-1"),
+                        html.Div(
+                            [
+                                dcc.Upload(
+                                    id='upload-lc',
+                                    children=html.Div(
+                                        ['Drag or ', html.A('Select')],
+                                        id='upload-lc-text',
+                                    ),
+                                    className="gp-upload-box",
+                                    style={
+                                        'border': '1px dashed',
+                                        'padding': '5px 8px',
+                                        'borderRadius': '5px',
+                                        'textAlign': 'center',
+                                    },
+                                ),
+                                html.Div(id='upload-lc-help', className='gp-upload-help-slot'),
+                            ],
+                            className='gp-upload-row',
                         ),
                     ], width=6),
 
                     # Intervals Upload
                     dbc.Col([
-                        html.Label("Intervals", className="small fw-bold"),
-                        dcc.Upload(
-                            id='upload-intervals',
-                            children=html.Div(['Drag or ', html.A('Select')], id='upload-intervals-text'),
-                            className="upload-box",  # We style this in the local style.css
-                            style={'border': '1px dashed', 'padding': '5px', 'borderRadius': '5px',
-                                   'textAlign': 'center'},
+                        html.Label("Intervals", className="small fw-bold d-block mb-1"),
+                        html.Div(
+                            [
+                                dcc.Upload(
+                                    id='upload-intervals',
+                                    children=html.Div(
+                                        ['Drag or ', html.A('Select')],
+                                        id='upload-intervals-text',
+                                    ),
+                                    className="gp-upload-box",
+                                    style={
+                                        'border': '1px dashed',
+                                        'padding': '5px 8px',
+                                        'borderRadius': '5px',
+                                        'textAlign': 'center',
+                                    },
+                                ),
+                                html.Div(
+                                    id='upload-intervals-help',
+                                    className='gp-upload-help-slot',
+                                ),
+                            ],
+                            className='gp-upload-row',
                         ),
                     ], width=6),
 
@@ -1100,6 +1211,8 @@ def toggle_gp_legend(n_clicks, is_open):
 @callback(
     # region unfold
     Output('prep-graph', 'figure'),
+    Output('store-gp-interval-pick-bands', 'data'),
+    Output('store-gp-intervals-marked', 'data'),
     Input('store-lc-data', 'data'),
     Input('store-intervals-data', 'data'),
     Input('folding-switch', 'value'),
@@ -1120,7 +1233,11 @@ def update_prep_graph(
     epoch,
 ):
     if not lc_json_string:
-        return go.Figure().update_layout(title="Upload data to see plot")
+        return (
+            go.Figure().update_layout(title="Upload data to see plot"),
+            {"enabled": False, "axis": TIME_AXIS_MJD, "bands": []},
+            [],
+        )
 
     axis_mode = time_axis_mode or TIME_AXIS_MJD
     phase_view = bool(folding_on) and period and period > 0
@@ -1135,7 +1252,11 @@ def update_prep_graph(
             template="plotly_white",
             margin=dict(l=40, r=20, t=60, b=40),
         )
-        return fig
+        return (
+            fig,
+            {"enabled": False, "axis": axis_mode, "bands": []},
+            [],
+        )
 
     x_jd = np.asarray(lc['x'], dtype=float)
     y_data = lc['y']
@@ -1215,6 +1336,7 @@ def update_prep_graph(
     apply_time_xaxis_format(fig, phase_view=phase_view, time_axis_mode=axis_mode)
 
     # Mark selected intervals (stored as absolute JD; display only in current axis)
+    pick_bands = {"enabled": False, "axis": axis_mode, "bands": []}
     if intervals_data:
         if phase_view:
             t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
@@ -1235,18 +1357,111 @@ def update_prep_graph(
                     )
         else:
             ts = lc.get("timescale")
-            for interval in intervals_data:
+            pick_bands = build_unfolded_interval_pick_payload(
+                intervals_data,
+                time_axis_mode=axis_mode,
+                display_epoch=jd0,
+                timescale=ts,
+            )
+            for index, interval in enumerate(intervals_data):
                 x0, x1 = absolute_jd_to_plot_x(
                     [interval[0], interval[1]], axis_mode, jd0, timescale=ts
                 )
-                fig.add_vrect(
-                    x0=x0, x1=x1,
-                    fillcolor="green", opacity=0.15,
-                    layer="below", line_width=1,
-                    line_color="green",
+                fig.add_shape(
+                    type="rect",
+                    x0=x0,
+                    x1=x1,
+                    y0=0,
+                    y1=1,
+                    yref="paper",
+                    fillcolor="green",
+                    opacity=0.15,
+                    layer="below",
+                    line=dict(color="green", width=1),
+                    name=interval_shape_name(index),
                 )
 
-    return fig
+    return fig, pick_bands, []
+
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="applyIntervalMarkMode"),
+    Output("prep-graph", "figure", allow_duplicate=True),
+    Input("gp-interval-mark-mode", "value"),
+    State("prep-graph", "figure"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphIntervalMarkClick"),
+    Output("store-gp-prep-dblclick-pending", "data", allow_duplicate=True),
+    Input("prep-graph", "figure"),
+    prevent_initial_call="initial_duplicate",
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="toggleIntervalMarkFromDblClick"),
+    Output("store-gp-intervals-marked", "data", allow_duplicate=True),
+    Output("prep-graph", "figure", allow_duplicate=True),
+    Input("store-gp-prep-dblclick-pending", "data"),
+    State("store-gp-interval-pick-bands", "data"),
+    State("store-gp-intervals-marked", "data"),
+    State("prep-graph", "figure"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="clearIntervalMarks"),
+    Output("store-gp-intervals-marked", "data", allow_duplicate=True),
+    Output("prep-graph", "figure", allow_duplicate=True),
+    Input("btn-clear-interval-marks", "n_clicks"),
+    State("prep-graph", "figure"),
+    prevent_initial_call=True,
+)
+
+
+@callback(
+    Output("store-intervals-data", "data", allow_duplicate=True),
+    Output("store-gp-intervals-marked", "data", allow_duplicate=True),
+    Input("btn-remove-marked-intervals", "n_clicks"),
+    State("store-intervals-data", "data"),
+    State("store-gp-intervals-marked", "data"),
+    prevent_initial_call=True,
+)
+def commit_remove_marked_intervals(n_clicks, intervals, marked):
+    """Removes intervals marked on the prep plot (single server round-trip)."""
+    if not n_clicks or not intervals or not marked:
+        raise PreventUpdate
+    return intervals_without_marked_indices(intervals, marked), []
+
+
+@callback(
+    Output("store-intervals-data", "data", allow_duplicate=True),
+    Input("btn-remove-empty-intervals", "n_clicks"),
+    State("store-intervals-data", "data"),
+    State("store-lc-data", "data"),
+    prevent_initial_call=True,
+)
+def commit_remove_empty_intervals(n_clicks, intervals, lc_json_string):
+    """Drops all point-free intervals in one store update (one prep replot)."""
+    if not n_clicks or not intervals or not lc_json_string:
+        raise PreventUpdate
+    drop = empty_interval_indices(intervals, lc_json_string)
+    if not drop:
+        raise PreventUpdate
+    return intervals_without_marked_indices(intervals, drop)
+
+
+@callback(
+    Output("gp-interval-mark-mode", "value"),
+    Input("folding-switch", "value"),
+    prevent_initial_call=True,
+)
+def disable_interval_mark_mode_when_folded(folding_on):
+    """Band marking is only defined on the unfolded time axis."""
+    if folding_on:
+        return False
+    return no_update
 
 
 # ------ Lightcurve ----
@@ -1255,6 +1470,7 @@ def update_prep_graph(
     # region unfold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),
+    Output('upload-lc-help', 'children'),
     Output('scale-calc-trigger', 'data', allow_duplicate=True),
     Output('input-period', 'value'),
     Output('input-epoch', 'value'),
@@ -1268,7 +1484,7 @@ def update_prep_graph(
 def upload_lc(contents, filename, scale_calc_trigger_counter):
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 6
+        return (dash.no_update,) * 7
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -1287,6 +1503,7 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
         return (
             lc_json_string,
             new_label,
+            None,
             scale_calc_trigger_counter + 1,
             period,
             epoch_display,
@@ -1300,8 +1517,8 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
         help_slug = "upload_lc_" + filename.replace(".", "-").replace(" ", "-")
         return (
             dash.no_update,
-            _gp_upload_error_ui(
-                filename,
+            _gp_upload_error_message(filename),
+            _gp_upload_traceback_help(
                 help_slug,
                 "Upload error",
                 f"Traceback: {str(e)}",
@@ -1333,8 +1550,8 @@ def update_global_intervals_label(stored_content):
 @callback(
     # region unfold me
     Output('store-intervals-data', 'data'),
-    Output('store-active-intervals-name', 'data', allow_duplicate=True),
-    # Output('upload-intervals-text', 'children'),
+    Output('store-active-intervals-name', 'data'),
+    Output('upload-intervals-help', 'children'),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
     prevent_initial_call=True
@@ -1342,7 +1559,7 @@ def update_global_intervals_label(stored_content):
 )
 def upload_intervals(contents, filename):
     if contents is None:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -1354,7 +1571,7 @@ def upload_intervals(contents, filename):
             html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
             html.B(filename)
         ])
-        return intervals_list, success_ui
+        return intervals_list, success_ui, None
         # --- Success UI ---
         # return intervals_list, filename
         # return intervals_list, html.Div([
@@ -1367,14 +1584,18 @@ def upload_intervals(contents, filename):
         logging.error(traceback.format_exc())
 
         help_slug = "upload_int_" + filename.replace(".", "-").replace(" ", "-")
-        error_ui = _gp_upload_error_ui(
-            filename,
-            help_slug,
-            "Interval load error",
-            f"Interval Load Error: {str(e)}",
-            icon_class="bi-exclamation-octagon-fill",
+        return (
+            dash.no_update,
+            _gp_upload_error_message(
+                filename,
+                icon_class="bi-exclamation-octagon-fill",
+            ),
+            _gp_upload_traceback_help(
+                help_slug,
+                "Interval load error",
+                f"Interval Load Error: {str(e)}",
+            ),
         )
-        return dash.no_update, error_ui
         # return dash.no_update, html.Div([
         #     html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
         #     html.Span(
@@ -1402,7 +1623,8 @@ def upload_intervals(contents, filename):
 @callback(
     # region infold
     Output("download-intervals-file", "data"),
-    Output("store-active-intervals-name", "data"),  # Store the "real" name here
+    Output("store-active-intervals-name", "data", allow_duplicate=True),
+    Output("upload-intervals-help", "children", allow_duplicate=True),
     Input("btn-download-intervals", "n_clicks"),
     State("store-intervals-data", "data"),
     State("export-intervals-filename", "value"),
@@ -1411,7 +1633,7 @@ def upload_intervals(contents, filename):
 )
 def download_intervals(n_clicks, intervals, custom_name):
     if not n_clicks or not intervals:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
 
     content = format_intervals_download(intervals)
     export_name = custom_name if custom_name else "my_intervals.dat"
@@ -1422,7 +1644,7 @@ def download_intervals(n_clicks, intervals, custom_name):
         html.B(export_name)
     ])
 
-    return dict(content=content, filename=export_name), download_ui
+    return dict(content=content, filename=export_name), download_ui, None
     # return dict(content=content, filename=export_name), export_name
 
 

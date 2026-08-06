@@ -439,5 +439,236 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             };
             return patch;
         }
+    },
+
+    gpOc: {
+        _markModeActive: false,
+        _lastPlotClick: { t: 0, x: null },
+
+        _xInIntervalBand: function (xClick, x0, x1, axis) {
+            if (xClick === undefined || xClick === null) {
+                return false;
+            }
+            const mode = (axis || 'mjd').toLowerCase();
+            if (mode === 'date') {
+                const t = new Date(xClick).getTime();
+                const t0 = new Date(x0).getTime();
+                const t1 = new Date(x1).getTime();
+                if (Number.isNaN(t) || Number.isNaN(t0) || Number.isNaN(t1)) {
+                    return false;
+                }
+                const lo = Math.min(t0, t1);
+                const hi = Math.max(t0, t1);
+                return t >= lo && t <= hi;
+            }
+            const xv = Number(xClick);
+            const a = Number(x0);
+            const b = Number(x1);
+            if (!Number.isFinite(xv) || !Number.isFinite(a) || !Number.isFinite(b)) {
+                return false;
+            }
+            const lo = Math.min(a, b);
+            const hi = Math.max(a, b);
+            return xv >= lo && xv <= hi;
+        },
+
+        _hitIntervalIndex: function (xClick, bandsPayload) {
+            if (!bandsPayload || !bandsPayload.enabled || !bandsPayload.bands) {
+                return null;
+            }
+            const axis = bandsPayload.axis || 'mjd';
+            for (let b = 0; b < bandsPayload.bands.length; b += 1) {
+                const band = bandsPayload.bands[b];
+                if (window.dash_clientside.gpOc._xInIntervalBand(
+                    xClick, band.x0, band.x1, axis
+                )) {
+                    return band.i;
+                }
+            }
+            return null;
+        },
+
+        _relayoutMarkedIntervalShapes: function (figure, marked) {
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (!plotDiv || typeof Plotly === 'undefined' || !figure || !figure.layout) {
+                return;
+            }
+            const shapes = figure.layout.shapes;
+            if (!shapes || !shapes.length) {
+                return;
+            }
+            const markedSet = new Set(marked || []);
+            const updated = shapes.map(function (shape) {
+                if (!shape || !shape.name || !shape.name.startsWith('gp-int-')) {
+                    return shape;
+                }
+                const idx = parseInt(shape.name.slice(7), 10);
+                const isMarked = markedSet.has(idx);
+                const next = Object.assign({}, shape);
+                next.fillcolor = isMarked ? 'rgba(220, 53, 69, 0.35)' : 'green';
+                next.opacity = isMarked ? 0.35 : 0.15;
+                next.line = Object.assign({}, shape.line || {});
+                next.line.color = isMarked ? '#dc3545' : 'green';
+                next.line.width = isMarked ? 2 : 1;
+                return next;
+            });
+            Plotly.relayout(plotDiv, { shapes: updated });
+        },
+
+        _prepPlotlyGraphDiv: function () {
+            const root = document.getElementById('prep-graph');
+            if (!root) {
+                return null;
+            }
+            const plot = root.querySelector('.js-plotly-plot');
+            if (plot && typeof plot.on === 'function') {
+                return plot;
+            }
+            return null;
+        },
+
+        _plotClickX: function (plotDiv, evt) {
+            if (!evt) {
+                return null;
+            }
+            if (evt.points && evt.points.length) {
+                return evt.points[0].x;
+            }
+            if (evt.xvals && evt.xvals.length) {
+                return evt.xvals[0];
+            }
+            if (plotDiv && plotDiv._fullLayout && evt.event) {
+                const layout = plotDiv._fullLayout;
+                const xaxis = layout.xaxis;
+                if (xaxis && typeof xaxis.p2d === 'function') {
+                    const bbox = plotDiv.getBoundingClientRect();
+                    const xPixel = evt.event.clientX - bbox.left;
+                    const innerX = xPixel - (layout.margin.l || 0);
+                    return xaxis.p2d(innerX);
+                }
+            }
+            return null;
+        },
+
+        _samePlotX: function (a, b) {
+            if (a === null || a === undefined || b === null || b === undefined) {
+                return false;
+            }
+            if (typeof a === 'number' && typeof b === 'number') {
+                const scale = Math.max(1, Math.abs(a), Math.abs(b));
+                return Math.abs(a - b) <= 1e-8 * scale;
+            }
+            return String(a) === String(b);
+        },
+
+        _ensureMarkClickListener: function (plotDiv) {
+            if (!plotDiv || plotDiv._gpMarkClickBound) {
+                return;
+            }
+            plotDiv._gpMarkClickBound = true;
+            plotDiv.on('plotly_click', function (evt) {
+                if (!window.dash_clientside.gpOc._markModeActive) {
+                    return;
+                }
+                const xVal = window.dash_clientside.gpOc._plotClickX(plotDiv, evt);
+                if (xVal === null || xVal === undefined) {
+                    return;
+                }
+                const now = Date.now();
+                const last = window.dash_clientside.gpOc._lastPlotClick;
+                if (
+                    window.dash_clientside.gpOc._samePlotX(xVal, last.x)
+                    && (now - last.t) < 500
+                ) {
+                    window.dash_clientside.gpOc._lastPlotClick = { t: 0, x: null };
+                    if (typeof dash_clientside.set_props === 'function') {
+                        dash_clientside.set_props('store-gp-prep-dblclick-pending', {
+                            data: { x: xVal, ts: now },
+                        });
+                    }
+                } else {
+                    window.dash_clientside.gpOc._lastPlotClick = { t: now, x: xVal };
+                }
+            });
+        },
+
+        applyIntervalMarkMode: function (enabled, figure) {
+            window.dash_clientside.gpOc._markModeActive = !!enabled;
+            window.dash_clientside.gpOc._lastPlotClick = { t: 0, x: null };
+            const shell = document.getElementById('prep-graph-shell');
+            if (shell) {
+                shell.classList.toggle('gp-prep-mark-mode', !!enabled);
+            }
+            const attachLater = function () {
+                const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+                if (plotDiv) {
+                    window.dash_clientside.gpOc._ensureMarkClickListener(plotDiv);
+                }
+            };
+            window.setTimeout(attachLater, 0);
+            window.setTimeout(attachLater, 300);
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (plotDiv && typeof Plotly !== 'undefined') {
+                Plotly.relayout(plotDiv, { dragmode: enabled ? 'pan' : 'zoom' });
+            }
+            return window.dash_clientside.no_update;
+        },
+
+        bindPrepGraphIntervalMarkClick: function (figure) {
+            const attach = function () {
+                const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+                if (!plotDiv || !figure) {
+                    return false;
+                }
+                window.dash_clientside.gpOc._ensureMarkClickListener(plotDiv);
+                return true;
+            };
+            if (!attach()) {
+                window.setTimeout(attach, 250);
+                window.setTimeout(attach, 800);
+            }
+            return window.dash_clientside.no_update;
+        },
+
+        toggleIntervalMarkFromDblClick: function (
+            pending, bandsPayload, marked, figure
+        ) {
+            if (!pending || !bandsPayload || !bandsPayload.enabled || !figure) {
+                return [
+                    window.dash_clientside.no_update,
+                    window.dash_clientside.no_update,
+                ];
+            }
+            const hit = window.dash_clientside.gpOc._hitIntervalIndex(
+                pending.x, bandsPayload
+            );
+            if (hit === null || hit === undefined) {
+                return [
+                    window.dash_clientside.no_update,
+                    window.dash_clientside.no_update,
+                ];
+            }
+            const next = Array.isArray(marked) ? marked.slice() : [];
+            const pos = next.indexOf(hit);
+            if (pos >= 0) {
+                next.splice(pos, 1);
+            } else {
+                next.push(hit);
+                next.sort((a, b) => a - b);
+            }
+            window.dash_clientside.gpOc._relayoutMarkedIntervalShapes(figure, next);
+            return [next, window.dash_clientside.no_update];
+        },
+
+        clearIntervalMarks: function (nClicks, figure) {
+            if (!nClicks || !figure) {
+                return [
+                    window.dash_clientside.no_update,
+                    window.dash_clientside.no_update,
+                ];
+            }
+            window.dash_clientside.gpOc._relayoutMarkedIntervalShapes(figure, []);
+            return [[], window.dash_clientside.no_update];
+        },
     }
 });
