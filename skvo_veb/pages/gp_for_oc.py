@@ -245,7 +245,11 @@ import traceback
 import logging
 import uuid
 
-from skvo_veb.utils.lc_bridge import get_intervals_from_phase, phase_vrect_bounds_for_jd_interval
+from skvo_veb.utils.lc_bridge import (
+    format_user_upload_error,
+    get_intervals_from_phase,
+    phase_vrect_bounds_for_jd_interval,
+)
 from skvo_veb.utils.gp.prep_interval_bands import (
     build_unfolded_interval_pick_payload,
     interval_shape_name,
@@ -1521,7 +1525,7 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
             _gp_upload_traceback_help(
                 help_slug,
                 "Upload error",
-                f"Traceback: {str(e)}",
+                format_user_upload_error(e),
             ),
             dash.no_update,
             dash.no_update,
@@ -1593,7 +1597,7 @@ def upload_intervals(contents, filename):
             _gp_upload_traceback_help(
                 help_slug,
                 "Interval load error",
-                f"Interval Load Error: {str(e)}",
+                format_user_upload_error(e),
             ),
         )
         # return dash.no_update, html.Div([

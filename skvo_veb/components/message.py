@@ -1,4 +1,6 @@
 import dash_bootstrap_components as dbc
+
+from skvo_veb.utils.lc_bridge import format_user_upload_error
 # DEBUG_EXCEPTION = True
 DEBUG_EXCEPTION = False
 
@@ -27,7 +29,7 @@ def warning_alert(arg: Exception | str):
         if DEBUG_EXCEPTION:
             message = traceback.format_exc()
         else:
-            message = str(arg)
+            message = format_user_upload_error(arg)
     return dbc.Alert(f'{message}', color='warning', style={'white-space': 'pre-wrap'})
 
 

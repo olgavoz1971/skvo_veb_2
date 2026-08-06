@@ -30,6 +30,18 @@ reader; this application reads ``.dat`` with all ``#`` lines stored as comments,
 2. Otherwise a positional fallback applies for generic ``col1``… columns: column 1 → ``obs_time``,
    column 2 → ``mag``, column 3 → ``mag_err``.
 
+## Row validation (strict)
+
+Every non-comment data line must contain the same number of whitespace-separated fields:
+
+- If a ``#`` comment line lists column names (not ``KEY=value`` metadata) and its word count
+  matches the data width, that width is required on every row.
+- Otherwise legacy ``.dat`` files must have exactly **three** columns per row (no padding).
+- Ragged or non-numeric rows fail ingest with ``PipeException`` and a **line number** (GP/TESS
+  upload ``?`` help shows the message).
+- Columns named ``label``, ``sector``, or ``flag`` may contain arbitrary strings; other
+  columns must be numeric (``NaN`` is allowed for missing photometry errors).
+
 ## Formats other than `.dat`
 
 - **VOTable** (``.vot`` / ``.xml``): full VO metadata (TIMESYS, PhotDM, PARAMs).
