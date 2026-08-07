@@ -165,7 +165,7 @@
 .lc-discovery-help-popover .popover-body {
     max-height: min(50vh, 20rem);
     overflow-y: auto;
-    font-size: var(--lc-discovery-text-sm);
+    font-size: var(--lc-discovery-text-sm, 0.85rem);
     line-height: 1.45;
 }
 

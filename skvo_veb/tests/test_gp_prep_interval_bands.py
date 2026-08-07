@@ -6,6 +6,7 @@ from skvo_veb.utils.gp.prep_interval_bands import (
     build_unfolded_interval_pick_payload,
     interval_shape_name,
     intervals_without_marked_indices,
+    prep_interval_band_shape_style,
 )
 
 
@@ -27,6 +28,16 @@ def test_build_unfolded_interval_pick_payload_mjd():
     assert payload["bands"][0]["i"] == 0
     assert payload["bands"][0]["x0"] == pytest.approx(58999.5)
     assert payload["bands"][0]["x1"] == pytest.approx(59000.5)
+
+
+def test_prep_interval_band_shape_style_marked_flag():
+    plain = prep_interval_band_shape_style(marked=False)
+    marked = prep_interval_band_shape_style(marked=True)
+    assert plain["fillcolor"] == "green"
+    assert marked["fillcolor"].startswith("rgba(220, 53, 69")
+    assert marked["line"]["width"] == 2
+    assert plain["editable"] is False
+    assert marked["editable"] is False
 
 
 def test_intervals_without_marked_indices():

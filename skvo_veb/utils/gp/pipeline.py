@@ -143,7 +143,9 @@ def gp_peak_pipeline(
         Must contain 'jd' and 'flux'. May contain 'flux_err'
     params : dict
         GP regression parameters:
-        - 'guess_sigma' If guess_sigma=True OR no valid errors → use MAD
+        - 'guess_sigma' If guess_sigma=True → MAD for the interval. If false, tabulated
+          ``flux_err`` when sufficient coverage (see ``GP_MIN_FINITE_ERROR_FRACTION``),
+          otherwise MAD; mixed NaN rows may receive median imputation.
         - 'noise_scale_divisor' Empirical factor, allow user tune sigma estimated by algorthm
         - 'length_scale_init' Initial guess about GP lenght scale
         - 'length_scale_min', 'length_scale_max'    Bounds
@@ -215,17 +217,18 @@ def gp_peak_pipeline(
     y_norm = (y - baseline) / ampl_guess
 
     # --- 3. estimate noise ---
-    # If guess_sigma=True OR no valid errors → use MAD
-    if params['guess_sigma'] or np.all(np.isnan(y_err)):
-        noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode)
-        noise_sigma /= params['noise_scale_divisor']  # empirical factor, allow user tune it
-        logger.info(f'guessed {noise_sigma=:.3f}')
-        # propagate noise into normalized units
-        noise_sigma_norm = noise_sigma / ampl_guess
-    else:
-        logger.info(f'noise_sigma mean {np.mean(y_err):.3f}')
-        y_err /= params['noise_scale_divisor']      # allow user to tweak (to manipulate!) the uncertainties
-        noise_sigma_norm = y_err / ampl_guess
+    from skvo_veb.utils.gp.noise_policy import resolve_interval_noise_sigma_norm
+
+    noise_sigma_norm = resolve_interval_noise_sigma_norm(
+        y_err,
+        x,
+        y,
+        baseline,
+        ampl_guess,
+        extrema_mode,
+        guess_sigma=bool(params["guess_sigma"]),
+        noise_scale_divisor=float(params["noise_scale_divisor"]),
+    )
 
     # --- 5. kernel ---
     amplitude = params['amplitude_init']

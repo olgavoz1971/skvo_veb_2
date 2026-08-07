@@ -636,6 +636,63 @@ def trace_selected_indices(lcd, selected_perm_indices) -> list[int]:
     return [index for index, perm_value in enumerate(perm) if int(perm_value) in selected_set]
 
 
+def _axis_range_from_relayout(relayout_data: dict, axis: str) -> tuple | None:
+    """Reads axis limits from Plotly ``relayoutData`` keys.
+
+    Args:
+        relayout_data (dict): Plotly relayout payload from ``dcc.Graph``.
+        axis (str): ``xaxis`` or ``yaxis``.
+
+    Returns:
+        tuple or None: ``(min, max)`` when zoomed, or ``None`` if unset or autorange.
+    """
+    if relayout_data.get(f'{axis}.autorange') is True:
+        return None
+    nested = relayout_data.get(f'{axis}.range')
+    if isinstance(nested, (list, tuple)) and len(nested) == 2:
+        return nested[0], nested[1]
+    lo = relayout_data.get(f'{axis}.range[0]')
+    hi = relayout_data.get(f'{axis}.range[1]')
+    if lo is not None and hi is not None:
+        return lo, hi
+    return None
+
+
+def apply_plot_relayout_ranges_to_figure(
+    fig,
+    relayout_data: dict | None,
+    *,
+    preserve_x: bool = True,
+    preserve_y: bool = True,
+) -> None:
+    """Copies visible axis ranges from relayout data onto a figure layout.
+
+    Server-side figure rebuilds (for example when interval bands are added) can
+    reset zoom even when ``uirevision`` is unchanged. Merging the client's last
+    relayout ranges keeps the viewport stable.
+
+    Args:
+        fig: Plotly figure to mutate in place.
+        relayout_data (dict | None): Latest ``prep-graph`` ``relayoutData``.
+        preserve_x (bool): When ``False``, skip the x-axis (fixed phase axis).
+        preserve_y (bool): When ``False``, skip the y-axis.
+    """
+    if not relayout_data:
+        return
+    if preserve_x:
+        x_range = _axis_range_from_relayout(relayout_data, 'xaxis')
+        if x_range is not None:
+            fig.update_xaxes(range=[x_range[0], x_range[1]], autorange=False)
+        elif relayout_data.get('xaxis.autorange') is True:
+            fig.update_xaxes(autorange=True)
+    if preserve_y:
+        y_range = _axis_range_from_relayout(relayout_data, 'yaxis')
+        if y_range is not None:
+            fig.update_yaxes(range=[y_range[0], y_range[1]], autorange=False)
+        elif relayout_data.get('yaxis.autorange') is True:
+            fig.update_yaxes(autorange=True)
+
+
 def apply_selectedpoints_to_figure(fig, selected_perm_indices) -> None:
     """Highlights selected observations on every trace via ``selectedpoints``.
 

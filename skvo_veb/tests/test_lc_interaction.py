@@ -7,6 +7,7 @@ import pytest
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_FLUX, TIME_AXIS_DATE
 from skvo_veb.utils.lc_interaction import (
+    apply_plot_relayout_ranges_to_figure,
     plot_x_to_jd,
     prepare_lcd_for_export,
     require_time_view_for_trim,
@@ -15,6 +16,7 @@ from skvo_veb.utils.lc_interaction import (
     trim_curvedash_from_plot_selection,
     trim_curvedash_from_selection_bounds,
 )
+import plotly.graph_objects as go
 from skvo_veb.utils.my_tools import PipeException
 
 
@@ -28,6 +30,15 @@ def _sample_lcd():
         name='TIC 1',
         active_domain=DOMAIN_FLUX,
     )
+
+
+def test_apply_plot_relayout_ranges_sets_axis_limits():
+    """Interval replots should be able to reuse the zoomed viewport from relayout."""
+    fig = go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 1])])
+    relayout = {'xaxis.range[0]': 1.2, 'xaxis.range[1]': 2.8, 'yaxis.range': [0.5, 2.5]}
+    apply_plot_relayout_ranges_to_figure(fig, relayout)
+    assert fig.layout.xaxis.range == (1.2, 2.8)
+    assert list(fig.layout.yaxis.range) == [0.5, 2.5]
 
 
 def test_require_time_view_for_trim_rejects_folded_view():

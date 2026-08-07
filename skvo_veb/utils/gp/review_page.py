@@ -149,16 +149,16 @@ def _fail_card_content(entry: dict) -> html.Div:
         [
             dbc.Alert(
                 [
-                    html.B("GP Fit Failed"),
+                    html.B("GP fit failed"),
                     html.Div(
                         f"Range: {jd_min:.2f}-{jd_max:.2f}",
-                        style={"fontSize": "0.7rem"},
+                        className="gp-fail-range",
                     ),
                     html.Hr(),
                     html.Div(
                         "Hover for error",
                         id=err_id,
-                        style={"cursor": "help", "fontSize": "0.8rem"},
+                        className="gp-fail-hint",
                     ),
                 ],
                 color="danger",
@@ -193,7 +193,7 @@ def create_review_interval_card(
         id={"type": "fit-selector", "index": global_index},
         value=include_in_export,
         disabled=is_fail,
-        label="Keep result" if not is_fail else "Fit Failed",
+        label="Keep result" if not is_fail else "Fit failed",
         className="mb-1 fw-bold",
     )
 

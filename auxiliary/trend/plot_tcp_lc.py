@@ -1,4 +1,4 @@
-"""Sandbox: read tcp.vot and plot the light curve (hardcoded paths only)."""
+"""Sandbox: Play with detrending methods """
 
 from pathlib import Path
 from typing import Literal

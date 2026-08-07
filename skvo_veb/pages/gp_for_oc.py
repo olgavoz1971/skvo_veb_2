@@ -226,6 +226,7 @@ from dash import (
     Output,
     State,
     ALL,
+    MATCH,
     callback_context,
     callback,
     no_update,
@@ -248,12 +249,21 @@ import uuid
 from skvo_veb.utils.lc_bridge import (
     format_user_upload_error,
     get_intervals_from_phase,
-    phase_vrect_bounds_for_jd_interval,
+)
+from skvo_veb.utils.my_tools import PipeException
+from skvo_veb.utils.gp.prep_phase_plot import (
+    EXTENDED_PHASE_XMAX,
+    EXTENDED_PHASE_XMIN,
+    assert_phase_intervals_not_duplicates,
+    build_extended_phase_plot_arrays,
+    phase_vrect_bounds_extended,
+    validate_extended_phase_selection,
 )
 from skvo_veb.utils.gp.prep_interval_bands import (
     build_unfolded_interval_pick_payload,
     interval_shape_name,
     intervals_without_marked_indices,
+    prep_interval_band_shape_style,
 )
 
 from skvo_veb.utils.gp import (
@@ -269,6 +279,7 @@ from skvo_veb.utils.gp import (
     format_intervals_download,
 )
 from skvo_veb.utils.gp.flux import empty_interval_indices
+from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
 from skvo_veb.utils.gp.review_page import (
     badges_from_specs,
@@ -303,7 +314,10 @@ from skvo_veb.utils.lc_figure import (
     apply_time_xaxis_format,
     time_axis_xaxis_title,
 )
-from skvo_veb.utils.lc_interaction import plot_x_to_jd
+from skvo_veb.utils.lc_interaction import (
+    apply_plot_relayout_ranges_to_figure,
+    plot_x_to_jd,
+)
 
 jd0 = DEFAULT_EPOCH_JD
 
@@ -328,14 +342,25 @@ params_float = DEFAULT_FLOAT_PARAMS
 # background_callback_manager = DiskcacheManager(cache)
 
 
-def _gp_click_help(help_id: str, title: str, body, *, placement: str = "bottom"):
-    """Builds a click-triggered ``?`` control and its popover (GP page).
+def _gp_click_help(
+    help_id: str,
+    title: str,
+    body,
+    *,
+    placement: str = "bottom",
+    label: str = "?",
+    trigger_class_name: str = "lc-discovery-help-btn",
+):
+    """Builds a click-triggered help control and its popover (GP page).
 
     Args:
         help_id (str): Short slug for unique component ids.
         title (str): Popover header text.
         body: Popover body as a string or sequence of Dash components.
         placement (str): Bootstrap popover placement.
+        label (str): Trigger text, ``?`` for a single control or e.g. ``TIPS``
+            for a workflow guide.
+        trigger_class_name (str): CSS classes on the help trigger element.
 
     Returns:
         tuple: ``(help_button, popover)`` components.
@@ -345,11 +370,11 @@ def _gp_click_help(help_id: str, title: str, body, *, placement: str = "bottom")
     if not isinstance(body, (list, tuple)):
         body = [html.P(body, className="mb-0")]
     button = html.Strong(
-        "?",
+        label,
         id=btn_id,
         role="button",
         tabIndex=0,
-        className="lc-discovery-help-btn",
+        className=trigger_class_name,
         **{"aria-label": f"Help: {title}"},
     )
     popover = dbc.Popover(
@@ -366,53 +391,132 @@ def _gp_click_help(help_id: str, title: str, body, *, placement: str = "bottom")
     return button, popover
 
 
-def _gp_upload_error_message(
-    filename: str,
-    *,
-    icon_class: str = "bi-exclamation-triangle-fill",
-) -> html.Div:
-    """Upload error label shown inside the dashed upload box (no help control).
+GP_UPLOAD_STATUS_ICONS = {
+    "ok": "bi-check-circle-fill text-success",
+    "info": "bi-check-circle-fill text-primary",
+    "error": "bi-exclamation-triangle-fill text-danger",
+}
 
-    Args:
-        filename (str): Uploaded file name.
-        icon_class (str): Bootstrap icon class suffix.
+
+def _gp_upload_placeholder() -> html.Span:
+    """Idle caption shown in a data-bar slot before a file is chosen.
 
     Returns:
-        html.Div: Icon and error line for ``upload-*-text`` children.
+        dash.html.Span: Muted hint for the ``upload-*-text`` slot.
+    """
+    return html.Span("Drag or select", className="gp-upload-name-text text-muted")
+
+
+def _gp_upload_status(filename: str, *, tone: str) -> html.Div:
+    """File name chip shown next to an upload button.
+
+    Args:
+        filename (str): File name to display; truncated at the front when long.
+        tone (str): ``ok`` for a loaded file, ``info`` for an exported file,
+            ``error`` for a file that failed to parse.
+
+    Returns:
+        dash.html.Div: Icon plus truncating file name for ``upload-*-text``.
+
+    Raises:
+        ValueError: If ``tone`` is not a known status tone.
+    """
+    if tone not in GP_UPLOAD_STATUS_ICONS:
+        raise ValueError(f"Unknown upload status tone: {tone}")
+    return html.Div(
+        [
+            html.I(className=f"bi {GP_UPLOAD_STATUS_ICONS[tone]} gp-upload-status-icon"),
+            html.Span(filename, className="gp-upload-name-text", title=filename),
+        ],
+        className="gp-upload-status",
+    )
+
+
+def _gp_upload_failure_detail(title: str, body: str) -> html.Div:
+    """Explanatory block revealed by the ``?`` button after a failed upload.
+
+    Args:
+        title (str): Short headline, e.g. ``Lightcurve upload failed``.
+        body (str): User-facing error text (may span several lines).
+
+    Returns:
+        dash.html.Div: Content for a ``gp-upload-detail`` collapse.
     """
     return html.Div(
         [
-            html.I(className=f"bi {icon_class} me-2", style={"color": "#dc3545"}),
-            html.Span(
-                [html.B("Error: "), filename],
-                style={"color": "#dc3545", "fontSize": "0.85rem"},
-            ),
-        ],
-        className="d-flex align-items-center justify-content-center flex-wrap",
+            html.B(title),
+            html.Pre(body, className="gp-upload-detail-body"),
+        ]
     )
 
 
-def _gp_upload_traceback_help(
-    help_slug: str,
-    popover_title: str,
-    popover_body: str,
-) -> html.Div:
-    """Side-mounted ``?`` popover for upload tracebacks (outside the drop zone).
+def _gp_upload_slot(upload_id: str, button_label: str, detail_index: str) -> html.Div:
+    """Builds one data-bar slot: load button, file name and a detail toggle.
+
+    Clicking anywhere in the target opens the file dialogue; the dashed outline
+    appears only while a file is dragged over it.
 
     Args:
-        help_slug (str): Unique slug for ``_gp_click_help`` ids.
-        popover_title (str): Popover header.
-        popover_body (str): Popover body text.
+        upload_id (str): Id for the ``dcc.Upload``; the file name area gets
+            ``<upload_id>-text``.
+        button_label (str): Sentence-case button label, e.g. ``Load lightcurve``.
+        detail_index (str): ``index`` of the matching detail collapse components.
 
     Returns:
-        html.Div: Help button and popover for ``upload-*-help`` slot.
+        dash.html.Div: Slot ready to place in the data bar.
     """
-    help_btn, help_pop = _gp_click_help(
-        help_slug, popover_title, popover_body, placement="right"
-    )
     return html.Div(
-        [html.Div(help_btn, className="lc-discovery-field-help"), help_pop],
-        className="gp-upload-help",
+        [
+            dcc.Upload(
+                id=upload_id,
+                children=html.Div(
+                    [
+                        dbc.Button(
+                            button_label,
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                        ),
+                        html.Div(
+                            _gp_upload_placeholder(),
+                            id=f"{upload_id}-text",
+                            className="gp-upload-name",
+                        ),
+                    ],
+                    className="gp-upload-target-inner",
+                ),
+                className="gp-upload-target",
+                className_active="gp-upload-target gp-upload-target-active",
+                className_reject="gp-upload-target gp-upload-target-reject",
+            ),
+            dbc.Button(
+                html.I(className="bi bi-question-circle"),
+                id={"type": "gp-upload-detail-btn", "index": detail_index},
+                color="link",
+                size="sm",
+                className="gp-upload-detail-btn d-none",
+            ),
+        ],
+        className="gp-data-slot",
+    )
+
+
+def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
+    """Full-width collapse holding the failure explanation for one slot.
+
+    Args:
+        detail_index (str): ``index`` shared with the slot's ``?`` button.
+
+    Returns:
+        dash_bootstrap_components.Collapse: Closed collapse with an empty body.
+    """
+    return dbc.Collapse(
+        html.Div(
+            id={"type": "gp-upload-detail", "index": detail_index},
+            className="gp-upload-detail",
+        ),
+        id={"type": "gp-upload-detail-collapse", "index": detail_index},
+        is_open=False,
     )
 
 
@@ -421,8 +525,69 @@ def _gp_upload_traceback_help(
     _add_interval_help_pop,
 ) = _gp_click_help(
     "add_interval",
-    "Add Interval",
-    "Register selected JD interval as a target for extremum analysis",
+    "Add interval",
+    "Unfolded: box-select a time range. Folded: box-select on the extended phase axis "
+    "(−0.5 to 1.5); width must not exceed 1 phase. Re-adding the same window is "
+    "rejected. See TIPS under the plot for the full workflow.",
+)
+# Workflow guide under the plot: longer than a per-control ? and opened on demand
+(
+    _prep_tips_btn,
+    _prep_tips_pop,
+) = _gp_click_help(
+    "prep_tips",
+    "Tips: selecting and removing intervals",
+    [
+        html.P(
+            "Unfolded curve: box-select a time range on the plot and press "
+            "Add interval.",
+            className="mb-2",
+        ),
+        html.P(
+            "If the period is known, add every cycle at once: switch on Fold, "
+            "box-select on the extended phase axis (−0.5 to 1.5, box width ≤ 1) and "
+            "press Add interval. Matching intervals from all cycles are added "
+            "automatically, and you can unfold the curve afterwards.",
+            className="mb-2",
+        ),
+        html.P(
+            "To drop intervals, switch on Mark bands and double-click on (or very "
+            "near) a photometry point inside a green band; clicks inside the band but "
+            "far from any point have no effect. Double-click again to unmark. Then "
+            "press Remove marked in the toolbar, or use Remove empty and Clear all in "
+            "the Selected intervals panel.",
+            className="mb-2",
+        ),
+        html.P(
+            "Mark bands, Remove trend and box-select all compete for the same click, "
+            "so only one of them can be active at a time.",
+            className="mb-0",
+        ),
+    ],
+    placement="top",
+    label="TIPS",
+    trigger_class_name="lc-discovery-help-btn gp-prep-tips-btn",
+)
+(
+    _prep_errorbars_help_btn,
+    _prep_errorbars_help_pop,
+) = _gp_click_help(
+    "prep_errorbars",
+    "Show error bars",
+    "Draws uncertainty bars on the prep plot. This increases data sent to the browser "
+    "and can slow pan/zoom and selection on long light curves.",
+)
+(
+    _remove_trend_help_btn,
+    _remove_trend_help_pop,
+) = _gp_click_help(
+    "remove_trend",
+    "Remove trend",
+    "Unfolded prep plot only. Switch on and click once: a horizontal dashed line "
+    "appears at that level (four-fifths of the visible width) and the Apply and "
+    "Clear buttons appear beside this switch. Drag the handles to adjust, then "
+    "Apply trend removal, which also switches this off. Uses the current "
+    "Magnitudes/Flux view. Reload the light curve to undo.",
 )
 (
     _guess_sigma_help_btn,
@@ -446,7 +611,7 @@ def _gp_upload_traceback_help(
     _kernel_type_help_pop,
 ) = _gp_click_help(
     "kernel_type",
-    "Kernel Smoothness Type",
+    "Kernel smoothness type",
     "Matern (nu=2.5): twice differentiable, physically realistic"
     "RBF (Radial Basis Function): infinitely differentiable, extremely smooth)",
 )
@@ -455,7 +620,7 @@ def _gp_upload_traceback_help(
     _length_scale_help_pop,
 ) = _gp_click_help(
     "length_scale",
-    "Length Scale (Min / Init / Max)",
+    "Length scale (min / init / max)",
     "GP smoothness (in days, as x-axis). Increase if fit is too wiggly, "
     "decrease if it misses structure.",
 )
@@ -464,175 +629,264 @@ def _gp_upload_traceback_help(
     _amplitude_help_pop,
 ) = _gp_click_help(
     "signal_amplitude",
-    "Signal Amplitude (Min / Init / Max)",
+    "Signal amplitude (min / init / max)",
     "GP vertical scale (y-axis). Sets the 'headroom' for peak height. "
     "Since flux is normalised to 1.0, values between 0.1 and 10.0 are usually safe. "
     "Best left alone unless the model is failing to reach the top of your peak!",
 )
 
 
+GP_CHECKLIST_SWITCH_ON = 1
+
+
+def gp_trend_mode_checklist_options(*, disabled: bool = False) -> list[dict]:
+    """Builds ``dbc.Checklist`` options for the prep-plot Remove trend switch.
+
+    Args:
+        disabled (bool): When ``True``, the switch cannot be turned on (folded LC).
+
+    Returns:
+        list[dict]: Single-option checklist payload for ``gp-prep-trend-mode``.
+    """
+    return [
+        {
+            "label": "Remove trend",
+            "value": GP_CHECKLIST_SWITCH_ON,
+            "disabled": disabled,
+        }
+    ]
+
+
+def gp_checklist_switch_is_on(value) -> bool:
+    """Returns whether a sidebar checklist switch (Fold, Remove trend, etc.) is on.
+
+    Args:
+        value: ``dbc.Checklist`` value (list of selected option values).
+
+    Returns:
+        bool: ``True`` when switch option ``1`` is selected.
+    """
+    return isinstance(value, list) and GP_CHECKLIST_SWITCH_ON in value
+
+
 def LegendItem(color, label, mode='line'):
-    # mode can be: 'line', 'dashed', or 'circle'
-    # Base style for the visual indicator
-    style = {
-        "display": "inline-block",
-        "margin-right": "10px",
-        "vertical-align": "middle",
-    }
+    """Builds one legend row: a colour swatch plus its caption.
 
-    if mode == 'circle':
-        style.update({
-            "background-color": color,
-            "width": "10px",
-            "height": "10px",
-            "border-radius": "50%"
-        })
-    elif mode == 'line':
-        style.update({
-            "background-color": color,
-            "width": "20px",
-            "height": "3px",
-            "border-radius": "0px"
-        })
-    elif mode == 'dashed':
-        # For dashed, we use a border instead of background
-        style.update({
-            "width": "20px",
-            "height": "0px",
-            "border-top": f"3px dashed {color}",
-            "background-color": "transparent"
-        })
+    Args:
+        color (str): Any CSS colour taken from the corresponding plot trace.
+        label (str): Caption shown next to the swatch.
+        mode (str): Swatch shape, ``line``, ``dashed`` or ``circle``.
 
-    return html.Div([
-        html.Span(style=style),
-        html.Span(label, style={"font-size": "0.85rem", "vertical-align": "middle"})
-    ], style={"margin-bottom": "4px", "display": "flex", "align-items": "center"})
+    Returns:
+        dash.html.Div: Legend row component.
+
+    Raises:
+        ValueError: If ``mode`` is not a supported swatch shape.
+    """
+    if mode not in ("line", "dashed", "circle"):
+        raise ValueError(f"Unsupported legend swatch mode: {mode}")
+
+    # Geometry lives in gp_for_oc.css; only the trace colour is data-driven.
+    swatch_style = (
+        {"borderTopColor": color} if mode == "dashed" else {"backgroundColor": color}
+    )
+    return html.Div(
+        [
+            html.Span(
+                className=f"gp-legend-swatch gp-legend-swatch-{mode}",
+                style=swatch_style,
+            ),
+            html.Span(label),
+        ],
+        className="gp-legend-item",
+    )
 
 
 # ==================== Lightcurve GUI ==================
 
 sidebar_lc = html.Div([
     # 1. PHASE FOLDING CONTROLS
-    html.Label("Phase Folding", className="fw-bold", id="phase-folding-label"),
-    dbc.Checklist(
-        options=[{"label": "Fold", "value": 1}],  # type: ignore
-        value=[],
-        id="folding-switch",
-        switch=True,
-        className="mb-2"
+    html.Div(
+        [
+            html.Label("Phase folding", className="gp-section-label"),
+            dbc.Checklist(
+                options=[{"label": "Fold", "value": GP_CHECKLIST_SWITCH_ON}],  # type: ignore
+                value=[],
+                id="folding-switch",
+                switch=True,
+            ),
+            dbc.InputGroup([
+                dbc.InputGroupText("P"),
+                dbc.Input(id="input-period", type="number", placeholder="Period (days)"),
+            ], size="sm"),
+            dbc.InputGroup([
+                dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
+                dbc.Input(id="input-epoch", type="number", placeholder="MJD offset"),
+            ], size="sm"),
+        ],
+        className="gp-sidebar-block",
     ),
-    dbc.InputGroup([
-        dbc.InputGroupText("P"),
-        dbc.Input(id="input-period", type="number", placeholder="Period (days)"),
-    ], size="sm", className="mb-1"),
-    dbc.InputGroup([
-        dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
-        dbc.Input(id="input-epoch", type="number", placeholder="MJD offset"),
-    ], size="sm", className="mb-3"),
 
     html.Hr(),
 
     # 2. VIEW SETTINGS
-    html.Label("View Settings", className="fw-bold", id="view-settings-label"),
-    dbc.RadioItems(
-        id="gp_time_axis_switch",
-        options=[
-            {"label": " MJD", "value": TIME_AXIS_MJD},
-            {"label": " Date", "value": TIME_AXIS_DATE},
-        ],
-        value=TIME_AXIS_MJD,
-        persistence=True,
-        className="mb-2",
-        inputStyle={"marginRight": "6px"},
-        labelStyle={"marginRight": "12px", "fontSize": "0.9rem"},
-    ),
-    dbc.RadioItems(
-        options=[  # type: ignore
-            {"label": "Magnitudes", "value": "mag"},
-            {"label": "Flux", "value": "flux"},
-        ],
-        value="mag",
-        id="view-mode-radio",
-        className="mb-3",
-        style={"fontSize": "0.9rem"}
-    ),
-
-    html.Hr(),
-
-    #  3. ACTION BUTTONS
     html.Div(
         [
-            html.Label("Interval control", className="fw-bold mb-0"),
-            html.Div(_add_interval_help_btn, className="lc-discovery-field-help ms-1"),
+            html.Label("View settings", className="gp-section-label"),
+            dbc.RadioItems(
+                id="gp_time_axis_switch",
+                options=[
+                    {"label": " MJD", "value": TIME_AXIS_MJD},
+                    {"label": " Date", "value": TIME_AXIS_DATE},
+                ],
+                value=TIME_AXIS_MJD,
+                persistence=True,
+                inputStyle={"marginRight": "6px"},
+                labelStyle={"marginRight": "12px"},
+            ),
+            dbc.RadioItems(
+                options=[  # type: ignore
+                    {"label": "Magnitudes", "value": "mag"},
+                    {"label": "Flux", "value": "flux"},
+                ],
+                value="mag",
+                id="view-mode-radio",
+            ),
+            html.Div(
+                [
+                    dbc.Switch(
+                        id="gp-prep-show-errorbars",
+                        label="Show error bars",
+                        value=False,
+                    ),
+                    html.Div(_prep_errorbars_help_btn, className="lc-discovery-field-help"),
+                ],
+                className="gp-sidebar-switch-row",
+            ),
         ],
-        className="d-flex align-items-center mb-2",
+        className="gp-sidebar-block",
     ),
-    dbc.Button(
-        [html.I(className="bi bi-plus-circle me-2"), "Add Interval"],
-        id="btn-add-interval", color="primary", className="w-100 mb-2"
-    ),
-    dbc.Switch(
-        id="gp-interval-mark-mode",
-        label="Mark bands: double-click plot (unfolded only)",
-        value=False,
-        className="mb-2",
-    ),
-    # CLEAR button
-    dbc.Button(
-        [html.I(className="bi bi-trash3 me-2"), "Clear All Intervals"],
-        id="btn-clear-intervals", color="outline-danger",
-        className="w-100", size="sm"
-    ),
-    dbc.Button(
-        [html.I(className="bi bi-x-circle me-2"), "Remove marked intervals"],
-        id="btn-remove-marked-intervals",
-        color="warning",
-        className="w-100 mt-2",
-        size="sm",
-    ),
-    dbc.Button(
-        [html.I(className="bi bi-filter-circle me-2"), "Remove empty intervals"],
-        id="btn-remove-empty-intervals",
-        color="secondary",
-        className="w-100 mt-2",
-        size="sm",
-    ),
-    dbc.Button(
-        "Clear marks",
-        id="btn-clear-interval-marks",
-        color="link",
-        className="w-100 p-0 small text-muted",
-        size="sm",
-    ),
+    _prep_errorbars_help_pop,
 
     html.Hr(),
 
-    # 4. --- EXPORT ---
-    html.Label("Export Settings", className="fw-bold"),
-    # dbc.InputGroup([
-    #     dbc.InputGroupText("Filename"),
-    dbc.Input(
-        id="export-intervals-filename",
-        placeholder="intervals_export",
-        type="text",
-        value="my_intervals"  # Default value
+    # 3. --- EXPORT ---
+    html.Div(
+        [
+            html.Label("Export settings", className="gp-section-label"),
+            dbc.InputGroup(
+                [
+                    dbc.Input(
+                        id="export-intervals-filename",
+                        placeholder="intervals_export",
+                        type="text",
+                        value="my_intervals",
+                    ),
+                    dbc.Button(
+                        "Download",
+                        id="btn-download-intervals",
+                        color="primary",
+                    ),
+                ],
+                size="sm",
+            ),
+            dcc.Download(id="download-intervals-file"),
+        ],
+        className="gp-sidebar-block",
     ),
-    # dbc.InputGroupText(".intervals"),
-    # ], size="sm", className="mb-2"),
+], className="gp-sidebar bg-light border rounded shadow-sm")
 
-    # DOWNLOAD button
-    dbc.Button(
-        [html.I(className="bi bi-download me-2"), "Download File"],
-        id="btn-download-intervals",
-        color="success",
-        className="w-100 mb-2",
-        size="sm"
-    ),
-    dcc.Download(id="download-intervals-file"),
-    _add_interval_help_pop,
-], className="p-3 bg-light border rounded shadow-sm")
+# Actions that operate on the plot itself live above it, not in the sidebar: the
+# marking and trend gestures happen on the graph, and the two modes compete for the
+# same click, which is only obvious when their switches sit side by side.
+prep_plot_toolbar = html.Div(
+    [
+        html.Div(
+            [
+                dbc.Button(
+                    "Add interval",
+                    id="btn-add-interval",
+                    color="primary",
+                    size="sm",
+                ),
+                html.Div(_add_interval_help_btn, className="lc-discovery-field-help"),
+            ],
+            className="gp-plot-toolbar-cluster",
+        ),
+        html.Div(
+            [
+                dbc.Checklist(
+                    options=[  # type: ignore
+                        {"label": "Mark bands", "value": GP_CHECKLIST_SWITCH_ON},
+                    ],
+                    value=[],
+                    id="gp-interval-mark-mode",
+                    switch=True,
+                ),
+                dbc.Button(
+                    "Remove marked",
+                    id="btn-remove-marked-intervals",
+                    color="primary",
+                    size="sm",
+                    disabled=True,
+                ),
+                dbc.Button(
+                    "Clear marks",
+                    id="btn-clear-interval-marks",
+                    color="secondary",
+                    outline=True,
+                    size="sm",
+                    disabled=True,
+                ),
+            ],
+            className="gp-plot-toolbar-cluster",
+        ),
+        html.Div(
+            [
+                dbc.Checklist(
+                    options=gp_trend_mode_checklist_options(disabled=False),  # type: ignore
+                    value=[],
+                    id="gp-prep-trend-mode",
+                    switch=True,
+                ),
+                html.Div(_remove_trend_help_btn, className="lc-discovery-field-help"),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Apply",
+                            id="btn-apply-prep-trend",
+                            color="primary",
+                            size="sm",
+                        ),
+                        dbc.Button(
+                            "Clear trend line",
+                            id="btn-clear-prep-trend",
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                        ),
+                    ],
+                    id="gp-trend-actions",
+                    className="gp-plot-toolbar-actions d-none",
+                ),
+            ],
+            className="gp-plot-toolbar-cluster",
+        ),
+        html.Div(
+            [
+                html.Div(id="gp-interval-add-feedback"),
+                html.Div(id="gp-trend-feedback"),
+            ],
+            className="gp-plot-toolbar-feedback",
+        ),
+        _add_interval_help_pop,
+        _remove_trend_help_pop,
+    ],
+    className="gp-plot-toolbar",
+)
 
 graph_lc = html.Div([
+    prep_plot_toolbar,
     html.Div(
         dcc.Graph(
             id='prep-graph',
@@ -640,51 +894,59 @@ graph_lc = html.Div([
                 'scrollZoom': True,
                 'displaylogo': False,
                 'doubleClick': False,
-                'modeBarButtonsToRemove': [
-                    'zoomIn2d',  # Hide Zoom In
-                    'zoomOut2d',  # Hide Zoom Out
-                    'lasso2d',  # Hide Lasso
-                    # 'select2d'  # Hide the default box-select (if you only want 'drawrect')
-                ],
-                'modeBarButtonsToAdd': ['drawrect', 'eraseshape'],
+                # Interval bands stay non-editable; trend line editing is toggled in JS
+                'edits': {'shapePosition': False},
+                # No shape-drawing tools: intervals come from box-select and the
+                # trend line is placed by clicking, so drawn shapes would only be junk.
+                'modeBarButtonsToRemove': ['zoomIn2d', 'zoomOut2d', 'lasso2d'],
             },
-            style={'height': '600px'},
+            className="gp-prep-graph",
         ),
         id="prep-graph-shell",
     ),
-    dbc.Alert(
-        html.Span(
-            [
-                html.Strong("Tip: "),
-                "If the period is known, you can add all intervals at once: "
-                "box-select an interval on the folded light curve and click ",
-                html.Strong("Add Interval"),
-                ". Matching intervals from all cycles are added automatically; "
-                "you can then unfold the curve. "
-                "To mark intervals for removal, enable ",
-                html.Strong("Mark bands"),
-                " and double-click on or very near a photometry point inside a "
-                "green band (clicks in the strip but far from any point have no effect). "
-                "Double-click again to unmark. Use ",
-                html.Strong("Remove marked intervals"),
-                " or ",
-                html.Strong("Remove empty intervals"),
-                " as needed.",
-            ],
-            className="mb-0",
-        ),
-        color="info",
-        className="mt-2 py-1 small",
-    )
+    html.Div([_prep_tips_btn, _prep_tips_pop], className="mt-2"),
 ], className="border rounded p-2 bg-white")
 
+# List maintenance belongs to the list: these two act on the registry, not the plot.
 intervals_registry = html.Div([
-    html.H6("Selected Intervals", className="fw-bold mb-3"),
+    html.Div(
+        [
+            html.H6(
+                [
+                    "Selected intervals ",
+                    html.Span(id="registry-interval-count", className="text-muted"),
+                ],
+                className="gp-card-title",
+            ),
+            html.Div(
+                [
+                    dbc.Button(
+                        "Remove empty",
+                        id="btn-remove-empty-intervals",
+                        color="link",
+                        size="sm",
+                        disabled=True,
+                        className="gp-registry-action gp-registry-action-caution",
+                    ),
+                    dbc.Button(
+                        "Clear all",
+                        id="btn-clear-intervals",
+                        color="link",
+                        size="sm",
+                        disabled=True,
+                        className="gp-registry-action text-danger",
+                    ),
+                ],
+                className="gp-registry-header-actions",
+            ),
+        ],
+        className="gp-registry-header",
+    ),
     html.Div(id='registry-list-container', children=[
         # We'll use a Dash Table or a List of Cards here
         html.P("No intervals selected.", className="text-muted small")
     ])
-], className="p-3 border rounded bg-light", style={'height': '500px', 'overflowY': 'auto'})
+], className="gp-registry-panel p-3 border rounded bg-light")
 
 registry_toggle_btn = dbc.Button(
     # region unfold
@@ -692,12 +954,7 @@ registry_toggle_btn = dbc.Button(
     id="btn-toggle-registry",
     color="light",
     size="sm",
-    className="border shadow-sm p-1",
-    style={
-        "position": "absolute", "right": "0", "top": "50%",
-        "zIndex": "1000", "transform": "translateX(50%)",
-        "borderRadius": "50%", "width": "30px", "height": "30px"
-    }
+    className="gp-registry-toggle border shadow-sm p-1",
     # endregion
 )
 # ===================  GP GUI ===========================
@@ -706,30 +963,37 @@ registry_toggle_btn = dbc.Button(
 sidebar_gp = html.Div([
     # 1. COLLAPSIBLE LEGEND
     dbc.Button(
-        "Show Legend",
+        "Show legend",
         id="toggle-legend-btn",
         color="link",
-        # size="sm",
-        className="p-0 mb-2 text-decoration-none"
+        size="sm",
+        className="p-0 text-decoration-none",
     ),
     dbc.Collapse(
         html.Div([
-            LegendItem("black", "Data Points", mode='circle'),
-            LegendItem("rgb(31, 119, 180)", "GP Mean", mode='line'),
-            LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ Confidence", mode='line'),
-            LegendItem("magenta", "Peak Estimate", mode='dashed'),
-            LegendItem("orange", "Posterior Draws", mode='circle'),
+            LegendItem("black", "Data points", mode='circle'),
+            LegendItem("rgb(31, 119, 180)", "GP mean", mode='line'),
+            LegendItem("rgba(31, 119, 180, 0.25)", "GP ±1σ confidence", mode='line'),
+            LegendItem("magenta", "Peak estimate", mode='dashed'),
+            LegendItem("orange", "Posterior draws", mode='circle'),
             LegendItem("green", "Guess", mode='dashed'),
-        ], className="p-2 border rounded bg-white mb-3 small"),
+        ], className="p-2 border rounded bg-white"),
         id="legend-collapse",
-        is_open=False
+        is_open=False,
+        className="gp-sidebar-group",
     ),
 
     # 2. PRIMARY ACTION BUTTONS
     dbc.Row([
-        dbc.Col(dbc.Button("Run GP", id="run-btn", color="primary", className="w-100"), width=7),
-        dbc.Col(dbc.Button("Stop", id="stop-btn", color="danger", outline=True, className="w-100"), width=5),
-    ], className="g-2 mb-3"),
+        dbc.Col(
+            dbc.Button("Run GP", id="run-btn", color="primary", className="w-100", size="sm"),
+            width=7,
+        ),
+        dbc.Col(
+            dbc.Button("Stop", id="stop-btn", color="danger", outline=True, className="w-100", size="sm"),
+            width=5,
+        ),
+    ], className="g-2 gp-sidebar-group"),
 
     # 3. GLOBAL MODEL SETTINGS
     dbc.Row([
@@ -737,68 +1001,74 @@ sidebar_gp = html.Div([
             dbc.Select(
                 id="extrema-mode",
                 options=[  # type: ignore
-                    {"label": "Search Minima", "value": "min"},
-                    {"label": "Search Maxima", "value": "max"},
+                    {"label": "Search minima", "value": "min"},
+                    {"label": "Search maxima", "value": "max"},
                 ],
                 value=EXTREMA_MODE,
                 size="sm",
             )
         ], width=12),
 
-    ], className="g-2 mb-2"),
+    ], className="g-2 gp-sidebar-group"),
 
-    dbc.Row([
-        dbc.Col([
-            html.Div(
+    # Two noise settings share one row; labels sit above so the columns line up
+    dbc.Row(
+        [
+            dbc.Col(
                 [
-                    html.Label(
-                        "Guess sigma", className="small fw-bold mb-0", id="guess-sigma-label"
+                    html.Div(
+                        [
+                            html.Label("Guess sigma", className="gp-section-label mb-0"),
+                            html.Div(
+                                _guess_sigma_help_btn,
+                                className="lc-discovery-field-help",
+                            ),
+                        ],
+                        className="gp-sidebar-heading-row",
                     ),
-                    html.Div(_guess_sigma_help_btn, className="lc-discovery-field-help ms-1"),
+                    html.Div(
+                        dbc.Switch(id="guess-sigma", value=GUESS_SIGMA),
+                        className="gp-field-switch",
+                    ),
                 ],
-                className="d-flex align-items-center",
+                width=6,
             ),
-        ], width=6),
-        dbc.Col([
-            html.Div(
+            dbc.Col(
                 [
-                    html.Label(
-                        "Noise divisor", className="small fw-bold mb-0", id="noise-divisor-label"
+                    html.Div(
+                        [
+                            html.Label("Noise divisor", className="gp-section-label mb-0"),
+                            html.Div(
+                                _noise_divisor_help_btn,
+                                className="lc-discovery-field-help",
+                            ),
+                        ],
+                        className="gp-sidebar-heading-row",
                     ),
-                    html.Div(_noise_divisor_help_btn, className="lc-discovery-field-help ms-1"),
+                    dbc.Input(
+                        id={"type": "float-input", "index": "noise_scale_divisor"},
+                        type="number", size="sm", step=0.1,
+                        value=params_float["noise_scale_divisor"],
+                    ),
                 ],
-                className="d-flex align-items-center",
+                width=6,
             ),
-        ], width=6),
-    ]),
+        ],
+        className="g-2 gp-sidebar-group",
+    ),
 
-    dbc.Row([
-        dbc.Col([
-            dbc.Checkbox(id="guess-sigma", value=GUESS_SIGMA, className="form-check-input"),
-            dbc.Label("", html_for="guess-sigma", className="small ms-2"),
-        ], width=6, className="d-flex align-items-center mb-3"),
-        dbc.Col([
-            dbc.Input(
-                id={"type": "float-input", "index": "noise_scale_divisor"},
-                type="number", size="sm", step=0.1,
-                value=params_float["noise_scale_divisor"]
-            ),
-            # dbc.Tooltip("Noise Divisor", target={"type": "float-input", "index": "noise_scale_divisor"})
-        ], width=6),
-    ]),
-
-    html.Hr(className="my-2"),
+    html.Hr(),
 
     # 4. KERNEL PARAMETERS (Compact Triples)
     # Kernel Selection
     html.Div(
         [
             html.Label(
-                "Kernel Smoothness Type", className="small fw-bold mb-0", id="kernel-type-label"
+                "Kernel smoothness type", className="gp-section-label mb-0"
             ),
-            html.Div(_kernel_type_help_btn, className="lc-discovery-field-help ms-1"),
+            html.Div(_kernel_type_help_btn, className="lc-discovery-field-help"),
         ],
-        className="d-flex align-items-center mb-1",
+        className="gp-sidebar-heading-row",
     ),
     dbc.RadioItems(
         id='kernel-type',
@@ -808,8 +1078,7 @@ sidebar_gp = html.Div([
         ],
         value=KERNEL_TYPE,
         inline=True,
-        className="mb-3 small",
-        style={"fontSize": "0.85rem"}
+        className="gp-sidebar-group",
     ),
 
     # html.Label("White Kernel (Min / Val /  Max)", className="small fw-bold", id='wk-label'),
@@ -836,18 +1105,18 @@ sidebar_gp = html.Div([
     html.Div(
         [
             html.Label(
-                "Length Scale (Min / Init / Max)", className="small fw-bold mb-0", id="ls-label"
+                "Length scale (min / init / max)", className="gp-section-label mb-0"
             ),
-            html.Div(_length_scale_help_btn, className="lc-discovery-field-help ms-1"),
+            html.Div(_length_scale_help_btn, className="lc-discovery-field-help"),
         ],
-        className="d-flex align-items-center mb-1",
+        className="gp-sidebar-heading-row",
     ),
     dbc.Row([
         dbc.Col(dbc.Input(
             id={'type': 'float-input', 'index': "length_scale_min"},
             size="sm",
             type="number", step="any",
-            style={"backgroundColor": "rgba(70, 90, 230, 0.12)"},  # Violet, "too short"
+            className="gp-limit-min",
             value=params_float["length_scale_min"]), width=4),
         dbc.Col(dbc.Input(
             size="sm",
@@ -860,20 +1129,19 @@ sidebar_gp = html.Div([
             size="sm",
             id={'type': 'float-input', 'index': "length_scale_max"},
             type="number", step="any",
-            style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},  # red, "too long"
+            className="gp-limit-max",
             value=params_float["length_scale_max"]), width=4),
-    ], className="g-1 mb-3"),
+    ], className="g-1 gp-sidebar-group"),
 
     html.Div(
         [
             html.Label(
-                "Signal Amplitude (Min / Init / Max)",
-                className="small fw-bold mb-0",
-                id="amp-label",
+                "Signal amplitude (min / init / max)",
+                className="gp-section-label mb-0",
             ),
-            html.Div(_amplitude_help_btn, className="lc-discovery-field-help ms-1"),
+            html.Div(_amplitude_help_btn, className="lc-discovery-field-help"),
         ],
-        className="d-flex align-items-center mb-1",
+        className="gp-sidebar-heading-row",
     ),
 
     dbc.Row([
@@ -881,7 +1149,7 @@ sidebar_gp = html.Div([
             id={'type': 'float-input', 'index': "amplitude_min"},
             size="sm",
             type="number", step="any",
-            style={"backgroundColor": "rgba(70, 90, 230, 0.12)"},  # Violet, "too short"
+            className="gp-limit-min",
             value=params_float["amplitude_min"]), width=4),
         dbc.Col(dbc.Input(
             size="sm",
@@ -894,11 +1162,17 @@ sidebar_gp = html.Div([
             size="sm",
             id={'type': 'float-input', 'index': "amplitude_max"},
             type="number", step="any",
-            style={"backgroundColor": "rgba(220, 53, 69, 0.12)"},  # red, "too big"
+            className="gp-limit-max",
             value=params_float["amplitude_max"]), width=4),
-    ], className="g-1 mb-3"),
+    ], className="g-1 gp-sidebar-group"),
 
-    dbc.Button("Reset Defaults", id="reset-btn", color="secondary", outline=True, size="sm", className="w-100 mt-2"),
+    dbc.Button(
+        "Guess parameters",
+        id="reset-btn",
+        color="primary",
+        size="sm",
+        className="w-100",
+    ),
 
     _guess_sigma_help_pop,
     _noise_divisor_help_pop,
@@ -906,7 +1180,7 @@ sidebar_gp = html.Div([
     _length_scale_help_pop,
     _amplitude_help_pop,
 
-], className="p-3 bg-light border rounded shadow-sm")
+], className="gp-sidebar bg-light border rounded shadow-sm")
 
 
 def _live_processing_layout():
@@ -936,8 +1210,8 @@ graph_gp = html.Div([
     # 1. DYNAMIC HEADER: title row + live progress (progress does not sit in the grid)
     html.Div(id='gp-header-area', children=[
         html.Div([
-            html.H5("GP Processing View", className="fw-bold mb-0"),
-            dbc.Badge("Waiting for Run", color="secondary", id='gp-view-badge', className="ms-2")
+            html.H6("GP processing view", className="gp-card-title"),
+            dbc.Badge("Waiting for run", color="secondary", id='gp-view-badge', className="ms-2")
         ], className="d-flex align-items-center"),
     ], className="mb-1"),
     html.Div(id="gp-live-progress-label", className="small text-muted mb-3"),
@@ -951,9 +1225,21 @@ graph_gp = html.Div([
         dbc.Card([
             dbc.CardBody([
                 dbc.Row([
-                    dbc.Col(html.H6("Review and Export", className="mb-0 fw-bold"), width="auto"),
-                    dbc.Col(dbc.Button("Select All", id="select-all-btn", size="sm", color="link"), width="auto"),
-                    dbc.Col(dbc.Button("Unselect All", id="unselect-all-btn", size="sm", color="link"), width="auto"),
+                    dbc.Col(html.H6("Review and export", className="gp-card-title"), width="auto"),
+                    dbc.Col(
+                        dbc.Button(
+                            "Select all", id="select-all-btn",
+                            size="sm", color="secondary", outline=True,
+                        ),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        dbc.Button(
+                            "Unselect all", id="unselect-all-btn",
+                            size="sm", color="secondary", outline=True,
+                        ),
+                        width="auto",
+                    ),
 
                     dbc.Col([
                         dbc.Button("Previous page", id="gp-review-prev", size="sm", outline=True, color="secondary"),
@@ -965,11 +1251,13 @@ graph_gp = html.Div([
                     dbc.Col([
                         dbc.InputGroup([
                             dbc.Input(id="export-filename", placeholder="results.dat", type="text", size="sm"),
-                            dbc.Button([html.I(className="bi bi-download me-2"), "Download"],
-                                       id="save-file-btn", color="success", size="sm"),
-                        ], className="ms-auto", style={"width": "350px"})
+                            dbc.Button(
+                                "Download", id="save-file-btn",
+                                color="primary", size="sm",
+                            ),
+                        ], className="gp-export-group ms-auto")
                     ], width="auto", className="ms-auto"),
-                ], className="align-items-center"),
+                ], className="align-items-center g-2"),
             ], className="py-2")  # Thinner padding
         ], className="bg-light mb-3"),
 
@@ -984,28 +1272,42 @@ graph_gp = html.Div([
 def layout():
     return dbc.Container([
         # --- HEADER SECTION ---
-        dbc.Row([
-            dbc.Col([
-                # html.H1("Astro-GP", className="display-4 text-primary mb-0"),
-                # html.P("Lightcurves Extrema Modeller", className="lead text-muted")
-                html.H1("Lightcurve Extrema Modeller (working draft)")  # , className="display-4 text-primary mb-0")
-            ], width="auto"),
-            dbc.Col(
-                dbc.Button([html.I(className="bi bi-question-circle me-2"), "About"],
-                           id="open-help", color="outline-secondary", className="mb-2"),
-                width="auto", className="ms-auto d-flex align-items-end"
-            ),
-        ], className="mb-4 border-bottom pb-3"),
+        dbc.Row(
+            [
+                dbc.Col(
+                    html.H1(
+                        "Lightcurve Extrema Modeller",
+                        className="gp-page-title",
+                    ),
+                    width="auto",
+                ),
+                dbc.Col(
+                    dbc.Button(
+                        [
+                            html.I(className="bi bi-question-circle me-2"),
+                            "About",
+                        ],
+                        id="open-help",
+                        color="secondary",
+                        outline=True,
+                        className="gp-page-about-btn",
+                    ),
+                    width="auto",
+                    className="ms-auto d-flex align-items-center",
+                ),
+            ],
+            className="gp-page-header align-items-center",
+        ),
 
         # --- THE HELP MODAL ---
         dbc.Modal([
             dbc.ModalHeader(dbc.ModalTitle("Description")),
-            dbc.ModalBody(
-                dcc.Markdown(DOC_MARKDOWN, dangerously_allow_html=True),
-                style={"maxHeight": "75vh", "overflowY": "auto"}
-            ),
+            dbc.ModalBody(dcc.Markdown(DOC_MARKDOWN, dangerously_allow_html=True)),
             dbc.ModalFooter(
-                dbc.Button("Stop talking!", id="close-help", className="ms-auto", n_clicks=0)
+                dbc.Button(
+                    "Stop talking!", id="close-help",
+                    color="secondary", size="sm", className="ms-auto", n_clicks=0,
+                )
             ),
         ], id="help-modal", size="xl", is_open=False),
 
@@ -1014,78 +1316,27 @@ def layout():
         dcc.Store(id='store-gp-interval-pick-bands'),
         dcc.Store(id='store-gp-intervals-marked', data=[]),
         dcc.Store(id='store-gp-prep-dblclick-pending'),
-        dcc.Store(id='store-active-intervals-name', data="Drag or Select"),
-        dcc.Store(id='scale-calc-trigger', data=0),  # A simple counter, trigger for scale recalculation
+        dcc.Store(id='store-gp-trend-click'),
+        dcc.Store(id='store-gp-trend-line'),
+        dcc.Store(id='store-active-intervals-name'),
+        dcc.Store(id='scale-calc-trigger', data=0),  # Incremented by Guess parameters only
 
         # --- 2. GLOBAL DATA HUB
 
-        dbc.Card([
-            # dbc.CardHeader(html.B("Data Management")),
-            dbc.CardBody([
-                dbc.Row([
-                    # Lightcurve Upload
-                    dbc.Col([
-                        html.Label("Lightcurve", className="small fw-bold d-block mb-1"),
-                        html.Div(
-                            [
-                                dcc.Upload(
-                                    id='upload-lc',
-                                    children=html.Div(
-                                        ['Drag or ', html.A('Select')],
-                                        id='upload-lc-text',
-                                    ),
-                                    className="gp-upload-box",
-                                    style={
-                                        'border': '1px dashed',
-                                        'padding': '5px 8px',
-                                        'borderRadius': '5px',
-                                        'textAlign': 'center',
-                                    },
-                                ),
-                                html.Div(id='upload-lc-help', className='gp-upload-help-slot'),
-                            ],
-                            className='gp-upload-row',
-                        ),
-                    ], width=6),
-
-                    # Intervals Upload
-                    dbc.Col([
-                        html.Label("Intervals", className="small fw-bold d-block mb-1"),
-                        html.Div(
-                            [
-                                dcc.Upload(
-                                    id='upload-intervals',
-                                    children=html.Div(
-                                        ['Drag or ', html.A('Select')],
-                                        id='upload-intervals-text',
-                                    ),
-                                    className="gp-upload-box",
-                                    style={
-                                        'border': '1px dashed',
-                                        'padding': '5px 8px',
-                                        'borderRadius': '5px',
-                                        'textAlign': 'center',
-                                    },
-                                ),
-                                html.Div(
-                                    id='upload-intervals-help',
-                                    className='gp-upload-help-slot',
-                                ),
-                            ],
-                            className='gp-upload-row',
-                        ),
-                    ], width=6),
-
-                    # # Global Summary Metrics
-                    # dbc.Col([
-                    #     html.Div([
-                    #         html.P(id='data-summary-text', children="No data loaded.",
-                    #                className="text-muted small mb-0")
-                    #     ], className="p-2 border rounded bg-light", style={'height': '75px'})
-                    # ], width=4),
-                ])
-            ])
-        ], className="mb-4 shadow-sm"),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        _gp_upload_slot('upload-lc', "Load lightcurve", "lc"),
+                        _gp_upload_slot('upload-intervals', "Load intervals", "intervals"),
+                    ],
+                    className="gp-data-bar",
+                ),
+                _gp_upload_detail_row("lc"),
+                _gp_upload_detail_row("intervals"),
+            ],
+            className="gp-data-hub",
+        ),
 
         # --- 3. THE WORKFLOW ACCORDION ---
 
@@ -1093,7 +1344,7 @@ def layout():
             [
                 dbc.AccordionItem(
                     item_id="accordion-lc",
-                    title="Lightcurve and Intervals",
+                    title="Lightcurve and intervals",
                     children=[
                         dbc.Row([
                             # Sidebar (Column 1 - Fixed)
@@ -1103,17 +1354,10 @@ def layout():
                             dbc.Col([
                                 html.Div([
                                     # Graph Area (Grows automatically)
-                                    html.Div([
-                                        graph_lc,
-                                        registry_toggle_btn
-                                    ],
-                                        style={
-                                            "flex": "1",
-                                            "minWidth": "0",
-                                            "position": "relative",
-                                            "transition": "none",  # Kill the animation for instant speed
-                                            # "transition": "flex 0.3s ease"
-                                        }),
+                                    html.Div(
+                                        [graph_lc, registry_toggle_btn],
+                                        className="gp-prep-workspace-plot",
+                                    ),
 
                                     # Registry Area (Collapses horizontally)
                                     dbc.Collapse(
@@ -1121,20 +1365,9 @@ def layout():
                                         id="registry-collapse",
                                         is_open=True,
                                         dimension="width",
-                                        style={
-                                            # "transition": "0.3s ease",
-                                            "transition": "none",  # Kill the animation for instant speed
-                                            "flexShrink": "0",
-                                            # "minWidth": "0px"
-                                        }
+                                        className="gp-registry-collapse",
                                     )
-                                ], style={
-                                    "display": "flex",
-                                    "flexDirection": "row",
-                                    "flexWrap": "nowrap",
-                                    "overflow": "hidden",
-                                    "alignItems": "stretch"
-                                })
+                                ], className="gp-prep-workspace")
                             ], width=9)
                             # dbc.Col(graph_lc, width=6),
                             # dbc.Col(intervals_registry, width=3),  # COLUMN 3: THE REGISTRY TABLE (intervals)
@@ -1159,7 +1392,7 @@ def layout():
             active_item=["accordion-lc", "accordion-gp"],  # Opens both by default on load
         ),
 
-    ], fluid=True)
+    ], fluid=True, className="gp-page")
 
 
 # ===================== CALLBACKS ================================================
@@ -1207,8 +1440,8 @@ def toggle_registry(n_clicks, is_open):
 )
 def toggle_gp_legend(n_clicks, is_open):
     if is_open:
-        return False, "Show Legend"
-    return True, "Hide Legend"
+        return False, "Show legend"
+    return True, "Hide legend"
 
 
 # ------ lightcurve visualisation -------
@@ -1222,9 +1455,11 @@ def toggle_gp_legend(n_clicks, is_open):
     Input('folding-switch', 'value'),
     Input('view-mode-radio', 'value'),
     Input('gp_time_axis_switch', 'value'),
+    Input('gp-prep-show-errorbars', 'value'),
+    Input('store-gp-intervals-marked', 'data'),
     State('input-period', 'value'),
     State('input-epoch', 'value'),
-    # State('prep-graph', 'relayoutData')  # Optional?
+    State('prep-graph', 'relayoutData'),
     # endregion
 )
 def update_prep_graph(
@@ -1233,8 +1468,11 @@ def update_prep_graph(
     folding_on,
     view_mode,
     time_axis_mode,
+    show_prep_errorbars,
+    marked_indices,
     period,
     epoch,
+    prep_relayout_data,
 ):
     if not lc_json_string:
         return (
@@ -1266,9 +1504,9 @@ def update_prep_graph(
     y_data = lc['y']
     err_data = lc['err']
 
-    # Error bars logic
+    # Error bars logic (off by default; large LC + triple phase copies is slow)
     error_y_logic = None
-    if err_data is not None:
+    if err_data is not None and show_prep_errorbars:
         error_y_logic = dict(
             type='data',
             array=err_data,
@@ -1282,9 +1520,27 @@ def update_prep_graph(
         t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
         if t0_abs is None:
             t0_abs = float(np.nanmin(x_jd))
-        x_data = ((x_jd - t0_abs) / period) % 1.0
+        x_plot, y_plot, err_plot = build_extended_phase_plot_arrays(
+            x_jd, y_data, err_data if show_prep_errorbars else None, t0_abs, float(period)
+        )
+        if err_plot is not None and show_prep_errorbars:
+            error_y_logic = dict(
+                type='data',
+                array=err_plot,
+                visible=True,
+                thickness=1,
+                width=0,
+                color='rgba(100, 100, 100, 0.3)',
+            )
+        else:
+            error_y_logic = None
+        x_data = x_plot
+        y_data = y_plot
         t0_label = display_epoch_offset(t0_abs, jd0)
-        x_label = f"Phase (P={period} d, Epoch-{jd0}={t0_label:.2f})"
+        x_label = (
+            f"Phase (P={period} d, Epoch-{jd0}={t0_label:.2f}; "
+            f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
+        )
     else:
         ts = lc.get("timescale")
         ref = lc.get("refposition")
@@ -1327,17 +1583,19 @@ def update_prep_graph(
         margin=dict(l=10, r=10, t=20, b=40),
         template="plotly_white",
         # dragmode='pan',
-        dragmode='zoom',
+        dragmode='select',
         selectdirection='h',
         # Using lc_json_string means zoom only resets when a NEW file is uploaded.
         # Adding an interval won't trigger a reset.
         # uirevision=[lc_json_string, view_mode],  # when we should update layout
-        uirevision=f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}",
+        uirevision=f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}_{show_prep_errorbars}",
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
     )
 
     apply_time_xaxis_format(fig, phase_view=phase_view, time_axis_mode=axis_mode)
+    if phase_view:
+        fig.update_xaxes(range=[EXTENDED_PHASE_XMIN, EXTENDED_PHASE_XMAX])
 
     # Mark selected intervals (stored as absolute JD; display only in current axis)
     pick_bands = {"enabled": False, "axis": axis_mode, "bands": []}
@@ -1347,7 +1605,7 @@ def update_prep_graph(
             if t0_abs is None:
                 t0_abs = float(np.nanmin(x_jd))
             for interval in intervals_data:
-                for x0, x1 in phase_vrect_bounds_for_jd_interval(
+                for x0, x1 in phase_vrect_bounds_extended(
                     interval[0], interval[1], t0_abs, float(period)
                 ):
                     fig.add_vrect(
@@ -1367,9 +1625,17 @@ def update_prep_graph(
                 display_epoch=jd0,
                 timescale=ts,
             )
+            marked_set = {
+                int(i)
+                for i in (marked_indices if isinstance(marked_indices, list) else [])
+                if 0 <= int(i) < len(intervals_data)
+            }
             for index, interval in enumerate(intervals_data):
                 x0, x1 = absolute_jd_to_plot_x(
                     [interval[0], interval[1]], axis_mode, jd0, timescale=ts
+                )
+                band_style = prep_interval_band_shape_style(
+                    marked=index in marked_set,
                 )
                 fig.add_shape(
                     type="rect",
@@ -1378,14 +1644,22 @@ def update_prep_graph(
                     y0=0,
                     y1=1,
                     yref="paper",
-                    fillcolor="green",
-                    opacity=0.15,
                     layer="below",
-                    line=dict(color="green", width=1),
                     name=interval_shape_name(index),
+                    **band_style,
                 )
 
-    return fig, pick_bands, []
+    triggered = callback_context.triggered
+    if triggered:
+        trigger_id = triggered[0]['prop_id'].split('.')[0]
+        if trigger_id in ('store-intervals-data', 'store-gp-intervals-marked'):
+            apply_plot_relayout_ranges_to_figure(
+                fig,
+                prep_relayout_data,
+                preserve_x=not phase_view,
+            )
+
+    return fig, pick_bands, no_update
 
 
 clientside_callback(
@@ -1395,6 +1669,48 @@ clientside_callback(
     State("prep-graph", "figure"),
     prevent_initial_call=True,
 )
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="syncPrepGraphConfig"),
+    Output("prep-graph", "config"),
+    Input("gp-interval-mark-mode", "value"),
+    Input("gp-prep-trend-mode", "value"),
+)
+
+# Mark-band actions stay disabled until at least one band is marked
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="reflectMarkedIntervalCount"),
+    Output("btn-remove-marked-intervals", "disabled"),
+    Output("btn-clear-interval-marks", "disabled"),
+    Input("store-gp-intervals-marked", "data"),
+)
+
+# The trend actions are meaningless while the mode is off
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="toggleTrendActions"),
+    Output("gp-trend-actions", "className"),
+    Input("gp-prep-trend-mode", "value"),
+)
+
+
+@callback(
+    Output("registry-interval-count", "children"),
+    Output("btn-remove-empty-intervals", "disabled"),
+    Output("btn-clear-intervals", "disabled"),
+    Input("store-intervals-data", "data"),
+)
+def reflect_registry_interval_count(intervals):
+    """Shows how many intervals are registered and gates the list actions.
+
+    Args:
+        intervals (list | None): Interval registry from ``store-intervals-data``.
+
+    Returns:
+        tuple: ``(count_label, remove_empty_disabled, clear_all_disabled)`` where the
+        label is ``(n)`` for a non-empty registry and empty otherwise.
+    """
+    count = len(intervals) if intervals else 0
+    return (f"({count})" if count else ""), count == 0, count == 0
 
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphIntervalMarkClick"),
@@ -1421,6 +1737,48 @@ clientside_callback(
     Input("btn-clear-interval-marks", "n_clicks"),
     State("prep-graph", "figure"),
     prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="applyTrendMode"),
+    Output("prep-graph", "figure", allow_duplicate=True),
+    Input("gp-prep-trend-mode", "value"),
+    Input("folding-switch", "value"),
+    State("prep-graph", "figure"),
+    prevent_initial_call="initial_duplicate",
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphTrend"),
+    Output("store-gp-trend-click", "data", allow_duplicate=True),
+    Input("prep-graph", "figure"),
+    prevent_initial_call="initial_duplicate",
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="processTrendClick"),
+    Output("store-gp-trend-line", "data"),
+    Input("store-gp-trend-click", "data"),
+    State("gp-prep-trend-mode", "value"),
+    State("folding-switch", "value"),
+    State("store-gp-trend-line", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="clearTrendLine"),
+    Output("store-gp-trend-line", "data", allow_duplicate=True),
+    Input("btn-clear-prep-trend", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="gpOc", function_name="restoreTrendPreviewFromStore"),
+    Output("prep-graph", "figure", allow_duplicate=True),
+    Input("prep-graph", "figure"),
+    State("store-gp-trend-line", "data"),
+    State("gp-prep-trend-mode", "value"),
+    prevent_initial_call="initial_duplicate",
 )
 
 
@@ -1458,14 +1816,101 @@ def commit_remove_empty_intervals(n_clicks, intervals, lc_json_string):
 
 @callback(
     Output("gp-interval-mark-mode", "value"),
+    Output("gp-prep-trend-mode", "value"),
+    Output("gp-prep-trend-mode", "options"),
     Input("folding-switch", "value"),
+)
+def disable_prep_interaction_modes_when_folded(folding_on):
+    """Clear mark/trend modes when folded; trend removal is unfolded-only."""
+    if gp_checklist_switch_is_on(folding_on):
+        return [], [], gp_trend_mode_checklist_options(disabled=True)
+    return no_update, no_update, gp_trend_mode_checklist_options(disabled=False)
+
+
+@callback(
+    Output("store-lc-data", "data", allow_duplicate=True),
+    Output("gp-trend-feedback", "children"),
+    Output("store-gp-trend-line", "data", allow_duplicate=True),
+    Output("gp-prep-trend-mode", "value", allow_duplicate=True),
+    Input("btn-apply-prep-trend", "n_clicks"),
+    State("store-lc-data", "data"),
+    State("store-gp-trend-line", "data"),
+    State("view-mode-radio", "value"),
+    State("gp_time_axis_switch", "value"),
+    State("folding-switch", "value"),
     prevent_initial_call=True,
 )
-def disable_interval_mark_mode_when_folded(folding_on):
-    """Band marking is only defined on the unfolded time axis."""
-    if folding_on:
-        return False
-    return no_update
+def commit_prep_linear_detrend(
+    n_clicks,
+    lc_json_string,
+    trend_line,
+    view_mode,
+    time_axis_mode,
+    folding_on,
+):
+    """Applies the user trend line to the stored light curve."""
+    if not n_clicks or not lc_json_string:
+        raise PreventUpdate
+    if gp_checklist_switch_is_on(folding_on):
+        return (
+            no_update,
+            dbc.Alert(
+                "Trend removal is only available on the unfolded light curve.",
+                color="warning",
+                className="py-2 small mb-0",
+            ),
+            no_update,
+            no_update,
+        )
+    if not trend_line or not trend_line.get("ready"):
+        return (
+            no_update,
+            dbc.Alert(
+                "Click the prep plot once to place a trend line, then Apply.",
+                color="warning",
+                className="py-2 small mb-0",
+            ),
+            no_update,
+            no_update,
+        )
+    try:
+        updated = apply_manual_linear_detrend(
+            lc_json_string,
+            view_mode=view_mode or "mag",
+            anchor_a=(trend_line["x0"], trend_line["y0"]),
+            anchor_b=(trend_line["x1"], trend_line["y1"]),
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
+            display_epoch=jd0,
+        )
+    except PipeException as exc:
+        return (
+            no_update,
+            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+            no_update,
+            no_update,
+        )
+    except Exception as exc:
+        logger.exception("Prep trend removal failed")
+        return (
+            no_update,
+            dbc.Alert(
+                f"Could not apply trend removal: {exc}",
+                color="danger",
+                className="py-2 small mb-0",
+            ),
+            no_update,
+            no_update,
+        )
+    return (
+        updated,
+        dbc.Alert(
+            "Trend removed from the working light curve.",
+            color="success",
+            className="py-2 small mb-0",
+        ),
+        None,
+        [],
+    )
 
 
 # ------ Lightcurve ----
@@ -1474,21 +1919,19 @@ def disable_interval_mark_mode_when_folded(folding_on):
     # region unfold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),
-    Output('upload-lc-help', 'children'),
-    Output('scale-calc-trigger', 'data', allow_duplicate=True),
+    Output({"type": "gp-upload-detail", "index": "lc"}, 'children'),
     Output('input-period', 'value'),
     Output('input-epoch', 'value'),
     Output('view-mode-radio', 'value'),
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),
-    State('scale-calc-trigger', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def upload_lc(contents, filename, scale_calc_trigger_counter):
+def upload_lc(contents, filename):
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 7
+        return (dash.no_update,) * 6
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -1499,16 +1942,10 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
             display_epoch_offset(epoch_abs, jd0) if epoch_abs is not None else None
         )
 
-        new_label = html.Div([
-            html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
-            html.Span(f"{filename}", style={"fontSize": "0.9rem", "fontWeight": "bold"})
-        ])
-
         return (
             lc_json_string,
-            new_label,
+            _gp_upload_status(filename, tone="ok"),
             None,
-            scale_calc_trigger_counter + 1,
             period,
             epoch_display,
             active_domain,
@@ -1518,20 +1955,62 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
         logger.error("Failed to process file: %s", filename)
         logger.error(traceback.format_exc())
 
-        help_slug = "upload_lc_" + filename.replace(".", "-").replace(" ", "-")
         return (
             dash.no_update,
-            _gp_upload_error_message(filename),
-            _gp_upload_traceback_help(
-                help_slug,
-                "Upload error",
+            _gp_upload_status(filename, tone="error"),
+            _gp_upload_failure_detail(
+                "Lightcurve upload failed",
                 format_user_upload_error(e),
             ),
             dash.no_update,
             dash.no_update,
             dash.no_update,
-            dash.no_update,
         )
+
+
+@callback(
+    Output({"type": "gp-upload-detail-btn", "index": MATCH}, "className"),
+    Output({"type": "gp-upload-detail-collapse", "index": MATCH}, "is_open"),
+    Input({"type": "gp-upload-detail", "index": MATCH}, "children"),
+)
+def reflect_upload_failure_detail(detail):
+    """Shows the ``?`` toggle only while a slot has an explanation to give.
+
+    Args:
+        detail: Children of the slot's detail container (``None`` when the last
+            upload succeeded).
+
+    Returns:
+        tuple: ``(button_class_name, collapse_is_open)``; the collapse always
+        starts closed so a new upload never leaves stale text open.
+    """
+    base = "gp-upload-detail-btn"
+    return (base if detail else f"{base} d-none"), False
+
+
+@callback(
+    Output(
+        {"type": "gp-upload-detail-collapse", "index": MATCH},
+        "is_open",
+        allow_duplicate=True,
+    ),
+    Input({"type": "gp-upload-detail-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "gp-upload-detail-collapse", "index": MATCH}, "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_upload_failure_detail(n_clicks, is_open):
+    """Expands or hides the failure explanation under the data bar.
+
+    Args:
+        n_clicks (int | None): Clicks on the slot's ``?`` button.
+        is_open (bool): Current collapse state.
+
+    Returns:
+        bool: Requested collapse state.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    return not is_open
 
 
 # Callbacks for Intervals file upload/download/signs
@@ -1540,22 +2019,28 @@ def upload_lc(contents, filename, scale_calc_trigger_counter):
     Output('upload-intervals-text', 'children'),
     Input('store-active-intervals-name', 'data')
 )
-def update_global_intervals_label(stored_content):
-    if not stored_content:
-        return html.Div(['Drag or ', html.A('Select')])
+def update_global_intervals_label(stored_status):
+    """Renders the intervals file name chip from the shared status store.
 
-    return stored_content
-    # return html.Div([
-    #     html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
-    #     html.B(active_name)
-    # ])
+    Args:
+        stored_status (dict | None): ``{"name": str, "tone": str}`` written by the
+            interval upload and download callbacks.
+
+    Returns:
+        dash development component: Placeholder when no file is active, otherwise
+        the file name chip.
+    """
+    if not stored_status:
+        return _gp_upload_placeholder()
+
+    return _gp_upload_status(stored_status["name"], tone=stored_status["tone"])
 
 
 @callback(
     # region unfold me
     Output('store-intervals-data', 'data'),
     Output('store-active-intervals-name', 'data'),
-    Output('upload-intervals-help', 'children'),
+    Output({"type": "gp-upload-detail", "index": "intervals"}, 'children'),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
     prevent_initial_call=True
@@ -1571,11 +2056,7 @@ def upload_intervals(contents, filename):
         text = decoded.decode('utf-8', errors='ignore')  # "ignore"  to prevent the whole app
         # from crashing over a single non-ASCII character.
         intervals_list = load_intervals(io.StringIO(text))
-        success_ui = html.Div([
-            html.I(className="bi bi-check-circle-fill me-2", style={"color": "#28a745"}),
-            html.B(filename)
-        ])
-        return intervals_list, success_ui, None
+        return intervals_list, {"name": filename, "tone": "ok"}, None
         # --- Success UI ---
         # return intervals_list, filename
         # return intervals_list, html.Div([
@@ -1587,16 +2068,11 @@ def upload_intervals(contents, filename):
         logging.error(f"Error processing interval file {filename}:")
         logging.error(traceback.format_exc())
 
-        help_slug = "upload_int_" + filename.replace(".", "-").replace(" ", "-")
         return (
             dash.no_update,
-            _gp_upload_error_message(
-                filename,
-                icon_class="bi-exclamation-octagon-fill",
-            ),
-            _gp_upload_traceback_help(
-                help_slug,
-                "Interval load error",
+            {"name": filename, "tone": "error"},
+            _gp_upload_failure_detail(
+                "Intervals upload failed",
                 format_user_upload_error(e),
             ),
         )
@@ -1628,7 +2104,11 @@ def upload_intervals(contents, filename):
     # region infold
     Output("download-intervals-file", "data"),
     Output("store-active-intervals-name", "data", allow_duplicate=True),
-    Output("upload-intervals-help", "children", allow_duplicate=True),
+    Output(
+        {"type": "gp-upload-detail", "index": "intervals"},
+        "children",
+        allow_duplicate=True,
+    ),
     Input("btn-download-intervals", "n_clicks"),
     State("store-intervals-data", "data"),
     State("export-intervals-filename", "value"),
@@ -1642,13 +2122,11 @@ def download_intervals(n_clicks, intervals, custom_name):
     content = format_intervals_download(intervals)
     export_name = custom_name if custom_name else "my_intervals.dat"
 
-    # --- DOWNLOAD SUCCESS UI ---
-    download_ui = html.Div([
-        html.I(className="bi bi-check-circle-fill me-2", style={"color": "#007bff"}),
-        html.B(export_name)
-    ])
-
-    return dict(content=content, filename=export_name), download_ui, None
+    return (
+        dict(content=content, filename=export_name),
+        {"name": export_name, "tone": "info"},
+        None,
+    )
     # return dict(content=content, filename=export_name), export_name
 
 
@@ -1670,14 +2148,15 @@ def clear_all_intervals(n_clicks):
     Output({'type': 'float-input', 'index': 'length_scale_min'}, 'value', allow_duplicate=True),
     Output({'type': 'float-input', 'index': 'length_scale_init'}, 'value', allow_duplicate=True),
     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
-    Input('store-intervals-data', 'data'),
-    Input('scale-calc-trigger', 'data'),  # Also triggered by Reset Button
+    Input('scale-calc-trigger', 'data'),
+    State('store-intervals-data', 'data'),
     State('store-lc-data', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def update_GP_scale(intervals, trigger_clicks, lc_json_string):
-    if not lc_json_string or not intervals:
+def update_GP_scale(trigger_clicks, intervals, lc_json_string):
+    """Fills length-scale bounds from data when the user clicks Guess parameters."""
+    if not trigger_clicks or not lc_json_string or not intervals:
         return dash.no_update, dash.no_update, dash.no_update
 
     # di = json.loads(lc_json_string)
@@ -1702,6 +2181,7 @@ def update_GP_scale(intervals, trigger_clicks, lc_json_string):
     # region unfold
     Output('store-intervals-data', 'data', allow_duplicate=True),
     Output('folding-switch', 'value'),
+    Output('gp-interval-add-feedback', 'children'),
     Input('btn-add-interval', 'n_clicks'),
     State('prep-graph', 'selectedData'),
     State('store-intervals-data', 'data'),
@@ -1710,6 +2190,7 @@ def update_GP_scale(intervals, trigger_clicks, lc_json_string):
     State('input-epoch', 'value'),
     State('gp_time_axis_switch', 'value'),
     State('store-lc-data', 'data'),  # We need this to get JD span
+    State('gp-prep-trend-mode', 'value'),
     prevent_initial_call=True
     # endregion
 )
@@ -1722,39 +2203,61 @@ def add_selection_to_registry(
     epoch,
     time_axis_mode,
     lc_json,
+    trend_mode_on,
 ):
     if not n_clicks or not selected_data or 'range' not in selected_data:
-        return dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update
+
+    if gp_checklist_switch_is_on(trend_mode_on):
+        return (
+            dash.no_update,
+            dash.no_update,
+            dbc.Alert(
+                "Turn off Remove trend before adding intervals from a box selection.",
+                color="warning",
+                className="py-2 small mb-0",
+            ),
+        )
 
     x_min, x_max = selected_data['range']['x']
-    updated_list = current_intervals or []
-    # updated_list = current_intervals if current_intervals else []
+    updated_list = list(current_intervals or [])
 
-    if folding_on:
-        # --- phase to jd logic ---
-        if not period or period <= 0:
-            return dash.no_update, dash.no_update  # Need a valid period
+    try:
+        if folding_on:
+            if not period or period <= 0:
+                raise PipeException("Set a valid period before adding intervals on the folded curve.")
+            if not lc_json:
+                raise PipeException("Upload a light curve before adding intervals.")
 
-        epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
-        new_intervals = get_intervals_from_phase(
-            lc_json, x_min, x_max, period, epoch_abs
-        )
-        for interval in new_intervals:
-            if interval not in updated_list:
-                updated_list.append(interval)
-
-    else:
-        # --- time selection (plot x → absolute JD) ---
-        mode = time_axis_mode or TIME_AXIS_MJD
-        left_jd = plot_x_to_jd(x_min, mode, jd0)
-        right_jd = plot_x_to_jd(x_max, mode, jd0)
-        new_interval = [round(left_jd, 6), round(right_jd, 6)]
-        if new_interval not in updated_list:
+            phi_lo, phi_hi = validate_extended_phase_selection(x_min, x_max)
+            epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
+            new_intervals = get_intervals_from_phase(
+                lc_json, phi_lo, phi_hi, period, epoch_abs
+            )
+            assert_phase_intervals_not_duplicates(new_intervals, updated_list)
+            updated_list.extend(new_intervals)
+        else:
+            mode = time_axis_mode or TIME_AXIS_MJD
+            left_jd = plot_x_to_jd(x_min, mode, jd0)
+            right_jd = plot_x_to_jd(x_max, mode, jd0)
+            new_interval = [round(left_jd, 6), round(right_jd, 6)]
+            assert_phase_intervals_not_duplicates([new_interval], updated_list)
             updated_list.append(new_interval)
 
-    # Final cleanup
-    updated_list.sort(key=lambda x: x[0])
-    return updated_list, False  # force lightcurve unfolding
+        updated_list.sort(key=lambda x: x[0])
+        fold_out = (
+            []
+            if gp_checklist_switch_is_on(folding_on)
+            else dash.no_update
+        )
+        return updated_list, fold_out, None
+
+    except PipeException as exc:
+        return (
+            dash.no_update,
+            dash.no_update,
+            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+        )
 
 
 # @callback(
@@ -1818,17 +2321,16 @@ def render_registry(intervals):
                     dbc.Row([
                         dbc.Col([
                             # html.Small(f"Interval {i+1}", className="text-muted d-block"),
-                            html.B(f"{interval[0]:.3f}", className="small"),
+                            html.B(f"{interval[0]:.3f}"),
                             html.Span(" - ", className="mx-1"),
-                            html.B(f"{interval[1]:.3f}", className="small"),
+                            html.B(f"{interval[1]:.3f}"),
                         ], width=9),
                         dbc.Col([
                             dbc.Button(
                                 html.I(className="bi bi-trash"),
                                 id={'type': 'del-int', 'index': i},
                                 color="link",  # Removes the button box entirely
-                                className="text-danger p-0",  # "text-danger" keeps the icon red
-                                style={"textDecoration": "none", "fontSize": "0.9rem"},
+                                className="text-danger text-decoration-none p-0",
                                 title="Delete"
                             )
                         ], width=3, className="text-end")
@@ -1902,7 +2404,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
     # 1. THE START: User clicks Run
     if trigger_id == 'run-btn' and run_clicks > 0:
         return html.Div([
-            html.H5("GP Processing View", className="fw-bold mb-0"),
+            html.H6("GP processing view", className="gp-card-title"),
             dbc.Badge([
                 html.I(className="bi bi-hourglass-split me-2"),
                 "RUNNING - Modeling..."
@@ -1912,7 +2414,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
     # 2. User clicks Stop (current fit finishes, then review partial results)
     if trigger_id == 'stop-btn' and stop_clicks > 0:
         return html.Div([
-            html.H5("GP Processing View", className="fw-bold mb-0"),
+            html.H6("GP processing view", className="gp-card-title"),
             dbc.Badge([
                 html.I(className="bi bi-pause-circle me-2"),
                 "STOPPING - finishing current fit…"
@@ -1922,7 +2424,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
     # 3. THE INTERMEDIATE: Plotting has started but isn't over
     if trigger_id == 'finished-signal' and signal_status == "WAITING":
         return html.Div([
-            html.H5("GP Processing View", className="fw-bold mb-0"),
+            html.H6("GP processing view", className="gp-card-title"),
             dbc.Badge([
                 html.I(className="bi bi-gear-wide-connected me-2"),
                 "GENERATING PLOTS..."
@@ -1939,7 +2441,7 @@ def update_gp_status_ui(run_clicks, stop_clicks, signal_status):
         )
         badge_color = "warning" if stopped else "success"
         return html.Div([
-            html.H5("Results: Normalised flux vs JD", className="fw-bold mb-0"),
+            html.H6("Results: Normalised flux vs JD", className="gp-card-title"),
             dbc.Badge([
                 html.I(className="bi bi-check-all me-2"),
                 badge_text
@@ -1953,7 +2455,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     """
     Wraps a graph or an alert into a standardized card with badges and checkboxes.
     """
-    badge_row = html.Div(badges, style={"textAlign": "center", "marginBottom": "2px"}) if badges else None
+    badge_row = html.Div(badges, className="gp-review-badges") if badges else None
 
     # Checkbox logic for Review Mode
     checkbox = None
@@ -1962,21 +2464,15 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
             id=checkbox_id,
             value=not is_fail,
             disabled=is_fail,  # Can't keep a failure
-            label="Keep Result" if not is_fail else "Fit Failed",
+            label="Keep result" if not is_fail else "Fit failed",
             className="mb-1 fw-bold"
         )
 
     return dbc.Col(
-        html.Div([
-            checkbox,
-            badge_row,
-            content
-        ], style={
-            "border": "1px solid #eee",
-            "padding": "10px",
-            "borderRadius": "5px",
-            "backgroundColor": "#fdfdfd" if is_fail else "white"
-        }),
+        html.Div(
+            [checkbox, badge_row, content],
+            className="gp-review-card gp-review-card-fail" if is_fail else "gp-review-card",
+        ),
         width=6, className="px-1 mb-2"
     )
 
@@ -2170,15 +2666,12 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     prevent_initial_call=True
     # endregion
 )
-def reset_params(n_clicks, ids, current_trigger):
-    if n_clicks is None:
+def guess_gp_parameters(n_clicks, ids, current_trigger):
+    """Applies default amplitude/noise guesses and data-driven length-scale bounds."""
+    if not n_clicks:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
-    # 1. Reset floats from the dictionary
     float_resets = [str(params_float[val_id['index']]) for val_id in ids]
-    # Create a list of return values based on the 'index' stored in the ID
-    # This pulls directly from your global 'params_float' dictionary
-    # 2. Reset the boolean to your default constant
     return float_resets, GUESS_SIGMA, KERNEL_TYPE, current_trigger + 1
 
 

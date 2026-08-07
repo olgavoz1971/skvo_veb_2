@@ -16,6 +16,11 @@ KERNEL_TYPE = "matern"  # or "rbf"
 # Scaling factor applied to estimated or tabulated noise.
 NOISE_SCALE_DIVISOR = 1
 
+# Minimum fraction of rows with finite ``flux_err`` in a GP interval (Guess sigma off)
+# to use tabulated errors; missing rows get the median of finite values. Below this
+# threshold the interval uses MAD noise guess for all points.
+GP_MIN_FINITE_ERROR_FRACTION = 0.7
+
 SAMPLING_SCALE_FACTOR = 3
 INTERVAL_DIVISOR = 4
 LENGTH_SCALE_FACTOR = 3

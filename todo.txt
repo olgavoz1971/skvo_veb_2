@@ -1,4 +1,13 @@
-Discovey page:
+============ GP
+- Add saving pictures
+- Decrease picture sizes, arrange thi into twree columns (?)
+- Add manual trend removal on the prep view (on unfolded curve)
+
+============= math:
+- Add Sharcschild template fitting method for timing
+
+============ Discovey page:
+
 Add
 	-ZTF - ready	!!! Attention! Do they use luptitudes?????? 
 	- Panstarrs -ready

@@ -17,6 +17,30 @@ def interval_shape_name(index: int) -> str:
     return f"{GP_INTERVAL_SHAPE_NAME_PREFIX}{index}"
 
 
+def prep_interval_band_shape_style(*, marked: bool) -> dict:
+    """Plotly rectangle shape kwargs for one interval band on the prep plot.
+
+    Args:
+        marked (bool): Whether the interval is marked for removal.
+
+    Returns:
+        dict: ``fillcolor``, ``opacity``, and ``line`` kwargs for ``fig.add_shape``.
+    """
+    if marked:
+        return {
+            "fillcolor": "rgba(220, 53, 69, 0.35)",
+            "opacity": 0.35,
+            "line": {"color": "#dc3545", "width": 2},
+            "editable": False,
+        }
+    return {
+        "fillcolor": "green",
+        "opacity": 0.15,
+        "line": {"color": "green", "width": 1},
+        "editable": False,
+    }
+
+
 def _plot_x_for_pick_store(value) -> float | str:
     """Serialises a plot x bound for JSON ``Store`` transport.
 

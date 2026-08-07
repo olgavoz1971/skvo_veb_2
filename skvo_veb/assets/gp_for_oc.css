@@ -1,37 +1,458 @@
-/* GP page uploads: drop zone width; ? help sits beside the box only */
+/* GP page: typography/spacing scale, upload drop zone, prep-plot interaction modes.
+ *
+ * Unit policy: rem/em for typography and spacing; the page sets one font size and
+ * every label or helper text inherits it instead of carrying its own override.
+ */
 
 :root {
-    --gp-upload-box-min-width: 18rem;
+    --gp-text-sm: 0.75rem;
+    --gp-text-md: 0.85rem;
+    --gp-space-xs: 0.25rem;
+    --gp-space-sm: 0.375rem;
+    --gp-space-md: 0.5rem;
+    --gp-space-lg: 0.75rem;
+    --gp-page-header-gap: 1.25rem;
+    /* Space between the app nav bar (root layout) and this page's title row */
+    --gp-page-top-gap: 1.25rem;
+    --gp-radius: 0.3rem;
+    /* Caution tint for list-scoped removals (Bootstrap's warning is too pale on white) */
+    --gp-caution: #c05621;
+    --gp-caution-hover: #8f3d13;
+    /* Prep plot and interval registry share this height so their bottoms line up */
+    --gp-plot-height: clamp(20rem, 55vh, 40rem);
 }
 
-.gp-upload-row {
+.gp-page {
+    font-size: var(--gp-text-md);
+    padding-top: var(--gp-page-top-gap);
+}
+
+.gp-page-title {
+    font-size: 1.5rem;
+    line-height: 1.25;
+    margin-bottom: 0;
+}
+
+/* Page chrome: title row and the data hub below stay visually separate */
+.gp-page-header {
+    margin-bottom: var(--gp-page-header-gap);
+    padding-bottom: var(--gp-space-lg);
+    border-bottom: 1px solid #dee2e6;
+}
+
+/* One page-level help entry: larger than sidebar/toolbar sm buttons, still secondary */
+.gp-page-about-btn {
+    font-size: 1rem;
+    padding: var(--gp-space-sm) var(--gp-space-lg);
+    font-weight: 600;
+}
+
+/* Sidebar section heading (both sidebars) and card heading */
+.gp-section-label {
+    font-weight: 700;
+}
+
+.gp-card-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 0;
+}
+
+/* Data bar: both file loaders on one line. The drop target carries no permanent
+ * dashed border; it only lights up while a file is dragged over it.
+ */
+.gp-data-hub {
+    margin-bottom: var(--gp-page-header-gap);
+}
+
+.gp-data-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: var(--gp-space-lg);
+    row-gap: var(--gp-space-xs);
+}
+
+.gp-data-slot {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    width: 100%;
-}
-
-.gp-upload-box {
-    flex: 1 1 var(--gp-upload-box-min-width);
-    min-width: var(--gp-upload-box-min-width);
-    max-width: 100%;
-    cursor: pointer;
-    font-size: 0.85rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.gp-upload-help-slot {
-    flex: 0 0 auto;
-    align-self: center;
-    min-width: 1.25em;
-}
-
-.gp-upload-help-slot:empty {
+    gap: var(--gp-space-xs);
+    flex: 1 1 20rem;
     min-width: 0;
 }
 
-.gp-prep-mark-mode .js-plotly-plot {
+.gp-upload-target {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    padding: var(--gp-space-xs);
+    border: 1px dashed transparent;
+    border-radius: var(--gp-radius);
+}
+
+.gp-upload-target-active {
+    border-color: #0d6efd;
+    background-color: rgba(13, 110, 253, 0.08);
+}
+
+.gp-upload-target-reject {
+    border-color: #dc3545;
+    background-color: rgba(220, 53, 69, 0.08);
+}
+
+.gp-upload-target-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--gp-space-md);
+    width: 100%;
+    min-width: 0;
+}
+
+.gp-upload-target .btn {
+    flex: 0 0 auto;
+}
+
+.gp-upload-name,
+.gp-upload-status {
+    display: flex;
+    align-items: center;
+    gap: var(--gp-space-xs);
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.gp-upload-status-icon {
+    flex: 0 0 auto;
+}
+
+/* Long names truncate at the front, so the telling tail stays readable */
+.gp-upload-name-text {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+}
+
+.gp-upload-detail-btn {
+    flex: 0 0 auto;
+    padding: 0 var(--gp-space-xs);
+    line-height: 1;
+    text-decoration: none;
+}
+
+.gp-upload-detail {
+    margin-top: var(--gp-space-xs);
+    padding: var(--gp-space-md);
+    border: 1px solid #f5c2c7;
+    border-radius: var(--gp-radius);
+    background-color: #fdf2f3;
+}
+
+.gp-upload-detail-body {
+    margin-bottom: 0;
+    font-size: var(--gp-text-sm);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.gp-prep-mark-mode .js-plotly-plot,
+.gp-prep-mark-mode .js-plotly-plot .plotly,
+.gp-prep-mark-mode .js-plotly-plot .cursor-crosshair {
     cursor: crosshair !important;
+}
+
+.gp-prep-trend-mode .js-plotly-plot {
+    cursor: crosshair !important;
+}
+
+/* Plot workflow guide: framed label (distinct from bare ? controls) */
+.lc-discovery-help-btn.gp-prep-tips-btn {
+    display: inline-block;
+    border: 1px solid #adb5bd;
+    border-radius: var(--gp-radius);
+    padding: var(--gp-space-xs) var(--gp-space-md);
+    background-color: #fff;
+}
+
+.lc-discovery-help-btn.gp-prep-tips-btn:hover,
+.lc-discovery-help-btn.gp-prep-tips-btn:focus-visible {
+    border-color: #446e9b;
+    background-color: #f8f9fa;
+    text-decoration: none;
+}
+
+/* Sidebars: padding, separator rhythm and one gap step between groups.
+ * Bootstrap gives .form-check a stray bottom margin; the flex gap owns spacing here.
+ */
+.gp-sidebar {
+    padding: var(--gp-space-lg);
+}
+
+.gp-sidebar hr {
+    margin: var(--gp-space-md) 0;
+}
+
+.gp-sidebar .form-check {
+    margin-bottom: 0;
+}
+
+.gp-sidebar-group {
+    margin-bottom: var(--gp-space-lg);
+}
+
+/* Switch sharing a grid row with a small input: match the input box height so both
+ * controls sit on the same centre line under their labels.
+ */
+.gp-field-switch {
+    display: flex;
+    align-items: center;
+    min-height: calc(1.5em + 0.5rem + 2px);
+}
+
+/* GP prep sidebar: shared vertical rhythm (tighter than legacy mt-2 stacks) */
+.gp-sidebar-btn-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-xs);
+}
+
+.gp-sidebar-switch-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--gp-space-xs);
+}
+
+.gp-sidebar-heading-row {
+    display: flex;
+    align-items: center;
+    gap: var(--gp-space-xs);
+    margin-bottom: var(--gp-space-xs);
+}
+
+.gp-sidebar-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-xs);
+    margin-bottom: var(--gp-space-lg);
+}
+
+/* Kernel bound inputs: min tinted blue ("too short"), max tinted red ("too long") */
+.gp-limit-min {
+    background-color: rgba(70, 90, 230, 0.12);
+}
+
+.gp-limit-max {
+    background-color: rgba(220, 53, 69, 0.12);
+}
+
+.gp-export-group {
+    width: min(22rem, 100%);
+}
+
+/* Prep workspace: plot grows, registry collapses horizontally.
+ * Collapse transitions are switched off deliberately: animating a wide plot is slow.
+ */
+.gp-prep-workspace {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    overflow: hidden;
+}
+
+.gp-prep-workspace-plot {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    transition: none;
+}
+
+.gp-registry-collapse {
+    flex-shrink: 0;
+    transition: none;
+}
+
+.gp-prep-graph {
+    height: var(--gp-plot-height);
+}
+
+/* Plot toolbar: one cluster per interaction mode, separated by a hairline.
+ * Contextual actions are hidden (d-none) until their mode is on, which keeps the
+ * strip to a single line in the common case.
+ */
+.gp-plot-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--gp-space-md);
+    margin-bottom: var(--gp-space-md);
+}
+
+.gp-plot-toolbar-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--gp-space-xs);
+}
+
+.gp-plot-toolbar-cluster + .gp-plot-toolbar-cluster {
+    border-left: 1px solid #dee2e6;
+    padding-left: var(--gp-space-md);
+}
+
+.gp-plot-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--gp-space-xs);
+}
+
+.gp-plot-toolbar .form-check {
+    margin-bottom: 0;
+}
+
+/* Feedback takes its own line so a message never reflows the buttons */
+.gp-plot-toolbar-feedback {
+    flex: 1 1 100%;
+}
+
+/* Registry keeps a stable width so its header cannot squeeze the plot, and only the
+ * list scrolls: the header actions must stay reachable at any scroll position.
+ */
+.gp-registry-panel {
+    width: clamp(14rem, 18vw, 18rem);
+    height: var(--gp-plot-height);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#registry-list-container {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.gp-registry-header {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    flex-wrap: nowrap;
+    gap: var(--gp-space-xs);
+    margin-bottom: var(--gp-space-md);
+}
+
+.gp-registry-header .gp-card-title {
+    line-height: 1.3;
+}
+
+/* Both registry actions are inline text: they only edit the interval list, never the
+ * light curve. Severity is carried by the tint — caution for a filtered removal,
+ * danger for wiping the list.
+ */
+.gp-registry-header-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--gp-space-sm);
+}
+
+.gp-registry-action {
+    padding: 0;
+    text-decoration: none;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+
+.gp-registry-action-caution,
+.gp-registry-action-caution:focus-visible {
+    color: var(--gp-caution);
+}
+
+.gp-registry-action-caution:hover {
+    color: var(--gp-caution-hover);
+}
+
+.gp-registry-toggle {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    z-index: 1000;
+    transform: translateX(50%);
+    border-radius: 50%;
+    width: 1.875rem;
+    height: 1.875rem;
+}
+
+#help-modal .modal-body {
+    max-height: 75vh;
+    overflow-y: auto;
+}
+
+/* Legend swatches: only the colour stays inline, since it is data-driven */
+.gp-legend-item {
+    display: flex;
+    align-items: center;
+    margin-bottom: var(--gp-space-xs);
+}
+
+.gp-legend-swatch {
+    display: inline-block;
+    margin-right: 0.625rem;
+    vertical-align: middle;
+}
+
+.gp-legend-swatch-circle {
+    width: 0.625rem;
+    height: 0.625rem;
+    border-radius: 50%;
+}
+
+.gp-legend-swatch-line {
+    width: 1.25rem;
+    height: 0.1875rem;
+}
+
+.gp-legend-swatch-dashed {
+    width: 1.25rem;
+    height: 0;
+    border-top: 0.1875rem dashed;
+    background-color: transparent;
+}
+
+/* Review grid card */
+.gp-review-card {
+    border: 1px solid #eee;
+    border-radius: var(--gp-radius);
+    padding: var(--gp-space-md);
+    background-color: #fff;
+}
+
+.gp-review-card-fail {
+    background-color: #fdfdfd;
+}
+
+.gp-review-badges {
+    text-align: center;
+    margin-bottom: 0.125rem;
+}
+
+/* Live grid: empty slot placeholder keeps the cell at plot-ish height */
+.gp-live-slot-waiting {
+    text-align: center;
+    padding: 6rem 0;
+    color: #999;
+}
+
+.gp-fail-range,
+.gp-fail-hint {
+    font-size: var(--gp-text-sm);
+}
+
+.gp-fail-hint {
+    cursor: help;
 }

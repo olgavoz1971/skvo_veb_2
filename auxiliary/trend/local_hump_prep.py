@@ -10,7 +10,8 @@ import pandas as pd
 
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_lk.csv"
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_spline.csv"
-DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "shug.dat"
+# DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "shug.dat"
+DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "R_detrended_sorted.dat"
 
 TIME_COLUMN = "obs_time"
 DETRENDED_COLUMN = "detrended"
@@ -30,6 +31,7 @@ T_ANCHOR_STEP = 6 * P0
 FIGSIZE = (20, 12)
 FIGSIZE_FOLD_VIEW = (20, 20)
 FONT_SIZE = 20
+FOLDED_STACK_EXPORT = Path(__file__).resolve().parent / "data" / "folded_stack.dat"
 
 
 def _discrete_cycle_colormap(cycle_ids: np.ndarray) -> tuple[cm.ScalarMappable, np.ndarray]:
@@ -39,7 +41,13 @@ def _discrete_cycle_colormap(cycle_ids: np.ndarray) -> tuple[cm.ScalarMappable, 
     base = plt.get_cmap("tab10" if n <= 10 else "tab20")
     colors = [base(i % base.N) for i in range(n)]
     cmap = mcolors.ListedColormap(colors)
-    bounds = np.arange(unique_ids[0], unique_ids[-1] + 2, dtype=float) - 0.5
+    if n == 1:
+        bounds = np.array([unique_ids[0] - 0.5, unique_ids[0] + 0.5], dtype=float)
+    else:
+        mid = (unique_ids[:-1].astype(float) + unique_ids[1:].astype(float)) / 2.0
+        bounds = np.concatenate(
+            [[float(unique_ids[0]) - 0.5], mid, [float(unique_ids[-1]) + 0.5]]
+        )
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
@@ -59,7 +67,7 @@ def load_detrended_csv(path: Path) -> pd.DataFrame:
             comment="#",
             names=["obs_time", "detrended", "flux_error"]
         )
-        df['obs_time'] = df['obs_time'] - 0.5       # to mjd
+        # df['obs_time'] = df['obs_time'] - 0.5       # to mjd
     else:
         raise ValueError(f"unsupported file type: {path.suffix}")
     return df
@@ -127,6 +135,47 @@ def local_stack_at_anchor(
     out["t_anchor"] = t_anchor
     out["k_cycles"] = k_cycles
     return out
+
+
+def extended_phase_fold(stack: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """Centred fold plus a +1 phase copy (phase panel and export span [-0.5, 1.5))."""
+    phi = stack["phi_local"].to_numpy(dtype=float)
+    y = stack[DETRENDED_COLUMN].to_numpy(dtype=float)
+    phi_ext = np.concatenate([phi, phi + 1.0])
+    y_ext = np.concatenate([y, y])
+    return phi_ext, y_ext
+
+
+def anchor_cycle_jd_from_phases(
+    stack: pd.DataFrame,
+    phi: np.ndarray,
+    p0: float,
+    period_slope: float,
+) -> np.ndarray:
+    """Map phase values (including extended copies) to JD around ``t_anchor``."""
+    t_anchor = float(stack["t_anchor"].iloc[0])
+    p_anchor = float(instantaneous_period(t_anchor, p0, period_slope))
+    return t_anchor + np.asarray(phi, dtype=float) * p_anchor
+
+
+def export_folded_stack_ascii(
+    stack: pd.DataFrame,
+    path: Path,
+    p0: float,
+    period_slope: float,
+) -> None:
+    """Export extended single-cycle fold as JD, detrended (matches phase panel [-0.5, 1.5))."""
+    if stack.empty:
+        raise ValueError("cannot export an empty stack")
+
+    phi_ext, y_ext = extended_phase_fold(stack)
+    t_jd = anchor_cycle_jd_from_phases(stack, phi_ext, p0, period_slope)
+    values = y_ext
+    order = np.argsort(t_jd)
+    t_jd = t_jd[order]
+    values = values[order]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savetxt(path, np.column_stack([t_jd, values]), fmt="%.10f")
 
 
 def anchor_times_for_lightcurve(
@@ -212,15 +261,11 @@ def plot_local_phase_stack(
     sm, _ = _discrete_cycle_colormap(cycle_ids)
     k_cycles = int(stack["k_cycles"].iloc[0])
 
-    phi = stack["phi_local"].to_numpy(dtype=float)
-    y_fold = stack[DETRENDED_COLUMN].to_numpy(dtype=float)
-    # Extend phase axis to [-0.5, 1.5) by copying the [-0.5, 0.5) fold shifted by +1.
-    phi_plot = np.concatenate([phi, phi + 1.0])
-    y_plot = np.concatenate([y_fold, y_fold])
+    phi_ext, y_plot = extended_phase_fold(stack)
     c_plot = np.concatenate([cycle_ids, cycle_ids])
 
     ax_phase.scatter(
-        phi_plot,
+        phi_ext,
         y_plot,
         c=c_plot,
         cmap=sm.cmap,
@@ -304,43 +349,48 @@ def main() -> None:
     df = load_detrended_csv(DETRENDED_CSV)
     plot_detrended_lightcurve(df)
     
-    t_anchor = 59856.5
+    t_anchor = 59857.25
     p0 = 0.0591
     stack = local_stack_at_anchor(
-            df,
-            t_anchor=t_anchor,
-            k_cycles=K_CYCLES,
-            p0=p0,
-            period_slope=PERIOD_SLOPE,
-            t_epoch=T_EPOCH,
-        )
+        df,
+        t_anchor=t_anchor,
+        k_cycles=8,
+        p0=p0,
+        period_slope=PERIOD_SLOPE,
+        t_epoch=T_EPOCH,
+    )
     if not stack.empty:
+        export_folded_stack_ascii(stack, FOLDED_STACK_EXPORT, p0, PERIOD_SLOPE)
         plot_local_phase_stack(df, stack, t_anchor, p0)
 
-    t_anchor = 59866.5
+    t_anchor = 59866.2
     p0 = 0.06066
     stack = local_stack_at_anchor(
-            df,
-            t_anchor=t_anchor,
-            k_cycles=7,
-            p0=p0,
-            period_slope=PERIOD_SLOPE,
-            t_epoch=T_EPOCH,
-        )
+        df,
+        t_anchor=t_anchor,
+        k_cycles=7,
+        p0=p0,
+        period_slope=PERIOD_SLOPE,
+        t_epoch=T_EPOCH,
+    )
     if not stack.empty:
+        # export_folded_stack_ascii(stack, FOLDED_STACK_EXPORT, p0, PERIOD_SLOPE)
         plot_local_phase_stack(df, stack, t_anchor, p0)
 
     anchors = anchor_times_for_lightcurve(
         df, K_CYCLES, P0, PERIOD_SLOPE, T_ANCHOR_STEP
     )
+    import sys
+    sys.exit(0)
+
     for t_anchor in anchors:
         stack = local_stack_at_anchor(
             df,
-            float(t_anchor),
-            K_CYCLES,
-            P0,
-            PERIOD_SLOPE,
-            T_EPOCH,
+            t_anchor=float(t_anchor),
+            k_cycles=K_CYCLES,
+            p0=P0,
+            period_slope=PERIOD_SLOPE,
+            t_epoch=T_EPOCH,
         )
         if stack.empty:
             continue

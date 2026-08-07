@@ -15,15 +15,7 @@ def live_slot_waiting() -> html.Div:
     Returns:
         html.Div: Centred grey ``Waiting`` label.
     """
-    return html.Div(
-        "Waiting",
-        style={
-            "textAlign": "center",
-            "padding": "6rem 0",
-            "color": "#999",
-            "fontSize": "0.95rem",
-        },
-    )
+    return html.Div("Waiting", className="gp-live-slot-waiting")
 
 
 def live_visible_page_for_done_count(

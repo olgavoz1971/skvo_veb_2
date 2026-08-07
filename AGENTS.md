@@ -57,6 +57,7 @@ my-dash-app/
 - **Theme File**: Use a shared `theme.py` or `theme.js` containing color constants, spacing scales, and font definitions to pass values systematically.
 - **Inline Styles**: Use inline Python dictionaries (`style={"marginRight": "10px"}`) only for highly dynamic, runtime-computed values (e.g., styling a component color based on a callback threshold). Avoid static inline styling blocks as much as possible.
 - **Code Format**: Run `black` for Python formatting and Prettier for CSS formatting.
+- **Page UI Consistency**: Before adding or editing any page layout, follow `.cursor/rules/dash-page-ui.mdc` (page token block, button role palette, one widget pattern per interaction kind, flex-gap spacing, sentence-case copy).
 
 ## Charts and Components
 - **Graphing Library**: Use `plotly.express` for charts first—it is simpler and covers most use cases. Switch to `plotly.graph_objects` only when you need fine-grained control.

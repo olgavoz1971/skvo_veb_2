@@ -746,8 +746,8 @@ def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: f
 
     Args:
         json_str (str): The serialised JSON transport string.
-        phi_min (float): Minimum phase selection bound (between 0.0 and 1.0).
-        phi_max (float): Maximum phase selection bound (between 0.0 and 1.0).
+        phi_min (float): Minimum phase selection bound (may be below 0 on the extended prep axis).
+        phi_max (float): Maximum phase selection bound (may exceed 1 on the extended prep axis).
         period (float): Fold period of the star in days.
         epoch (float, optional): Reference zero-phase epoch Julian Date.
             Defaults to the start of the dataset.

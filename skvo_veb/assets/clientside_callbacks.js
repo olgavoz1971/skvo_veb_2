@@ -443,7 +443,82 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
 
     gpOc: {
         _markModeActive: false,
+        _trendModeActive: false,
+        _foldActive: false,
+        _trendSuppressRelayoutSync: false,
+        _lastTrendClickTs: 0,
         _lastPlotClick: { t: 0, x: null },
+        _prepPlotDiv: null,
+
+        _syncMarkModeFromDom: function () {
+            const host = document.getElementById('gp-interval-mark-mode');
+            if (!host) {
+                return;
+            }
+            const inputs = host.querySelectorAll('input[type="checkbox"]');
+            let on = false;
+            for (let i = 0; i < inputs.length; i += 1) {
+                if (inputs[i].checked) {
+                    on = true;
+                    break;
+                }
+            }
+            window.dash_clientside.gpOc._markModeActive = on;
+        },
+
+        _deactivateTrendMode: function (plotDiv) {
+            window.dash_clientside.gpOc._trendModeActive = false;
+            const shell = document.getElementById('prep-graph-shell');
+            if (shell) {
+                shell.classList.remove('gp-prep-trend-mode');
+            }
+            const target = plotDiv || window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (target) {
+                window.dash_clientside.gpOc._syncTrendPreviewShape(target, null);
+            }
+            if (typeof dash_clientside.set_props === 'function') {
+                dash_clientside.set_props('store-gp-trend-line', { data: null });
+            }
+        },
+
+        _syncTrendModeFromDom: function () {
+            const host = document.getElementById('gp-prep-trend-mode');
+            if (!host) {
+                return;
+            }
+            const inputs = host.querySelectorAll('input[type="checkbox"]');
+            let on = false;
+            for (let i = 0; i < inputs.length; i += 1) {
+                if (inputs[i].checked && !inputs[i].disabled) {
+                    on = true;
+                    break;
+                }
+            }
+            window.dash_clientside.gpOc._trendModeActive = on;
+        },
+
+        _checklistSwitchOn: function (value) {
+            if (Array.isArray(value)) {
+                return value.indexOf(1) >= 0;
+            }
+            return !!value;
+        },
+
+        _prepGraphConfig: function (allowShapeEdit) {
+            return {
+                scrollZoom: true,
+                displaylogo: false,
+                doubleClick: false,
+                edits: { shapePosition: !!allowShapeEdit },
+                modeBarButtonsToRemove: ['zoomIn2d', 'zoomOut2d', 'lasso2d'],
+            };
+        },
+
+        syncPrepGraphConfig: function (markMode, trendMode) {
+            const markOn = window.dash_clientside.gpOc._checklistSwitchOn(markMode);
+            const trendOn = window.dash_clientside.gpOc._checklistSwitchOn(trendMode);
+            return window.dash_clientside.gpOc._prepGraphConfig(trendOn && !markOn);
+        },
 
         _xInIntervalBand: function (xClick, x0, x1, axis) {
             if (xClick === undefined || xClick === null) {
@@ -473,7 +548,10 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         },
 
         _hitIntervalIndex: function (xClick, bandsPayload) {
-            if (!bandsPayload || !bandsPayload.enabled || !bandsPayload.bands) {
+            if (!bandsPayload || !bandsPayload.bands || !bandsPayload.bands.length) {
+                return null;
+            }
+            if (bandsPayload.enabled === false) {
                 return null;
             }
             const axis = bandsPayload.axis || 'mjd';
@@ -490,10 +568,14 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
 
         _relayoutMarkedIntervalShapes: function (figure, marked) {
             const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
-            if (!plotDiv || typeof Plotly === 'undefined' || !figure || !figure.layout) {
+            if (!plotDiv || typeof Plotly === 'undefined') {
                 return;
             }
-            const shapes = figure.layout.shapes;
+            const layout = plotDiv.layout || plotDiv._fullLayout;
+            let shapes = layout && layout.shapes ? layout.shapes.slice() : null;
+            if ((!shapes || !shapes.length) && figure && figure.layout) {
+                shapes = figure.layout.shapes ? figure.layout.shapes.slice() : null;
+            }
             if (!shapes || !shapes.length) {
                 return;
             }
@@ -510,6 +592,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 next.line = Object.assign({}, shape.line || {});
                 next.line.color = isMarked ? '#dc3545' : 'green';
                 next.line.width = isMarked ? 2 : 1;
+                next.editable = false;
                 return next;
             });
             Plotly.relayout(plotDiv, { shapes: updated });
@@ -527,27 +610,330 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             return null;
         },
 
+        _syncPrepPlotDragmode: function (plotDiv) {
+            if (!plotDiv || typeof Plotly === 'undefined') {
+                return;
+            }
+            let dragmode = 'select';
+            if (window.dash_clientside.gpOc._trendModeActive) {
+                dragmode = 'pan';
+            } else if (window.dash_clientside.gpOc._markModeActive) {
+                dragmode = 'zoom';
+            }
+            Plotly.relayout(plotDiv, { dragmode: dragmode });
+        },
+
+        _bindPrepPlotGraphClients: function (figure) {
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (!plotDiv || !figure) {
+                return false;
+            }
+            if (window.dash_clientside.gpOc._prepPlotDiv !== plotDiv) {
+                window.dash_clientside.gpOc._prepPlotDiv = plotDiv;
+                delete plotDiv._gpMarkClickBound;
+                delete plotDiv._gpTrendBound;
+                delete plotDiv._gpTrendPointerBound;
+            }
+            window.dash_clientside.gpOc._syncMarkModeFromDom();
+            window.dash_clientside.gpOc._syncTrendModeFromDom();
+            window.dash_clientside.gpOc._ensureMarkClickListener(plotDiv);
+            window.dash_clientside.gpOc._ensureTrendListeners(plotDiv);
+            window.dash_clientside.gpOc._syncPrepPlotDragmode(plotDiv);
+            return true;
+        },
+
         _plotClickX: function (plotDiv, evt) {
+            const xy = window.dash_clientside.gpOc._plotClickXY(plotDiv, evt);
+            return xy ? xy.x : null;
+        },
+
+        _plotClickXY: function (plotDiv, evt) {
             if (!evt) {
                 return null;
             }
             if (evt.points && evt.points.length) {
-                return evt.points[0].x;
+                return { x: evt.points[0].x, y: evt.points[0].y };
             }
             if (evt.xvals && evt.xvals.length) {
-                return evt.xvals[0];
+                const y = evt.yvals && evt.yvals.length ? evt.yvals[0] : null;
+                return { x: evt.xvals[0], y: y };
             }
             if (plotDiv && plotDiv._fullLayout && evt.event) {
                 const layout = plotDiv._fullLayout;
                 const xaxis = layout.xaxis;
-                if (xaxis && typeof xaxis.p2d === 'function') {
+                const yaxis = layout.yaxis;
+                if (
+                    xaxis && typeof xaxis.p2d === 'function'
+                    && yaxis && typeof yaxis.p2d === 'function'
+                ) {
                     const bbox = plotDiv.getBoundingClientRect();
                     const xPixel = evt.event.clientX - bbox.left;
+                    const yPixel = evt.event.clientY - bbox.top;
                     const innerX = xPixel - (layout.margin.l || 0);
-                    return xaxis.p2d(innerX);
+                    const innerY = yPixel - (layout.margin.t || 0);
+                    return { x: xaxis.p2d(innerX), y: yaxis.p2d(innerY) };
                 }
             }
             return null;
+        },
+
+        _stripTrendPreviewShapes: function (shapes) {
+            if (!shapes || !shapes.length) {
+                return [];
+            }
+            return shapes.filter(function (shape) {
+                if (!shape || !shape.name) {
+                    return true;
+                }
+                return !String(shape.name).startsWith('gp-trend-');
+            });
+        },
+
+        // Endpoints are picked in pixel space and converted by the axis itself, so the
+        // same code works for the numeric MJD axis and the calendar-date axis (whose
+        // range values are date strings and cannot be used in arithmetic).
+        _trendLineXBounds: function (plotDiv) {
+            if (!plotDiv || !plotDiv._fullLayout) {
+                return null;
+            }
+            const xaxis = plotDiv._fullLayout.xaxis;
+            if (!xaxis || typeof xaxis.p2d !== 'function') {
+                return null;
+            }
+            const width = xaxis._length;
+            if (!width || !isFinite(width)) {
+                return null;
+            }
+            const inset = width * 0.1;  // line spans 4/5 of the visible width
+            return [xaxis.p2d(inset), xaxis.p2d(width - inset)];
+        },
+
+        _isTrendCoord: function (value) {
+            if (value === null || value === undefined) {
+                return false;
+            }
+            if (typeof value === 'number') {
+                return isFinite(value);
+            }
+            if (typeof value === 'string') {
+                return value.trim() !== '';
+            }
+            return value instanceof Date;
+        },
+
+        _trendPreviewLineShape: function (lineStore) {
+            return {
+                type: 'line',
+                xref: 'x',
+                yref: 'y',
+                x0: lineStore.x0,
+                y0: lineStore.y0,
+                x1: lineStore.x1,
+                y1: lineStore.y1,
+                line: {
+                    color: '#fd7e14',
+                    width: 2,
+                },
+                editable: true,
+                layer: 'above',
+                name: 'gp-trend-preview-line',
+            };
+        },
+
+        _syncTrendPreviewShape: function (plotDiv, lineStore) {
+            if (!plotDiv || typeof Plotly === 'undefined') {
+                return;
+            }
+            // Read the input layout, not _fullLayout: re-submitting fully expanded
+            // shape objects feeds Plotly internals back into relayout.
+            const existing = plotDiv.layout && plotDiv.layout.shapes
+                ? plotDiv.layout.shapes.slice()
+                : [];
+            const kept = window.dash_clientside.gpOc._stripTrendPreviewShapes(existing);
+            const isCoord = window.dash_clientside.gpOc._isTrendCoord;
+            if (
+                lineStore
+                && isCoord(lineStore.x0) && isCoord(lineStore.x1)
+                && isCoord(lineStore.y0) && isCoord(lineStore.y1)
+            ) {
+                kept.push(
+                    window.dash_clientside.gpOc._trendPreviewLineShape(lineStore)
+                );
+            }
+            window.dash_clientside.gpOc._trendSuppressRelayoutSync = true;
+            Plotly.relayout(plotDiv, { shapes: kept });
+            window.setTimeout(function () {
+                window.dash_clientside.gpOc._trendSuppressRelayoutSync = false;
+            }, 0);
+        },
+
+        _domEventToPlotXY: function (plotDiv, domEvent) {
+            if (!plotDiv || !plotDiv._fullLayout || !domEvent) {
+                return null;
+            }
+            const layout = plotDiv._fullLayout;
+            const xaxis = layout.xaxis;
+            const yaxis = layout.yaxis;
+            if (
+                !xaxis || typeof xaxis.p2d !== 'function'
+                || !yaxis || typeof yaxis.p2d !== 'function'
+            ) {
+                return null;
+            }
+            const bbox = plotDiv.getBoundingClientRect();
+            const xPixel = domEvent.clientX - bbox.left;
+            const yPixel = domEvent.clientY - bbox.top;
+            const lx = xPixel - (layout.margin.l || 0);
+            const ly = yPixel - (layout.margin.t || 0);
+            const plotW = (layout.width || plotDiv.clientWidth)
+                - (layout.margin.l || 0) - (layout.margin.r || 0);
+            const plotH = (layout.height || plotDiv.clientHeight)
+                - (layout.margin.t || 0) - (layout.margin.b || 0);
+            if (lx < 0 || ly < 0 || lx > plotW || ly > plotH) {
+                return null;
+            }
+            return { x: xaxis.p2d(lx), y: yaxis.p2d(ly) };
+        },
+
+        _emitTrendPlotClick: function (plotDiv, xy) {
+            if (
+                !xy || xy.x === null || xy.x === undefined
+                || xy.y === null || xy.y === undefined
+            ) {
+                return;
+            }
+            const now = Date.now();
+            if (now - window.dash_clientside.gpOc._lastTrendClickTs < 150) {
+                return;
+            }
+            window.dash_clientside.gpOc._lastTrendClickTs = now;
+            if (typeof dash_clientside.set_props === 'function') {
+                dash_clientside.set_props('store-gp-trend-click', {
+                    data: {
+                        x: xy.x,
+                        y: xy.y,
+                        ts: Date.now(),
+                    },
+                });
+            }
+        },
+
+        _trendRelayoutToStore: function (plotDiv) {
+            if (!plotDiv || !plotDiv.layout) {
+                return;
+            }
+            const shapes = plotDiv.layout.shapes;
+            if (!shapes || !shapes.length) {
+                return;
+            }
+            let preview = null;
+            for (let i = 0; i < shapes.length; i += 1) {
+                if (shapes[i] && shapes[i].name === 'gp-trend-preview-line') {
+                    preview = shapes[i];
+                    break;
+                }
+            }
+            if (!preview) {
+                return;
+            }
+            if (typeof dash_clientside.set_props === 'function') {
+                dash_clientside.set_props('store-gp-trend-line', {
+                    data: {
+                        x0: preview.x0,
+                        y0: preview.y0,
+                        x1: preview.x1,
+                        y1: preview.y1,
+                        ready: true,
+                    },
+                });
+            }
+        },
+
+        _ensureTrendListeners: function (plotDiv) {
+            if (!plotDiv) {
+                return;
+            }
+            if (!plotDiv._gpTrendBound) {
+                plotDiv._gpTrendBound = true;
+                plotDiv.on('plotly_relayout', function () {
+                    if (!window.dash_clientside.gpOc._trendModeActive) {
+                        return;
+                    }
+                    if (window.dash_clientside.gpOc._trendSuppressRelayoutSync) {
+                        return;
+                    }
+                    window.dash_clientside.gpOc._trendRelayoutToStore(plotDiv);
+                });
+            }
+            if (plotDiv._gpTrendPointerBound) {
+                return;
+            }
+            plotDiv._gpTrendPointerBound = true;
+            plotDiv._gpTrendPointerDown = null;
+
+            plotDiv.addEventListener('pointerdown', function (ev) {
+                if (window.dash_clientside.gpOc._foldActive) {
+                    return;
+                }
+                if (!window.dash_clientside.gpOc._trendModeActive) {
+                    return;
+                }
+                if (window.dash_clientside.gpOc._markModeActive) {
+                    return;
+                }
+                plotDiv._gpTrendPointerDown = {
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    id: ev.pointerId,
+                };
+            }, true);
+
+            plotDiv.addEventListener('pointerup', function (ev) {
+                if (window.dash_clientside.gpOc._foldActive) {
+                    return;
+                }
+                if (!window.dash_clientside.gpOc._trendModeActive) {
+                    return;
+                }
+                if (window.dash_clientside.gpOc._markModeActive) {
+                    return;
+                }
+                const down = plotDiv._gpTrendPointerDown;
+                plotDiv._gpTrendPointerDown = null;
+                if (!down || down.id !== ev.pointerId) {
+                    return;
+                }
+                const dx = ev.clientX - down.x;
+                const dy = ev.clientY - down.y;
+                if ((dx * dx + dy * dy) > 64) {
+                    return;
+                }
+                const xy = window.dash_clientside.gpOc._domEventToPlotXY(plotDiv, ev);
+                window.dash_clientside.gpOc._emitTrendPlotClick(plotDiv, xy);
+            }, true);
+
+            plotDiv.on('plotly_click', function (evt) {
+                if (window.dash_clientside.gpOc._foldActive) {
+                    return;
+                }
+                if (!window.dash_clientside.gpOc._trendModeActive) {
+                    return;
+                }
+                if (window.dash_clientside.gpOc._markModeActive) {
+                    return;
+                }
+                if (evt && evt.event) {
+                    const xy = window.dash_clientside.gpOc._domEventToPlotXY(
+                        plotDiv, evt.event
+                    );
+                    if (xy) {
+                        window.dash_clientside.gpOc._emitTrendPlotClick(plotDiv, xy);
+                        return;
+                    }
+                }
+                const xyFallback = window.dash_clientside.gpOc._plotClickXY(plotDiv, evt);
+                window.dash_clientside.gpOc._emitTrendPlotClick(plotDiv, xyFallback);
+            });
         },
 
         _samePlotX: function (a, b) {
@@ -568,6 +954,9 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             plotDiv._gpMarkClickBound = true;
             plotDiv.on('plotly_click', function (evt) {
                 if (!window.dash_clientside.gpOc._markModeActive) {
+                    return;
+                }
+                if (window.dash_clientside.gpOc._trendModeActive) {
                     return;
                 }
                 const xVal = window.dash_clientside.gpOc._plotClickX(plotDiv, evt);
@@ -593,35 +982,42 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         },
 
         applyIntervalMarkMode: function (enabled, figure) {
-            window.dash_clientside.gpOc._markModeActive = !!enabled;
+            window.dash_clientside.gpOc._markModeActive =
+                window.dash_clientside.gpOc._checklistSwitchOn(enabled);
             window.dash_clientside.gpOc._lastPlotClick = { t: 0, x: null };
+            if (
+                window.dash_clientside.gpOc._markModeActive
+                && window.dash_clientside.gpOc._trendModeActive
+                && typeof dash_clientside.set_props === 'function'
+            ) {
+                dash_clientside.set_props('gp-prep-trend-mode', { value: [] });
+            }
             const shell = document.getElementById('prep-graph-shell');
             if (shell) {
-                shell.classList.toggle('gp-prep-mark-mode', !!enabled);
+                shell.classList.toggle(
+                    'gp-prep-mark-mode',
+                    window.dash_clientside.gpOc._markModeActive
+                );
             }
             const attachLater = function () {
                 const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
                 if (plotDiv) {
                     window.dash_clientside.gpOc._ensureMarkClickListener(plotDiv);
+                    window.dash_clientside.gpOc._syncPrepPlotDragmode(plotDiv);
                 }
             };
             window.setTimeout(attachLater, 0);
             window.setTimeout(attachLater, 300);
             const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
-            if (plotDiv && typeof Plotly !== 'undefined') {
-                Plotly.relayout(plotDiv, { dragmode: enabled ? 'pan' : 'zoom' });
+            if (plotDiv) {
+                window.dash_clientside.gpOc._syncPrepPlotDragmode(plotDiv);
             }
             return window.dash_clientside.no_update;
         },
 
         bindPrepGraphIntervalMarkClick: function (figure) {
             const attach = function () {
-                const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
-                if (!plotDiv || !figure) {
-                    return false;
-                }
-                window.dash_clientside.gpOc._ensureMarkClickListener(plotDiv);
-                return true;
+                return window.dash_clientside.gpOc._bindPrepPlotGraphClients(figure);
             };
             if (!attach()) {
                 window.setTimeout(attach, 250);
@@ -630,10 +1026,22 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             return window.dash_clientside.no_update;
         },
 
+        reflectMarkedIntervalCount: function (marked) {
+            const count = Array.isArray(marked) ? marked.length : 0;
+            return [count === 0, count === 0];
+        },
+
+        toggleTrendActions: function (trendMode) {
+            const base = 'gp-plot-toolbar-actions';
+            return window.dash_clientside.gpOc._checklistSwitchOn(trendMode)
+                ? base
+                : base + ' d-none';
+        },
+
         toggleIntervalMarkFromDblClick: function (
             pending, bandsPayload, marked, figure
         ) {
-            if (!pending || !bandsPayload || !bandsPayload.enabled || !figure) {
+            if (!pending || !figure) {
                 return [
                     window.dash_clientside.no_update,
                     window.dash_clientside.no_update,
@@ -654,21 +1062,152 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 next.splice(pos, 1);
             } else {
                 next.push(hit);
-                next.sort((a, b) => a - b);
+                next.sort(function (a, b) { return a - b; });
             }
-            window.dash_clientside.gpOc._relayoutMarkedIntervalShapes(figure, next);
             return [next, window.dash_clientside.no_update];
         },
 
         clearIntervalMarks: function (nClicks, figure) {
-            if (!nClicks || !figure) {
+            if (!nClicks) {
                 return [
                     window.dash_clientside.no_update,
                     window.dash_clientside.no_update,
                 ];
             }
-            window.dash_clientside.gpOc._relayoutMarkedIntervalShapes(figure, []);
             return [[], window.dash_clientside.no_update];
+        },
+
+        applyTrendMode: function (enabled, foldingOn, figure) {
+            window.dash_clientside.gpOc._foldActive =
+                window.dash_clientside.gpOc._checklistSwitchOn(foldingOn);
+            if (window.dash_clientside.gpOc._foldActive) {
+                window.dash_clientside.gpOc._deactivateTrendMode();
+                if (
+                    window.dash_clientside.gpOc._checklistSwitchOn(enabled)
+                    && typeof dash_clientside.set_props === 'function'
+                ) {
+                    dash_clientside.set_props('gp-prep-trend-mode', { value: [] });
+                }
+                return window.dash_clientside.no_update;
+            }
+            window.dash_clientside.gpOc._trendModeActive =
+                window.dash_clientside.gpOc._checklistSwitchOn(enabled);
+            if (
+                window.dash_clientside.gpOc._trendModeActive
+                && typeof dash_clientside.set_props === 'function'
+            ) {
+                dash_clientside.set_props('gp-interval-mark-mode', { value: [] });
+            }
+            const shell = document.getElementById('prep-graph-shell');
+            if (shell) {
+                shell.classList.toggle(
+                    'gp-prep-trend-mode',
+                    window.dash_clientside.gpOc._trendModeActive
+                );
+            }
+            const attachLater = function () {
+                const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+                if (plotDiv) {
+                    window.dash_clientside.gpOc._ensureTrendListeners(plotDiv);
+                    window.dash_clientside.gpOc._syncPrepPlotDragmode(plotDiv);
+                }
+            };
+            window.setTimeout(attachLater, 0);
+            window.setTimeout(attachLater, 300);
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (plotDiv) {
+                window.dash_clientside.gpOc._syncPrepPlotDragmode(plotDiv);
+            }
+            if (!window.dash_clientside.gpOc._trendModeActive) {
+                const plotDivOff = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+                if (plotDivOff) {
+                    window.dash_clientside.gpOc._syncTrendPreviewShape(plotDivOff, null);
+                }
+                if (typeof dash_clientside.set_props === 'function') {
+                    dash_clientside.set_props('store-gp-trend-line', { data: null });
+                }
+            }
+            return window.dash_clientside.no_update;
+        },
+
+        bindPrepGraphTrend: function (figure) {
+            const attach = function () {
+                return window.dash_clientside.gpOc._bindPrepPlotGraphClients(figure);
+            };
+            if (!attach()) {
+                window.setTimeout(attach, 250);
+                window.setTimeout(attach, 800);
+            }
+            return window.dash_clientside.no_update;
+        },
+
+        processTrendClick: function (clickPayload, trendMode, foldingOn, lineStore) {
+            if (window.dash_clientside.gpOc._checklistSwitchOn(foldingOn)) {
+                return window.dash_clientside.no_update;
+            }
+            if (
+                !window.dash_clientside.gpOc._checklistSwitchOn(trendMode)
+                || !clickPayload
+            ) {
+                return window.dash_clientside.no_update;
+            }
+            if (lineStore && lineStore.ready) {
+                return window.dash_clientside.no_update;
+            }
+            const y = clickPayload.y;
+            if (y === null || y === undefined) {
+                return window.dash_clientside.no_update;
+            }
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (!plotDiv) {
+                return window.dash_clientside.no_update;
+            }
+            const xBounds = window.dash_clientside.gpOc._trendLineXBounds(plotDiv);
+            if (!xBounds) {
+                return window.dash_clientside.no_update;
+            }
+            const next = {
+                x0: xBounds[0],
+                y0: y,
+                x1: xBounds[1],
+                y1: y,
+                ready: true,
+            };
+            window.dash_clientside.gpOc._syncTrendPreviewShape(plotDiv, next);
+            return next;
+        },
+
+        clearTrendLine: function (nClicks) {
+            if (!nClicks) {
+                return window.dash_clientside.no_update;
+            }
+            const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+            if (plotDiv) {
+                window.dash_clientside.gpOc._syncTrendPreviewShape(plotDiv, null);
+            }
+            return null;
+        },
+
+        restoreTrendPreviewFromStore: function (lineStore, figure, trendMode) {
+            if (
+                !window.dash_clientside.gpOc._checklistSwitchOn(trendMode)
+                || !lineStore
+                || !figure
+            ) {
+                return window.dash_clientside.no_update;
+            }
+            if (!lineStore.ready) {
+                return window.dash_clientside.no_update;
+            }
+            const redraw = function () {
+                const plotDiv = window.dash_clientside.gpOc._prepPlotlyGraphDiv();
+                if (plotDiv && window.dash_clientside.gpOc._trendModeActive) {
+                    window.dash_clientside.gpOc._syncTrendPreviewShape(plotDiv, lineStore);
+                }
+            };
+            window.setTimeout(redraw, 50);
+            window.setTimeout(redraw, 400);
+            return window.dash_clientside.no_update;
         },
     }
 });
