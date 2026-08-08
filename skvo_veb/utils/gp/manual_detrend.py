@@ -197,7 +197,14 @@ def apply_manual_linear_detrend(
         ell = float(line_y_at_jd(np.array([jd]), jd_a, y_a, jd_b, y_b)[0])
 
         e_raw = row[2]
-        err_val = float(e_raw) if has_err and e_raw is not None else None
+        err_val = None
+        if has_err and e_raw is not None:
+            try:
+                parsed = float(e_raw)
+                if np.isfinite(parsed):
+                    err_val = parsed
+            except (TypeError, ValueError):
+                err_val = None
 
         y_view, e_view = _view_values_native_column(
             np.array([v_raw]),
@@ -232,10 +239,13 @@ def apply_manual_linear_detrend(
             pc,
         )
         row[1] = float(v_native[0])
-        if has_err and view_mode == DOMAIN_FLUX:
-            if e_native is not None and np.isfinite(e_native[0]):
-                row[2] = float(e_native[0])
-            elif e1 is None:
+        if has_err:
+            if view_mode == DOMAIN_FLUX:
+                if e_native is not None and np.isfinite(e_native[0]):
+                    row[2] = float(e_native[0])
+                else:
+                    row[2] = None
+            elif err_val is None:
                 row[2] = None
         n_updated += 1
 

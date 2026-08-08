@@ -255,6 +255,36 @@
     width: min(22rem, 100%);
 }
 
+.gp-export-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-md);
+}
+
+.gp-export-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-xs);
+}
+
+.gp-export-sublabel {
+    font-weight: 600;
+    font-size: var(--gp-text-sm);
+    margin-bottom: 0;
+}
+
+.gp-lc-export-actions {
+    margin-top: var(--gp-space-xs);
+}
+
+.gp-export-feedback:empty {
+    display: none;
+}
+
+.gp-export-feedback .alert {
+    margin-bottom: 0;
+}
+
 /* Prep workspace: plot grows, registry collapses horizontally.
  * Collapse transitions are switched off deliberately: animating a wide plot is slow.
  */

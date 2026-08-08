@@ -1,0 +1,124 @@
+---
+description: UI design rules for Dash pages (typography, buttons, switches, spacing, CSS boundaries)
+globs: skvo_veb/pages/**/*.py,skvo_veb/assets/**/*.css,skvo_veb/utils/**/*_page.py
+alwaysApply: false
+---
+
+# Page UI rules
+
+A page must look like one designer built it. Drift happens when each widget gets its own
+ad-hoc size, colour and margin, so the rules below remove that freedom on purpose.
+Reference implementations: `assets/gp_for_oc.css` + `pages/gp_for_oc.py`, `assets/lc_discovery.css`.
+See also `docs/lc_discovery_css.md`.
+
+## 1. One token block per page; Python carries class names only
+
+Every page wraps its container in a page class and declares its scale **once** in CSS.
+Never restate a size, colour or height on individual components.
+
+```python
+# ❌ BAD — five sizes invented in five places
+html.Label("Guess sigma", className="small fw-bold"),
+dbc.RadioItems(..., style={"fontSize": "0.9rem"}),
+dcc.Graph(..., style={"height": "600px"}),
+```
+
+```python
+# ✅ GOOD — the page class and CSS own all of it
+dbc.Container([...], fluid=True, className="gp-page")
+html.Label("Guess sigma", className="gp-section-label"),
+dbc.RadioItems(...),
+dcc.Graph(..., className="gp-prep-graph"),
+```
+
+Inline `style=` is allowed **only** for values that cannot exist in a stylesheet:
+data-driven colours (a trace colour in a legend swatch) and visibility that a callback writes.
+Everything else — font size, padding, margin, border, width, height, background — belongs in CSS.
+
+## 2. Sizes come from tokens; heights use `clamp()`
+
+Declare tokens in `:root` or on the page class, then reference them:
+`--<page>-text-sm/md`, `--<page>-space-xs/sm/md/lg`, `--<page>-plot-height`.
+Panels and plots use `clamp(rem, vh, rem)` so they survive small laptops. Never a fixed `600px`.
+Use `rem`/`em`; reserve `px` for hairlines (1–2px borders, AgGrid cell padding).
+
+## 3. One widget pattern per interaction kind
+
+- **On/off toggle**: `dbc.Switch(id=..., label=...)`, or `dbc.Checklist(switch=True)` when the
+  callback wants a list. Never hand-build `dbc.Checkbox` + `dbc.Label` + `d-flex`, and never
+  park a label in a separate grid row with an empty `dbc.Label("")` as a spacer.
+- **Label with help**: label plus the shared `?` control in one `*-heading-row` /
+  `*-switch-row` flex container. Use the page's `?` popover helper, not `dbc.Tooltip`.
+- **Exception**: in a two-column parameter grid, a switch may drop its own `label` and take
+  a plain label above it, so its column lines up with the input beside it. The label still
+  uses the shared heading-row class — never an ad-hoc flex block.
+- Identical controls must be written identically everywhere on the page.
+
+## 4. Button roles: colour encodes meaning, nothing else
+
+| Role | Style |
+|------|-------|
+| Run / apply / add / download | `color="primary"` |
+| Clear / reset / low emphasis | `color="secondary", outline=True` |
+| Abort a job, or destroy data with no undo | `color="danger"` (outline, or `link` + `text-danger` when inline) |
+| Inline text action | `color="link"`, optionally tinted (`text-danger`, caution) to show severity |
+
+All buttons take `size="sm"` and a **text-only** label. An icon is allowed only when the button
+has no text at all (a chevron toggle, a trash icon), except one **page-level About/help**
+control per page: icon plus label, sized via a dedicated page CSS class (not `size="lg"` on
+every control). Do not add a second filled colour
+(`success`, `warning`) for a fourth meaning, and do not use `color="outline-secondary"` —
+that string only works by accident; write `color="secondary", outline=True`.
+
+## 5. Placement: an action lives with the object it acts on
+
+Before choosing a container, ask what the button changes. Operations on a plot
+(select, mark, draw) go in a compact horizontal strip above that plot. Operations on a
+list go in that list's header. A sidebar holds **state**: parameters, view options, export
+settings — not a column of actions aimed at things elsewhere on the screen.
+
+Never stack many equal-width buttons in one column: identical slabs rank nothing, force
+label-by-label reading, put destructive next to frequent actions, and eat the vertical
+space the plot needs. At most one full-width primary per group; everything else is
+auto-width and paired on a line. Hide or disable an action that cannot apply yet
+(nothing marked, mode off) — disabling teaches the required order.
+
+## 6. Vertical rhythm from flex gaps, not sprinkled margins
+
+Two spacings exist: inside a group and between groups. Express both with page classes
+(`*-block`, `*-btn-stack`, `*-switch-row`) that set `gap` and one `margin-bottom` token.
+Do not mix `mb-1`, `mb-2`, `mb-3`, `mt-2` on neighbouring widgets — that is what produces
+uneven gaps between buttons that sit next to each other.
+
+```python
+# ✅ GOOD — the container owns spacing, the children own nothing
+html.Div([
+    dbc.Button("Remove marked intervals", ..., color="primary", size="sm", className="w-100"),
+    dbc.Button("Remove empty intervals", ..., color="primary", size="sm", className="w-100"),
+], className="gp-sidebar-btn-stack"),
+```
+
+## 7. Typography and copy
+
+- One label class per role: section label (bold, page size), card title, helper text (`small`).
+  Do not stack `small` on a page that already sets a smaller base size.
+- Heading ladder: page title → card title → body. No jump from `display-4` to `0.75rem`.
+- **Sentence case** for every label, button, heading, badge and option: "Add interval",
+  "Clear all intervals", "Search minima". Not "Add Interval".
+- British English in user-facing strings; technical CSS/HTML spelling stays US.
+- Long explanations belong in the `?` popover, not in a permanent alert next to the plot.
+
+## 8. Do not ship dead interaction affordances
+
+Remove modebar tools, drawing tools and switches that no callback consumes. Interaction modes
+that compete for the same gesture (mark / draw / box-select) must be mutually exclusive.
+
+## Checklist before finishing page work
+
+1. `rg "style=\{" <page>.py` — every hit is data-driven or callback-written visibility.
+2. `rg "fontSize|font-size" <page>.py` — no hits.
+3. Every button: `size="sm"`, text-only, colour from the table above.
+4. Neighbouring controls of the same kind share one class, not per-widget margins.
+5. Each action sits with the object it changes; no column of look-alike full-width buttons.
+6. Labels in sentence case; each `?` popover title matches its control label.
+7. Hard-refresh (Ctrl+Shift+R) before judging a CSS change.

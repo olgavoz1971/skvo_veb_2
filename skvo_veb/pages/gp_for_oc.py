@@ -247,6 +247,8 @@ import logging
 import uuid
 
 from skvo_veb.utils.lc_bridge import (
+    curvedash_from_transport_json,
+    export_curvedash,
     format_user_upload_error,
     get_intervals_from_phase,
 )
@@ -278,6 +280,7 @@ from skvo_veb.utils.gp import (
     figure_from_gp_result,
     format_intervals_download,
 )
+from skvo_veb.utils.gp.export import gp_lc_export_download_name
 from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
@@ -304,6 +307,8 @@ from skvo_veb.utils.gp.live_page import (
 from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
+    DEFAULT_EXPORT_FORMAT,
+    EXPORT_FORMAT_OPTIONS,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
     absolute_jd_from_display_epoch,
@@ -561,6 +566,11 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
         html.P(
             "Mark bands, Remove trend and box-select all compete for the same click, "
             "so only one of them can be active at a time.",
+            className="mb-2",
+        ),
+        html.P(
+            "After trend removal, use Download light curve under Export settings "
+            "to save the current stored light curve.",
             className="mb-0",
         ),
     ],
@@ -774,25 +784,63 @@ sidebar_lc = html.Div([
     html.Div(
         [
             html.Label("Export settings", className="gp-section-label"),
-            dbc.InputGroup(
+            html.Div(
                 [
-                    dbc.Input(
-                        id="export-intervals-filename",
-                        placeholder="intervals_export",
-                        type="text",
-                        value="my_intervals",
-                    ),
-                    dbc.Button(
-                        "Download",
-                        id="btn-download-intervals",
-                        color="primary",
+                    html.Label("Intervals", className="gp-export-sublabel"),
+                    dbc.InputGroup(
+                        [
+                            dbc.Input(
+                                id="export-intervals-filename",
+                                placeholder="intervals_export",
+                                type="text",
+                                value="my_intervals",
+                            ),
+                            dbc.Button(
+                                "Download",
+                                id="btn-download-intervals",
+                                color="primary",
+                            ),
+                        ],
+                        size="sm",
                     ),
                 ],
-                size="sm",
+                className="gp-export-block",
+            ),
+            html.Div(
+                [
+                    html.Label("Light curve", className="gp-export-sublabel"),
+                    dbc.Select(
+                        options=EXPORT_FORMAT_OPTIONS,  # type: ignore[arg-type]
+                        value=DEFAULT_EXPORT_FORMAT,
+                        id="gp-lc-export-format",
+                        size="sm",
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.Input(
+                                id="export-lc-filename",
+                                placeholder="lightcurve_export",
+                                type="text",
+                                value="gp_lightcurve",
+                            ),
+                            dbc.Button(
+                                "Download",
+                                id="btn-download-lc",
+                                color="primary",
+                                disabled=True,
+                            ),
+                        ],
+                        size="sm",
+                        className="gp-lc-export-actions",
+                    ),
+                    html.Div(id="gp-lc-export-feedback", className="gp-export-feedback"),
+                ],
+                className="gp-export-block",
             ),
             dcc.Download(id="download-intervals-file"),
+            dcc.Download(id="download-lc-file"),
         ],
-        className="gp-sidebar-block",
+        className="gp-sidebar-block gp-export-stack",
     ),
 ], className="gp-sidebar bg-light border rounded shadow-sm")
 
@@ -2688,6 +2736,73 @@ def update_intervals_output_filename(filename):
         base = filename.rsplit('.', 1)[0]
         return f"{base}_intervals.dat"
     return "results_intervals.dat"
+
+
+@callback(
+    Output("export-lc-filename", "value"),
+    Input("upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def update_lc_export_default_filename(filename):
+    """Default light curve export stem from the uploaded file name."""
+    if filename:
+        base = filename.rsplit(".", 1)[0]
+        return f"{base}_lc"
+    return "gp_lightcurve"
+
+
+@callback(
+    Output("btn-download-lc", "disabled"),
+    Input("store-lc-data", "data"),
+)
+def gate_lc_export_button(lc_json_string):
+    """Light curve export is available whenever prep data is loaded."""
+    return not lc_json_string
+
+
+@callback(
+    Output("download-lc-file", "data"),
+    Output("gp-lc-export-feedback", "children"),
+    Input("btn-download-lc", "n_clicks"),
+    State("store-lc-data", "data"),
+    State("gp-lc-export-format", "value"),
+    State("export-lc-filename", "value"),
+    State("upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def download_gp_prep_lightcurve(
+    n_clicks,
+    lc_json_string,
+    table_format,
+    filename_stem,
+    upload_filename,
+):
+    """Exports the stored prep light curve (including manual detrend) via lc_bridge."""
+    if not n_clicks or not lc_json_string:
+        raise PreventUpdate
+    fmt = table_format or DEFAULT_EXPORT_FORMAT
+    try:
+        lcd = curvedash_from_transport_json(
+            lc_json_string,
+            source_name=upload_filename,
+        )
+        file_bytes = export_curvedash(lcd, fmt)
+        outfile = gp_lc_export_download_name(filename_stem, fmt)
+        return dcc.send_bytes(file_bytes, outfile), None
+    except PipeException as exc:
+        logger.warning("GP light curve export failed: %s", exc)
+        return no_update, dbc.Alert(
+            str(exc),
+            color="warning",
+            className="py-2 small mb-0",
+        )
+    except Exception as exc:
+        logger.exception("GP light curve export failed")
+        return no_update, dbc.Alert(
+            f"Could not export light curve: {exc}",
+            color="danger",
+            className="py-2 small mb-0",
+        )
 
 
 # Build GP output filename

@@ -1,0 +1,81 @@
+# Two-piece run (59857 + 59866) on one detrended light curve.
+
+version: 1
+
+global:
+  lc_path: ../data/R_detrended.dat
+  mag0: 10
+
+  ephemeris:
+    t_ref: 59866.41
+    p0: 0.06012
+    period_slope: 0.0
+
+  timing:
+    method: nls_clean
+    error_model: rms_slope
+
+  output:
+    run_dir: ../data/runs/two_intervals
+
+  plots:
+    save_interval_plots: true
+    save_overview: true
+    overview_t_min: null
+    overview_t_max: null
+
+gp_template_defaults:
+  extended_fold: true
+  extrema_mode: max
+  kernel_type: matern
+  length_scale_init: 0.02
+  length_scale_min: 0.01
+  length_scale_max: 0.026
+  amplitude_init: 0.3
+  amplitude_min: 0.1
+  amplitude_max: 0.7
+  guess_sigma: false
+  noise_scale_divisor: 1.0
+  n_grid: 2000
+  n_restarts: 3
+  peak_local_order: 20
+  peak_pair_period_tol: 0.15
+  peak_min_prominence_frac: 0.5
+  mask_length_scale_factor: 2.5
+  mask_min_half_width: 0.012
+
+fit_defaults:
+  delta_tau_margin: 0.003
+  delta_tau_max: 0.02
+  outlier_mad_k: 3.0
+  outlier_max_iter: 8
+  outlier_min_inliers: 8
+  scale_min: 0.5
+  scale_max: 1.5
+
+pieces:
+  - piece_id: "59857"
+    local_period: 0.0591
+    # Skip GP Step 1 when template already exists from an earlier run (same piece):
+    existing_template_dir: ../data/runs/two_intervals/pieces/59857
+    # existing_template_dir: ../data
+    template_window:
+      t_min: 59857.0
+      t_max: 59857.7
+    fit_window:
+      t_min: 59857.0
+      t_max: 59857.7
+    intervals_path: ../data/intervals_59857.dat
+
+  - piece_id: "59866"
+    local_period: 0.06066
+    # Or copy template from another piece in THIS run (earlier in the list):
+    # reuse_template_from: "59857"
+    existing_template_dir: ../data/runs/two_intervals/pieces/59866
+    template_window:
+      t_min: 59866.0
+      t_max: 59866.7
+    fit_window:
+      t_min: 59866.0
+      t_max: 59866.7
+    intervals_path: ../data/intervals_59866.dat

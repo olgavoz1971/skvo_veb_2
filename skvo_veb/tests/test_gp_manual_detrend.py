@@ -60,6 +60,52 @@ def test_mag_view_subtracts_trend():
     assert data[1][2] == 0.01
 
 
+def test_detrend_preserves_missing_errors():
+    """Rows with null uncertainties stay null through detrend and export rebuild."""
+    struct = {
+        "schema": {"time": "t", "value": "mag", "error": "mag_err", "flag": None},
+        "meta": {
+            "active_domain": "mag",
+            "jd0": 0.0,
+            "photcal": {
+                "zp_mag": 20.0,
+                "zp_flux": 1.0,
+                "zp_mag_unit": "mag",
+                "zp_flux_unit": "",
+                "filter_identifier": "TEST",
+                "filter_name": "TEST",
+            },
+            "vo_envelope": {
+                "table_name": "t",
+                "lightcurve_title": "t",
+                "table_description": "test",
+                "votable_description": "test",
+            },
+        },
+        "data": [
+            [2450000.0, 10.0, None, None],
+            [2450001.0, 11.0, 0.05, None],
+        ],
+    }
+    payload = json.dumps(struct)
+    out = apply_manual_linear_detrend(
+        payload,
+        view_mode="mag",
+        anchor_a=(2450000.0 - DEFAULT_EPOCH_JD, 10.0),
+        anchor_b=(2450002.0 - DEFAULT_EPOCH_JD, 12.0),
+        time_axis_mode="mjd",
+    )
+    rows = json.loads(out)["data"]
+    assert rows[0][2] is None
+    assert rows[1][2] == 0.05
+
+    from skvo_veb.utils.lc_bridge import curvedash_from_transport_json
+
+    lcd = curvedash_from_transport_json(out, source_name="t.dat")
+    assert np.isnan(lcd.mag_err.iloc[0])
+    assert lcd.mag_err.iloc[1] == 0.05
+
+
 def test_identical_anchor_jd_raises():
     """Duplicate anchor times are rejected."""
     with pytest.raises(PipeException, match="same time"):

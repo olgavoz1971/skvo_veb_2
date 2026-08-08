@@ -15,6 +15,7 @@ from skvo_veb.utils.lc_config import (
     EXPORT_FORMATS,
     JD_TO_MJD,
     METADATA_KEY_VO_ENVELOPE,
+    METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
     PHOTCAL_KEY_FILTER_IDENTIFIER,
@@ -576,6 +577,16 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
         except (ValueError, TypeError) as exc:
             logger.warning("Could not normalise epoch for transport JSON: %s", exc)
 
+    meta_block[METADATA_KEY_VO_ENVELOPE] = _extract_vo_envelope_meta(
+        lc,
+        filename=str(
+            table_meta.get("name")
+            or table_meta.get("ID")
+            or table_meta.get("lightcurve_title")
+            or "lightcurve"
+        ),
+    )
+
     struct = {
         "schema": {
             "time": time_col,
@@ -588,6 +599,141 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     }
 
     return json.dumps(struct, cls=LCEncoder)
+
+
+def _transport_flag_column_to_labels(flag_values) -> np.ndarray:
+    """Maps transport flag cells to ``CurveDash`` uint8 label array.
+
+    Args:
+        flag_values: Column from transport ``data`` (index 3).
+
+    Returns:
+        numpy.ndarray: Label array aligned with photometry rows.
+    """
+    labels = []
+    for raw in flag_values:
+        if raw is None:
+            labels.append(0)
+            continue
+        try:
+            labels.append(int(raw))
+        except (TypeError, ValueError):
+            labels.append(0)
+    return np.asarray(labels, dtype=np.uint8)
+
+
+def curvedash_from_transport_json(
+    json_str: str,
+    *,
+    source_name: str | None = None,
+):
+    """Builds a ``CurveDash`` from GP/Dash transport JSON for bridge export.
+
+    Args:
+        json_str (str): Serialised packet from ``pack_volc_to_json`` (possibly
+            updated by GP detrend or other prep steps).
+        source_name (str, optional): Original upload filename for metadata title.
+
+    Returns:
+        CurveDash: Instance ready for ``export_curvedash``.
+
+    Raises:
+        PipeException: When the payload is empty or structurally invalid.
+    """
+    from skvo_veb.utils.curve_dash import CurveDash
+
+    if not json_str or not str(json_str).strip():
+        raise PipeException("No light curve data to export.")
+
+    try:
+        packet = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise PipeException(f"Light curve transport JSON is invalid: {exc}") from exc
+
+    data = packet.get("data")
+    if not data:
+        raise PipeException("Light curve transport contains no observations.")
+
+    meta = packet.get("meta") or {}
+    schema = packet.get("schema") or {}
+    arr = np.array(data, dtype=object)
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        raise PipeException("Light curve transport rows are malformed.")
+
+    t_raw = arr[:, 0].astype(float)
+    v_raw = arr[:, 1].astype(float)
+    jd0 = float(_jd0_from_packet_meta(meta) or 0.0)
+    jd = t_raw + jd0
+
+    has_err = schema.get("error") is not None
+    if has_err and arr.shape[1] > 2:
+        err_list = []
+        for cell in arr[:, 2]:
+            if cell is None:
+                err_list.append(np.nan)
+                continue
+            try:
+                val = float(cell)
+            except (TypeError, ValueError):
+                err_list.append(np.nan)
+                continue
+            err_list.append(val if np.isfinite(val) else np.nan)
+        err = np.asarray(err_list, dtype=float)
+    else:
+        err = np.full_like(v_raw, np.nan, dtype=float)
+
+    if arr.shape[1] > 3 and schema.get("flag") is not None:
+        label = _transport_flag_column_to_labels(arr[:, 3])
+    else:
+        label = np.zeros(len(v_raw), dtype=np.uint8)
+
+    active_domain = meta.get("active_domain") or DOMAIN_MAG
+    photcal = meta.get("photcal") or {}
+    timescale = (meta.get("timescale") or "utc").lower()
+
+    if source_name:
+        stem = Path(source_name).stem
+        display_name = stem
+    else:
+        display_name = meta.get("name") or "gp_lightcurve"
+        stem = str(display_name)
+
+    common_kwargs = dict(
+        name=stem,
+        title=stem,
+        jd=jd,
+        label=label,
+        time_unit="d",
+        timescale=timescale,
+        photcal=photcal,
+        period=meta.get("period"),
+        epoch=meta.get("epoch"),
+        period_unit="d",
+        active_domain=active_domain,
+    )
+
+    if active_domain == DOMAIN_MAG:
+        lcd = CurveDash(
+            **common_kwargs,
+            mag=v_raw,
+            mag_err=err,
+            mag_unit=str(meta.get("mag_unit") or "mag"),
+        )
+    else:
+        flux_unit = meta.get("flux_unit") or photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT) or ""
+        lcd = CurveDash(
+            **common_kwargs,
+            flux=v_raw,
+            flux_err=err,
+            flux_unit=str(flux_unit) if flux_unit else "",
+            active_domain=DOMAIN_FLUX,
+        )
+
+    envelope = meta.get(METADATA_KEY_VO_ENVELOPE)
+    if envelope:
+        lcd.metadata[METADATA_KEY_VO_ENVELOPE] = envelope
+
+    return lcd
 
 
 def unpack_json_for_plotly(json_str: str, view_mode='mag'):

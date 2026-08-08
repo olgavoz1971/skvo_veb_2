@@ -1,0 +1,108 @@
+# Template timing orchestrator manifest (example)
+#
+# Matches the parameters used in the recent 59857 sniff run, extended to two
+# pieces on one detrended light curve (data/R_detrended.dat spans 59857 and 59866).
+# Paths are relative to this file's directory (auxiliary/template_timing/examples/).
+#
+# Expected outputs (once run.py exists), under output.run_dir:
+#   timing.csv              — merged t_max + error per interval (official method)
+#   overview_lc_maxima.png  — full-LC plot with maxima marked
+#   pieces/<piece_id>/      — template.npz, template_meta.json, fit_summary.csv
+#   pieces/<piece_id>/fits/ — interval_XX.png if save_interval_plots is true
+
+version: 1
+
+global:
+  # Single detrended archive (or stitched) light curve; mag in file, mag0 from header unless overridden.
+  lc_path: ../data/R_detrended.dat
+  mag0: null  # null = read # mag0= from LC header
+
+  ephemeris:
+    t_ref: 59866.41
+    p0: 0.0591
+    period_slope: 0.0
+
+  timing:
+    # Official maximum time for every piece (same enum for all intervals).
+    method: nls_scale_clean
+    # Planned: map inlier RMS to sigma_t_max via |d template / d tau| at peak.
+    error_model: rms_slope
+
+  output:
+    run_dir: ../data/runs/example_59857_59866
+
+  plots:
+    save_interval_plots: true
+    save_overview: true
+    # null = span all piece template/fit windows; or set explicit truncated JD range:
+    overview_t_min: null
+    overview_t_max: null
+
+# Step 1 GP template defaults (per piece; override under pieces[].gp_template).
+gp_template_defaults:
+  extended_fold: true
+  extrema_mode: max
+  kernel_type: matern
+  length_scale_init: 0.02
+  length_scale_min: 0.01
+  length_scale_max: 0.026
+  amplitude_init: 0.3
+  amplitude_min: 0.1
+  amplitude_max: 0.7
+  guess_sigma: false
+  noise_scale_divisor: 1.0
+  n_grid: 2000
+  n_restarts: 3
+  peak_local_order: 20
+  peak_pair_period_tol: 0.15
+  peak_min_prominence_frac: 0.5
+  mask_length_scale_factor: 2.5
+  mask_min_half_width: 0.012
+
+# Step 2 template fit defaults (per piece; override under pieces[].fit).
+fit_defaults:
+  delta_tau_margin: 0.003
+  delta_tau_max: 0.02
+  outlier_mad_k: 3.0
+  outlier_max_iter: 8
+  outlier_min_inliers: 8
+  scale_min: 0.05
+  scale_max: 5.0
+  tau_mask_min_fallback: 0.035
+  tau_mask_max_fallback: 0.095
+
+pieces:
+  # Recent run: build_template + fit_template_sniff on this window and intervals.
+  - piece_id: "59857_dense"
+    template_window:
+      t_min: 59857.0
+      t_max: 59857.7
+    fit_window:
+      t_min: 59857.0
+      t_max: 59857.7
+    # local_period omitted → fold with global ephemeris.p0
+    intervals_path: ../data/intervals_59857.dat
+
+  # Second dense segment on the same LC (59866 case from commented script constants).
+  - piece_id: "59866_dense"
+    template_window:
+      t_min: 59866.0
+      t_max: 59866.7
+    fit_window:
+      t_min: 59866.0
+      t_max: 59866.7
+    intervals_path: ../data/intervals_59866.dat
+
+  # Example: piece-specific period for folding only (uncomment to use).
+  # - piece_id: "59866_dense_local_p"
+  #   local_period: 0.06066
+  #   template_window: { t_min: 59866.0, t_max: 59866.7 }
+  #   fit_window: { t_min: 59866.0, t_max: 59866.7 }
+  #   intervals_path: ../data/intervals_59866.dat
+
+  # Master-template special case: same as any piece, but only one piece runs
+  # template_window; others set reuse_template_from: "<piece_id>" (orchestrator TBD).
+  # - piece_id: "59857_fit_only"
+  #   reuse_template_from: "59857_dense"
+  #   fit_window: { t_min: 59857.0, t_max: 59857.7 }
+  #   intervals_path: ../data/intervals_59857.dat
