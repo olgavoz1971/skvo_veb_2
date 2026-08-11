@@ -20,6 +20,7 @@
     --gp-caution-hover: #8f3d13;
     /* Prep plot and interval registry share this height so their bottoms line up */
     --gp-plot-height: clamp(20rem, 55vh, 40rem);
+    --gp-registry-width: clamp(11.5rem, 13vw, 14.5rem);
 }
 
 .gp-page {
@@ -355,16 +356,42 @@
  * list scrolls: the header actions must stay reachable at any scroll position.
  */
 .gp-registry-panel {
-    width: clamp(14rem, 18vw, 18rem);
+    width: var(--gp-registry-width);
     height: var(--gp-plot-height);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    padding: var(--gp-space-md);
 }
 
 #registry-list-container {
     flex: 1 1 auto;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-sm);
+}
+
+#registry-list-container .card-body {
+    padding: var(--gp-space-sm) var(--gp-space-md);
+}
+
+.gp-registry-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--gp-space-sm);
+}
+
+.gp-registry-item-values {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+    line-height: 1.25;
+}
+
+.gp-registry-item-outside .gp-registry-item-values {
+    opacity: 0.55;
 }
 
 .gp-registry-header {

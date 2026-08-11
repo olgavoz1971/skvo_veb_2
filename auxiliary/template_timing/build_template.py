@@ -24,7 +24,8 @@ from skvo_veb.utils.gp.noise_policy import resolve_interval_noise_sigma_norm
 
 from fold_stack import fold_for_template, load_detrended_mag_dat
 from plot_style import FIGSIZE_TEMPLATE as FIGSIZE, FONT_SIZE, apply_plot_style
-from template_peak import fit_tau_mask, select_template_peak_tau
+from fit_mask import resolve_fit_mask
+from template_peak import select_template_peak
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,14 @@ N_GRID = 2000
 N_RESTARTS = 3
 
 EXTENDED_FOLD = True
-PEAK_LOCAL_ORDER = 20
-PEAK_PAIR_PERIOD_TOL = 0.15
-PEAK_MIN_PROMINENCE_FRAC = 0.5
-MASK_LENGTH_SCALE_FACTOR = 2.5
-MASK_MIN_HALF_WIDTH = 0.012
+PEAK_EDGE_MARGIN_FRAC_PERIOD = 0.05
+PEAK_MIN_SEPARATION_FRAC_PERIOD = 0.15
+PEAK_MIN_PROMINENCE_FRAC = 0.25
+PEAK_DUPLICATE_PHASE_TOL = 0.05
+PEAK_SELECT = "dominant"
+PEAK_TAU_HINT = None
+FIT_MASK_MODE = "whole_period"
+FIT_MASK_HALF_WIDTH_PHASE = 0.25
 
 def _apply_plot_style() -> None:
     apply_plot_style()
@@ -166,22 +170,28 @@ def fit_gp_template(frag: pd.DataFrame) -> dict:
     tau_grid = np.linspace(tau_lo - pad, tau_hi + pad, N_GRID).reshape(-1, 1)
     mean_grid, std_grid = gp.predict(tau_grid, return_std=True)
 
-    tau_peak = select_template_peak_tau(
+    selection = select_template_peak(
         tau_grid.ravel(),
         mean_grid.ravel(),
         P0,
-        extended_fold=EXTENDED_FOLD,
+        tau_data_min=tau_lo,
+        tau_data_max=tau_hi,
         extrema_mode=EXTREMA_MODE,
-        local_order=PEAK_LOCAL_ORDER,
-        period_pair_tol=PEAK_PAIR_PERIOD_TOL,
+        edge_margin_frac_period=PEAK_EDGE_MARGIN_FRAC_PERIOD,
+        min_separation_frac_period=PEAK_MIN_SEPARATION_FRAC_PERIOD,
         min_prominence_frac=PEAK_MIN_PROMINENCE_FRAC,
+        duplicate_phase_tol=PEAK_DUPLICATE_PHASE_TOL,
+        select=PEAK_SELECT,
+        tau_hint=PEAK_TAU_HINT,
     )
-    tau_mask_min, tau_mask_max = fit_tau_mask(
-        tau_peak,
-        length_scale_final,
-        half_width_factor=MASK_LENGTH_SCALE_FACTOR,
-        min_half_width=MASK_MIN_HALF_WIDTH,
+    tau_peak = selection.tau_peak
+    mask = resolve_fit_mask(
+        mode=FIT_MASK_MODE,
+        half_width_phase=FIT_MASK_HALF_WIDTH_PHASE,
+        period=P0,
+        tau_peak=tau_peak,
     )
+    tau_mask_min, tau_mask_max = mask.tau_min, mask.tau_max
 
     return {
         "gp": gp,
@@ -196,6 +206,10 @@ def fit_gp_template(frag: pd.DataFrame) -> dict:
         "tau_peak": tau_peak,
         "tau_mask_min": tau_mask_min,
         "tau_mask_max": tau_mask_max,
+        "tau_data_min": tau_lo,
+        "tau_data_max": tau_hi,
+        "fit_mask": mask,
+        "peak_selection": selection,
         "length_scale_final": length_scale_final,
         "amplitude_final": amplitude_final,
     }
@@ -274,11 +288,12 @@ def save_template(result: dict) -> None:
         "t_obs_max": T_OBS_MAX,
         "extended_fold": EXTENDED_FOLD,
         "tau_units": "days (phi_ext * P0, phase 0 at tau=0)",
-        "peak_selection": "extended_pair_near_phase0_or_nearest_tau0",
+        "peak_selection": result["peak_selection"].as_dict(),
         "extrema_mode": EXTREMA_MODE,
         "tau_peak": result["tau_peak"],
-        "tau_mask_min": result["tau_mask_min"],
-        "tau_mask_max": result["tau_mask_max"],
+        "tau_data_min": result["tau_data_min"],
+        "tau_data_max": result["tau_data_max"],
+        "fit_mask_at_build": result["fit_mask"].as_dict(),
         "gp_kernel": KERNEL_TYPE,
         "length_scale_final": result["length_scale_final"],
         "amplitude_final": result["amplitude_final"],

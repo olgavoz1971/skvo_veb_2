@@ -58,28 +58,8 @@ def t_from_tau_on_cycle(
     period: float,
     cycle_index: int,
 ) -> float:
-    """Calendar time at fold coordinate ``tau`` on cycle ``cycle_index`` (O-C / ephemeris use)."""
+    """Calendar time at fold coordinate ``tau`` on cycle ``cycle_index`` (O-C use only)."""
     return t_ref + cycle_index * period + tau
-
-
-def t_max_from_delta_tau_at_anchor(
-    delta_tau: float,
-    *,
-    t_anchor: float,
-    t_ref: float,
-    period: float,
-    tau_peak: float,
-) -> float:
-    """Calendar JD of the template peak after shift ``delta_tau``, local to ``t_anchor``.
-
-    Step 2 fits data in a known JD interval; ``t_max`` is obtained by correcting
-    ``t_anchor`` in fold-time ``tau`` (same extended-fold branch as ``observation_tau``),
-    without global cycle counting.
-    """
-    tau_target = float(tau_peak + delta_tau)
-    tau_anchor = observation_tau(t_anchor, t_ref, period, tau_peak=tau_peak)
-    tau_anchor = float(np.asarray(tau_anchor, dtype=float).reshape(-1)[0])
-    return float(t_anchor + (tau_target - tau_anchor))
 
 
 def extended_tau_from_phase(phi: np.ndarray, period: float) -> np.ndarray:

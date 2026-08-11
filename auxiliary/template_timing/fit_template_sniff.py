@@ -17,11 +17,11 @@ import numpy as np
 
 from skvo_veb.utils.gp.intervals import load_intervals
 
-from fold_stack import observation_tau
 from lc_flux import load_lc_fragment, mag_to_normalised_flux
 from plot_style import FIGSIZE_INTERVAL, FONT_SIZE, apply_interval_plot_style
+from fit_mask import resolve_fit_mask
 from template_fit import (
-    EphemerisContext,
+    IntervalFitContext,
     ShiftFitResult,
     TemplateCurve,
     fit_cross_correlation,
@@ -49,9 +49,9 @@ P0 = 0.0591
 T_OBS_MIN = 59857.0
 T_OBS_MAX = 59857.7
 
-# Fallback if template_meta lacks tau_mask (re-build template after rule change).
-TAU_MASK_MIN_FALLBACK = 0.035
-TAU_MASK_MAX_FALLBACK = 0.095
+# Step 2 fit window around the peak: whole_period, or frac_period with a phase half-width.
+FIT_MASK_MODE = "whole_period"
+FIT_MASK_HALF_WIDTH_PHASE = 0.25
 
 # Search half-width for phase shift (days), plus margin from interval span in tau.
 DELTA_TAU_MARGIN = 0.003
@@ -70,14 +70,24 @@ def load_template_bundle() -> tuple[TemplateCurve, dict]:
     """Load template grid and metadata written by ``build_template``."""
     meta = json.loads(TEMPLATE_META.read_text(encoding="utf-8"))
     data = np.load(TEMPLATE_NPZ)
-    curve = TemplateCurve(data["tau"], data["mu"], float(data["tau_peak"]))
+    curve = TemplateCurve(
+        data["tau"],
+        data["mu"],
+        float(data["tau_peak"]),
+        tau_data_min=float(meta["tau_data_min"]),
+        tau_data_max=float(meta["tau_data_max"]),
+    )
     return curve, meta
 
 
-def _tau_mask_from_meta(meta: dict) -> tuple[float, float]:
-    if "tau_mask_min" in meta and "tau_mask_max" in meta:
-        return float(meta["tau_mask_min"]), float(meta["tau_mask_max"])
-    return TAU_MASK_MIN_FALLBACK, TAU_MASK_MAX_FALLBACK
+def _fit_mask(meta: dict, tau_peak: float):
+    """Resolve the fit window from module constants and the template fold period."""
+    return resolve_fit_mask(
+        mode=FIT_MASK_MODE,
+        half_width_phase=FIT_MASK_HALF_WIDTH_PHASE,
+        period=float(meta.get("fold_period", meta["p0"])),
+        tau_peak=tau_peak,
+    )
 
 
 def plot_template_preview(
@@ -87,7 +97,8 @@ def plot_template_preview(
     save_path: Path,
 ) -> None:
     """Show saved template with tau mask used in fits."""
-    tau_mask_min, tau_mask_max = _tau_mask_from_meta(meta)
+    mask = _fit_mask(meta, curve.tau_peak)
+    tau_mask_min, tau_mask_max = mask.tau_min, mask.tau_max
     data = np.load(TEMPLATE_NPZ)
     tau = data["tau"]
     mu = data["mu"]
@@ -106,7 +117,7 @@ def plot_template_preview(
     plt.show()
 
 
-def _delta_tau_bounds(t_start: float, t_end: float) -> tuple[float, float]:
+def _delta_t_bounds(t_start: float, t_end: float) -> tuple[float, float]:
     span = max(t_end - t_start, 1e-9)
     half = min(DELTA_TAU_MAX, 0.5 * span + DELTA_TAU_MARGIN)
     return -half, half
@@ -116,12 +127,9 @@ def _model_flux_on_jd_grid(
     t_line: np.ndarray,
     curve: TemplateCurve,
     fit: ShiftFitResult,
-    t_ref: float,
-    period: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    tau_obs = observation_tau(t_line, t_ref, period, tau_peak=curve.tau_peak)
-    tau_q = tau_obs - fit.delta_tau
-    mu = curve.eval(tau_q)
+    dt = t_line - fit.t_max
+    mu = curve.eval_from_peak(dt)
     ok = np.isfinite(mu)
     return t_line[ok], (fit.scale * mu[ok] + fit.delta_y)
 
@@ -135,8 +143,6 @@ def _plot_fit_panel(
     t_start: float,
     t_end: float,
     title: str,
-    t_ref: float,
-    period: float,
 ) -> None:
     inlier = fit.inlier_mask
     if inlier is not None and len(inlier) == len(t):
@@ -154,15 +160,15 @@ def _plot_fit_panel(
     else:
         ax.scatter(t, y, s=40, c="k", alpha=0.75, label="data")
     t_line = np.linspace(t_start, t_end, 300)
-    t_ok, y_model = _model_flux_on_jd_grid(t_line, curve, fit, t_ref, period)
+    t_ok, y_model = _model_flux_on_jd_grid(t_line, curve, fit)
     ax.plot(t_ok, y_model, color="tab:blue", lw=2, label="template + shift")
     ax.axvline(fit.t_max, color="magenta", ls="--", label=f"t_max={fit.t_max:.6f}")
     ax.set_xlim(t_start, t_end)
-    ax.set_xlabel("truncated JD")
+    ax.set_xlabel("time (LC units)")
     ax.set_ylabel("normalised flux")
     ax.set_title(
         f"{title}\nRMS={fit.rms:.4f}, n={fit.n_used}, "
-        f"delta_tau={fit.delta_tau * 86400:.1f}s, s={fit.scale:.3f}"
+        f"delta_t={fit.delta_t * 86400:.1f}s, s={fit.scale:.3f}"
     )
     ax.legend()
 
@@ -180,18 +186,16 @@ def plot_interval_fits(
     nls_scale_clean: ShiftFitResult,
     *,
     save_path: Path,
-    t_ref: float,
-    period: float,
 ) -> None:
     """CC, NLS, cleaned NLS, and scaled+cleaned NLS for one cycle."""
     fig, (ax_cc, ax_nls, ax_clean, ax_scale) = plt.subplots(
         1, 4, figsize=FIGSIZE_INTERVAL, sharey=True
     )
     _plot_fit_panel(
-        ax_cc, t, y, curve, cc, t_start, t_end, "Cross-correlation", t_ref, period
+        ax_cc, t, y, curve, cc, t_start, t_end, "Cross-correlation"
     )
     _plot_fit_panel(
-        ax_nls, t, y, curve, nls, t_start, t_end, "Nonlinear least squares", t_ref, period
+        ax_nls, t, y, curve, nls, t_start, t_end, "Nonlinear least squares"
     )
     _plot_fit_panel(
         ax_clean,
@@ -202,8 +206,6 @@ def plot_interval_fits(
         t_start,
         t_end,
         "NLS + iterative outlier clean",
-        t_ref,
-        period,
     )
     _plot_fit_panel(
         ax_scale,
@@ -214,8 +216,6 @@ def plot_interval_fits(
         t_start,
         t_end,
         "NLS + scale + outlier clean",
-        t_ref,
-        period,
     )
     fig.suptitle(f"Interval {index}: [{t_start:.5f}, {t_end:.5f}]", fontsize=FONT_SIZE)
     fig.tight_layout()
@@ -229,9 +229,8 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
     curve, meta = load_template_bundle()
-    t_ref = float(meta.get("t_ref", T_REF))
-    period = float(meta.get("p0", P0))
-    tau_mask_min, tau_mask_max = _tau_mask_from_meta(meta)
+    mask = _fit_mask(meta, curve.tau_peak)
+    dt_min, dt_max = mask.dt_min, mask.dt_max
 
     plot_template_preview(curve, meta, save_path=OUT_TEMPLATE_PREVIEW)
 
@@ -273,64 +272,60 @@ def main() -> None:
             continue
 
         t_centre = 0.5 * (t_start + t_end)
-        tau_obs = observation_tau(t, t_ref, period, tau_peak=curve.tau_peak)
-        ephem = EphemerisContext(
-            t_ref=t_ref,
-            period=period,
-            tau_peak=curve.tau_peak,
-            t_anchor=t_centre,
-        )
+        ctx = IntervalFitContext(t_anchor=t_centre)
 
-        dtau_lo, dtau_hi = _delta_tau_bounds(t_start, t_end)
+        dt_lo, dt_hi = _delta_t_bounds(t_start, t_end)
         cc = fit_cross_correlation(
             curve,
-            tau_obs,
+            t,
             y,
-            ephem,
-            tau_mask_min=tau_mask_min,
-            tau_mask_max=tau_mask_max,
-            delta_tau_min=dtau_lo,
-            delta_tau_max=dtau_hi,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=dt_lo,
+            delta_t_max=dt_hi,
         )
         nls = fit_nonlinear_least_squares(
             curve,
-            tau_obs,
+            t,
             y,
-            ephem,
-            tau_mask_min=tau_mask_min,
-            tau_mask_max=tau_mask_max,
-            delta_tau_min=dtau_lo,
-            delta_tau_max=dtau_hi,
-            delta_tau_init=cc.delta_tau,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=dt_lo,
+            delta_t_max=dt_hi,
+            delta_t_init=cc.delta_t,
         )
         nls_clean = fit_nls_iterative_outlier_clean(
             curve,
-            tau_obs,
+            t,
             y,
-            ephem,
-            tau_mask_min=tau_mask_min,
-            tau_mask_max=tau_mask_max,
-            delta_tau_min=dtau_lo,
-            delta_tau_max=dtau_hi,
-            delta_tau_init=nls.delta_tau,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=dt_lo,
+            delta_t_max=dt_hi,
+            delta_t_init=nls.delta_t,
             mad_k=OUTLIER_MAD_K,
             max_iter=OUTLIER_MAX_ITER,
             min_inliers=OUTLIER_MIN_INLIERS,
         )
         nls_scale_clean = fit_nls_scale_iterative_outlier_clean(
             curve,
-            tau_obs,
+            t,
             y,
-            ephem,
-            tau_mask_min=tau_mask_min,
-            tau_mask_max=tau_mask_max,
-            delta_tau_min=dtau_lo,
-            delta_tau_max=dtau_hi,
-            delta_tau_init=nls_clean.delta_tau,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=dt_lo,
+            delta_t_max=dt_hi,
+            delta_t_init=nls_clean.delta_t,
             scale_init=1.0,
             mad_k=OUTLIER_MAD_K,
             max_iter=OUTLIER_MAX_ITER,
             min_inliers=OUTLIER_MIN_INLIERS,
+            scale_min=0.05,
+            scale_max=5.0,
         )
 
         plot_interval_fits(
@@ -345,8 +340,6 @@ def main() -> None:
             nls_clean,
             nls_scale_clean,
             save_path=OUT_DIR / f"interval_{idx:02d}.png",
-            t_ref=t_ref,
-            period=period,
         )
 
         n_rejected = (
@@ -368,20 +361,20 @@ def main() -> None:
                 "n_points": len(t),
                 "n_outliers_rejected": n_rejected,
                 "n_outliers_rejected_scale": n_rejected_scale,
-                "delta_tau_cc": cc.delta_tau,
+                "delta_t_cc": cc.delta_t,
                 "delta_y_cc": cc.delta_y,
                 "t_max_cc": cc.t_max,
                 "rms_cc": cc.rms,
-                "delta_tau_nls": nls.delta_tau,
+                "delta_t_nls": nls.delta_t,
                 "delta_y_nls": nls.delta_y,
                 "t_max_nls": nls.t_max,
                 "rms_nls": nls.rms,
-                "delta_tau_nls_clean": nls_clean.delta_tau,
+                "delta_t_nls_clean": nls_clean.delta_t,
                 "delta_y_nls_clean": nls_clean.delta_y,
                 "t_max_nls_clean": nls_clean.t_max,
                 "rms_nls_clean": nls_clean.rms,
                 "scale_nls_scale_clean": nls_scale_clean.scale,
-                "delta_tau_nls_scale_clean": nls_scale_clean.delta_tau,
+                "delta_t_nls_scale_clean": nls_scale_clean.delta_t,
                 "delta_y_nls_scale_clean": nls_scale_clean.delta_y,
                 "t_max_nls_scale_clean": nls_scale_clean.t_max,
                 "rms_nls_scale_clean": nls_scale_clean.rms,

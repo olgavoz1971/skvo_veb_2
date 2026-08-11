@@ -30,6 +30,23 @@ def test_build_unfolded_interval_pick_payload_mjd():
     assert payload["bands"][0]["x1"] == pytest.approx(59000.5)
 
 
+def test_build_unfolded_interval_pick_payload_respects_jd_window():
+    jd0 = 2400000.5
+    intervals = [
+        [2459000.0, 2459001.0],
+        [2459100.0, 2459101.0],
+    ]
+    payload = build_unfolded_interval_pick_payload(
+        intervals,
+        time_axis_mode="mjd",
+        display_epoch=jd0,
+        timescale=None,
+        jd_window=(2459099.0, 2459102.0),
+    )
+    assert len(payload["bands"]) == 1
+    assert payload["bands"][0]["i"] == 1
+
+
 def test_prep_interval_band_shape_style_marked_flag():
     plain = prep_interval_band_shape_style(marked=False)
     marked = prep_interval_band_shape_style(marked=True)

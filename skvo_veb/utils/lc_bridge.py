@@ -884,7 +884,7 @@ def get_jd_limits(json_str):
     return min(times) + jd0, max(times) + jd0
 
 
-def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: float, epoch=None):
+def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: float, epoch=None, observation_jd_bounds=None):
     """Converts selected phase boundaries into concrete absolute JD intervals.
 
     Identifies which cycles fall within the dataset's time window, maps phase coordinates back
@@ -897,12 +897,20 @@ def get_intervals_from_phase(json_str, phi_min: float, phi_max: float, period: f
         period (float): Fold period of the star in days.
         epoch (float, optional): Reference zero-phase epoch Julian Date.
             Defaults to the start of the dataset.
+        observation_jd_bounds (tuple, optional): ``(jd_min, jd_max)`` to restrict cycle
+            clipping (prep working range). When omitted, uses the full light curve span.
 
     Returns:
         list of list: A list of absolute time segments [[start_jd, end_jd], ...]
             clipped to the observation window.
     """
     jd_start, jd_end = get_jd_limits(json_str)
+    if observation_jd_bounds is not None:
+        w0, w1 = sorted((float(observation_jd_bounds[0]), float(observation_jd_bounds[1])))
+        jd_start = max(jd_start, w0)
+        jd_end = min(jd_end, w1)
+        if jd_end <= jd_start:
+            return []
     t0 = epoch if epoch is not None else jd_start
 
     # Cycle detection

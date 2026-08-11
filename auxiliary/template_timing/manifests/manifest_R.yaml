@@ -1,0 +1,177 @@
+# Working manifest for all meaningful ground-based observations in R filter
+
+version: 1
+
+global:
+  lc_path: ../data/R_detrended_corrected.dat
+  mag0: 10
+
+  template_fold:
+    default_epoch: 59866.41
+    default_period: 0.05937839
+    period_slope: 0.0
+
+  timing:
+    method: nls_clean
+    error_model: rms_slope
+
+  output:
+    run_dir: ../data/runs/ground_R
+
+  plots:
+    save_interval_plots: true
+    save_overview: true
+    overview_t_min: null
+    overview_t_max: null
+
+gp_template_defaults:
+  extended_fold: true
+  extrema_mode: max
+  kernel_type: matern
+  length_scale_init: 0.02
+  length_scale_min: 0.01
+  length_scale_max: 0.026
+  amplitude_init: 0.3
+  amplitude_min: 0.1
+  amplitude_max: 0.7
+  guess_sigma: false
+  noise_scale_divisor: 1.0
+  n_grid: 2000
+  n_restarts: 3
+  # Peak search: local extrema of the GP mean inside the folded data range only,
+  # ranked by prominence relative to the in-range peak-to-peak amplitude.
+  peak_edge_margin_frac_period: 0.05
+  peak_min_separation_frac_period: 0.15
+  peak_min_prominence_frac: 0.25
+  peak_duplicate_phase_tol: 0.05
+  peak_select: dominant
+  peak_tau_hint: null
+
+fit_defaults:
+  # Which part of the cycle Step 2 fits, around the timed peak.
+  # whole_period = +-0.5 P; frac_period = +-fit_mask_half_width_phase * P (max 0.5).
+  fit_mask_mode: whole_period   # frac_period 
+  fit_mask_half_width_phase: 0.25
+  delta_tau_margin: 0.003
+  delta_tau_max: 0.02
+  outlier_mad_k: 3.0
+  outlier_max_iter: 8
+  outlier_min_inliers: 8
+  scale_min: 0.5
+  scale_max: 1.5
+
+pieces:
+  - piece_id: "early"
+    # skip: true
+    local_period: 0.05937839
+    local_epoch: 59866.380310805 
+    # existing_template_dir: ../data/runs/ground_R/pieces/early
+    template_window:
+      t_min: 59853.0
+      t_max: 59858.203804
+    fit_window:
+      t_min: 59853.0
+      t_max: 59862.7
+    intervals_path: ../data/R_early_intervals.dat
+    # local_lc_path if omitted -- use global lc_path
+
+  - piece_id: "59865"
+    # skip: true
+    local_period: 0.06066
+    # existing_template_dir: ../data/runs/ground_R/pieces/59865
+    template_window:
+      t_min: 59865.0
+      t_max: 59865.7
+    fit_window:
+      t_min: 59865.0
+      t_max: 59865.7
+    intervals_path: ../data/R_59865_intervals.dat
+
+  - piece_id: "59866_67"
+    # skip: true
+    local_period: 0.06066
+    # Or copy template from another piece in THIS run (earlier in the list):
+    # reuse_template_from: "59857"
+    # existing_template_dir: ../data/runs/ground_R/pieces/59866_67
+    template_window:
+      t_min: 59866.0
+      t_max: 59867.7
+    fit_window:
+      t_min: 59866.0
+      t_max: 59867.7
+    intervals_path: ../data/R_59866_67_intervals.dat
+
+  - piece_id: "59868_69"
+    # skip: true
+    local_period: 0.05991
+    # local_epoch: 59866.469905
+    local_epoch: 59866.44
+    # existing_template_dir: ../data/runs/ground_R/pieces/59868_69
+    template_window:
+      t_min: 59868.2
+      t_max: 59869.7
+    fit_window:
+      t_min: 59868.2
+      t_max: 59869.7
+    intervals_path: ../data/R_59868_70_intervals.dat
+
+  - piece_id: "59870_71"
+    # skip: true
+    local_period: 0.05991
+    local_epoch: 59866.43995
+    # existing_template_dir: ../data/runs/ground_R/pieces/59870_71
+    template_window:
+      t_min: 59870.2
+      t_max: 59871.7
+    fit_window:
+      t_min: 59870.2
+      t_max: 59871.7
+    intervals_path: ../data/R_59870_71_intervals.dat
+
+  - piece_id: "59872_75"
+    # skip: true
+    local_period: 0.05984
+    local_epoch: 59866.43995
+    # existing_template_dir: ../data/runs/ground_R/pieces/59872_75
+    template_window:
+      t_min: 59872.0
+      t_max: 59873.7
+    fit_window:
+      t_min: 59872.0
+      t_max: 59875.7
+    intervals_path: ../data/R_59872_75_intervals.dat
+
+  - piece_id: "59878"
+    local_period: 0.0619
+    local_epoch: 59866.43995
+    template_window:
+      t_min: 59878.2
+      t_max: 59878.7
+    fit_window:
+      t_min: 59878.2
+      t_max: 59878.7
+    intervals_path: ../data/R_5978_intervals.dat
+
+  - piece_id: "59880"
+    local_period: 0.06191
+    local_epoch: 59866.43995
+    template_window:
+      t_min: 59880.2
+      t_max: 59880.7
+    fit_window:
+      t_min: 59880.2
+      t_max: 59888.7
+    intervals_path: ../data/R_5980_intervals.dat
+
+  
+  - piece_id: "59883"    
+    local_period: 0.06191
+    local_epoch: 59866.43995
+    template_window:
+      t_min: 59883.2
+      t_max: 59883.7
+    fit_window:
+      t_min: 59883.2
+      t_max: 59883.7
+    intervals_path: ../data/R_5983_intervals.dat
+

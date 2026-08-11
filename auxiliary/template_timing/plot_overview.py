@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 from fold_stack import load_detrended_mag_dat
 
@@ -16,32 +15,49 @@ logger = logging.getLogger(__name__)
 
 
 def plot_lc_with_maxima(
-    lc_path: Path,
     timing_rows: list[dict],
     *,
     t_min: float,
     t_max: float,
+    lc_segments: list[tuple[Path, float, float]],
     save_path: Path,
     show: bool = False,
 ) -> None:
-    """Plot detrended mag vs truncated JD with vertical markers at ``t_max``."""
+    """Plot detrended mag vs truncated JD with vertical markers at ``t_max``.
+
+    Args:
+        lc_segments: ``(lc_path, segment_t_min, segment_t_max)`` per distinct LC file;
+            each segment is clipped to ``[t_min, t_max]`` for plotting.
+    """
     apply_plot_style()
-    df, _header = load_detrended_mag_dat(lc_path)
-    mask = (df["jd"] >= t_min) & (df["jd"] <= t_max)
-    piece = df.loc[mask]
-    if piece.empty:
-        raise ValueError(f"no LC points in overview range [{t_min}, {t_max}]")
+    if not lc_segments:
+        raise ValueError("lc_segments must be non-empty")
 
     fig, ax = plt.subplots(figsize=FIGSIZE_OVERVIEW)
-    ax.scatter(
-        piece["jd"].to_numpy(dtype=float),
-        piece["mag"].to_numpy(dtype=float),
-        s=8,
-        c="0.35",
-        alpha=0.6,
-        label="detrended mag",
-        rasterized=True,
-    )
+    plotted_lc = False
+    for lc_path, seg_lo, seg_hi in lc_segments:
+        lo = max(t_min, seg_lo)
+        hi = min(t_max, seg_hi)
+        if lo > hi:
+            continue
+        df, _header = load_detrended_mag_dat(lc_path)
+        mask = (df["jd"] >= lo) & (df["jd"] <= hi)
+        piece = df.loc[mask]
+        if piece.empty:
+            logger.warning("no LC points for %s in [%s, %s]", lc_path.name, lo, hi)
+            continue
+        ax.scatter(
+            piece["jd"].to_numpy(dtype=float),
+            piece["mag"].to_numpy(dtype=float),
+            s=8,
+            c="0.35",
+            alpha=0.6,
+            rasterized=True,
+        )
+        plotted_lc = True
+
+    if not plotted_lc:
+        raise ValueError(f"no LC points in overview range [{t_min}, {t_max}]")
 
     piece_ids = sorted({str(row["piece_id"]) for row in timing_rows})
     cmap = plt.get_cmap("tab10")
@@ -60,14 +76,11 @@ def plot_lc_with_maxima(
             alpha=0.85,
         )
 
-    for pid in piece_ids:
-        ax.plot([], [], color=colour_for[pid], ls="--", label=f"maxima ({pid})")
-
     ax.set_xlim(t_min, t_max)
+    ax.invert_yaxis()
     ax.set_xlabel("truncated JD")
-    ax.set_ylabel("detrended mag")
+    ax.set_ylabel("detrended magnitude")
     ax.set_title("Light curve with template timing maxima")
-    ax.legend(loc="upper right")
     fig.tight_layout()
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150)
@@ -87,10 +100,13 @@ def overview_time_span(
     """Resolve overview JD limits from manifest or data."""
     if overview_t_min is not None and overview_t_max is not None:
         return overview_t_min, overview_t_max
-    t_mins = [p.fit_window.t_min for p in manifest_pieces]
-    t_maxs = [p.fit_window.t_max for p in manifest_pieces]
-    t_lo = min(t_mins)
-    t_hi = max(t_maxs)
+    t_mins = [p.fit_window.t_min for p in manifest_pieces if not getattr(p, "skip", False)]
+    t_maxs = [p.fit_window.t_max for p in manifest_pieces if not getattr(p, "skip", False)]
+    if not t_mins:
+        t_lo, t_hi = 0.0, 1.0
+    else:
+        t_lo = min(t_mins)
+        t_hi = max(t_maxs)
     if timing_rows:
         t_lo = min(t_lo, min(float(r["t_max"]) for r in timing_rows) - 0.02)
         t_hi = max(t_hi, max(float(r["t_max"]) for r in timing_rows) + 0.02)

@@ -305,6 +305,17 @@ from skvo_veb.utils.gp.live_page import (
     live_visible_page_for_done_count,
 )
 from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
+from skvo_veb.utils.gp.intervals import format_interval_display_pair
+from skvo_veb.utils.gp.working_window import (
+    WORKING_WINDOW_DISABLED,
+    build_working_window_store,
+    filter_plot_arrays_by_jd_window,
+    interval_overlaps_jd_window,
+    jd_bounds_from_visible_plot,
+    normalize_working_window,
+    observation_jd_bounds_tuple,
+    transport_json_for_prep_export,
+)
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
     DEFAULT_EXPORT_FORMAT,
@@ -773,6 +784,31 @@ sidebar_lc = html.Div([
                 ],
                 className="gp-sidebar-switch-row",
             ),
+            html.Label("Working range", className="gp-export-sublabel"),
+            html.Div(
+                id="gp-prep-working-window-status",
+                className="small text-muted",
+            ),
+            html.Div(
+                [
+                    dbc.Button(
+                        "Use visible range",
+                        id="btn-use-visible-range",
+                        color="primary",
+                        size="sm",
+                    ),
+                    dbc.Button(
+                        "Restore full light curve",
+                        id="btn-restore-full-lc",
+                        color="secondary",
+                        outline=True,
+                        size="sm",
+                        disabled=True,
+                    ),
+                ],
+                className="gp-sidebar-btn-stack",
+            ),
+            html.Div(id="gp-prep-working-window-feedback", className="gp-export-feedback"),
         ],
         className="gp-sidebar-block",
     ),
@@ -959,17 +995,11 @@ graph_lc = html.Div([
 intervals_registry = html.Div([
     html.Div(
         [
-            html.H6(
-                [
-                    "Selected intervals ",
-                    html.Span(id="registry-interval-count", className="text-muted"),
-                ],
-                className="gp-card-title",
-            ),
+            html.H6("Selected intervals", className="gp-card-title"),
             html.Div(
                 [
                     dbc.Button(
-                        "Remove empty",
+                        "Clear empty",
                         id="btn-remove-empty-intervals",
                         color="link",
                         size="sm",
@@ -994,7 +1024,7 @@ intervals_registry = html.Div([
         # We'll use a Dash Table or a List of Cards here
         html.P("No intervals selected.", className="text-muted small")
     ])
-], className="gp-registry-panel p-3 border rounded bg-light")
+], className="gp-registry-panel border rounded bg-light")
 
 registry_toggle_btn = dbc.Button(
     # region unfold
@@ -1360,6 +1390,7 @@ def layout():
         ], id="help-modal", size="xl", is_open=False),
 
         dcc.Store(id='store-lc-data'),
+        dcc.Store(id='store-gp-prep-working-window', data=WORKING_WINDOW_DISABLED),
         dcc.Store(id='store-intervals-data'),
         dcc.Store(id='store-gp-interval-pick-bands'),
         dcc.Store(id='store-gp-intervals-marked', data=[]),
@@ -1504,6 +1535,7 @@ def toggle_gp_legend(n_clicks, is_open):
     Input('view-mode-radio', 'value'),
     Input('gp_time_axis_switch', 'value'),
     Input('gp-prep-show-errorbars', 'value'),
+    Input('store-gp-prep-working-window', 'data'),
     Input('store-gp-intervals-marked', 'data'),
     State('input-period', 'value'),
     State('input-epoch', 'value'),
@@ -1517,6 +1549,7 @@ def update_prep_graph(
     view_mode,
     time_axis_mode,
     show_prep_errorbars,
+    working_window_store,
     marked_indices,
     period,
     epoch,
@@ -1551,6 +1584,29 @@ def update_prep_graph(
     x_jd = np.asarray(lc['x'], dtype=float)
     y_data = lc['y']
     err_data = lc['err']
+
+    working_window = normalize_working_window(working_window_store)
+    if working_window is not None:
+        try:
+            x_jd, y_data, err_data = filter_plot_arrays_by_jd_window(
+                x_jd,
+                y_data,
+                err_data,
+                working_window["jd_min"],
+                working_window["jd_max"],
+            )
+        except PipeException as exc:
+            fig = go.Figure()
+            fig.update_layout(
+                title=str(exc),
+                template="plotly_white",
+                margin=dict(l=40, r=20, t=60, b=40),
+            )
+            return (
+                fig,
+                {"enabled": False, "axis": axis_mode, "bands": []},
+                [],
+            )
 
     # Error bars logic (off by default; large LC + triple phase copies is slow)
     error_y_logic = None
@@ -1636,7 +1692,10 @@ def update_prep_graph(
         # Using lc_json_string means zoom only resets when a NEW file is uploaded.
         # Adding an interval won't trigger a reset.
         # uirevision=[lc_json_string, view_mode],  # when we should update layout
-        uirevision=f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}_{show_prep_errorbars}",
+        uirevision=(
+            f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}_"
+            f"{show_prep_errorbars}_{working_window_store}"
+        ),
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
     )
@@ -1648,11 +1707,21 @@ def update_prep_graph(
     # Mark selected intervals (stored as absolute JD; display only in current axis)
     pick_bands = {"enabled": False, "axis": axis_mode, "bands": []}
     if intervals_data:
+        jd_window = None
+        if working_window is not None:
+            jd_window = (
+                working_window["jd_min"],
+                working_window["jd_max"],
+            )
         if phase_view:
             t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
             if t0_abs is None:
                 t0_abs = float(np.nanmin(x_jd))
             for interval in intervals_data:
+                if jd_window is not None and not interval_overlaps_jd_window(
+                    interval, jd_window[0], jd_window[1]
+                ):
+                    continue
                 for x0, x1 in phase_vrect_bounds_extended(
                     interval[0], interval[1], t0_abs, float(period)
                 ):
@@ -1672,6 +1741,7 @@ def update_prep_graph(
                 time_axis_mode=axis_mode,
                 display_epoch=jd0,
                 timescale=ts,
+                jd_window=jd_window,
             )
             marked_set = {
                 int(i)
@@ -1679,6 +1749,10 @@ def update_prep_graph(
                 if 0 <= int(i) < len(intervals_data)
             }
             for index, interval in enumerate(intervals_data):
+                if jd_window is not None and not interval_overlaps_jd_window(
+                    interval, jd_window[0], jd_window[1]
+                ):
+                    continue
                 x0, x1 = absolute_jd_to_plot_x(
                     [interval[0], interval[1]], axis_mode, jd0, timescale=ts
                 )
@@ -1701,11 +1775,22 @@ def update_prep_graph(
     if triggered:
         trigger_id = triggered[0]['prop_id'].split('.')[0]
         if trigger_id in ('store-intervals-data', 'store-gp-intervals-marked'):
-            apply_plot_relayout_ranges_to_figure(
-                fig,
-                prep_relayout_data,
-                preserve_x=not phase_view,
-            )
+            if working_window is None:
+                apply_plot_relayout_ranges_to_figure(
+                    fig,
+                    prep_relayout_data,
+                    preserve_x=not phase_view,
+                )
+
+    if working_window is not None and not phase_view:
+        ts = lc.get("timescale")
+        wx0, wx1 = absolute_jd_to_plot_x(
+            [working_window["jd_min"], working_window["jd_max"]],
+            axis_mode,
+            jd0,
+            timescale=ts,
+        )
+        fig.update_xaxes(range=[wx0, wx1], autorange=False)
 
     return fig, pick_bands, no_update
 
@@ -1742,23 +1827,176 @@ clientside_callback(
 
 
 @callback(
-    Output("registry-interval-count", "children"),
     Output("btn-remove-empty-intervals", "disabled"),
     Output("btn-clear-intervals", "disabled"),
     Input("store-intervals-data", "data"),
 )
 def reflect_registry_interval_count(intervals):
-    """Shows how many intervals are registered and gates the list actions.
+    """Enables list actions when at least one interval is registered.
 
     Args:
         intervals (list | None): Interval registry from ``store-intervals-data``.
 
     Returns:
-        tuple: ``(count_label, remove_empty_disabled, clear_all_disabled)`` where the
-        label is ``(n)`` for a non-empty registry and empty otherwise.
+        tuple: ``(remove_empty_disabled, clear_all_disabled)``.
     """
     count = len(intervals) if intervals else 0
-    return (f"({count})" if count else ""), count == 0, count == 0
+    return count == 0, count == 0
+
+
+@callback(
+    Output("btn-restore-full-lc", "disabled"),
+    Input("store-gp-prep-working-window", "data"),
+)
+def gate_restore_full_lightcurve(working_window_store):
+    """Disables restore until a working range is active.
+
+    Args:
+        working_window_store: ``store-gp-prep-working-window`` payload.
+
+    Returns:
+        bool: ``True`` when restore should stay disabled.
+    """
+    return normalize_working_window(working_window_store) is None
+
+
+@callback(
+    Output("gp-prep-working-window-status", "children"),
+    Input("store-gp-prep-working-window", "data"),
+    Input("gp_time_axis_switch", "value"),
+    State("store-lc-data", "data"),
+)
+def describe_working_window(working_window_store, time_axis_mode, lc_json_string):
+    """Shows whether prep uses the full light curve or a working JD window.
+
+    Args:
+        working_window_store: Working range store payload.
+        time_axis_mode: Active prep plot time axis.
+        lc_json_string: Full light curve transport JSON.
+
+    Returns:
+        str: Sentence-case status for the sidebar.
+    """
+    window = normalize_working_window(working_window_store)
+    if window is None:
+        return "Full light curve (zoom changes the view only)."
+    timescale = None
+    if lc_json_string:
+        try:
+            import json as _json
+
+            meta = _json.loads(lc_json_string).get("meta") or {}
+            timescale = meta.get("timescale")
+        except (TypeError, ValueError, _json.JSONDecodeError):
+            timescale = None
+    start_label, end_label = format_interval_display_pair(
+        window["jd_min"],
+        window["jd_max"],
+        time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
+        display_epoch=jd0,
+        timescale=timescale,
+    )
+    return f"Working range: {start_label} – {end_label}"
+
+
+@callback(
+    Output("store-gp-prep-working-window", "data"),
+    Output("gp-prep-working-window-feedback", "children"),
+    Input("btn-use-visible-range", "n_clicks"),
+    State("prep-graph", "relayoutData"),
+    State("gp_time_axis_switch", "value"),
+    State("folding-switch", "value"),
+    State("store-lc-data", "data"),
+    prevent_initial_call=True,
+)
+def apply_visible_range_as_working_window(
+    n_clicks,
+    relayout_data,
+    time_axis_mode,
+    folding_on,
+    lc_json_string,
+):
+    """Sets the prep working window from the current plot zoom.
+
+    Args:
+        n_clicks: Button click count.
+        relayout_data: Latest prep graph relayout payload.
+        time_axis_mode: Active time axis mode.
+        folding_on: Phase folding checklist value.
+        lc_json_string: Full light curve transport JSON.
+
+    Returns:
+        tuple: Updated working window store and optional feedback alert.
+    """
+    if not n_clicks or not lc_json_string:
+        return dash.no_update, dash.no_update
+
+    if gp_checklist_switch_is_on(folding_on):
+        return (
+            dash.no_update,
+            dbc.Alert(
+                "Unfold the light curve before setting a working range from zoom.",
+                color="warning",
+                className="py-2 small mb-0",
+            ),
+        )
+
+    try:
+        mode = time_axis_mode or TIME_AXIS_MJD
+        jd_min, jd_max = jd_bounds_from_visible_plot(
+            relayout_data,
+            time_axis_mode=mode,
+            display_epoch=jd0,
+        )
+        store_payload = build_working_window_store(jd_min, jd_max, lc_json_string)
+    except PipeException as exc:
+        return dash.no_update, dbc.Alert(
+            str(exc),
+            color="warning",
+            className="py-2 small mb-0",
+        )
+
+    if store_payload.get("enabled"):
+        message = dbc.Alert(
+            "Prep plot and folding now use this time range only.",
+            color="success",
+            className="py-2 small mb-0",
+        )
+    else:
+        message = dbc.Alert(
+            "Visible range covers the full light curve; working range cleared.",
+            color="info",
+            className="py-2 small mb-0",
+        )
+    return store_payload, message
+
+
+@callback(
+    Output("store-gp-prep-working-window", "data", allow_duplicate=True),
+    Output("gp-prep-working-window-feedback", "children", allow_duplicate=True),
+    Input("btn-restore-full-lc", "n_clicks"),
+    prevent_initial_call=True,
+)
+def restore_full_lightcurve_working_window(n_clicks):
+    """Clears the prep working window so the full light curve is used again.
+
+    Args:
+        n_clicks: Restore button click count.
+
+    Returns:
+        tuple: Disabled working window store and success feedback.
+    """
+    if not n_clicks:
+        return dash.no_update, dash.no_update
+    return (
+        WORKING_WINDOW_DISABLED,
+        dbc.Alert(
+            "Full light curve restored for prep and folding.",
+            color="success",
+            className="py-2 small mb-0",
+        ),
+    )
+
 
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphIntervalMarkClick"),
@@ -1886,6 +2124,7 @@ def disable_prep_interaction_modes_when_folded(folding_on):
     State("view-mode-radio", "value"),
     State("gp_time_axis_switch", "value"),
     State("folding-switch", "value"),
+    State("store-gp-prep-working-window", "data"),
     prevent_initial_call=True,
 )
 def commit_prep_linear_detrend(
@@ -1895,6 +2134,7 @@ def commit_prep_linear_detrend(
     view_mode,
     time_axis_mode,
     folding_on,
+    working_window_store,
 ):
     """Applies the user trend line to the stored light curve."""
     if not n_clicks or not lc_json_string:
@@ -1922,6 +2162,8 @@ def commit_prep_linear_detrend(
             no_update,
         )
     try:
+        window = normalize_working_window(working_window_store)
+        jd_bounds = observation_jd_bounds_tuple(window)
         updated = apply_manual_linear_detrend(
             lc_json_string,
             view_mode=view_mode or "mag",
@@ -1929,6 +2171,7 @@ def commit_prep_linear_detrend(
             anchor_b=(trend_line["x1"], trend_line["y1"]),
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
             display_epoch=jd0,
+            jd_bounds=jd_bounds,
         )
     except PipeException as exc:
         return (
@@ -1952,7 +2195,9 @@ def commit_prep_linear_detrend(
     return (
         updated,
         dbc.Alert(
-            "Trend removed from the working light curve.",
+            "Trend removed from the working range."
+            if jd_bounds
+            else "Trend removed from the working light curve.",
             color="success",
             className="py-2 small mb-0",
         ),
@@ -1964,13 +2209,15 @@ def commit_prep_linear_detrend(
 # ------ Lightcurve ----
 
 @callback(
-    # region unfold me
     Output('store-lc-data', 'data'),
     Output('upload-lc-text', 'children'),
     Output({"type": "gp-upload-detail", "index": "lc"}, 'children'),
     Output('input-period', 'value'),
     Output('input-epoch', 'value'),
     Output('view-mode-radio', 'value'),
+    Output('store-gp-prep-working-window', 'data', allow_duplicate=True),
+    Output("gp-trend-feedback", "children", allow_duplicate=True),
+    Output("gp-prep-working-window-feedback", "children", allow_duplicate=True),
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),
     prevent_initial_call=True
@@ -1979,7 +2226,7 @@ def commit_prep_linear_detrend(
 def upload_lc(contents, filename):
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 6
+        return (dash.no_update,) * 9
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -1997,6 +2244,9 @@ def upload_lc(contents, filename):
             period,
             epoch_display,
             active_domain,
+            WORKING_WINDOW_DISABLED,
+            None,
+            None,
         )
 
     except Exception as e:
@@ -2010,6 +2260,9 @@ def upload_lc(contents, filename):
                 "Lightcurve upload failed",
                 format_user_upload_error(e),
             ),
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -2238,6 +2491,7 @@ def update_GP_scale(trigger_clicks, intervals, lc_json_string):
     State('input-epoch', 'value'),
     State('gp_time_axis_switch', 'value'),
     State('store-lc-data', 'data'),  # We need this to get JD span
+    State('store-gp-prep-working-window', 'data'),
     State('gp-prep-trend-mode', 'value'),
     prevent_initial_call=True
     # endregion
@@ -2251,6 +2505,7 @@ def add_selection_to_registry(
     epoch,
     time_axis_mode,
     lc_json,
+    working_window_store,
     trend_mode_on,
 ):
     if not n_clicks or not selected_data or 'range' not in selected_data:
@@ -2279,9 +2534,21 @@ def add_selection_to_registry(
 
             phi_lo, phi_hi = validate_extended_phase_selection(x_min, x_max)
             epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
-            new_intervals = get_intervals_from_phase(
-                lc_json, phi_lo, phi_hi, period, epoch_abs
+            obs_bounds = observation_jd_bounds_tuple(
+                normalize_working_window(working_window_store)
             )
+            new_intervals = get_intervals_from_phase(
+                lc_json,
+                phi_lo,
+                phi_hi,
+                period,
+                epoch_abs,
+                observation_jd_bounds=obs_bounds,
+            )
+            if not new_intervals:
+                raise PipeException(
+                    "No intervals fall inside the working time range for this phase selection."
+                )
             assert_phase_intervals_not_duplicates(new_intervals, updated_list)
             updated_list.extend(new_intervals)
         else:
@@ -2355,36 +2622,71 @@ def add_selection_to_registry(
 # ------- interval registry stuff ----
 @callback(
     Output('registry-list-container', 'children'),
-    Input('store-intervals-data', 'data')
+    Input('store-intervals-data', 'data'),
+    Input('gp_time_axis_switch', 'value'),
+    Input('store-gp-prep-working-window', 'data'),
+    State('store-lc-data', 'data'),
 )
-def render_registry(intervals):
+def render_registry(intervals, time_axis_mode, working_window_store, lc_json_string):
+    """Renders interval cards using the same time axis as the prep plot."""
     if not intervals:
         return html.P("No intervals selected.", className="text-muted small italic")
 
+    axis_mode = time_axis_mode or TIME_AXIS_MJD
+    timescale = None
+    if lc_json_string:
+        try:
+            import json as _json
+
+            meta = _json.loads(lc_json_string).get("meta") or {}
+            timescale = meta.get("timescale")
+        except (TypeError, ValueError, _json.JSONDecodeError):
+            timescale = None
+
+    working_window = normalize_working_window(working_window_store)
     cards = []
     for i, interval in enumerate(intervals):
+        start_label, end_label = format_interval_display_pair(
+            interval[0],
+            interval[1],
+            time_axis_mode=axis_mode,
+            display_epoch=jd0,
+            timescale=timescale,
+        )
+        outside = working_window is not None and not interval_overlaps_jd_window(
+            interval,
+            working_window["jd_min"],
+            working_window["jd_max"],
+        )
+        row_class = "gp-registry-item"
+        if outside:
+            row_class = "gp-registry-item gp-registry-item-outside"
         cards.append(
             dbc.Card([
                 dbc.CardBody([
-                    dbc.Row([
-                        dbc.Col([
-                            # html.Small(f"Interval {i+1}", className="text-muted d-block"),
-                            html.B(f"{interval[0]:.3f}"),
-                            html.Span(" - ", className="mx-1"),
-                            html.B(f"{interval[1]:.3f}"),
-                        ], width=9),
-                        dbc.Col([
+                    html.Div(
+                        [
+                            html.Div(
+                                [
+                                    html.B(start_label),
+                                    html.Span(" - "),
+                                    html.B(end_label),
+                                ],
+                                className="small gp-registry-item-values",
+                            ),
                             dbc.Button(
                                 html.I(className="bi bi-trash"),
                                 id={'type': 'del-int', 'index': i},
-                                color="link",  # Removes the button box entirely
-                                className="text-danger text-decoration-none p-0",
-                                title="Delete"
-                            )
-                        ], width=3, className="text-end")
-                    ], className="align-items-center")
-                ], className="p-2")
-            ], className="mb-2 shadow-sm")
+                                color="link",
+                                size="sm",
+                                className="gp-registry-action text-danger",
+                                title="Delete",
+                            ),
+                        ],
+                        className=row_class,
+                    )
+                ])
+            ], className="shadow-sm")
         )
     return cards
 
@@ -2727,15 +3029,14 @@ def guess_gp_parameters(n_clicks, ids, current_trigger):
 
 @callback(
     Output('export-intervals-filename', 'value'),
-    Input('upload-lc', 'filename'),
-    prevent_initial_call=True
+    Input('upload-intervals', 'filename'),
+    prevent_initial_call=True,
 )
 def update_intervals_output_filename(filename):
+    """Default interval export stem from the uploaded intervals file name."""
     if filename:
-        # Strip the old extension and add '_intervals.dat'
-        base = filename.rsplit('.', 1)[0]
-        return f"{base}_intervals.dat"
-    return "results_intervals.dat"
+        return filename.rsplit('.', 1)[0]
+    return "my_intervals"
 
 
 @callback(
@@ -2768,6 +3069,7 @@ def gate_lc_export_button(lc_json_string):
     State("gp-lc-export-format", "value"),
     State("export-lc-filename", "value"),
     State("upload-lc", "filename"),
+    State("store-gp-prep-working-window", "data"),
     prevent_initial_call=True,
 )
 def download_gp_prep_lightcurve(
@@ -2776,14 +3078,19 @@ def download_gp_prep_lightcurve(
     table_format,
     filename_stem,
     upload_filename,
+    working_window_store,
 ):
     """Exports the stored prep light curve (including manual detrend) via lc_bridge."""
     if not n_clicks or not lc_json_string:
         raise PreventUpdate
     fmt = table_format or DEFAULT_EXPORT_FORMAT
     try:
-        lcd = curvedash_from_transport_json(
+        export_json = transport_json_for_prep_export(
             lc_json_string,
+            working_window_store,
+        )
+        lcd = curvedash_from_transport_json(
+            export_json,
             source_name=upload_filename,
         )
         file_bytes = export_curvedash(lcd, fmt)

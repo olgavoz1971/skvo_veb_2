@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from skvo_veb.utils.gp.working_window import interval_overlaps_jd_window
+
 GP_INTERVAL_SHAPE_NAME_PREFIX = "gp-int-"
 
 
@@ -61,6 +63,7 @@ def build_unfolded_interval_pick_payload(
     time_axis_mode: str,
     display_epoch: float,
     timescale: str | None,
+    jd_window: tuple[float, float] | None = None,
 ) -> dict:
     """Builds clientside hit-test metadata for unfolded interval bands.
 
@@ -69,6 +72,8 @@ def build_unfolded_interval_pick_payload(
         time_axis_mode (str): Active MJD or date axis mode.
         display_epoch (float): JD reference for MJD display.
         timescale (str, optional): ``TIMESYS/@timescale`` for date axis.
+        jd_window (tuple, optional): When set, ``(jd_min, jd_max)``; bands outside
+            the closed window are omitted (indices unchanged for survivors).
 
     Returns:
         dict: ``{enabled, axis, bands: [{i, x0, x1}, ...]}`` for ``dcc.Store``.
@@ -80,6 +85,10 @@ def build_unfolded_interval_pick_payload(
 
     bands = []
     for index, interval in enumerate(intervals):
+        if jd_window is not None and not interval_overlaps_jd_window(
+            interval, jd_window[0], jd_window[1]
+        ):
+            continue
         x0, x1 = absolute_jd_to_plot_x(
             [interval[0], interval[1]],
             time_axis_mode,

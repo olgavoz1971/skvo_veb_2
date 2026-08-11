@@ -60,6 +60,27 @@ def test_mag_view_subtracts_trend():
     assert data[1][2] == 0.01
 
 
+def test_detrend_jd_bounds_leaves_outside_rows_unchanged():
+    """Detrend with jd_bounds only mutates rows inside the window."""
+    jds = [2450000.0, 2450001.0, 2450002.0]
+    mags = [10.0, 11.0, 12.0]
+    payload = _minimal_mag_packet(mags, jds)
+    x0 = jds[0] - DEFAULT_EPOCH_JD
+    x1 = jds[2] - DEFAULT_EPOCH_JD
+    out = apply_manual_linear_detrend(
+        payload,
+        view_mode="mag",
+        anchor_a=(x0, 10.0),
+        anchor_b=(x1, 12.0),
+        time_axis_mode="mjd",
+        jd_bounds=(2450000.5, 2450001.5),
+    )
+    data = json.loads(out)["data"]
+    assert data[0][1] == 10.0
+    np.testing.assert_allclose(data[1][1], 0.0, atol=1e-10)
+    assert data[2][1] == 12.0
+
+
 def test_detrend_preserves_missing_errors():
     """Rows with null uncertainties stay null through detrend and export rebuild."""
     struct = {

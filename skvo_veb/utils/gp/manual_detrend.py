@@ -153,6 +153,7 @@ def apply_manual_linear_detrend(
     anchor_b: tuple[float | str, float],
     time_axis_mode: str,
     display_epoch: float = DEFAULT_EPOCH_JD,
+    jd_bounds: tuple[float, float] | None = None,
 ) -> str:
     """Removes a user line from the transport light curve in the current view domain.
 
@@ -167,6 +168,8 @@ def apply_manual_linear_detrend(
         anchor_b (tuple): Second anchor ``(plot_x, y)``.
         time_axis_mode (str): Prep plot time axis (``mjd`` or ``date``).
         display_epoch (float): MJD display epoch offset.
+        jd_bounds (tuple, optional): When set, ``(jd_min, jd_max)`` absolute JD;
+            only rows inside the closed window are detrended.
 
     Returns:
         str: Updated transport JSON.
@@ -186,6 +189,10 @@ def apply_manual_linear_detrend(
     y_a = float(anchor_a[1])
     y_b = float(anchor_b[1])
 
+    jd_lo = jd_hi = None
+    if jd_bounds is not None:
+        jd_lo, jd_hi = sorted((float(jd_bounds[0]), float(jd_bounds[1])))
+
     data = packet["data"]
     n_updated = 0
     for row in data:
@@ -194,6 +201,8 @@ def apply_manual_linear_detrend(
         if np.isnan(t_raw) or np.isnan(v_raw):
             continue
         jd = t_raw + jd0
+        if jd_lo is not None and (jd < jd_lo or jd > jd_hi):
+            continue
         ell = float(line_y_at_jd(np.array([jd]), jd_a, y_a, jd_b, y_b)[0])
 
         e_raw = row[2]
@@ -253,8 +262,9 @@ def apply_manual_linear_detrend(
         raise PipeException("No valid light curve rows to detrend.")
 
     logger.info(
-        "Manual linear detrend applied (%s view) on %d rows",
+        "Manual linear detrend applied (%s view) on %d rows%s",
         view_mode,
         n_updated,
+        " (working range only)" if jd_bounds is not None else "",
     )
     return json.dumps(packet)
