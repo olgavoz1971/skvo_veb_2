@@ -54,3 +54,60 @@ DEFAULT_FLOAT_PARAMS = {
     "amplitude_min": AMPLITUDE_MIN,
     "amplitude_max": AMPLITUDE_MAX,
 }
+
+GP_FLOAT_PARAM_LABELS = {
+    "noise_scale_divisor": "Noise divisor",
+    "length_scale_init": "Length scale (initial)",
+    "length_scale_min": "Length scale (minimum)",
+    "length_scale_max": "Length scale (maximum)",
+    "amplitude_init": "Amplitude (initial)",
+    "amplitude_min": "Amplitude (minimum)",
+    "amplitude_max": "Amplitude (maximum)",
+}
+
+
+def parse_gp_float_param(name: str, value) -> float:
+    """Parse one GP sidebar float parameter from a Dash number input.
+
+    Args:
+        name: Parameter key in ``DEFAULT_FLOAT_PARAMS`` (used in error text).
+        value: Raw ``dbc.Input`` value (number, string, empty, or ``None``).
+
+    Returns:
+        float: Parsed parameter value.
+
+    Raises:
+        ValueError: When ``value`` is empty or cannot be converted to ``float``.
+        KeyError: When ``name`` is not a known GP float parameter.
+    """
+    if name not in DEFAULT_FLOAT_PARAMS:
+        raise KeyError(f"Unknown GP float parameter: {name!r}")
+    label = GP_FLOAT_PARAM_LABELS.get(name, name)
+    if value is None or value == "":
+        raise ValueError(f"{label} is empty; enter a numeric value.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{label} must be a number; got {value!r}."
+        ) from exc
+
+
+def build_gp_float_params(ids: list[dict], values: list) -> dict[str, float]:
+    """Build the GP float-parameter dict from pattern-matched sidebar inputs.
+
+    Args:
+        ids: ``State({'type': 'float-input', 'index': ALL}, 'id')`` list.
+        values: Matching ``value`` list in the same order as ``ids``.
+
+    Returns:
+        dict[str, float]: Parsed float parameters keyed by ``index``.
+
+    Raises:
+        ValueError: When any parameter is empty or not numeric.
+    """
+    params: dict[str, float] = {}
+    for val_id, val in zip(ids, values):
+        key = val_id["index"]
+        params[key] = parse_gp_float_param(key, val)
+    return params

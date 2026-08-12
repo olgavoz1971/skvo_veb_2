@@ -51,6 +51,27 @@ class TimeWindow:
             raise ValueError(f"time window invalid: {self.t_min} > {self.t_max}")
 
 
+FOLD_EPHEMERIS_KINDS = frozenset({"quadratic", "quadratic_oc"})
+
+
+@dataclass(frozen=True)
+class FoldEphemerisConfig:
+    """Step 1 quadratic O-C fold for template stacking."""
+
+    kind: str
+    oc_a: float
+    oc_b: float
+    oc_c: float
+    tau_period: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in FOLD_EPHEMERIS_KINDS:
+            raise ValueError(
+                f"fold_ephemeris.kind must be one of {sorted(FOLD_EPHEMERIS_KINDS)}, "
+                f"got {self.kind!r}"
+            )
+
+
 @dataclass
 class GPTemplateDefaults:
     """Step 1 Gaussian process template hyperparameters."""
@@ -120,6 +141,7 @@ class PieceConfig:
     intervals_path: Path
     local_period: float | None = None
     local_epoch: float | None = None
+    fold_ephemeris: FoldEphemerisConfig | None = None
     local_lc_path: Path | None = None
     reuse_template_from: str | None = None
     existing_template_dir: Path | None = None
@@ -155,6 +177,34 @@ def _resolve_path(base: Path, raw: str) -> Path:
     if not path.is_absolute():
         path = (base / path).resolve()
     return path
+
+
+def _parse_fold_ephemeris(
+    entry: dict[str, Any],
+    *,
+    piece_id: str,
+) -> FoldEphemerisConfig | None:
+    """Parse optional ``fold_ephemeris`` on a piece."""
+    raw = entry.get("fold_ephemeris")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"piece {piece_id}: fold_ephemeris must be a mapping")
+    kind = str(raw.get("kind", "quadratic"))
+    missing = [key for key in ("a", "b", "c") if key not in raw]
+    if missing:
+        raise ValueError(
+            f"piece {piece_id}: fold_ephemeris requires {missing} for kind {kind!r}"
+        )
+    tau_raw = raw.get("tau_period")
+    tau_period = None if tau_raw is None else float(tau_raw)
+    return FoldEphemerisConfig(
+        kind=kind,
+        oc_a=float(raw["a"]),
+        oc_b=float(raw["b"]),
+        oc_c=float(raw["c"]),
+        tau_period=tau_period,
+    )
 
 
 def _window_from_mapping(data: dict[str, Any]) -> TimeWindow:
@@ -397,6 +447,7 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
         local_period = None if local_period is None else float(local_period)
         local_epoch = entry.get("local_epoch")
         local_epoch = None if local_epoch is None else float(local_epoch)
+        fold_ephemeris = _parse_fold_ephemeris(entry, piece_id=piece_id)
         local_lc_raw = entry.get("local_lc_path")
         local_lc_path = (
             None if local_lc_raw is None else _resolve_path(base, str(local_lc_raw))
@@ -428,6 +479,7 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 intervals_path=intervals_path,
                 local_period=local_period,
                 local_epoch=local_epoch,
+                fold_ephemeris=fold_ephemeris,
                 local_lc_path=local_lc_path,
                 reuse_template_from=reuse_template_from,
                 existing_template_dir=existing_template_dir,

@@ -130,6 +130,50 @@ def build_extended_phase_plot_arrays(
     return x_out, y_out, err_out
 
 
+def build_extended_phase_plot_arrays_from_phi(
+    phi: np.ndarray,
+    y,
+    err,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Builds triple-stripe phase coordinates from precomputed fractional phases.
+
+    Args:
+        phi (numpy.ndarray): Fractional phases in ``[0, 1)``, one per observation.
+        y: Photometry values aligned with ``phi``.
+        err: Per-point errors or None.
+
+    Returns:
+        tuple: ``(x_phase, y, err)`` concatenated for Scattergl (err may be None).
+    """
+    phi = np.mod(np.asarray(phi, dtype=float), 1.0)
+    y_arr = np.asarray(y)
+    err_arr = None if err is None else np.asarray(err)
+
+    x_parts: list[np.ndarray] = []
+    y_parts: list[np.ndarray] = []
+    e_parts: list[np.ndarray] = []
+
+    for offset in (-1.0, 0.0, 1.0):
+        x_copy = phi + offset
+        mask = (x_copy >= EXTENDED_PHASE_XMIN - _PHASE_AXIS_EPS) & (
+            x_copy <= EXTENDED_PHASE_XMAX + _PHASE_AXIS_EPS
+        )
+        if not np.any(mask):
+            continue
+        x_parts.append(x_copy[mask])
+        y_parts.append(y_arr[mask])
+        if err_arr is not None:
+            e_parts.append(err_arr[mask])
+
+    if not x_parts:
+        return np.array([]), np.array([]), None
+
+    x_out = np.concatenate(x_parts)
+    y_out = np.concatenate(y_parts)
+    err_out = np.concatenate(e_parts) if e_parts else None
+    return x_out, y_out, err_out
+
+
 def phase_vrect_bounds_extended(
     jd_min: float,
     jd_max: float,
@@ -180,3 +224,68 @@ def _canonical_phase_segments(
     if phi0 <= phi1:
         return [(phi0, phi1)]
     return [(phi0, 1.0), (0.0, phi1)]
+
+
+def phase_vrect_bounds_extended_quadratic(
+    jd_min: float,
+    jd_max: float,
+    period: float,
+    epoch_jd: float,
+    oc_a: float,
+    oc_b: float,
+    oc_c: float,
+) -> list[tuple[float, float]]:
+    """Maps a JD interval to extended-axis vrect bounds (quadratic O-C fold).
+
+    Args:
+        jd_min (float): Interval start (absolute JD).
+        jd_max (float): Interval end (absolute JD).
+        period (float): Reference period ``P_0``.
+        epoch_jd (float): Reference epoch ``T_0``.
+        oc_a (float): Quadratic O-C coefficient.
+        oc_b (float): Linear O-C coefficient.
+        oc_c (float): Constant O-C offset.
+
+    Returns:
+        list[tuple[float, float]]: Segments on ``[-0.5, 1.5]``.
+    """
+    from skvo_veb.utils.gp.quadratic_fold import continuous_cycles_from_jd
+
+    if period <= 0 or not np.isfinite(period):
+        return []
+    start = float(min(jd_min, jd_max))
+    end = float(max(jd_min, jd_max))
+    if end <= start:
+        return []
+
+    e0 = float(
+        continuous_cycles_from_jd(
+            np.array([start]), period, epoch_jd, oc_a, oc_b, oc_c
+        )[0]
+    )
+    e1 = float(
+        continuous_cycles_from_jd(
+            np.array([end]), period, epoch_jd, oc_a, oc_b, oc_c
+        )[0]
+    )
+    if e1 < e0:
+        e0, e1 = e1, e0
+    if e1 - e0 >= 1.0:
+        canonical = [(0.0, 1.0)]
+    else:
+        phi0 = e0 % 1.0
+        phi1 = e1 % 1.0
+        if phi0 <= phi1:
+            canonical = [(phi0, phi1)]
+        else:
+            canonical = [(phi0, 1.0), (0.0, phi1)]
+
+    extended: list[tuple[float, float]] = []
+    for phi0, phi1 in canonical:
+        for offset in (-1.0, 0.0, 1.0):
+            x0, x1 = phi0 + offset, phi1 + offset
+            clip_lo = max(x0, EXTENDED_PHASE_XMIN)
+            clip_hi = min(x1, EXTENDED_PHASE_XMAX)
+            if clip_hi > clip_lo + _PHASE_AXIS_EPS:
+                extended.append((clip_lo, clip_hi))
+    return extended

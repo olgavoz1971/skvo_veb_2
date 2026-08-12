@@ -95,6 +95,133 @@ def load_detrended_mag_dat(path: Path) -> tuple[pd.DataFrame, dict]:
     return df, meta
 
 
+def extended_tau_from_phase(phi: np.ndarray, period: float) -> np.ndarray:
+    """Map centred phase and +1 copy to tau = phi_ext * P (days, phase 0 at tau=0)."""
+    phi_ext = np.concatenate([phi, phi + 1.0])
+    return phi_ext * period
+
+
+def continuous_cycles_from_quadratic_oc(
+    t: np.ndarray | float,
+    *,
+    period: float,
+    epoch: float,
+    oc_a: float,
+    oc_b: float,
+    oc_c: float,
+) -> np.ndarray:
+    """Solve for continuous cycle number ``E`` at truncated JD ``t``.
+
+    Inverts ``JD = a E² + (P₀ + b) E + (T₀ + c)`` using the same root branch as
+    ``skvo_veb.utils.gp.quadratic_fold`` and ``binary_processor.fold_lightcurve_with_oc``.
+
+    Args:
+        t (numpy.ndarray | float): Julian dates (truncated JD, same units as epoch).
+        period (float): Reference period ``P₀`` (days).
+        epoch (float): Reference epoch ``T₀`` (truncated JD).
+        oc_a (float): Quadratic O-C coefficient on ``E²``.
+        oc_b (float): Linear O-C coefficient on ``E``.
+        oc_c (float): Constant O-C offset (days).
+
+    Returns:
+        numpy.ndarray: Continuous cycle numbers ``E``.
+
+    Raises:
+        ValueError: When the discriminant is negative or the corrected period is zero.
+    """
+    t_arr = np.asarray(t, dtype=float)
+    p_corr = period + oc_b
+    t_corr = epoch + oc_c
+    if np.isclose(oc_a, 0.0, atol=1e-16):
+        if np.isclose(p_corr, 0.0, atol=1e-16):
+            raise ValueError("corrected period is zero; cannot fold")
+        return (t_arr - t_corr) / p_corr
+
+    discriminant = p_corr**2 - 4.0 * oc_a * (t_corr - t_arr)
+    if np.any(discriminant < 0):
+        bad = int(np.count_nonzero(discriminant < 0))
+        raise ValueError(
+            f"quadratic fold failed for {bad} point(s): discriminant < 0"
+        )
+    return (-p_corr + np.sqrt(discriminant)) / (2.0 * oc_a)
+
+
+def phase_centred_from_quadratic_oc(
+    t: np.ndarray | float,
+    *,
+    period: float,
+    epoch: float,
+    oc_a: float,
+    oc_b: float,
+    oc_c: float,
+) -> np.ndarray:
+    """Centred phase in [-0.5, 0.5) from a quadratic O-C ephemeris."""
+    cycles = continuous_cycles_from_quadratic_oc(
+        t,
+        period=period,
+        epoch=epoch,
+        oc_a=oc_a,
+        oc_b=oc_b,
+        oc_c=oc_c,
+    )
+    return cycles - np.round(cycles)
+
+
+def instantaneous_period_at_cycle(
+    cycle_e: float | np.ndarray,
+    *,
+    period: float,
+    oc_b: float,
+    oc_a: float,
+) -> float | np.ndarray:
+    """Instantaneous period ``P(E) = P₀ + b + 2 a E``."""
+    return period + oc_b + 2.0 * oc_a * np.asarray(cycle_e, dtype=float)
+
+
+def resolve_tau_period(
+    *,
+    period: float,
+    epoch: float,
+    oc_a: float,
+    oc_b: float,
+    oc_c: float,
+    jd_segment_start: float,
+    tau_period_override: float | None,
+) -> tuple[float, float]:
+    """Resolve ``P_τ`` for ``tau = phi_ext * P_τ``.
+
+    Args:
+        period (float): Reference period ``P₀``.
+        epoch (float): Reference epoch ``T₀``.
+        oc_a (float): Quadratic O-C coefficient.
+        oc_b (float): Linear O-C coefficient.
+        oc_c (float): Constant O-C offset.
+        jd_segment_start (float): Segment start JD (typically ``template_window.t_min``).
+        tau_period_override (float | None): Manifest override; ``None`` → ``P(E_start)``.
+
+    Returns:
+        tuple[float, float]: ``(P_tau, E_start)``.
+    """
+    e_start = float(
+        continuous_cycles_from_quadratic_oc(
+            jd_segment_start,
+            period=period,
+            epoch=epoch,
+            oc_a=oc_a,
+            oc_b=oc_b,
+            oc_c=oc_c,
+        )
+    )
+    p_inst = float(
+        instantaneous_period_at_cycle(
+            e_start, period=period, oc_b=oc_b, oc_a=oc_a
+        )
+    )
+    if tau_period_override is not None:
+        return float(tau_period_override), e_start
+    return p_inst, e_start
+
+
 def fold_for_template(
     df: pd.DataFrame,
     *,
@@ -117,6 +244,66 @@ def fold_for_template(
     times = piece[time_col].to_numpy(dtype=float)
     phi = phase_centred(times, t_ref, period)
     tau = extended_tau_from_phase(phi, period)
+    mag = np.concatenate([piece[mag_col].to_numpy(dtype=float)] * 2)
+    if err_col in piece.columns:
+        err = np.concatenate([piece[err_col].to_numpy(dtype=float)] * 2)
+    else:
+        err = np.full_like(mag, np.nan)
+
+    return pd.DataFrame({"tau": tau, "mag": mag, "dmag": err})
+
+
+def fold_for_template_quadratic(
+    df: pd.DataFrame,
+    *,
+    t_min: float,
+    t_max: float,
+    epoch: float,
+    period: float,
+    oc_a: float,
+    oc_b: float,
+    oc_c: float,
+    tau_period: float,
+    time_col: str = "jd",
+    mag_col: str = "mag",
+    err_col: str = "dmag",
+) -> pd.DataFrame:
+    """Pre-fold with quadratic O-C phase and separate ``P_τ`` for the tau axis.
+
+    Args:
+        df (pandas.DataFrame): Detrended light curve.
+        t_min (float): Template window start (truncated JD).
+        t_max (float): Template window end (truncated JD).
+        epoch (float): Reference epoch ``T₀`` (truncated JD).
+        period (float): Reference period ``P₀`` (days).
+        oc_a (float): Quadratic O-C coefficient.
+        oc_b (float): Linear O-C coefficient.
+        oc_c (float): Constant O-C offset.
+        tau_period (float): ``P_τ`` scaling phase to days on the tau axis.
+        time_col (str): Time column name.
+        mag_col (str): Magnitude column name.
+        err_col (str): Uncertainty column name.
+
+    Returns:
+        pandas.DataFrame: Folded stack with ``tau``, ``mag``, ``dmag``.
+    """
+    if tau_period <= 0:
+        raise ValueError("tau_period must be positive")
+
+    piece = df.loc[(df[time_col] >= t_min) & (df[time_col] <= t_max)].copy()
+    if piece.empty:
+        raise ValueError(f"no points in [{t_min}, {t_max}]")
+
+    times = piece[time_col].to_numpy(dtype=float)
+    phi = phase_centred_from_quadratic_oc(
+        times,
+        period=period,
+        epoch=epoch,
+        oc_a=oc_a,
+        oc_b=oc_b,
+        oc_c=oc_c,
+    )
+    tau = extended_tau_from_phase(phi, tau_period)
     mag = np.concatenate([piece[mag_col].to_numpy(dtype=float)] * 2)
     if err_col in piece.columns:
         err = np.concatenate([piece[err_col].to_numpy(dtype=float)] * 2)

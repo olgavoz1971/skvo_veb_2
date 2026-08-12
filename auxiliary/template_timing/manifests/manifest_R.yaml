@@ -160,7 +160,7 @@ pieces:
       t_max: 59880.7
     fit_window:
       t_min: 59880.2
-      t_max: 59888.7
+      t_max: 59880.7
     intervals_path: ../data/R_5980_intervals.dat
 
   

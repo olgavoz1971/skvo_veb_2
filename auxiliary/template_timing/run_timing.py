@@ -227,6 +227,7 @@ def run_manifest(
                 mag0=manifest.mag0,
                 cfg=piece.gp_template,
                 fit_cfg=piece.fit,
+                fold_ephemeris=piece.fold_ephemeris,
                 out_npz=piece_dir / "template.npz",
                 out_meta=piece_dir / "template_meta.json",
                 out_plot=piece_dir / "template_gp.png",

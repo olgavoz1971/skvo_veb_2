@@ -258,8 +258,16 @@ from skvo_veb.utils.gp.prep_phase_plot import (
     EXTENDED_PHASE_XMIN,
     assert_phase_intervals_not_duplicates,
     build_extended_phase_plot_arrays,
+    build_extended_phase_plot_arrays_from_phi,
     phase_vrect_bounds_extended,
+    phase_vrect_bounds_extended_quadratic,
     validate_extended_phase_selection,
+)
+from skvo_veb.utils.gp.quadratic_fold import (
+    FOLD_EPHEMERIS_CONSTANT,
+    FOLD_EPHEMERIS_QUADRATIC_OC,
+    get_intervals_from_phase_quadratic,
+    phases_from_quadratic_oc,
 )
 from skvo_veb.utils.gp.prep_interval_bands import (
     build_unfolded_interval_pick_payload,
@@ -292,7 +300,7 @@ from skvo_veb.utils.gp.review_page import (
     serialise_review_entry,
     success_badge_specs,
 )
-from skvo_veb.utils.gp.config import GP_LIVE_PAGE_SIZE
+from skvo_veb.utils.gp.config import GP_LIVE_PAGE_SIZE, build_gp_float_params
 from skvo_veb.utils.gp.run_control import (
     clear_gp_batch_stop,
     gp_batch_stop_requested,
@@ -690,6 +698,20 @@ def gp_checklist_switch_is_on(value) -> bool:
     return isinstance(value, list) and GP_CHECKLIST_SWITCH_ON in value
 
 
+def gp_parse_oc_coefficient(value) -> float:
+    """Parses one quadratic O-C coefficient from a sidebar number input.
+
+    Args:
+        value: Raw ``dbc.Input`` value (number or empty).
+
+    Returns:
+        float: Parsed coefficient, or ``0.0`` when empty.
+    """
+    if value is None or value == "":
+        return 0.0
+    return float(value)
+
+
 def LegendItem(color, label, mode='line'):
     """Builds one legend row: a colour swatch plus its caption.
 
@@ -744,6 +766,62 @@ sidebar_lc = html.Div([
                 dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
                 dbc.Input(id="input-epoch", type="number", placeholder="MJD offset"),
             ], size="sm"),
+            dbc.RadioItems(
+                id="gp-fold-ephemeris-mode",
+                options=[
+                    {"label": " Constant period", "value": FOLD_EPHEMERIS_CONSTANT},
+                    {"label": " Quadratic O-C", "value": FOLD_EPHEMERIS_QUADRATIC_OC},
+                ],
+                value=FOLD_EPHEMERIS_CONSTANT,
+                inputStyle={"marginRight": "6px"},
+                labelStyle={"display": "block", "marginBottom": "0.25rem"},
+            ),
+            html.Div(
+                [
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("a"),
+                            dbc.Input(
+                                id="input-oc-a",
+                                type="number",
+                                placeholder="0",
+                                value=0,
+                            ),
+                        ],
+                        size="sm",
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("b"),
+                            dbc.Input(
+                                id="input-oc-b",
+                                type="number",
+                                placeholder="0",
+                                value=0,
+                            ),
+                        ],
+                        size="sm",
+                    ),
+                    dbc.InputGroup(
+                        [
+                            dbc.InputGroupText("c"),
+                            dbc.Input(
+                                id="input-oc-c",
+                                type="number",
+                                placeholder="0",
+                                value=0,
+                            ),
+                        ],
+                        size="sm",
+                    ),
+                    html.Div(
+                        "O-C (days) = aE² + bE + c",
+                        className="small text-muted",
+                    ),
+                ],
+                id="gp-quadratic-oc-fields",
+                className="gp-sidebar-btn-stack d-none",
+            ),
         ],
         className="gp-sidebar-block",
     ),
@@ -1125,7 +1203,7 @@ sidebar_gp = html.Div([
                     ),
                     dbc.Input(
                         id={"type": "float-input", "index": "noise_scale_divisor"},
-                        type="number", size="sm", step=0.1,
+                        type="number", size="sm", step="any",
                         value=params_float["noise_scale_divisor"],
                     ),
                 ],
@@ -1537,8 +1615,12 @@ def toggle_gp_legend(n_clicks, is_open):
     Input('gp-prep-show-errorbars', 'value'),
     Input('store-gp-prep-working-window', 'data'),
     Input('store-gp-intervals-marked', 'data'),
+    Input('gp-fold-ephemeris-mode', 'value'),
     State('input-period', 'value'),
     State('input-epoch', 'value'),
+    State('input-oc-a', 'value'),
+    State('input-oc-b', 'value'),
+    State('input-oc-c', 'value'),
     State('prep-graph', 'relayoutData'),
     # endregion
 )
@@ -1551,8 +1633,12 @@ def update_prep_graph(
     show_prep_errorbars,
     working_window_store,
     marked_indices,
+    fold_ephemeris_mode,
     period,
     epoch,
+    oc_a,
+    oc_b,
+    oc_c,
     prep_relayout_data,
 ):
     if not lc_json_string:
@@ -1624,9 +1710,56 @@ def update_prep_graph(
         t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
         if t0_abs is None:
             t0_abs = float(np.nanmin(x_jd))
-        x_plot, y_plot, err_plot = build_extended_phase_plot_arrays(
-            x_jd, y_data, err_data if show_prep_errorbars else None, t0_abs, float(period)
-        )
+        fold_mode = fold_ephemeris_mode or FOLD_EPHEMERIS_CONSTANT
+        oc_a_val = gp_parse_oc_coefficient(oc_a)
+        oc_b_val = gp_parse_oc_coefficient(oc_b)
+        oc_c_val = gp_parse_oc_coefficient(oc_c)
+        try:
+            if fold_mode == FOLD_EPHEMERIS_QUADRATIC_OC:
+                phi = phases_from_quadratic_oc(
+                    x_jd,
+                    float(period),
+                    t0_abs,
+                    oc_a_val,
+                    oc_b_val,
+                    oc_c_val,
+                )
+                x_plot, y_plot, err_plot = build_extended_phase_plot_arrays_from_phi(
+                    phi,
+                    y_data,
+                    err_data if show_prep_errorbars else None,
+                )
+                t0_label = display_epoch_offset(t0_abs, jd0)
+                x_label = (
+                    f"Phase (quadratic O-C; P={period} d, Epoch-{jd0}={t0_label:.2f}; "
+                    f"a={oc_a_val:g}, b={oc_b_val:g}, c={oc_c_val:g}; "
+                    f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
+                )
+            else:
+                x_plot, y_plot, err_plot = build_extended_phase_plot_arrays(
+                    x_jd,
+                    y_data,
+                    err_data if show_prep_errorbars else None,
+                    t0_abs,
+                    float(period),
+                )
+                t0_label = display_epoch_offset(t0_abs, jd0)
+                x_label = (
+                    f"Phase (P={period} d, Epoch-{jd0}={t0_label:.2f}; "
+                    f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
+                )
+        except PipeException as exc:
+            fig = go.Figure()
+            fig.update_layout(
+                title=str(exc),
+                template="plotly_white",
+                margin=dict(l=40, r=20, t=60, b=40),
+            )
+            return (
+                fig,
+                {"enabled": False, "axis": axis_mode, "bands": []},
+                [],
+            )
         if err_plot is not None and show_prep_errorbars:
             error_y_logic = dict(
                 type='data',
@@ -1640,11 +1773,6 @@ def update_prep_graph(
             error_y_logic = None
         x_data = x_plot
         y_data = y_plot
-        t0_label = display_epoch_offset(t0_abs, jd0)
-        x_label = (
-            f"Phase (P={period} d, Epoch-{jd0}={t0_label:.2f}; "
-            f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
-        )
     else:
         ts = lc.get("timescale")
         ref = lc.get("refposition")
@@ -1694,7 +1822,8 @@ def update_prep_graph(
         # uirevision=[lc_json_string, view_mode],  # when we should update layout
         uirevision=(
             f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}_"
-            f"{show_prep_errorbars}_{working_window_store}"
+            f"{show_prep_errorbars}_{working_window_store}_{fold_ephemeris_mode}_"
+            f"{oc_a}_{oc_b}_{oc_c}"
         ),
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
@@ -1717,14 +1846,30 @@ def update_prep_graph(
             t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
             if t0_abs is None:
                 t0_abs = float(np.nanmin(x_jd))
+            fold_mode = fold_ephemeris_mode or FOLD_EPHEMERIS_CONSTANT
+            oc_a_val = gp_parse_oc_coefficient(oc_a)
+            oc_b_val = gp_parse_oc_coefficient(oc_b)
+            oc_c_val = gp_parse_oc_coefficient(oc_c)
             for interval in intervals_data:
                 if jd_window is not None and not interval_overlaps_jd_window(
                     interval, jd_window[0], jd_window[1]
                 ):
                     continue
-                for x0, x1 in phase_vrect_bounds_extended(
-                    interval[0], interval[1], t0_abs, float(period)
-                ):
+                if fold_mode == FOLD_EPHEMERIS_QUADRATIC_OC:
+                    vrect_bounds = phase_vrect_bounds_extended_quadratic(
+                        interval[0],
+                        interval[1],
+                        float(period),
+                        t0_abs,
+                        oc_a_val,
+                        oc_b_val,
+                        oc_c_val,
+                    )
+                else:
+                    vrect_bounds = phase_vrect_bounds_extended(
+                        interval[0], interval[1], t0_abs, float(period)
+                    )
+                for x0, x1 in vrect_bounds:
                     fig.add_vrect(
                         x0=x0,
                         x1=x1,
@@ -2098,6 +2243,25 @@ def commit_remove_empty_intervals(n_clicks, intervals, lc_json_string):
     if not drop:
         raise PreventUpdate
     return intervals_without_marked_indices(intervals, drop)
+
+
+@callback(
+    Output("gp-quadratic-oc-fields", "className"),
+    Input("gp-fold-ephemeris-mode", "value"),
+)
+def toggle_quadratic_oc_fields(fold_ephemeris_mode):
+    """Shows O-C coefficient inputs only for quadratic fold mode.
+
+    Args:
+        fold_ephemeris_mode (str): ``constant`` or ``quadratic_oc``.
+
+    Returns:
+        str: CSS classes for the coefficient block.
+    """
+    base = "gp-sidebar-btn-stack"
+    if fold_ephemeris_mode == FOLD_EPHEMERIS_QUADRATIC_OC:
+        return base
+    return f"{base} d-none"
 
 
 @callback(
@@ -2492,6 +2656,10 @@ def update_GP_scale(trigger_clicks, intervals, lc_json_string):
     State('gp_time_axis_switch', 'value'),
     State('store-lc-data', 'data'),  # We need this to get JD span
     State('store-gp-prep-working-window', 'data'),
+    State('gp-fold-ephemeris-mode', 'value'),
+    State('input-oc-a', 'value'),
+    State('input-oc-b', 'value'),
+    State('input-oc-c', 'value'),
     State('gp-prep-trend-mode', 'value'),
     prevent_initial_call=True
     # endregion
@@ -2506,6 +2674,10 @@ def add_selection_to_registry(
     time_axis_mode,
     lc_json,
     working_window_store,
+    fold_ephemeris_mode,
+    oc_a,
+    oc_b,
+    oc_c,
     trend_mode_on,
 ):
     if not n_clicks or not selected_data or 'range' not in selected_data:
@@ -2537,14 +2709,28 @@ def add_selection_to_registry(
             obs_bounds = observation_jd_bounds_tuple(
                 normalize_working_window(working_window_store)
             )
-            new_intervals = get_intervals_from_phase(
-                lc_json,
-                phi_lo,
-                phi_hi,
-                period,
-                epoch_abs,
-                observation_jd_bounds=obs_bounds,
-            )
+            fold_mode = fold_ephemeris_mode or FOLD_EPHEMERIS_CONSTANT
+            if fold_mode == FOLD_EPHEMERIS_QUADRATIC_OC:
+                new_intervals = get_intervals_from_phase_quadratic(
+                    lc_json,
+                    phi_lo,
+                    phi_hi,
+                    period,
+                    epoch_abs,
+                    gp_parse_oc_coefficient(oc_a),
+                    gp_parse_oc_coefficient(oc_b),
+                    gp_parse_oc_coefficient(oc_c),
+                    observation_jd_bounds=obs_bounds,
+                )
+            else:
+                new_intervals = get_intervals_from_phase(
+                    lc_json,
+                    phi_lo,
+                    phi_hi,
+                    period,
+                    epoch_abs,
+                    observation_jd_bounds=obs_bounds,
+                )
             if not new_intervals:
                 raise PipeException(
                     "No intervals fall inside the working time range for this phase selection."
@@ -2868,19 +3054,13 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     set_progress((live_progress_label(0, 0), *empty_slots, "WAITING"))
     clear_gp_batch_stop()
     logger.debug("run_gp started")
-    # print(f'{ids=}')
-    # print(f'{float_values=}')
-    # Use a safe conversion with a fallback to the default
-    p = {}
-    for val_id, val in zip(ids, float_values):
-        key = val_id['index']
-        try:
-            # If val is None or empty, float(val) fails.
-            # We fall back to the constant default.
-            p[key] = float(val) if val is not None else params_float[key]
-        except (ValueError, TypeError):
-            p[key] = params_float[key]
-    # p = {val_id['index']: float(val) for val_id, val in zip(ids, float_values)}
+    try:
+        p = build_gp_float_params(ids, float_values)
+    except ValueError as exc:
+        error_alert = dbc.Alert(
+            str(exc), color="warning", className="py-2 small mb-0"
+        )
+        return error_alert, "FINISHED", None, ""
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
     p['extrema_mode'] = extrema_mode

@@ -19,8 +19,13 @@ from skvo_veb.utils.gp.flux import resolve_gp_photcal
 from skvo_veb.utils.gp.noise_policy import resolve_interval_noise_sigma_norm
 
 from fit_mask import FitMask, resolve_fit_mask, warn_fit_mask_support
-from fold_stack import fold_for_template, load_detrended_mag_dat
-from manifest_config import FitDefaults, GPTemplateDefaults
+from fold_stack import (
+    fold_for_template,
+    fold_for_template_quadratic,
+    load_detrended_mag_dat,
+    resolve_tau_period,
+)
+from manifest_config import FitDefaults, FoldEphemerisConfig, GPTemplateDefaults
 from template_peak import select_template_peak
 
 from plot_style import FIGSIZE_TEMPLATE, apply_plot_style
@@ -368,6 +373,75 @@ def plot_template_artifacts(
         plt.close(fig)
 
 
+def plot_fold_stack(
+    folded: pd.DataFrame,
+    *,
+    piece_id: str,
+    fold_mode: str,
+    tau_period: float,
+    p0_ephemeris: float,
+    save_path: Path | None,
+    show: bool,
+) -> None:
+    """Matplotlib: raw extended fold stack before the GP fit.
+
+    Args:
+        folded (pandas.DataFrame): Output of :func:`fold_for_template` or quadratic fold.
+        piece_id (str): Manifest piece identifier for the title.
+        fold_mode (str): ``constant`` or quadratic ephemeris kind.
+        tau_period (float): ``P_τ`` used for the tau axis (days).
+        p0_ephemeris (float): Reference period ``P₀`` from the manifest.
+        save_path (Path | None): Where to write the figure, if anywhere.
+        show (bool): Call ``plt.show()`` when true.
+    """
+    apply_plot_style()
+    tau = folded["tau"].to_numpy(dtype=float)
+    mag = folded["mag"].to_numpy(dtype=float)
+    has_err = "dmag" in folded.columns and np.any(np.isfinite(folded["dmag"].to_numpy()))
+    dmag = folded["dmag"].to_numpy(dtype=float) if has_err else None
+
+    fig, ax = plt.subplots(figsize=FIGSIZE_TEMPLATE)
+    if has_err and dmag is not None:
+        ax.errorbar(
+            tau,
+            mag,
+            yerr=dmag,
+            fmt="o",
+            markersize=3,
+            ecolor="0.6",
+            elinewidth=0.6,
+            capsize=1,
+            alpha=0.45,
+            label="folded stack",
+        )
+    else:
+        ax.plot(tau, mag, "o", markersize=3, alpha=0.45, color="C0", label="folded stack")
+
+    ax.axvline(0.0, color="0.35", ls=":", lw=1.0)
+    ax.axvline(tau_period, color="0.35", ls=":", lw=1.0, alpha=0.6)
+    ax.set_xlabel("tau (days from phase 0)")
+    ax.set_ylabel("detrended mag")
+    ax.invert_yaxis()
+    if fold_mode == "constant":
+        subtitle = f"constant P = {tau_period:.8f} d"
+    else:
+        subtitle = (
+            f"{fold_mode} fold, P0 = {p0_ephemeris:.8f} d, "
+            f"P_tau = {tau_period:.8f} d"
+        )
+    ax.set_title(f"Step 1: folded stack before GP ({piece_id})\n{subtitle}")
+    ax.legend(loc="best")
+    fig.tight_layout()
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=150)
+        logger.info("Wrote plot %s", save_path)
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def build_piece_template(
     lc_path: Path,
     *,
@@ -382,6 +456,7 @@ def build_piece_template(
     mag0: float | None,
     cfg: GPTemplateDefaults,
     fit_cfg: FitDefaults,
+    fold_ephemeris: FoldEphemerisConfig | None = None,
     out_npz: Path,
     out_meta: Path,
     out_plot: Path | None = None,
@@ -392,29 +467,83 @@ def build_piece_template(
     Args:
         fold_epoch: Fold epoch (truncated JD) used for this build (piece ``local_epoch``
             or manifest ``default_epoch``).
+        fold_period: Reference period ``P₀`` for constant fold or quadratic ephemeris.
         default_epoch: Manifest ``template_fold.default_epoch`` at build time (provenance).
+        fold_ephemeris: Optional quadratic O-C fold; ``None`` → constant-``P`` fold.
         fit_cfg: Step 2 settings for this piece, used only to draw and record the fit
             window that Step 2 will resolve again from the manifest.
     """
     df_raw, header = load_detrended_mag_dat(lc_path)
     effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
 
-    folded = fold_for_template(
-        df_raw,
-        t_min=t_obs_min,
-        t_max=t_obs_max,
-        t_ref=fold_epoch,
-        period=fold_period,
-    )
+    if fold_ephemeris is None:
+        tau_period = fold_period
+        folded = fold_for_template(
+            df_raw,
+            t_min=t_obs_min,
+            t_max=t_obs_max,
+            t_ref=fold_epoch,
+            period=fold_period,
+        )
+        fold_mode = "constant"
+        e_start = None
+        p_tau_source = "P0"
+    else:
+        tau_period, e_start = resolve_tau_period(
+            period=fold_period,
+            epoch=fold_epoch,
+            oc_a=fold_ephemeris.oc_a,
+            oc_b=fold_ephemeris.oc_b,
+            oc_c=fold_ephemeris.oc_c,
+            jd_segment_start=t_obs_min,
+            tau_period_override=fold_ephemeris.tau_period,
+        )
+        folded = fold_for_template_quadratic(
+            df_raw,
+            t_min=t_obs_min,
+            t_max=t_obs_max,
+            epoch=fold_epoch,
+            period=fold_period,
+            oc_a=fold_ephemeris.oc_a,
+            oc_b=fold_ephemeris.oc_b,
+            oc_c=fold_ephemeris.oc_c,
+            tau_period=tau_period,
+        )
+        fold_mode = fold_ephemeris.kind
+        p_tau_source = (
+            "manifest_override"
+            if fold_ephemeris.tau_period is not None
+            else "segment_start"
+        )
+        logger.info(
+            "Piece %s: quadratic fold P0=%.8f, P_tau=%.8f (E_start=%.2f, %s)",
+            piece_id,
+            fold_period,
+            tau_period,
+            e_start,
+            p_tau_source,
+        )
+
     logger.info("Piece %s: folded stack %s points", piece_id, len(folded))
 
+    stack_plot = None if out_plot is None else out_plot.with_name("template_stack.png")
+    plot_fold_stack(
+        folded,
+        piece_id=piece_id,
+        fold_mode=fold_mode,
+        tau_period=tau_period,
+        p0_ephemeris=fold_period,
+        save_path=stack_plot,
+        show=show_plot,
+    )
+
     frag = mag_fragment_to_flux(folded, effective_mag0)
-    result = fit_gp_template(frag, cfg, fold_period=fold_period)
+    result = fit_gp_template(frag, cfg, fold_period=tau_period)
 
     mask = resolve_fit_mask(
         mode=fit_cfg.fit_mask_mode,
         half_width_phase=fit_cfg.fit_mask_half_width_phase,
-        period=fold_period,
+        period=tau_period,
         tau_peak=result["tau_peak"],
     )
     warn_fit_mask_support(
@@ -426,17 +555,20 @@ def build_piece_template(
 
     meta = {
         "piece_id": piece_id,
+        "fold_mode": fold_mode,
         "fold_epoch": fold_epoch,
         "t_ref": fold_epoch,
         "default_epoch": default_epoch,
-        "fold_period": fold_period,
+        "P0_ephemeris": fold_period,
+        "fold_period": tau_period,
+        "P_tau": tau_period,
         "default_period": default_period,
-        "p0": fold_period,
+        "p0": tau_period,
         "period_slope": period_slope,
         "t_obs_min": t_obs_min,
         "t_obs_max": t_obs_max,
         "extended_fold": cfg.extended_fold,
-        "tau_units": "days (phi_ext * fold_period, phase 0 at tau=0)",
+        "tau_units": "days (phi_ext * P_tau, phase 0 at tau=0)",
         "peak_selection": result["peak_selection"].as_dict(),
         "extrema_mode": cfg.extrema_mode,
         "tau_peak": result["tau_peak"],
@@ -454,6 +586,17 @@ def build_piece_template(
         "source_lc": str(lc_path.name),
         "gp_template_config": asdict(cfg),
     }
+    if fold_ephemeris is not None:
+        meta["fold_ephemeris"] = {
+            "kind": fold_ephemeris.kind,
+            "a": fold_ephemeris.oc_a,
+            "b": fold_ephemeris.oc_b,
+            "c": fold_ephemeris.oc_c,
+            "tau_period_override": fold_ephemeris.tau_period,
+            "P_tau_source": p_tau_source,
+            "E_start": e_start,
+            "jd_segment_start": t_obs_min,
+        }
     save_template_artifacts(result, out_npz=out_npz, out_meta=out_meta, meta=meta)
     plot_template_fit(result, cfg, mask=mask, save_path=out_plot, show=show_plot)
     return result
