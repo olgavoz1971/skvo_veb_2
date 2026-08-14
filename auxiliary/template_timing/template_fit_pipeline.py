@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -29,6 +31,122 @@ from template_fit import (
 logger = logging.getLogger(__name__)
 
 TEMPLATE_SUPPORT_KEYS = ("tau_data_min", "tau_data_max")
+
+
+@dataclass
+class FitSummaryEntry:
+    """One ``fit_summary.csv`` data line with optional verbatim preservation."""
+
+    raw_line: str
+    row: dict
+    commented: bool
+    modified: bool = False
+
+
+@dataclass
+class FitSummaryTable:
+    """Parsed ``fit_summary.csv`` with header and row order preserved."""
+
+    header_line: str
+    fieldnames: list[str]
+    entries: list[FitSummaryEntry]
+    newline: str = "\n"
+
+
+def load_fit_summary_table(summary_path: Path) -> FitSummaryTable:
+    """Load a wide summary table, retaining original line text and order.
+
+    Commented (``#``) rows are kept as :class:`FitSummaryEntry` objects with
+    ``commented=True`` and ``row["rejected"]="true"``.
+
+    Args:
+        summary_path (Path): Path to ``fit_summary.csv``.
+
+    Returns:
+        FitSummaryTable: Parsed table with verbatim lines for round-trip writes.
+    """
+    if not summary_path.is_file():
+        raise FileNotFoundError(f"fit summary not found: {summary_path}")
+    with summary_path.open(encoding="utf-8", newline="") as handle:
+        lines = handle.readlines()
+    if not lines:
+        raise ValueError(f"empty fit summary: {summary_path}")
+    newline = "\r\n" if lines[0].endswith("\r\n") else "\n"
+    header_line = lines[0]
+    fieldnames = next(csv.reader([header_line.lstrip("#").strip()]))
+    entries: list[FitSummaryEntry] = []
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        stripped = line.lstrip()
+        commented = stripped.startswith("#")
+        parse_line = stripped[1:] if commented else line.rstrip("\r\n")
+        values = next(csv.reader([parse_line]))
+        row = dict(zip(fieldnames, values, strict=False))
+        if commented:
+            row["rejected"] = "true"
+        entries.append(
+            FitSummaryEntry(raw_line=line, row=row, commented=commented, modified=False)
+        )
+    return FitSummaryTable(
+        header_line=header_line,
+        fieldnames=fieldnames,
+        entries=entries,
+        newline=newline,
+    )
+
+
+def load_fit_summary_rows(summary_path: Path, *, include_rejected: bool = False) -> list[dict]:
+    """Load summary rows, optionally including commented rejections.
+
+    Args:
+        summary_path (Path): Path to ``fit_summary.csv``.
+        include_rejected (bool): When false, skip ``#`` lines (accepted rows only).
+
+    Returns:
+        list[dict]: Parsed summary rows.
+    """
+    table = load_fit_summary_table(summary_path)
+    if include_rejected:
+        return [entry.row for entry in table.entries]
+    return [entry.row for entry in table.entries if not entry.commented]
+
+
+def write_fit_summary_table(path: Path, table: FitSummaryTable) -> None:
+    """Write ``fit_summary.csv``, preserving unmodified lines verbatim.
+
+    Args:
+        path (Path): Output CSV path.
+        table (FitSummaryTable): Table loaded from :func:`load_fit_summary_table`
+            or returned by :func:`review_piece_from_summary`.
+    """
+    from fit_review import parse_rejected_flag
+
+    fieldnames = list(table.fieldnames)
+    if "rejected" not in fieldnames:
+        fieldnames = [*fieldnames, "rejected"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(table.header_line)
+        for entry in table.entries:
+            if not entry.modified:
+                handle.write(entry.raw_line)
+                continue
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writerow(entry.row)
+            line = buffer.getvalue()
+            if table.newline == "\r\n" and line.endswith("\n"):
+                line = line[:-1] + "\r\n"
+            if parse_rejected_flag(entry.row.get("rejected")):
+                handle.write(f"#{line}")
+            else:
+                handle.write(line)
+
+
+def fit_summary_table_rows(table: FitSummaryTable) -> list[dict]:
+    """Return all row dicts from a table in file order."""
+    return [entry.row for entry in table.entries]
 
 
 def template_data_range(meta: dict, *, context: str) -> tuple[float, float]:
@@ -190,8 +308,17 @@ def plot_interval_fits(
     *,
     save_path: Path | None,
     show: bool,
-) -> None:
-    """Four-panel comparison for one interval."""
+    return_figure: bool = False,
+) -> plt.Figure | None:
+    """Four-panel comparison for one interval.
+
+    Args:
+        return_figure (bool): When true, return the figure without closing it
+            (used by interactive review mode).
+
+    Returns:
+        plt.Figure | None: The figure when ``return_figure`` is true, else None.
+    """
     apply_interval_plot_style()
     fig, (ax_cc, ax_nls, ax_clean, ax_scale) = plt.subplots(
         1, 4, figsize=FIGSIZE_INTERVAL, sharey=True
@@ -210,10 +337,13 @@ def plot_interval_fits(
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150)
         logger.info("Wrote %s", save_path)
+    if return_figure:
+        return fig
     if show:
         plt.show()
     else:
         plt.close(fig)
+    return None
 
 
 def fit_all_methods(
@@ -341,6 +471,32 @@ def method_timing_record(row: dict, method: str) -> dict:
     }
 
 
+def sync_official_columns(row: dict, method: str) -> None:
+    """Copy one method's fit columns into the official summary fields."""
+    fit = fit_result_from_summary_row(row, method)
+    row["selected_method"] = method
+    row["timing_method"] = method
+    row["t_max"] = fit.t_max
+    row["rms_official"] = fit.rms
+    row["delta_t_official"] = fit.delta_t
+    row["scale_official"] = fit.scale
+    if f"sigma_t_max_{method}" in row:
+        row["sigma_t_max"] = row[f"sigma_t_max_{method}"]
+
+
+def _interval_arrays_for_row(
+    t_all: np.ndarray,
+    y_all: np.ndarray,
+    t_start: float,
+    t_end: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Slice LC arrays for one interval, swapping bounds if needed."""
+    if t_start > t_end:
+        t_start, t_end = t_end, t_start
+    mask = (t_all >= t_start) & (t_all <= t_end)
+    return t_all[mask], y_all[mask]
+
+
 def fit_piece_intervals(
     lc_path: Path,
     *,
@@ -356,6 +512,7 @@ def fit_piece_intervals(
     out_summary: Path,
     fits_dir: Path | None,
     show_plots: bool,
+    review_fits: bool = False,
 ) -> list[dict]:
     """Run Step 2 for all intervals in a piece; write ``fit_summary.csv``."""
     curve, meta = load_template_bundle(
@@ -422,7 +579,7 @@ def fit_piece_intervals(
             fit_cfg=fit_cfg,
         )
 
-        if fits_dir is not None:
+        if fits_dir is not None or show_plots:
             plot_interval_fits(
                 idx,
                 t_start,
@@ -434,11 +591,37 @@ def fit_piece_intervals(
                 nls,
                 nls_clean,
                 nls_scale_clean,
-                save_path=fits_dir / f"interval_{idx:02d}.png",
-                show=show_plots,
+                save_path=fits_dir / f"interval_{idx:02d}.png" if fits_dir else None,
+                show=show_plots and not review_fits,
             )
 
-        official = official_fit_result(timing_method, cc, nls, nls_clean, nls_scale_clean)
+        selected_method = timing_method
+        rejected = "false"
+        if review_fits:
+            from fit_review import review_interval_fits
+
+            decision = review_interval_fits(
+                idx,
+                t_start,
+                t_end,
+                t,
+                y,
+                curve,
+                cc,
+                nls,
+                nls_clean,
+                nls_scale_clean,
+                default_method=timing_method,
+                piece_id=piece_id,
+            )
+            if decision.rejected:
+                selected_method = timing_method
+                rejected = "true"
+            else:
+                selected_method = decision.selected_method or timing_method
+                rejected = "false"
+
+        official = official_fit_result(selected_method, cc, nls, nls_clean, nls_scale_clean)
         n_rejected = (
             int(np.count_nonzero(~nls_clean.inlier_mask))
             if nls_clean.inlier_mask is not None
@@ -457,7 +640,9 @@ def fit_piece_intervals(
                 "t_end": t_end,
                 "t_anchor": t_centre,
                 "n_points": len(t),
-                "timing_method": timing_method,
+                "timing_method": selected_method,
+                "selected_method": selected_method,
+                "rejected": rejected,
                 "t_max": official.t_max,
                 "rms_official": official.rms,
                 "delta_t_official": official.delta_t,
@@ -493,3 +678,111 @@ def fit_piece_intervals(
             writer.writerows(rows)
         logger.info("Piece %s: wrote %s (%s intervals)", piece_id, out_summary, len(rows))
     return rows
+
+
+def review_piece_from_summary(
+    lc_path: Path,
+    *,
+    piece_id: str,
+    fit_t_min: float,
+    fit_t_max: float,
+    template_npz: Path,
+    template_meta_path: Path,
+    mag0: float | None,
+    default_method: str,
+    summary_table: FitSummaryTable,
+) -> FitSummaryTable:
+    """Re-open interactive review for active summary rows without refitting.
+
+    Commented (rejected) rows are left untouched and are not shown again.
+
+    Args:
+        lc_path (Path): Light-curve file for this piece.
+        piece_id (str): Piece identifier.
+        fit_t_min (float): Fit window lower bound.
+        fit_t_max (float): Fit window upper bound.
+        template_npz (Path): Template bundle path.
+        template_meta_path (Path): Template metadata JSON path.
+        mag0 (float | None): Reference magnitude for flux normalisation.
+        default_method (str): Manifest default timing method.
+        summary_table (FitSummaryTable): Existing summary table for this piece.
+
+    Returns:
+        FitSummaryTable: Updated table; unmodified rows keep verbatim ``raw_line``.
+    """
+    from fit_review import (
+        apply_review_decision,
+        normalise_review_fields,
+        parse_rejected_flag,
+        review_interval_fits,
+    )
+
+    curve, meta = load_template_bundle(
+        template_npz, template_meta_path, context=f"Piece {piece_id}"
+    )
+    piece, header = load_lc_fragment(lc_path, fit_t_min, fit_t_max)
+    effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
+    norm = mag_to_normalised_flux(
+        piece,
+        effective_mag0,
+        float(meta["baseline_flux"]),
+        float(meta["ampl_guess_flux"]),
+    )
+    t_all = norm["jd"].to_numpy(dtype=float)
+    y_all = norm["y_norm"].to_numpy(dtype=float)
+
+    for entry in summary_table.entries:
+        if entry.commented:
+            logger.debug(
+                "Piece %s interval %s: commented rejection; skip review",
+                piece_id,
+                entry.row.get("interval"),
+            )
+            continue
+
+        row = entry.row
+        normalise_review_fields(row, default_method=default_method)
+        before_method = str(row.get("selected_method") or default_method)
+        before_rejected = parse_rejected_flag(row.get("rejected"))
+
+        idx = int(row["interval"])
+        t_start = float(row["t_start"])
+        t_end = float(row["t_end"])
+        t, y = _interval_arrays_for_row(t_all, y_all, t_start, t_end)
+        if len(t) < 5:
+            logger.error(
+                "Piece %s interval %s: only %s points during review; keep row unchanged",
+                piece_id,
+                idx,
+                len(t),
+            )
+            continue
+
+        cc = fit_result_from_summary_row(row, "cc")
+        nls = fit_result_from_summary_row(row, "nls")
+        nls_clean = fit_result_from_summary_row(row, "nls_clean")
+        nls_scale_clean = fit_result_from_summary_row(row, "nls_scale_clean")
+        decision = review_interval_fits(
+            idx,
+            t_start,
+            t_end,
+            t,
+            y,
+            curve,
+            cc,
+            nls,
+            nls_clean,
+            nls_scale_clean,
+            default_method=default_method,
+            piece_id=piece_id,
+        )
+        apply_review_decision(row, decision, default_method=default_method)
+        if not parse_rejected_flag(row["rejected"]):
+            sync_official_columns(row, row["selected_method"])
+
+        after_method = str(row.get("selected_method") or default_method)
+        after_rejected = parse_rejected_flag(row.get("rejected"))
+        if before_method != after_method or before_rejected != after_rejected:
+            entry.modified = True
+
+    return summary_table

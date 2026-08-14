@@ -32,26 +32,39 @@ logger = logging.getLogger(__name__)
 
 # --- edit these ---
 RUN_STEP1 = True
-RUN_STEP2 = True
-RUN_STEP3 = True
+RUN_STEP2 = False
+RUN_STEP3 = False
 
 JD0 = 2400000
 # TIMING_FILE = Path(__file__).resolve().parent / "data/runs/ground_R/timing.csv"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/R_detrended_corrected_max_gp.dat"
-TIMING_FILE = Path(__file__).resolve().parent / "data/timing_max_vlada.dat"
-
-OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_vlada.csv")
-TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_vlada.csv")
+# TIMING_FILE = Path(__file__).resolve().parent / "data/timing_max_vlada.dat"
+# TIMING_FILE = Path(__file__).resolve().parent / "data/runs/merged/timing.csv"
+TIMING_FILE = Path(__file__).resolve().parent / "data/GP_max/R_TESS_all.dat"
+# OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_vlada.csv")
+# OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_template_merged.csv")
+OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_GP.csv")
+# TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_vlada.csv")
+TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_template_merged.csv")
 LC_DAT = Path(__file__).resolve().parent / "data/R_detrended_corrected.dat"
 LC_EXPORT = LC_DAT.with_name(f"{LC_DAT.stem}_smart_folded.dat")
 MF_LC_EXPORT = LC_DAT.with_name(f"{LC_DAT.stem}_model_free_folded.dat")
 
 T0 = JD0 + 59865.4936
-P0 = 0.05937839
+# P0 = 0.05937839
+P0 = 0.060
+# CYCLE_SHIFTS: list[tuple[float, int]] = [
+#     (JD0 + 59865.642, -1),
+#     (JD0 + 59869.92, -1),
+#     (JD0 + 59874.92, -1),
+#     (JD0 + 59878.4, -1),
+#     (JD0 + 59883.1, -1),
+# ]
 CYCLE_SHIFTS: list[tuple[float, int]] = [
-    (JD0 + 59865.64, -1),
-    (JD0 + 59870.21, -1),
-    (JD0 + 59875.32, -1),
+    (JD0 + 59858.63, 1),
+    (JD0 + 59865.38, 1),
+    (JD0 + 59866.25, -1),
+    (JD0 + 59880.34, -1),
 ]
 
 JD_OBS_FOR_FIT = (JD0 + 59865.0, JD0 + 59874.0)

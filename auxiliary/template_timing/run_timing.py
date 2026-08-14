@@ -19,7 +19,6 @@ from manifest_config import (
     TIMING_METHODS,
     PieceConfig,
     load_manifest,
-    overview_lc_segments,
     piece_fold_epoch,
     piece_fold_period,
     piece_lc_path,
@@ -33,9 +32,16 @@ from template_fit_pipeline import (
     fit_mask_for_template,
     fit_piece_intervals,
     fit_result_from_summary_row,
+    fit_summary_table_rows,
+    load_fit_summary_rows,
+    load_fit_summary_table,
     load_template_bundle,
     method_timing_record,
+    review_piece_from_summary,
+    sync_official_columns,
+    write_fit_summary_table,
 )
+from fit_review import normalise_review_fields, parse_rejected_flag
 from timing_errors import sigma_t_max_rms_slope
 
 logger = logging.getLogger(__name__)
@@ -98,43 +104,254 @@ def _attach_timing_errors(
         row["sigma_t_max"] = row[f"sigma_t_max_{timing_method}"]
 
 
-def _write_timing_csv(path: Path, records: list[dict], *, fieldnames: list[str]) -> None:
-    """Write one merged timing table."""
+def _write_csv_rows(
+    path: Path,
+    records: list[dict],
+    *,
+    fieldnames: list[str],
+    comment_rejected: bool = True,
+) -> None:
+    """Write CSV rows, prefixing rejected rows with ``#`` when requested."""
+    import io
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(records)
+        for row in records:
+            buffer = io.StringIO()
+            row_writer = csv.DictWriter(
+                buffer, fieldnames=fieldnames, extrasaction="ignore"
+            )
+            row_writer.writerow(row)
+            line = buffer.getvalue()
+            if comment_rejected and parse_rejected_flag(row.get("rejected")):
+                handle.write(f"#{line}")
+            else:
+                handle.write(line)
 
 
-def _write_all_method_timing_csvs(
-    run_dir: Path,
-    rows: list[dict],
-    *,
-    official_method: str,
-) -> Path:
-    """Write ``timing.csv`` (official) and ``timing_<method>.csv`` for every method."""
-    official_path = run_dir / "timing.csv"
-    official_records = []
-    for row in rows:
-        official = {
-            **method_timing_record(row, official_method),
-            "timing_method": official_method,
-            "rms_official": row["rms_official"],
-            "delta_t_official": row["delta_t_official"],
-            "scale_official": row["scale_official"],
-        }
-        official_records.append(official)
+def _write_timing_csv(path: Path, records: list[dict], *, fieldnames: list[str]) -> None:
+    """Write one merged timing table, commenting rejected rows."""
+    _write_csv_rows(path, records, fieldnames=fieldnames, comment_rejected=True)
+
+
+def _official_timing_record(row: dict) -> dict:
+    """Build one official timing export row from a wide summary row."""
+    method = row["selected_method"]
+    record = {
+        **method_timing_record(row, method),
+        "timing_method": method,
+        "rms_official": row[f"rms_{method}"],
+        "delta_t_official": row[f"delta_t_{method}"],
+        "scale_official": (
+            float(row["scale_nls_scale_clean"])
+            if method == "nls_scale_clean"
+            else 1.0
+        ),
+        "rejected": row.get("rejected", "false"),
+    }
+    if f"sigma_t_max_{method}" in row:
+        record["sigma_t_max"] = row[f"sigma_t_max_{method}"]
+    return record
+
+
+def _write_all_method_timing_csvs(out_dir: Path, rows: list[dict]) -> Path:
+    """Write ``timing.csv`` (per-row official method) and ``timing_<method>.csv`` under ``out_dir``."""
+    official_path = out_dir / "timing.csv"
+    official_records = [_official_timing_record(row) for row in rows]
 
     _write_timing_csv(official_path, official_records, fieldnames=TIMING_CSV_FIELDS_OFFICIAL)
-    logger.info("Wrote %s (%s maxima, method=%s)", official_path, len(official_records), official_method)
+    logger.info("Wrote %s (%s maxima, per-row selected_method)", official_path, len(official_records))
 
     for method in sorted(TIMING_METHODS):
-        path = run_dir / f"timing_{method}.csv"
-        records = [method_timing_record(row, method) for row in rows]
-        _write_timing_csv(path, records, fieldnames=TIMING_CSV_FIELDS)
+        path = out_dir / f"timing_{method}.csv"
+        records = [
+            {**method_timing_record(row, method), "rejected": row.get("rejected", "false")}
+            for row in rows
+        ]
+        _write_timing_csv(path, records, fieldnames=TIMING_CSV_FIELDS + ["rejected"])
         logger.info("Wrote %s (%s maxima)", path, len(records))
 
     return official_path
+
+
+def _write_piece_timing_exports(piece_dir: Path, rows: list[dict]) -> Path | None:
+    """Write final timing tables for one segment under ``pieces/<piece_id>/``."""
+    if not rows:
+        return None
+    return _write_all_method_timing_csvs(piece_dir, rows)
+
+
+def _write_fit_summary_csv(path: Path, rows: list[dict]) -> None:
+    """Write a piece-level wide summary, commenting rejected rows."""
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    if "rejected" not in fieldnames:
+        fieldnames = [*fieldnames, "rejected"]
+    _write_csv_rows(path, rows, fieldnames=fieldnames, comment_rejected=True)
+
+
+def _prepare_summary_rows(
+    rows: list[dict],
+    *,
+    curve: TemplateCurve,
+    error_model: str,
+    default_method: str,
+) -> None:
+    """Normalise review fields, timing errors, and official columns in place."""
+    _attach_timing_errors(
+        rows,
+        curve=curve,
+        error_model=error_model,
+        timing_method=default_method,
+    )
+    for row in rows:
+        normalise_review_fields(row, default_method=default_method)
+        if not parse_rejected_flag(row["rejected"]):
+            sync_official_columns(row, row["selected_method"])
+            row["sigma_t_max"] = row[f"sigma_t_max_{row['selected_method']}"]
+
+
+def _load_all_piece_summary_rows(run_dir: Path) -> list[dict]:
+    """Load wide summary rows from every ``pieces/*/fit_summary.csv`` on disk."""
+    rows: list[dict] = []
+    pieces_dir = run_dir / "pieces"
+    if not pieces_dir.is_dir():
+        return rows
+    for piece_dir in sorted(pieces_dir.iterdir()):
+        if not piece_dir.is_dir():
+            continue
+        summary_path = piece_dir / "fit_summary.csv"
+        if not summary_path.is_file():
+            continue
+        piece_rows = load_fit_summary_rows(summary_path, include_rejected=True)
+        rows.extend(piece_rows)
+        logger.info(
+            "Loaded %s row(s) from %s",
+            len(piece_rows),
+            summary_path,
+        )
+    return rows
+
+
+def _overview_lc_segments_for_timing(
+    timing_rows: list[dict],
+    manifest,
+) -> list[tuple[Path, float, float]]:
+    """Build overview LC clip windows from merged timing rows and the manifest."""
+    piece_by_id = {piece.piece_id: piece for piece in manifest.pieces}
+    windows_by_path: dict[Path, list[tuple[float, float]]] = {}
+    for row in timing_rows:
+        piece_id = str(row["piece_id"])
+        piece = piece_by_id.get(piece_id)
+        if piece is None:
+            logger.warning(
+                "Overview: piece_id %s not in manifest; using global lc_path",
+                piece_id,
+            )
+            lc = manifest.lc_path
+        else:
+            lc = piece_lc_path(piece, manifest.lc_path)
+        windows_by_path.setdefault(lc, []).append(
+            (float(row["t_start"]), float(row["t_end"]))
+        )
+    segments: list[tuple[Path, float, float]] = []
+    for lc, windows in windows_by_path.items():
+        seg_lo = min(w[0] for w in windows)
+        seg_hi = max(w[1] for w in windows)
+        segments.append((lc, seg_lo, seg_hi))
+    return segments
+
+
+def _write_piece_overview(
+    piece_dir: Path,
+    rows: list[dict],
+    *,
+    manifest,
+    piece: PieceConfig,
+    show: bool,
+) -> None:
+    """Save (and optionally show) an LC overview for one segment's accepted maxima."""
+    if not manifest.save_overview:
+        return
+    accepted = [r for r in rows if not parse_rejected_flag(r.get("rejected"))]
+    if not accepted:
+        return
+    t_lo, t_hi = overview_time_span(
+        [piece],
+        accepted,
+        manifest.overview_t_min,
+        manifest.overview_t_max,
+    )
+    plot_lc_with_maxima(
+        accepted,
+        t_min=t_lo,
+        t_max=t_hi,
+        lc_segments=_overview_lc_segments_for_timing(accepted, manifest),
+        save_path=piece_dir / "overview_lc_maxima.png",
+        show=show,
+    )
+
+
+def _export_merged_run_outputs(
+    manifest,
+    *,
+    show_plots: bool,
+) -> Path:
+    """Explicit merge: all piece folders -> ``run_dir/timing.csv`` and run overview."""
+    all_timing = _load_all_piece_summary_rows(manifest.run_dir)
+    timing_path = manifest.run_dir / "timing.csv"
+    all_timing.sort(key=lambda r: (float(r["t_max"]), str(r["piece_id"]), int(r["interval"])))
+    if all_timing:
+        timing_path = _write_all_method_timing_csvs(manifest.run_dir, all_timing)
+        logger.info(
+            "Merged run export: %s row(s) from %s piece(s) -> %s",
+            len(all_timing),
+            len({str(r["piece_id"]) for r in all_timing}),
+            timing_path,
+        )
+
+    accepted = [r for r in all_timing if not parse_rejected_flag(r.get("rejected"))]
+    if manifest.save_overview and accepted:
+        t_lo, t_hi = overview_time_span(
+            manifest.pieces,
+            accepted,
+            manifest.overview_t_min,
+            manifest.overview_t_max,
+        )
+        plot_lc_with_maxima(
+            accepted,
+            t_min=t_lo,
+            t_max=t_hi,
+            lc_segments=_overview_lc_segments_for_timing(accepted, manifest),
+            save_path=manifest.run_dir / "overview_lc_maxima.png",
+            show=show_plots,
+        )
+    elif manifest.save_overview and not accepted:
+        logger.warning("No accepted maxima; run overview not written")
+    return timing_path
+
+
+def _finish_piece_outputs(
+    piece_dir: Path,
+    rows: list[dict],
+    *,
+    manifest,
+    piece: PieceConfig,
+    show_overview: bool,
+) -> Path | None:
+    """Write segment-local timing exports and optional segment overview."""
+    timing_path = _write_piece_timing_exports(piece_dir, rows)
+    _write_piece_overview(
+        piece_dir,
+        rows,
+        manifest=manifest,
+        piece=piece,
+        show=show_overview,
+    )
+    return timing_path
 
 
 def _plot_reused_template(piece_dir: Path, piece: PieceConfig, *, show_plots: bool) -> None:
@@ -169,6 +386,7 @@ def run_manifest(
     *,
     dry_run: bool = False,
     show_plots: bool = False,
+    review_fits: bool = False,
 ) -> Path:
     """Execute full pipeline; return path to ``timing.csv``."""
     manifest = load_manifest(manifest_path)
@@ -179,7 +397,9 @@ def run_manifest(
         return manifest.run_dir / "timing.csv"
 
     manifest.run_dir.mkdir(parents=True, exist_ok=True)
-    all_timing: list[dict] = []
+    last_timing_path: Path | None = None
+    last_piece: PieceConfig | None = None
+    last_rows: list[dict] = []
     piece_dirs: dict[str, Path] = {}
 
     for piece in manifest.pieces:
@@ -249,6 +469,7 @@ def run_manifest(
             out_summary=piece_dir / "fit_summary.csv",
             fits_dir=fits_dir,
             show_plots=show_plots,
+            review_fits=review_fits,
         )
 
         curve, _meta = load_template_bundle(
@@ -256,46 +477,152 @@ def run_manifest(
             piece_dir / "template_meta.json",
             context=f"Piece {piece.piece_id}",
         )
-        _attach_timing_errors(
+        _prepare_summary_rows(
             summary_rows,
             curve=curve,
             error_model=manifest.error_model,
-            timing_method=manifest.timing_method,
+            default_method=manifest.timing_method,
         )
         if summary_rows:
+            _write_fit_summary_csv(piece_dir / "fit_summary.csv", summary_rows)
+            last_timing_path = _finish_piece_outputs(
+                piece_dir,
+                summary_rows,
+                manifest=manifest,
+                piece=piece,
+                show_overview=False,
+            )
+            last_piece = piece
+            last_rows = summary_rows
+
+    if review_fits and last_piece is not None and last_rows:
+        _write_piece_overview(
+            manifest.run_dir / "pieces" / last_piece.piece_id,
+            last_rows,
+            manifest=manifest,
+            piece=last_piece,
+            show=True,
+        )
+
+    if last_timing_path is None:
+        return manifest.run_dir / "pieces" / "timing.csv"
+    return last_timing_path
+
+
+def export_manifest(manifest_path: Path, *, show_plots: bool = False) -> Path:
+    """Merge all segment folders into ``run_dir/timing.csv`` (explicit opt-in)."""
+    manifest = load_manifest(manifest_path)
+    apply_plot_style()
+    logger.info(
+        "Export-only: merging segment timing under %s -> run_dir (no refit, no review)",
+        manifest.run_dir,
+    )
+    pieces_dir = manifest.run_dir / "pieces"
+    if pieces_dir.is_dir():
+        for piece_dir in sorted(pieces_dir.iterdir()):
+            if not piece_dir.is_dir():
+                continue
             summary_path = piece_dir / "fit_summary.csv"
-            with summary_path.open("w", encoding="utf-8", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=list(summary_rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(summary_rows)
-        all_timing.extend(summary_rows)
+            if not summary_path.is_file():
+                continue
+            rows = load_fit_summary_rows(summary_path, include_rejected=True)
+            if rows:
+                _write_piece_timing_exports(piece_dir, rows)
+    return _export_merged_run_outputs(manifest, show_plots=show_plots)
 
-    all_timing.sort(key=lambda r: (float(r["t_max"]), str(r["piece_id"]), int(r["interval"])))
-    timing_path = manifest.run_dir / "timing.csv"
-    if all_timing:
-        timing_path = _write_all_method_timing_csvs(
-            manifest.run_dir,
-            all_timing,
-            official_method=manifest.timing_method,
+
+def review_manifest(manifest_path: Path, *, show_plots: bool = False) -> Path:
+    """Re-review existing fit summaries without refitting or rebuilding templates."""
+    manifest = load_manifest(manifest_path)
+    apply_plot_style()
+    last_timing_path: Path | None = None
+    last_piece: PieceConfig | None = None
+    last_rows: list[dict] = []
+
+    for piece in manifest.pieces:
+        if piece.skip:
+            logger.info("Piece %s: skip=true; review not run", piece.piece_id)
+            continue
+        piece_dir = manifest.run_dir / "pieces" / piece.piece_id
+        summary_path = piece_dir / "fit_summary.csv"
+        try:
+            summary_table = load_fit_summary_table(summary_path)
+        except FileNotFoundError:
+            logger.warning("Piece %s: no fit_summary at %s", piece.piece_id, summary_path)
+            continue
+        if not any(not entry.commented for entry in summary_table.entries):
+            logger.warning(
+                "Piece %s: no active intervals to review in %s",
+                piece.piece_id,
+                summary_path,
+            )
+            continue
+
+        piece_lc = piece_lc_path(piece, manifest.lc_path)
+        summary_table = review_piece_from_summary(
+            piece_lc,
+            piece_id=piece.piece_id,
+            fit_t_min=piece.fit_window.t_min,
+            fit_t_max=piece.fit_window.t_max,
+            template_npz=piece_dir / "template.npz",
+            template_meta_path=piece_dir / "template_meta.json",
+            mag0=manifest.mag0,
+            default_method=manifest.timing_method,
+            summary_table=summary_table,
+        )
+        modified_rows = [
+            entry.row
+            for entry in summary_table.entries
+            if entry.modified and not entry.commented
+        ]
+        if modified_rows:
+            curve, _meta = load_template_bundle(
+                piece_dir / "template.npz",
+                piece_dir / "template_meta.json",
+                context=f"Piece {piece.piece_id}",
+            )
+            _prepare_summary_rows(
+                modified_rows,
+                curve=curve,
+                error_model=manifest.error_model,
+                default_method=manifest.timing_method,
+            )
+        write_fit_summary_table(summary_path, summary_table)
+        all_rows = fit_summary_table_rows(summary_table)
+        n_modified = sum(1 for entry in summary_table.entries if entry.modified)
+        last_timing_path = _finish_piece_outputs(
+            piece_dir,
+            all_rows,
+            manifest=manifest,
+            piece=piece,
+            show_overview=False,
+        )
+        if n_modified:
+            logger.info(
+                "Piece %s: updated fit_summary (%s row(s)) and segment timing.csv",
+                piece.piece_id,
+                n_modified,
+            )
+        else:
+            logger.info(
+                "Piece %s: fit_summary unchanged; segment timing.csv written from summary",
+                piece.piece_id,
+            )
+        last_piece = piece
+        last_rows = all_rows
+
+    if last_piece is not None and last_rows:
+        _write_piece_overview(
+            manifest.run_dir / "pieces" / last_piece.piece_id,
+            last_rows,
+            manifest=manifest,
+            piece=last_piece,
+            show=True,
         )
 
-    if manifest.save_overview and all_timing:
-        t_lo, t_hi = overview_time_span(
-            manifest.pieces,
-            all_timing,
-            manifest.overview_t_min,
-            manifest.overview_t_max,
-        )
-        plot_lc_with_maxima(
-            all_timing,
-            t_min=t_lo,
-            t_max=t_hi,
-            lc_segments=overview_lc_segments(manifest.pieces, manifest.lc_path),
-            save_path=manifest.run_dir / "overview_lc_maxima.png",
-            show=show_plots,
-        )
-
-    return timing_path
+    if last_timing_path is None:
+        return manifest.run_dir / "pieces" / "timing.csv"
+    return last_timing_path
 
 
 def main() -> None:
@@ -314,11 +641,37 @@ def main() -> None:
     parser.add_argument(
         "--show-plots",
         action="store_true",
-        help="Interactive plt.show() after each figure",
+        help="Interactive plt.show() after each saved figure (not used during --review-fits)",
+    )
+    parser.add_argument(
+        "--review-fits",
+        action="store_true",
+        help="After each interval fit, open a 4-panel review window (keys 1-4/c/n/l/s, r=reject)",
+    )
+    parser.add_argument(
+        "--review-only",
+        action="store_true",
+        help="Skip Step 1 and refitting; re-review existing fit_summary.csv files and rewrite exports",
+    )
+    parser.add_argument(
+        "--export-only",
+        action="store_true",
+        help="Rebuild run_dir/timing.csv from all pieces/*/fit_summary.csv (explicit merge; does not run fits)",
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    run_manifest(args.config.resolve(), dry_run=args.dry_run, show_plots=args.show_plots)
+    config = args.config.resolve()
+    if args.export_only:
+        export_manifest(config, show_plots=args.show_plots)
+    elif args.review_only:
+        review_manifest(config, show_plots=args.show_plots)
+    else:
+        run_manifest(
+            config,
+            dry_run=args.dry_run,
+            show_plots=args.show_plots,
+            review_fits=args.review_fits,
+        )
 
 
 if __name__ == "__main__":

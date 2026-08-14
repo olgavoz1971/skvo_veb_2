@@ -31,6 +31,7 @@ def apply_interval_plot_style() -> None:
             "font.size": FONT_SIZE,
             "axes.labelsize": FONT_SIZE,
             "axes.titlesize": FONT_SIZE,
+            "figure.titlesize": FONT_SIZE,
             "xtick.labelsize": FONT_SIZE * 0.85,
             "ytick.labelsize": FONT_SIZE * 0.85,
             "legend.fontsize": FONT_SIZE * 0.65,

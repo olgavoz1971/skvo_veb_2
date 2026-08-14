@@ -62,7 +62,7 @@ fit_defaults:
 
 pieces:
   - piece_id: "early"
-    # skip: true
+    skip: true
     local_period: 0.05937839
     local_epoch: 59866.380310805 
     # existing_template_dir: ../data/runs/ground_R/pieces/early
@@ -76,7 +76,7 @@ pieces:
     # local_lc_path if omitted -- use global lc_path
 
   - piece_id: "59865"
-    # skip: true
+    skip: true
     local_period: 0.06066
     # existing_template_dir: ../data/runs/ground_R/pieces/59865
     template_window:
@@ -88,7 +88,7 @@ pieces:
     intervals_path: ../data/R_59865_intervals.dat
 
   - piece_id: "59866_67"
-    # skip: true
+    skip: true
     local_period: 0.06066
     # Or copy template from another piece in THIS run (earlier in the list):
     # reuse_template_from: "59857"
@@ -102,7 +102,7 @@ pieces:
     intervals_path: ../data/R_59866_67_intervals.dat
 
   - piece_id: "59868_69"
-    # skip: true
+    skip: true
     local_period: 0.05991
     # local_epoch: 59866.469905
     local_epoch: 59866.44
@@ -116,7 +116,7 @@ pieces:
     intervals_path: ../data/R_59868_70_intervals.dat
 
   - piece_id: "59870_71"
-    # skip: true
+    skip: true
     local_period: 0.05991
     local_epoch: 59866.43995
     # existing_template_dir: ../data/runs/ground_R/pieces/59870_71
@@ -129,10 +129,10 @@ pieces:
     intervals_path: ../data/R_59870_71_intervals.dat
 
   - piece_id: "59872_75"
-    # skip: true
+    skip: true
     local_period: 0.05984
     local_epoch: 59866.43995
-    # existing_template_dir: ../data/runs/ground_R/pieces/59872_75
+    existing_template_dir: ../data/runs/ground_R/pieces/59872_75
     template_window:
       t_min: 59872.0
       t_max: 59873.7
@@ -142,8 +142,10 @@ pieces:
     intervals_path: ../data/R_59872_75_intervals.dat
 
   - piece_id: "59878"
+    skip: true
     local_period: 0.0619
     local_epoch: 59866.43995
+    existing_template_dir: ../data/runs/ground_R/pieces/59878
     template_window:
       t_min: 59878.2
       t_max: 59878.7
@@ -153,8 +155,10 @@ pieces:
     intervals_path: ../data/R_5978_intervals.dat
 
   - piece_id: "59880"
+    skip: true
     local_period: 0.06191
     local_epoch: 59866.43995
+    existing_template_dir: ../data/runs/ground_R/pieces/59880
     template_window:
       t_min: 59880.2
       t_max: 59880.7
@@ -167,6 +171,7 @@ pieces:
   - piece_id: "59883"    
     local_period: 0.06191
     local_epoch: 59866.43995
+    existing_template_dir: ../data/runs/ground_R/pieces/59883
     template_window:
       t_min: 59883.2
       t_max: 59883.7

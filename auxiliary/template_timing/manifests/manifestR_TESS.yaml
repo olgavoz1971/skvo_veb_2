@@ -12,7 +12,7 @@ global:
     period_slope: 0.0
 
   timing:
-    method: nls_clean
+    method: nls_scale_clean #  nls_clean
     error_model: rms_slope
 
   output:
@@ -77,9 +77,10 @@ pieces:
 
 
   - piece_id: "parabolic"
-    skip: false
+    skip: true
     local_period: 0.05937839
     local_epoch: 59864.4936
+    existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
     fold_ephemeris:
       kind: quadratic
       a: -2.014e-06
@@ -98,19 +99,19 @@ pieces:
   - piece_id: "59874_77"
     skip: true
     local_period: 0.0600
-    # existing_template_dir: ../data/runs/ground_R/pieces/59865
+    existing_template_dir: ../data/runs/R_TESS/pieces/59874_77
     template_window:
       t_min: 59874.5
       t_max: 59877.8
     fit_window:
-      t_min: 59865.0
-      t_max: 59865.7
+      t_min: 59874.0
+      t_max: 59877.7
     intervals_path: ../data/R_TESS_intervals_59874_77_max.dat
 
   - piece_id: "59877_79"
     skip: true
     local_period: 0.060
-    # existing_template_dir: ../data/runs/ground_R/pieces/59865
+    existing_template_dir: ../data/runs/R_TESS/pieces/59877_79
     template_window:
       t_min: 59877.8
       t_max: 59879.0
@@ -119,3 +120,14 @@ pieces:
       t_max: 59879.0
     intervals_path: ../data/R_TESS_intervals_59877_79_max.dat
 
+  - piece_id: "59883"
+    # skip: true
+    local_period: 0.060
+    # existing_template_dir: ../data/runs/R_TESS/pieces/59883
+    template_window:
+      t_min: 59882.7
+      t_max: 59884.2
+    fit_window:
+      t_min: 59882.7
+      t_max: 59884.2
+    intervals_path: ../data/R_TESS_intervals_59883_max.dat

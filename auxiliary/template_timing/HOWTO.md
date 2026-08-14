@@ -34,7 +34,7 @@ Paths in the YAML are **relative to the manifest file**, not to where you run th
 | **1** | Build GP **template** per piece | Yes (minutes per piece) | `template.npz`, `template_meta.json`, `template_gp.png` |
 | **2** | **Fit** template in each interval | Faster | `fit_summary.csv`, optional `fits/interval_XX.png` |
 
-At the end, everything is merged into **`timing.csv`** and **`overview_lc_maxima.png`** in the run folder.
+At the end of each active segment, official timing is written under **`pieces/<piece_id>/timing.csv`**. A merged **`run_dir/timing.csv`** is **not** updated automatically; use **`--export-only`** when you want the combined run file.
 
 ---
 
@@ -53,12 +53,34 @@ cd auxiliary/template_timing
 |------|----------------|
 | **`--config PATH`** | Required. Your manifest YAML. |
 | **`--dry-run`** | Only checks the manifest and paths. No GP, no fits, no plots written. |
-| **`--show-plots`** | After each figure is saved, also open an **interactive** matplotlib window (`plt.show()`). You must **close each window** before the run continues. Without this flag, plots are **only saved to files** under `run_dir` (default behaviour). |
+| **`--show-plots`** | After each figure is saved, also open an **interactive** matplotlib window (`plt.show()`). You must **close each window** before the run continues. Without this flag, plots are **only saved to files** under `run_dir` (default behaviour). Not used for `--review-fits` windows (those always block until you press a key). |
+| **`--review-fits`** | After each interval fit, open a **4-panel review** window. Press **`1`/`c`**, **`2`/`n`**, **`3`/`l`**, or **`4`/`s`** to accept that method as the official timing for **this interval only**. Press **`r`** to **reject** (the row is kept but written as a **`#`-commented line** in all timing CSVs and `fit_summary.csv`). **Enter** or **space** accepts the manifest default method. |
+| **`--review-only`** | Skip Step 1 and refitting. Reload existing `pieces/<id>/fit_summary.csv`, run interactive review, then rewrite **that segment's** `pieces/<id>/timing.csv` only. Opens that segment's overview when review ends. |
+| **`--export-only`** | **Explicit merge:** rebuild `run_dir/timing.csv` and run overview from all `pieces/*/fit_summary.csv`. Does not refit or re-review. |
 
 **Interactive pop-ups while you work on the machine:**
 
 ```bash
 python run_timing.py --config manifests/manifest.yaml --show-plots
+```
+
+**Fit + review in one go:**
+
+```bash
+python run_timing.py --config manifests/manifest.yaml --review-fits
+```
+
+**Silent fit first, review later** (segment overview opens when review ends):
+
+```bash
+python run_timing.py --config manifests/manifest.yaml
+python run_timing.py --config manifests/manifest.yaml --review-only
+```
+
+**Merge all segments into one run-level file** (only when you ask for it):
+
+```bash
+python run_timing.py --config manifests/manifest.yaml --export-only
 ```
 
 **No GUI windows** (figures still saved to `run_dir`; good for SSH or batch):
@@ -85,11 +107,30 @@ Whatever you set under `global.output.run_dir`, for example:
 
 Important files:
 
-- **`timing.csv`** — merged maxima for the manifest **`timing.method`** (official)
-- **`timing_cc.csv`**, **`timing_nls.csv`**, **`timing_nls_clean.csv`**, **`timing_nls_scale_clean.csv`** — same columns, one file per fit method
-- **`overview_lc_maxima.png`** — LC with vertical lines at each official `t_max`
-- **`pieces/<piece_id>/`** — template + per-piece **`fit_summary.csv`** (all four methods in one wide table, plus `sigma_t_max_*` when errors are enabled)
-- **`pieces/<piece_id>/fits/`** — 4-panel debug plots (if `save_interval_plots: true`)
+- **`pieces/<piece_id>/timing.csv`** — official maxima for **that segment only** (`timing_method` = your per-row review choice)
+- **`pieces/<piece_id>/timing_<method>.csv`** — same segment, one file per fit method
+- **`pieces/<piece_id>/fit_summary.csv`** — wide table (all methods + `selected_method`, `rejected`)
+- **`pieces/<piece_id>/overview_lc_maxima.png`** — LC overview for that segment (when plots enabled)
+- **`pieces/<piece_id>/fits/`** — four-panel interval plots (if `save_interval_plots: true`)
+- **`timing.csv`** (under `run_dir`) — **merged** table; written only by **`--export-only`**
+- **`overview_lc_maxima.png`** (under `run_dir`) — full-run overview; written only by **`--export-only`**
+
+### The four-panel interval plot
+
+Each interval fit produces one wide figure (`pieces/<id>/fits/interval_XX.png`, or the same layout in **`--review-fits`** / **`--review-only`** pop-ups):
+
+| Panel | Method | Keys (review) |
+|-------|--------|---------------|
+| 1 | Cross-correlation (`cc`) | `1` or `c` |
+| 2 | Nonlinear least squares (`nls`) | `2` or `n` |
+| 3 | NLS + iterative outlier clean (`nls_clean`) | `3` or `l` |
+| 4 | NLS + scale + outlier clean (`nls_scale_clean`) | `4` or `s` |
+
+Each panel shows the LC points, the shifted template, and a magenta **`t_max`** line. Panel titles include RMS, point count, Δt, and scale.
+
+**Caption / fonts:** titles and axis labels use the shared Step 2 style (`plot_style.py`, **`FONT_SIZE = 20`**). The figure caption (interval id and JD bounds) uses the same size. During review, the keyboard hint line under the caption is slightly smaller (`0.65 × FONT_SIZE`, matching legend text). Saved PNGs and review windows share this styling.
+
+Press **`r`** to reject an interval; **Enter** or **space** accepts the manifest default method.
 
 ### Step 2 (fitting) vs Step 1 (template)
 
@@ -244,11 +285,17 @@ The orchestrator does **not** check that a loaded template’s **`fold_period`**
 
 ## Timing methods (which column wins)
 
-All four methods are computed for every interval. **`timing.method`** selects the official row in **`timing.csv`** and the overview plot markers. Compare methods via **`timing_<method>.csv`** in `run_dir` or the wide **`fit_summary.csv`** per piece.
+All four methods are computed for every interval. Compare methods via **`timing_<method>.csv`** in `run_dir` or the wide **`fit_summary.csv`** per piece.
+
+**Official timing per segment:** `pieces/<id>/timing.csv` — one row per accepted interval; **`timing_method`** is your selected method for that row. Without review, every row uses the manifest default **`timing.method`** (stored as **`selected_method`** in `fit_summary.csv`).
+
+**Run-level `timing.csv`:** optional merged copy; create it only with **`--export-only`**.
+
+**Rejected intervals:** press **`r`** during review. The row stays in the segment files but is prefixed with **`#`** (skipped by downstream loaders such as `plot_oc.py`). Cycle / interval index remains traceable. On **`--review-only`**, commented rows are **not shown again**; if you change nothing, `fit_summary.csv` is rewritten **verbatim** (same commented rows, same order). Segment **`timing.csv`** is **always refreshed** from the summary after review (so method changes and stale exports stay in sync).
 
 - **`nls_scale_clean`** — NLS + outlier cleaning + scale `s` (most flexible; default in examples)
 
-Per-piece wide table: `pieces/<id>/fit_summary.csv` (all methods + `sigma_t_max_*` when errors enabled).
+Per-piece wide table: `pieces/<id>/fit_summary.csv` (all methods + `selected_method`, `rejected`, and `sigma_t_max_*` when errors enabled).
 
 ---
 
@@ -281,8 +328,12 @@ Common fixes:
 2. Set `lc_path`, ephemeris, windows, interval files, `run_dir`.
 3. `--dry-run`
 4. Full run (add `--show-plots` for pop-ups, or `MPLBACKEND=Agg` for headless).
-5. Open `run_dir/timing.csv` and `overview_lc_maxima.png`.
-6. Next time: add `existing_template_dir` on pieces where the template is unchanged; rerun for new fits only.
+5. Open `pieces/<id>/timing.csv` and `pieces/<id>/overview_lc_maxima.png` for each segment you ran.
+6. Next time: add `existing_template_dir` on pieces where the template is unchanged; rerun for new fits only (`skip: true` on finished segments).
+
+**Incremental segment runs:** set `skip: true` on finished pieces; only the active segment's `pieces/<id>/timing.csv` is written. Other segments are never touched.
+
+**Merged run file:** when all segments are ready, run **`--export-only`** to build `run_dir/timing.csv`.
 
 ---
 
