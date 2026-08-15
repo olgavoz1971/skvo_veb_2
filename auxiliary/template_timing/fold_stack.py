@@ -62,6 +62,41 @@ def t_from_tau_on_cycle(
     return t_ref + cycle_index * period + tau
 
 
+def ensemble_calendar_from_delta_tau(
+    delta_tau: float,
+    *,
+    t_ref: float,
+    period: float,
+    tau_peak: float,
+    t_pick: float,
+) -> tuple[int, float, float]:
+    """Map a fold-space template shift to one calendar ToM on the nearest cycle.
+
+    Constant-period inversion: ``t = T0 + E P + tau``. ``E`` is the integer cycle
+    nearest ``t_pick`` (typically the fit-window centre, start, or end).
+
+    Args:
+        delta_tau (float): Fitted shift of the template peak in tau (days).
+        t_ref (float): Fold epoch ``T0`` (same origin as the tau coordinate).
+        period (float): Fold period ``P`` (days).
+        tau_peak (float): Unshifted template peak in tau (days).
+        t_pick (float): Calendar time that selects the reporting cycle.
+
+    Returns:
+        tuple[int, float, float]: ``(cycle_index, t_anchor, t_max)`` where
+        ``t_anchor`` is the unshifted template peak on that cycle and
+        ``t_max = t_anchor + delta_tau``.
+    """
+    cycle_index = cycle_index_at_time(t_pick, t_ref, period)
+    t_anchor = t_from_tau_on_cycle(
+        tau_peak, t_ref=t_ref, period=period, cycle_index=cycle_index
+    )
+    t_max = t_from_tau_on_cycle(
+        tau_peak + delta_tau, t_ref=t_ref, period=period, cycle_index=cycle_index
+    )
+    return cycle_index, t_anchor, t_max
+
+
 def extended_tau_from_phase(phi: np.ndarray, period: float) -> np.ndarray:
     """Map centred phase and +1 copy to tau = phi_ext * P (days, phase 0 at tau=0)."""
     phi_ext = np.concatenate([phi, phi + 1.0])

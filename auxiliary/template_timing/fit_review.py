@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 from manifest_config import TIMING_METHODS
 from plot_style import FONT_SIZE
 from template_fit import ShiftFitResult, TemplateCurve
-from template_fit_pipeline import plot_interval_fits
+from template_fit_pipeline import plot_interval_fits, plot_segment_anchor_fits
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,142 @@ def review_interval_fits(
     if decision["value"] is None:
         logger.warning(
             "Piece %s interval %s: window closed without key; using default %s",
+            piece_id,
+            index,
+            default_method,
+        )
+        return ReviewDecision(selected_method=default_method, rejected=False)
+    return decision["value"]
+
+
+def review_segment_anchor_fits(
+    index: int,
+    t_start: float,
+    t_end: float,
+    tau,
+    y,
+    curve: TemplateCurve,
+    t_anchor: float,
+    anchor_epoch: str,
+    cc: ShiftFitResult,
+    nls: ShiftFitResult,
+    nls_clean: ShiftFitResult,
+    nls_scale_clean: ShiftFitResult,
+    *,
+    dt_min: float,
+    dt_max: float,
+    default_method: str,
+    piece_id: str,
+    template_npz: Path | None = None,
+) -> ReviewDecision:
+    """Interactive review for ensemble ToM (folded stack + four methods).
+
+    Args:
+        index (int): Segment index (0 for segment_anchor).
+        t_start (float): Fit window start.
+        t_end (float): Fit window end.
+        tau: Fold coordinates of the fit-window LC (days).
+        y: Normalised flux.
+        curve (TemplateCurve): Step 1 template.
+        t_anchor (float): Calendar time of the unshifted template peak on the
+            reporting cycle.
+        anchor_epoch (str): Anchor kind for the title.
+        cc, nls, nls_clean, nls_scale_clean: Stored fit results.
+        dt_min (float): Fit-mask lower edge (days from peak).
+        dt_max (float): Fit-mask upper edge (days from peak).
+        default_method (str): Manifest default timing method.
+        piece_id (str): Piece identifier.
+        template_npz (Path | None): ``template.npz`` for GP sigma bands.
+
+    Returns:
+        ReviewDecision: Selected method or rejection.
+    """
+    if default_method not in TIMING_METHODS:
+        raise ValueError(f"unsupported default_method: {default_method}")
+
+    fig = plot_segment_anchor_fits(
+        index,
+        t_start,
+        t_end,
+        tau,
+        y,
+        curve,
+        t_anchor,
+        anchor_epoch,
+        cc,
+        nls,
+        nls_clean,
+        nls_scale_clean,
+        dt_min=dt_min,
+        dt_max=dt_max,
+        save_path=None,
+        show=False,
+        return_figure=True,
+        template_npz=template_npz,
+    )
+    decision: dict[str, ReviewDecision | None] = {"value": None}
+
+    def _finish(selected_method: str | None, *, rejected: bool) -> None:
+        decision["value"] = ReviewDecision(
+            selected_method=selected_method,
+            rejected=rejected,
+        )
+        plt.close(fig)
+
+    def _on_key(event) -> None:
+        if decision["value"] is not None:
+            return
+        key = event.key
+        if key in REJECT_KEYS:
+            logger.info(
+                "Piece %s segment anchor %s: rejected by reviewer",
+                piece_id,
+                index,
+            )
+            _finish(None, rejected=True)
+            return
+        if key in ("enter", "return", " "):
+            logger.info(
+                "Piece %s segment anchor %s: accepted default method %s",
+                piece_id,
+                index,
+                default_method,
+            )
+            _finish(default_method, rejected=False)
+            return
+        method = METHOD_KEYS.get(key)
+        if method is not None:
+            logger.info(
+                "Piece %s segment anchor %s: accepted method %s",
+                piece_id,
+                index,
+                method,
+            )
+            _finish(method, rejected=False)
+
+    help_line = _review_help_text(default_method)
+    fig.suptitle(
+        f"{piece_id} segment anchor {index}: [{t_start:.5f}, {t_end:.5f}], "
+        f"anchor={anchor_epoch}",
+        fontsize=FONT_SIZE,
+        y=0.98,
+    )
+    fig.text(
+        0.5,
+        0.93,
+        help_line,
+        ha="center",
+        va="top",
+        fontsize=FONT_SIZE * 0.65,
+        transform=fig.transFigure,
+    )
+    fig.subplots_adjust(top=0.88)
+    fig.canvas.mpl_connect("key_press_event", _on_key)
+    plt.show()
+
+    if decision["value"] is None:
+        logger.warning(
+            "Piece %s segment anchor %s: window closed without key; using default %s",
             piece_id,
             index,
             default_method,

@@ -34,16 +34,19 @@ logger = logging.getLogger(__name__)
 RUN_STEP1 = True
 RUN_STEP2 = False
 RUN_STEP3 = False
+RUN_PERIOD_SEGMENTS = True
+# RUN_PERIOD_SEGMENTS = False
 
 JD0 = 2400000
 # TIMING_FILE = Path(__file__).resolve().parent / "data/runs/ground_R/timing.csv"
+TIMING_FILE = Path(__file__).resolve().parent / "data/runs/R_TESS_1/timing.csv"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/R_detrended_corrected_max_gp.dat"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/timing_max_vlada.dat"
-# TIMING_FILE = Path(__file__).resolve().parent / "data/runs/merged/timing.csv"
-TIMING_FILE = Path(__file__).resolve().parent / "data/GP_max/R_TESS_all.dat"
+# TIMING_FILE = Path(__file__).resolve().parent / "data/runs/merged/timing_ensemble.csv"
+# TIMING_FILE = Path(__file__).resolve().parent / "data/GP_max/R_TESS_all.dat"
 # OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_vlada.csv")
-# OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_template_merged.csv")
-OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_GP.csv")
+OC_EXPORT = TIMING_FILE.with_name("oc_max_template_ensemble_1.csv")
+# OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_GP.csv")
 # TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_vlada.csv")
 TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_template_merged.csv")
 LC_DAT = Path(__file__).resolve().parent / "data/R_detrended_corrected.dat"
@@ -64,10 +67,26 @@ CYCLE_SHIFTS: list[tuple[float, int]] = [
     (JD0 + 59858.63, 1),
     (JD0 + 59865.38, 1),
     (JD0 + 59866.25, -1),
-    (JD0 + 59880.34, -1),
+    # (JD0 + 59875.0, 1),
+    (JD0 + 59878.4, 1),
+    # (JD0 + 59880.34, -2),
 ]
 
 JD_OBS_FOR_FIT = (JD0 + 59865.0, JD0 + 59874.0)
+
+# Step 1b: linear O-C segments — period / epoch correction (after CYCLE_SHIFTS)
+# Each entry is (label, jd_start, jd_end) inclusive on observed JD.
+PERIOD_SEGMENTS: list[tuple[str, float, float]] = [
+    ("early", JD0 + 59854.8, JD0 + 59865.46),
+    ("A", JD0 + 59865.45, JD0 + 59867.10),
+    ("B", JD0 + 59867.09, JD0 + 59874.12),
+    ("B1", JD0 + 59875.20, JD0 + 59877.07),
+    # ("late", JD0 + 59875.9, JD0 + 59883.5),
+]
+
+PERIOD_CORRECT_MAX_ITER = 5
+PERIOD_CORRECT_TOL = 1e-8
+SEGMENT_PERIOD_EXPORT = TIMING_FILE.with_name("oc_segment_periods.csv")
 
 # Step 3: model-free folding
 MF_MIN_CYCLE_GAP = 1.0
@@ -118,6 +137,48 @@ class QuadraticEphemeris:
             f"{0.5 * self.P1:+.3e} E²\n"
             f"P1 = dP/dE = {self.P1:.3e} d/cycle²,  "
             f"Pdot ≈ {self.Pdot_dt:.3e} d/d/cycle"
+        )
+
+
+@dataclass(frozen=True)
+class LinearSegmentEphemeris:
+    """Constant-period ephemeris from a linear O-C segment (Step 1b).
+
+    Period correction follows the ``correct_period`` idea: fit ``O-C`` vs
+    observed JD within the segment (cycle numbers ``E`` stay fixed after
+    ``CYCLE_SHIFTS``), then ``P_corr = P / (1 - slope)`` and
+    ``T0_corr = T0 + intercept``, iterated until the time slope vanishes.
+    """
+
+    name: str
+    jd_min: float
+    jd_max: float
+    T0: float
+    P: float
+    T0_trial: float
+    P_trial: float
+    slope_oc_vs_jd: float
+    intercept_oc_vs_jd: float
+    slope_oc_vs_E: float
+    intercept_oc_vs_E: float
+    n_points: int
+    n_used: int
+    rms: float
+    n_iter: int
+
+    def describe(self) -> str:
+        """Human-readable summary for terminal output."""
+        dP = self.P - self.P_trial
+        dT0 = self.T0 - self.T0_trial
+        return (
+            f"segment {self.name!r}  JD {self.jd_min:.5f} .. {self.jd_max:.5f}  "
+            f"({self.n_used}/{self.n_points} pts, RMS={self.rms:.5f} d, "
+            f"{self.n_iter} iter)\n"
+            f"  P = {self.P:.8f} d  (ΔP = {dP:+.3e} d vs trial)\n"
+            f"  T0 = {self.T0:.5f}  (ΔT0 = {dT0:+.5f} d vs trial)\n"
+            f"  OC vs JD (centred): slope={self.slope_oc_vs_jd:.3e}\n"
+            f"  OC vs E:  slope={self.slope_oc_vs_E:.3e} d/cycle "
+            f"(≈ ΔP), intercept={self.intercept_oc_vs_E:+.5f} d (≈ ΔT0)"
         )
 
 
@@ -710,6 +771,400 @@ def model_free_fold_lightcurve(
     return out
 
 
+def fit_linear_oc_vs_jd(
+    jd: np.ndarray,
+    oc: np.ndarray,
+    sigma: np.ndarray | None = None,
+    *,
+    outlier_sigma: float = 3.0,
+) -> tuple[float, float, np.ndarray]:
+    """Weighted linear ``O-C`` vs observed JD with 3σ outlier rejection.
+
+    Args:
+        jd (numpy.ndarray): Observed maximum times (days).
+        oc (numpy.ndarray): O-C residuals (days).
+        sigma (numpy.ndarray | None): Timing uncertainties for weighting.
+        outlier_sigma (float): Rejection threshold in residual RMS units.
+
+    Returns:
+        tuple: ``(slope, intercept, inlier_mask)`` for ``oc ≈ intercept + slope * jd``.
+    """
+    jd = np.asarray(jd, dtype=float)
+    oc = np.asarray(oc, dtype=float)
+    weights = None
+    if sigma is not None:
+        safe = np.where(sigma == 0, 1e-6, sigma)
+        weights = 1.0 / safe**0.75
+
+    line = models.Linear1D()
+    fitter = fitting.LinearLSQFitter()
+    if weights is not None:
+        fitted = fitter(line, jd, oc, weights=weights)
+    else:
+        fitted = fitter(line, jd, oc)
+
+    resid = oc - fitted(jd)
+    std = float(np.std(resid))
+    inlier = np.abs(resid) < outlier_sigma * std if std > 0 else np.ones(len(jd), dtype=bool)
+    if not np.any(inlier):
+        inlier = np.ones(len(jd), dtype=bool)
+
+    jd_in = jd[inlier]
+    oc_in = oc[inlier]
+    w_in = weights[inlier] if weights is not None else None
+    line_final = models.Linear1D()
+    if w_in is not None:
+        fitted_final = fitter(line_final, jd_in, oc_in, weights=w_in)
+    else:
+        fitted_final = fitter(line_final, jd_in, oc_in)
+
+    return (
+        float(fitted_final.slope.value),
+        float(fitted_final.intercept.value),
+        inlier,
+    )
+
+
+def fit_linear_oc_vs_E(
+    E: np.ndarray,
+    oc: np.ndarray,
+    sigma: np.ndarray | None = None,
+) -> tuple[float, float]:
+    """Linear ``O-C`` vs cycle number (diagnostic / plot overlay).
+
+    Args:
+        E (numpy.ndarray): Cycle numbers after ``CYCLE_SHIFTS``.
+        oc (numpy.ndarray): O-C residuals (days).
+        sigma (numpy.ndarray | None): Timing uncertainties for weighting.
+
+    Returns:
+        tuple: ``(slope, intercept)`` with ``slope ≈ P_true - P_trial``.
+    """
+    E = np.asarray(E, dtype=float)
+    oc = np.asarray(oc, dtype=float)
+    line = models.Linear1D()
+    fitter = fitting.LinearLSQFitter()
+    if sigma is not None:
+        safe = np.where(sigma == 0, 1e-6, sigma)
+        weights = 1.0 / safe**0.75
+        fitted = fitter(line, E, oc, weights=weights)
+    else:
+        fitted = fitter(line, E, oc)
+    return float(fitted.slope.value), float(fitted.intercept.value)
+
+
+def correct_period_in_segment(
+    jd: np.ndarray,
+    E: np.ndarray,
+    OC: np.ndarray,
+    *,
+    name: str,
+    jd_window: tuple[float, float],
+    T0: float,
+    P0: float,
+    sigma: np.ndarray | None = None,
+    max_iter: int = PERIOD_CORRECT_MAX_ITER,
+    tol: float = PERIOD_CORRECT_TOL,
+) -> LinearSegmentEphemeris:
+    """Correct constant ``P`` and ``T0`` inside one linear O-C segment.
+
+    Cycle numbers ``E`` are held fixed (post ``CYCLE_SHIFTS``). Each iteration
+    refits ``O-C`` vs JD on the segment and applies
+    ``P ← P / (1 - slope)``, ``T0 ← T0 + intercept`` (see ``correct_period``
+    in ``binary_processor.py``).
+
+    Args:
+        jd (numpy.ndarray): Observed maximum times (days).
+        E (numpy.ndarray): Corrected cycle numbers.
+        OC (numpy.ndarray): Step 1 O-C residuals (days).
+        name (str): Segment label.
+        jd_window (tuple[float, float]): Inclusive JD bounds.
+        T0 (float): Trial epoch (days).
+        P0 (float): Trial period (days).
+        sigma (numpy.ndarray | None): Per-point timing sigma.
+        max_iter (int): Maximum correction iterations.
+        tol (float): Stop when ``|slope_oc_vs_jd|`` falls below this value.
+
+    Returns:
+        LinearSegmentEphemeris: Corrected segment ephemeris and fit diagnostics.
+    """
+    jd_lo, jd_hi = jd_window
+    mask = (jd >= jd_lo) & (jd <= jd_hi)
+    n_points = int(np.count_nonzero(mask))
+    if n_points < 2:
+        raise ValueError(
+            f"segment {name!r}: need at least 2 maxima in "
+            f"JD [{jd_lo:.5f}, {jd_hi:.5f}], got {n_points}"
+        )
+
+    jd_seg = np.asarray(jd[mask], dtype=float)
+    E_seg = np.asarray(E[mask], dtype=float)
+    sigma_seg = np.asarray(sigma[mask], dtype=float) if sigma is not None else None
+
+    P_work = float(P0)
+    T0_work = float(T0)
+    slope = float("nan")
+    intercept_at_jd0 = float("nan")
+    inlier = np.ones(n_points, dtype=bool)
+    n_iter = 0
+
+    for n_iter in range(1, max_iter + 1):
+        oc_seg = jd_seg - T0_work - E_seg * P_work
+        jd_ref = float(np.mean(jd_seg))
+        slope, intercept_at_jd0, inlier = fit_linear_oc_vs_jd(
+            jd_seg - jd_ref, oc_seg, sigma_seg
+        )
+        P_work = P_work / (1.0 - slope)
+        oc_after_p = jd_seg[inlier] - T0_work - E_seg[inlier] * P_work
+        T0_work = T0_work + float(np.mean(oc_after_p))
+        logger.info(
+            "  %s iter %d: slope=%.3e, P=%.8f, T0=%.5f, mean OC=%.5f d",
+            name,
+            n_iter,
+            slope,
+            P_work,
+            T0_work,
+            float(np.mean(jd_seg[inlier] - T0_work - E_seg[inlier] * P_work)),
+        )
+        if abs(slope) < tol:
+            break
+
+    oc_final = jd_seg[inlier] - T0_work - E_seg[inlier] * P_work
+    rms = float(np.sqrt(np.mean(oc_final**2))) if len(oc_final) else float("nan")
+
+    oc_trial_seg = np.asarray(OC[mask], dtype=float)
+    slope_e, intercept_e = fit_linear_oc_vs_E(
+        E_seg, oc_trial_seg, sigma=sigma_seg
+    )
+
+    return LinearSegmentEphemeris(
+        name=name,
+        jd_min=jd_lo,
+        jd_max=jd_hi,
+        T0=T0_work,
+        P=P_work,
+        T0_trial=T0,
+        P_trial=P0,
+        slope_oc_vs_jd=slope,
+        intercept_oc_vs_jd=intercept_at_jd0,
+        slope_oc_vs_E=slope_e,
+        intercept_oc_vs_E=intercept_e,
+        n_points=n_points,
+        n_used=int(np.count_nonzero(inlier)),
+        rms=rms,
+        n_iter=n_iter,
+    )
+
+
+def export_segment_periods(
+    path: Path,
+    segments: list[LinearSegmentEphemeris],
+) -> None:
+    """Write segment period-correction summary CSV.
+
+    Args:
+        path (Path): Output CSV path.
+        segments (list[LinearSegmentEphemeris]): One row per fitted segment.
+    """
+    fieldnames = [
+        "segment",
+        "jd_min",
+        "jd_max",
+        "P_trial",
+        "P_corrected",
+        "delta_P",
+        "T0_trial",
+        "T0_corrected",
+        "delta_T0",
+        "slope_oc_vs_jd",
+        "slope_oc_vs_E",
+        "n_points",
+        "n_used",
+        "rms",
+        "n_iter",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for seg in segments:
+            writer.writerow(
+                {
+                    "segment": seg.name,
+                    "jd_min": f"{seg.jd_min:.5f}",
+                    "jd_max": f"{seg.jd_max:.5f}",
+                    "P_trial": f"{seg.P_trial:.8f}",
+                    "P_corrected": f"{seg.P:.8f}",
+                    "delta_P": f"{seg.P - seg.P_trial:.3e}",
+                    "T0_trial": f"{seg.T0_trial:.5f}",
+                    "T0_corrected": f"{seg.T0:.5f}",
+                    "delta_T0": f"{seg.T0 - seg.T0_trial:.5f}",
+                    "slope_oc_vs_jd": f"{seg.slope_oc_vs_jd:.3e}",
+                    "slope_oc_vs_E": f"{seg.slope_oc_vs_E:.3e}",
+                    "n_points": seg.n_points,
+                    "n_used": seg.n_used,
+                    "rms": f"{seg.rms:.5f}",
+                    "n_iter": seg.n_iter,
+                }
+            )
+    logger.info("Wrote %s (%s segments)", path, len(segments))
+
+
+def plot_oc_segment_period_fits(
+    E: np.ndarray,
+    OC: np.ndarray,
+    jd_max: np.ndarray,
+    segments: list[LinearSegmentEphemeris],
+    *,
+    T0: float,
+    P0: float,
+    show: bool = True,
+) -> None:
+    """Step 1b: O-C diagram with linear segment fits and corrected ephemerides.
+
+    Args:
+        E (numpy.ndarray): Cycle numbers.
+        OC (numpy.ndarray): Step 1 O-C residuals (days).
+        jd_max (numpy.ndarray): Observed maximum times.
+        segments (list[LinearSegmentEphemeris]): Fitted segment results.
+        T0 (float): Trial epoch used in Step 1.
+        P0 (float): Trial period used in Step 1.
+        show (bool): Call ``plt.show()`` when true.
+    """
+    apply_plot_style()
+    seg_colours = plt.cm.tab10(np.linspace(0, 0.9, max(len(segments), 1)))
+
+    fig, (ax_e, ax_jd) = plt.subplots(
+        2, 1, figsize=(16, 12), sharex=False, height_ratios=[2, 1]
+    )
+
+    ax_e.plot(E, OC, "o", markersize=10, alpha=0.35, color="0.55", label="all O-C")
+    ax_e.axhline(0.0, color="0.35", ls="--")
+
+    for colour, seg in zip(seg_colours, segments, strict=False):
+        mask = (jd_max >= seg.jd_min) & (jd_max <= seg.jd_max)
+        E_seg = E[mask]
+        OC_seg = OC[mask]
+        ax_e.plot(
+            E_seg,
+            OC_seg,
+            "o",
+            markersize=14,
+            alpha=0.85,
+            color=colour,
+            label=f"{seg.name} data",
+        )
+        e_line = np.linspace(float(np.min(E_seg)), float(np.max(E_seg)), 50)
+        oc_line = seg.intercept_oc_vs_E + seg.slope_oc_vs_E * e_line
+        ax_e.plot(
+            e_line,
+            oc_line,
+            "-",
+            lw=2.5,
+            color=colour,
+            label=f"{seg.name} linear (P={seg.P:.6f} d)",
+        )
+        ax_e.axvspan(
+            float(np.min(E_seg)),
+            float(np.max(E_seg)),
+            alpha=0.08,
+            color=colour,
+        )
+
+    ax_e.set_ylabel("O-C (days)")
+    ax_e.set_xlabel("Cycle number E")
+    ax_e.set_title(
+        f"Step 1b: linear segment period correction  "
+        f"(trial T0={T0:.5f}, P0={P0:.8f} d)"
+    )
+    ax_e.legend(loc="upper left", fontsize=11, ncol=2)
+
+    ax_jd.barh(
+        range(len(segments)),
+        [seg.P - seg.P_trial for seg in segments],
+        color=seg_colours[: len(segments)],
+        alpha=0.85,
+    )
+    ax_jd.axvline(0.0, color="0.35", ls="--")
+    ax_jd.set_yticks(range(len(segments)))
+    ax_jd.set_yticklabels([seg.name for seg in segments])
+    ax_jd.set_xlabel("ΔP (days) vs trial period")
+    ax_jd.set_title("Segment period corrections")
+
+    fig.tight_layout()
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def run_step_period_segments(
+    E: np.ndarray,
+    OC: np.ndarray,
+    jd_max: np.ndarray,
+    rows: list[dict],
+    *,
+    T0: float,
+    P0: float,
+) -> list[LinearSegmentEphemeris]:
+    """Fit linear O-C segments and export corrected local periods (Step 1b).
+
+    Args:
+        E (numpy.ndarray): Cycle numbers after ``CYCLE_SHIFTS``.
+        OC (numpy.ndarray): Step 1 O-C residuals (days).
+        jd_max (numpy.ndarray): Observed maximum times (days).
+        rows (list[dict]): Timing metadata (for sigma).
+        T0 (float): Trial epoch.
+        P0 (float): Trial period.
+
+    Returns:
+        list[LinearSegmentEphemeris]: One result per entry in ``PERIOD_SEGMENTS``.
+    """
+    sigma = _timing_sigma(rows)
+    results: list[LinearSegmentEphemeris] = []
+
+    logger.info(
+        "Step 1b: period correction in %s segment(s), trial T0=%.5f P0=%.8f",
+        len(PERIOD_SEGMENTS),
+        T0,
+        P0,
+    )
+    for name, jd_lo, jd_hi in PERIOD_SEGMENTS:
+        mask = (jd_max >= jd_lo) & (jd_max <= jd_hi)
+        n_in = int(np.count_nonzero(mask))
+        if n_in < 2:
+            logger.warning(
+                "Step 1b segment %r: skipping — only %s point(s) in "
+                "JD [%.5f, %.5f] (need ≥2 for linear fit)",
+                name,
+                n_in,
+                jd_lo,
+                jd_hi,
+            )
+            continue
+        logger.info("Step 1b segment %r: JD %.5f .. %.5f", name, jd_lo, jd_hi)
+        seg = correct_period_in_segment(
+            jd_max,
+            E,
+            OC,
+            name=name,
+            jd_window=(jd_lo, jd_hi),
+            T0=T0,
+            P0=P0,
+            sigma=sigma,
+        )
+        logger.info("%s", seg.describe())
+        results.append(seg)
+
+    if not results:
+        logger.warning("Step 1b: no segments fitted — check PERIOD_SEGMENTS and timing data")
+        return results
+
+    export_segment_periods(SEGMENT_PERIOD_EXPORT, results)
+    plot_oc_segment_period_fits(E, OC, jd_max, results, T0=T0, P0=P0)
+    return results
+
+
 def plot_calculated_oc(
     E: np.ndarray,
     OC: np.ndarray,
@@ -1151,6 +1606,8 @@ def main() -> None:
 
     if RUN_STEP1:
         run_step1(rows, E, OC, jd_max, T0=T0, P0=P0)
+    if RUN_PERIOD_SEGMENTS:
+        run_step_period_segments(E, OC, jd_max, rows, T0=T0, P0=P0)
     if RUN_STEP2:
         run_step2(rows, E, OC, jd_max, T0=T0, P0=P0)
     if RUN_STEP3:

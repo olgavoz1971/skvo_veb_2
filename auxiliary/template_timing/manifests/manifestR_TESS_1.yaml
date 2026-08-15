@@ -1,0 +1,348 @@
+# Working manifest for all meaningful ground-based observations in R filter
+
+version: 1.1
+
+global:
+  lc_path: ../data/R_TESS_detrended_sorted_corrected.dat
+  mag0: 10
+
+  template_fold:
+    default_epoch: 59863.9936
+    default_period: 0.05937839
+    period_slope: 0.0
+
+  timing:
+    # method: nls_clean   # nls_scale_clean
+    method: nls_scale_clean
+    error_model: rms_slope
+
+  output:
+    run_dir: ../data/runs/R_TESS_1
+
+  plots:
+    save_interval_plots: true
+    save_overview: true
+    overview_t_min: null
+    overview_t_max: null
+
+gp_template_defaults:
+  extended_fold: true
+  extrema_mode: max
+  kernel_type: matern
+  length_scale_init: 0.02
+  length_scale_min: 0.01
+  length_scale_max: 0.026
+  amplitude_init: 0.3
+  amplitude_min: 0.1
+  amplitude_max: 0.7
+  guess_sigma: true
+  noise_scale_divisor: 1.25
+  n_grid: 2000
+  n_restarts: 3
+  # Peak search: local extrema of the GP mean inside the folded data range only,
+  # ranked by prominence relative to the in-range peak-to-peak amplitude.
+  peak_edge_margin_frac_period: 0.05
+  peak_min_separation_frac_period: 0.15
+  peak_min_prominence_frac: 0.25
+  peak_duplicate_phase_tol: 0.05
+  peak_select: dominant
+  peak_tau_hint: null
+
+fit_defaults:
+  # Which part of the cycle Step 2 fits, around the timed peak.
+  # whole_period = +-0.5 P; frac_period = +-fit_mask_half_width_phase * P (max 0.5).
+  # fit_mask_mode: whole_period   # frac_period
+  fit_mask_mode: frac_period
+  fit_mask_half_width_phase: 0.25
+  delta_tau_margin: 0.003
+  delta_tau_max: 0.02
+  outlier_mad_k: 3.0
+  outlier_max_iter: 8
+  outlier_min_inliers: 8
+  scale_min: 0.5
+  scale_max: 1.5
+
+pieces:
+
+  - piece_id: "early_1"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    # local_period: 0.06
+    # local_epoch: 59866.380310805
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    template_window:
+      t_min: 59853.25
+      t_max: 59854.1
+    fit_window:
+      t_min: 59853.25
+      t_max: 59854.1
+    # intervals_path: ../data/R_TESS_early_intervals_max.dat
+    # local_lc_path if omitted -- use global lc_path
+
+  - piece_id: "early_2"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    # local_period: 0.06
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    template_window:
+      t_min: 59854.1
+      t_max: 59855.7
+    fit_window:
+      t_min: 59854.1
+      t_max: 59855.7
+
+  - piece_id: "early_3"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    # local_period: 0.06
+    template_window:
+      t_min: 59855.7
+      t_max: 59857.5
+    fit_window:
+      t_min: 59855.7
+      t_max: 59857.5
+
+  - piece_id: "early_4"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    # local_period: 0.06
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    template_window:
+      t_min: 59857.5
+      t_max: 59859.0
+    fit_window:
+      t_min: 59857.5
+      t_max: 59859.0
+
+  - piece_id: "early_5"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    # local_period: 0.0593783900
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    template_window:
+      t_min: 59859.0
+      t_max: 59860.65
+    fit_window:
+      t_min: 59859.0
+      t_max: 59860.65
+
+  - piece_id: "early_6"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    # local_period: 0.06
+    template_window:
+      t_min: 59860.65
+      t_max: 59862.5
+    fit_window:
+      t_min: 59860.65
+      t_max: 59862.5
+
+  - piece_id: "early_7"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    existing_template_dir: ../data/runs/R_TESS/pieces/early
+    # local_period: 0.06
+    template_window:
+      t_min: 59862.65
+      t_max: 59863.4
+    fit_window:
+      t_min: 59862.65
+      t_max: 59863.4
+
+  - piece_id: "parabolic_1"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_1
+    local_period: 0.0600
+    template_window:
+      t_min: 59865.2
+      t_max: 59865.7
+    fit_window:
+      t_min: 59865.2
+      t_max: 59865.7
+  
+  - piece_id: "parabolic_2a"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.060
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_2a
+    template_window:
+      t_min: 59866.15
+      t_max: 59866.6
+    fit_window:
+      t_min: 59866.15
+      t_max: 59866.6
+
+  - piece_id: "parabolic_2b"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_2b
+    template_window:
+      t_min: 59866.6
+      t_max: 59867.5
+    fit_window:
+      t_min: 59866.6
+      t_max: 59867.5
+
+  - piece_id: "parabolic_3"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_3
+    template_window:
+      t_min: 59867.5
+      t_max: 59869.7
+    fit_window:
+      t_min: 59867.5
+      t_max: 59869.7
+
+  - piece_id: "parabolic_4"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    # existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_4
+    template_window:
+      t_min: 59869.7
+      t_max: 59871.5
+    fit_window:
+      t_min: 59869.7
+      t_max: 59870.7
+
+  - piece_id: "parabolic_4a"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    # existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_4
+    template_window:
+      t_min: 59869.7
+      t_max: 59871.5
+    fit_window:
+      t_min: 59870.7
+      t_max: 59871.5
+
+  - piece_id: "parabolic_5"
+    skip: true
+    # existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_5
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    template_window:
+      t_min: 59871.5
+      t_max: 59873.5
+    fit_window:
+      t_min: 59871.5
+      t_max: 59872.5
+
+  - piece_id: "parabolic_5a"
+    skip: true
+    # existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_5
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    template_window:
+      t_min: 59871.5
+      t_max: 59873.5
+    fit_window:
+      t_min: 59872.5
+      t_max: 59873.5
+
+  - piece_id: "parabolic_6"
+    skip: true
+    # existing_template_dir: ../data/runs/R_TESS/pieces/parabolic
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/parabolic_5
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.0600
+    template_window:
+      t_min: 59873.5
+      t_max: 59874.7
+    fit_window:
+      t_min: 59873.5
+      t_max: 59874.7
+
+  - piece_id: "59874"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    skip: true
+    local_period: 0.0600
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/59874
+    template_window:
+      t_min: 59874.8
+      t_max: 59875.5
+    fit_window:
+      t_min: 59874.8
+      t_max: 59875.5
+
+  - piece_id: "59875"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    # skip: true
+    local_period: 0.0600
+    existing_template_dir: ../data/runs/R_TESS_1/pieces/59875
+    # existing_template_dir: ../data/runs/R_TESS/pieces/59874_77
+    template_window:
+      t_min: 59875.3
+      t_max: 59876.9
+    fit_window:
+      t_min: 59875.3
+      t_max: 59876.9
+
+  - piece_id: "59876"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    # skip: true
+    local_period: 0.0600
+    # existing_template_dir: ../data/runs/R_TESS/pieces/59874_77
+    template_window:
+      t_min: 59875.8
+      t_max: 59878.2
+    fit_window:
+      t_min: 59875.8
+      t_max: 59878.2
+
+  - piece_id: "59877_78"
+    # skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.060
+    existing_template_dir: ../data/runs/R_TESS/pieces/59874_77
+    template_window:
+      t_min: 59878.2
+      t_max: 59878.57
+    fit_window:
+      t_min: 59878.2
+      t_max: 59878.57
+
+  - piece_id: "59883"
+    skip: true
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre
+    local_period: 0.060
+    # existing_template_dir: ../data/runs/R_TESS_1/pieces/59883
+    template_window:
+      t_min: 59882.7
+      t_max: 59884.2
+    fit_window:
+      t_min: 59882.7
+      t_max: 59884.2
+    intervals_path: ../data/R_TESS_intervals_59883_max.dat

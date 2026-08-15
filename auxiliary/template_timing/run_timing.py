@@ -22,15 +22,17 @@ from manifest_config import (
     piece_fold_epoch,
     piece_fold_period,
     piece_lc_path,
+    piece_template_window,
 )
 from plot_style import apply_plot_style
 from plot_overview import overview_time_span, plot_lc_with_maxima
 from template_build import build_piece_template, plot_template_artifacts
-from template_reuse import copy_piece_template, load_existing_template_dir
+from template_reuse import bind_reused_template_dir, resolve_piece_template_dir
 from template_fit import TemplateCurve
 from template_fit_pipeline import (
     fit_mask_for_template,
     fit_piece_intervals,
+    fit_piece_segment_anchor,
     fit_result_from_summary_row,
     fit_summary_table_rows,
     load_fit_summary_rows,
@@ -354,16 +356,23 @@ def _finish_piece_outputs(
     return timing_path
 
 
-def _plot_reused_template(piece_dir: Path, piece: PieceConfig, *, show_plots: bool) -> None:
-    """Draw a reused template with the fit window taken from the current manifest.
+def _show_reused_template(
+    template_dir: Path,
+    piece: PieceConfig,
+    *,
+    show_plots: bool,
+) -> None:
+    """Optionally display a reused template; never write into the piece folder.
 
     Args:
-        piece_dir (Path): Output directory holding the copied template artefacts.
+        template_dir (Path): Read-only directory with ``template.npz`` / meta.
         piece (PieceConfig): Piece whose ``fit`` settings define the window.
         show_plots (bool): Call ``plt.show()`` when true.
     """
-    npz_path = piece_dir / "template.npz"
-    meta_path = piece_dir / "template_meta.json"
+    if not show_plots:
+        return
+    npz_path = template_dir / "template.npz"
+    meta_path = template_dir / "template_meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     tau_peak = float(np.load(npz_path)["tau_peak"])
     mask = fit_mask_for_template(
@@ -376,8 +385,8 @@ def _plot_reused_template(piece_dir: Path, piece: PieceConfig, *, show_plots: bo
         npz_path,
         meta_path,
         mask=mask,
-        save_path=piece_dir / "template_gp.png",
-        show=show_plots,
+        save_path=None,
+        show=True,
     )
 
 
@@ -401,6 +410,7 @@ def run_manifest(
     last_piece: PieceConfig | None = None
     last_rows: list[dict] = []
     piece_dirs: dict[str, Path] = {}
+    template_dirs: dict[str, Path] = {}
 
     for piece in manifest.pieces:
         if piece.skip:
@@ -414,31 +424,24 @@ def run_manifest(
         piece_lc = piece_lc_path(piece, manifest.lc_path)
 
         if piece.existing_template_dir is not None:
-            load_existing_template_dir(
-                piece.existing_template_dir,
-                piece_dir,
-                piece_id=piece.piece_id,
-                fit_t_min=piece.fit_window.t_min,
-                fit_t_max=piece.fit_window.t_max,
+            template_dir = bind_reused_template_dir(
+                piece, template_dirs=template_dirs
             )
-            _plot_reused_template(piece_dir, piece, show_plots=show_plots)
+            template_dirs[piece.piece_id] = template_dir
+            _show_reused_template(template_dir, piece, show_plots=show_plots)
         elif piece.reuse_template_from is not None:
-            source_dir = piece_dirs[piece.reuse_template_from]
-            copy_piece_template(
-                source_dir,
-                piece_dir,
-                piece_id=piece.piece_id,
-                reuse_template_from=piece.reuse_template_from,
-                fit_t_min=piece.fit_window.t_min,
-                fit_t_max=piece.fit_window.t_max,
+            template_dir = bind_reused_template_dir(
+                piece, template_dirs=template_dirs
             )
-            _plot_reused_template(piece_dir, piece, show_plots=show_plots)
+            template_dirs[piece.piece_id] = template_dir
+            _show_reused_template(template_dir, piece, show_plots=show_plots)
         else:
+            tw = piece_template_window(piece)
             build_piece_template(
                 piece_lc,
                 piece_id=piece.piece_id,
-                t_obs_min=piece.template_window.t_min,
-                t_obs_max=piece.template_window.t_max,
+                t_obs_min=tw.t_min,
+                t_obs_max=tw.t_max,
                 fold_epoch=fold_epoch,
                 fold_period=fold_p,
                 default_epoch=manifest.default_epoch,
@@ -453,28 +456,52 @@ def run_manifest(
                 out_plot=piece_dir / "template_gp.png",
                 show_plot=show_plots,
             )
+            template_dirs[piece.piece_id] = piece_dir.resolve()
+
+        template_dir = template_dirs[piece.piece_id]
+        template_npz = template_dir / "template.npz"
+        template_meta = template_dir / "template_meta.json"
 
         fits_dir = piece_dir / "fits" if manifest.save_interval_plots else None
-        summary_rows = fit_piece_intervals(
-            piece_lc,
-            piece_id=piece.piece_id,
-            fit_t_min=piece.fit_window.t_min,
-            fit_t_max=piece.fit_window.t_max,
-            intervals_path=piece.intervals_path,
-            template_npz=piece_dir / "template.npz",
-            template_meta_path=piece_dir / "template_meta.json",
-            mag0=manifest.mag0,
-            fit_cfg=piece.fit,
-            timing_method=manifest.timing_method,
-            out_summary=piece_dir / "fit_summary.csv",
-            fits_dir=fits_dir,
-            show_plots=show_plots,
-            review_fits=review_fits,
-        )
+        if piece.timing_mode == "segment_anchor":
+            summary_rows = fit_piece_segment_anchor(
+                piece_lc,
+                piece_id=piece.piece_id,
+                fit_t_min=piece.fit_window.t_min,
+                fit_t_max=piece.fit_window.t_max,
+                anchor_epoch=piece.anchor_epoch,
+                piece_period=fold_p,
+                template_npz=template_npz,
+                template_meta_path=template_meta,
+                mag0=manifest.mag0,
+                fit_cfg=piece.fit,
+                timing_method=manifest.timing_method,
+                out_summary=piece_dir / "fit_summary.csv",
+                fits_dir=fits_dir,
+                show_plots=show_plots,
+                review_fits=review_fits,
+            )
+        else:
+            summary_rows = fit_piece_intervals(
+                piece_lc,
+                piece_id=piece.piece_id,
+                fit_t_min=piece.fit_window.t_min,
+                fit_t_max=piece.fit_window.t_max,
+                intervals_path=piece.intervals_path,
+                template_npz=template_npz,
+                template_meta_path=template_meta,
+                mag0=manifest.mag0,
+                fit_cfg=piece.fit,
+                timing_method=manifest.timing_method,
+                out_summary=piece_dir / "fit_summary.csv",
+                fits_dir=fits_dir,
+                show_plots=show_plots,
+                review_fits=review_fits,
+            )
 
         curve, _meta = load_template_bundle(
-            piece_dir / "template.npz",
-            piece_dir / "template_meta.json",
+            template_npz,
+            template_meta,
             context=f"Piece {piece.piece_id}",
         )
         _prepare_summary_rows(
@@ -559,15 +586,31 @@ def review_manifest(manifest_path: Path, *, show_plots: bool = False) -> Path:
             continue
 
         piece_lc = piece_lc_path(piece, manifest.lc_path)
+        try:
+            template_dir = resolve_piece_template_dir(
+                piece,
+                run_dir=manifest.run_dir,
+                pieces=manifest.pieces,
+            )
+        except FileNotFoundError as exc:
+            logger.warning(
+                "Piece %s: no template for review (%s)",
+                piece.piece_id,
+                exc,
+            )
+            continue
+        template_npz = template_dir / "template.npz"
+        template_meta = template_dir / "template_meta.json"
         summary_table = review_piece_from_summary(
             piece_lc,
             piece_id=piece.piece_id,
             fit_t_min=piece.fit_window.t_min,
             fit_t_max=piece.fit_window.t_max,
-            template_npz=piece_dir / "template.npz",
-            template_meta_path=piece_dir / "template_meta.json",
+            template_npz=template_npz,
+            template_meta_path=template_meta,
             mag0=manifest.mag0,
             default_method=manifest.timing_method,
+            fit_cfg=piece.fit,
             summary_table=summary_table,
         )
         modified_rows = [
@@ -577,8 +620,8 @@ def review_manifest(manifest_path: Path, *, show_plots: bool = False) -> Path:
         ]
         if modified_rows:
             curve, _meta = load_template_bundle(
-                piece_dir / "template.npz",
-                piece_dir / "template_meta.json",
+                template_npz,
+                template_meta,
                 context=f"Piece {piece.piece_id}",
             )
             _prepare_summary_rows(

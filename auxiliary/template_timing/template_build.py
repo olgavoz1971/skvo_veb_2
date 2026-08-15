@@ -290,6 +290,25 @@ def plot_template_fit(
         plt.close(fig)
 
 
+def load_template_sigma_grid(npz_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """Return sorted ``(tau, sigma)`` arrays from ``template.npz``.
+
+    Args:
+        npz_path (Path): Path to ``template.npz``.
+
+    Returns:
+        tuple[numpy.ndarray, numpy.ndarray] | None: Fold grid and GP posterior
+        sigma, or ``None`` when ``sigma`` was not stored.
+    """
+    data = np.load(npz_path)
+    if "sigma" not in data:
+        return None
+    tau = np.asarray(data["tau"], dtype=float)
+    sigma = np.asarray(data["sigma"], dtype=float)
+    order = np.argsort(tau)
+    return tau[order], sigma[order]
+
+
 def plot_template_artifacts(
     npz_path: Path,
     meta_path: Path,
@@ -319,10 +338,11 @@ def plot_template_artifacts(
 
     fig, ax = plt.subplots(figsize=FIGSIZE_TEMPLATE)
     ax.plot(tau, mu, color="tab:blue", lw=2, label="template mu(tau)")
-    if "sigma" in data:
-        sigma = np.asarray(data["sigma"], dtype=float)
+    sigma_grid = load_template_sigma_grid(npz_path)
+    if sigma_grid is not None:
+        tau_sig, sigma = sigma_grid
         ax.fill_between(
-            tau,
+            tau_sig,
             mu - sigma,
             mu + sigma,
             color="tab:blue",

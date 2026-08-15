@@ -245,12 +245,42 @@ instruction to rebuild; the photometric support of the fold cannot be recovered 
 
 - **`piece_id`** — short label (e.g. `"59857"`)
 - **`skip`** — optional; if **`true`**, this piece is listed but Step 1 and Step 2 are not run (no output under `pieces/<id>/`, no rows in `timing.csv`). Intervals file is not checked. Another piece cannot `reuse_template_from` a skipped piece.
-- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build (required in YAML; ignored when reusing a template).
-- **`fit_window`** — truncated JD range where Step 2 loads the LC and fits intervals. Intervals in the file that **do not overlap** this window are **skipped** (logged). At least **one** interval must overlap or manifest load fails.
-- **`intervals_path`** — file with interval start/end times
+- **`timing_mode`** — optional; default **`per_interval`**. Set to **`segment_anchor`** for sparse segments where you want **one** Step 2 timing point over the whole **`fit_window`** (no **`intervals_path`**). See [Segment-anchor timing](#segment-anchor-timing-sparse-segments) below.
+- **`anchor_epoch`** — optional; used only when **`timing_mode: segment_anchor`**. Which cycle the ensemble ToM is written on: **`window_centre`** (default), **`window_start`**, or **`window_end`**. The fit itself is in fold space (all cycles); this only chooses **E** for `t_max = T0 + E P + tau_peak + delta_t`. Step 1 still uses **`local_epoch`** / **`default_epoch`** for building the template. Quadratic **`fold_ephemeris`** is not allowed with **`segment_anchor`**.
+- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build. Required for **`per_interval`**; for **`segment_anchor`**, defaults to **`fit_window`** if omitted. Ignored when reusing a template (`existing_template_dir` / `reuse_template_from`).
+- **`fit_window`** — truncated JD range where Step 2 loads the LC. For **`per_interval`**, intervals in the file that **do not overlap** this window are **skipped** (logged); at least **one** interval must overlap or manifest load fails. For **`segment_anchor`**, every point in the window is folded and used in the ensemble fit (interval index **`0`** in outputs).
+- **`intervals_path`** — file with interval start/end times; **required** for **`per_interval`**, **not used** for **`segment_anchor`** (may be omitted).
 - **`local_period`** — optional; Step 1 fold period for this piece. If omitted, **`default_period`** is used. **Not used in Step 2 fitting.**
 - **`local_lc_path`** — optional; detrended LC file for this piece only (relative to the manifest directory). If omitted, global **`lc_path`** is used for Step 1 and Step 2 on this piece. Useful for a pre-cut segment file (e.g. one epoch’s `.dat`) while other pieces use the full archive.
 - **`local_epoch`** — optional; Step 1 fold epoch (truncated JD) for this piece. If omitted, **`template_fold.default_epoch`** is used. Use when you want phase 0 centred on a known maximum/minimum in that LC segment for a sharper template. **Not used in Step 2.** You are responsible for using a sensible template when reusing paths.
+
+### Segment-anchor timing (sparse segments)
+
+Use **`timing_mode: segment_anchor`** when a piece spans **several cycles** but you only want **one** O-C point for the whole segment (e.g. early sparse ground data), not one point per observing night.
+
+```yaml
+  - piece_id: "early_sparse"
+    timing_mode: segment_anchor
+    anchor_epoch: window_centre   # reporting cycle for the ensemble ToM (not the fold epoch)
+    existing_template_dir: ../data/runs/ground_R/pieces/early
+    fit_window:
+      t_min: 59853.0
+      t_max: 59858.203804
+    local_epoch: 59866.380310805   # Step 1 fold only
+    local_period: 0.05937839
+```
+
+**Step 1 (template):** unchanged — fold with **`local_epoch`** / **`default_epoch`**, build or reuse GP template. Omit **`existing_template_dir`** to rebuild; **`template_window`** defaults to **`fit_window`** when omitted.
+
+**Step 2 (ensemble ToM):** fold **all** points in **`fit_window`** with the template’s constant period and epoch, then run the four methods in **tau** (the stacked segment). The fitted shift ``delta_t`` is one number for the whole stack. Calendar time is that shift placed on the cycle nearest **`anchor_epoch`**:
+
+`t_max = T0 + E P + tau_peak + delta_t`  (`t_anchor` is the unshifted peak on that cycle; `t_max = t_anchor + delta_t`).
+
+Piece **`local_period`** must match the template **`fold_period`**. Quadratic **`fold_ephemeris`** is not supported. Outputs use **`interval: 0`**, plot **`fits/segment_anchor.png`**, and **`timing_mode`** / **`anchor_epoch`** / **`cycle_index`** in **`fit_summary.csv`**.
+
+**Review plot (`segment_anchor.png`):** two rows, both in fold time. **Top:** folded segment vs **unshifted** template (shape check). **Bottom:** the four methods on the **same stacked points** (orange mask); `n` is the ensemble, not one cycle. Step 1 fold quality is also in **`template_gp.png`**.
+
+**When not to use it:** single-cycle or single-hump segments — keep **`per_interval`** (default).
 
 ---
 

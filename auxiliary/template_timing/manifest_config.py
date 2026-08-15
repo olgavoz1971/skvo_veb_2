@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 TIMING_METHODS = frozenset({"cc", "nls", "nls_clean", "nls_scale_clean"})
 ERROR_MODELS = frozenset({"rms_slope", "none"})
+TIMING_MODES = frozenset({"per_interval", "segment_anchor"})
+ANCHOR_EPOCH_KINDS = frozenset({"window_centre", "window_start", "window_end"})
 EXTREMA_MODES = frozenset({"max", "min"})
 PEAK_SELECT_RULES = frozenset({"dominant", "nearest_phase0"})
 
@@ -136,9 +138,11 @@ class PieceConfig:
     """One dense segment: build template and fit intervals."""
 
     piece_id: str
-    template_window: TimeWindow
     fit_window: TimeWindow
-    intervals_path: Path
+    template_window: TimeWindow | None = None
+    intervals_path: Path | None = None
+    timing_mode: str = "per_interval"
+    anchor_epoch: str = "window_centre"
     local_period: float | None = None
     local_epoch: float | None = None
     fold_ephemeris: FoldEphemerisConfig | None = None
@@ -148,6 +152,27 @@ class PieceConfig:
     skip: bool = False
     gp_template: GPTemplateDefaults = field(default_factory=GPTemplateDefaults)
     fit: FitDefaults = field(default_factory=FitDefaults)
+
+    def __post_init__(self) -> None:
+        if self.timing_mode not in TIMING_MODES:
+            raise ValueError(
+                f"piece {self.piece_id}: timing_mode must be one of "
+                f"{sorted(TIMING_MODES)}, got {self.timing_mode!r}"
+            )
+        if self.anchor_epoch not in ANCHOR_EPOCH_KINDS:
+            raise ValueError(
+                f"piece {self.piece_id}: anchor_epoch must be one of "
+                f"{sorted(ANCHOR_EPOCH_KINDS)}, got {self.anchor_epoch!r}"
+            )
+        if self.timing_mode == "per_interval" and self.intervals_path is None:
+            raise ValueError(
+                f"piece {self.piece_id}: intervals_path required for timing_mode=per_interval"
+            )
+        if self.timing_mode == "segment_anchor" and self.fold_ephemeris is not None:
+            raise ValueError(
+                f"piece {self.piece_id}: segment_anchor ensemble ToM supports "
+                f"constant period only; omit fold_ephemeris"
+            )
 
 
 @dataclass
@@ -209,6 +234,34 @@ def _parse_fold_ephemeris(
 
 def _window_from_mapping(data: dict[str, Any]) -> TimeWindow:
     return TimeWindow(t_min=float(data["t_min"]), t_max=float(data["t_max"]))
+
+
+def resolve_anchor_jd(window: TimeWindow, anchor_epoch: str) -> float:
+    """Map ``anchor_epoch`` to a calendar JD inside ``fit_window``.
+
+    Args:
+        window (TimeWindow): Step 2 fit window.
+        anchor_epoch (str): ``window_centre``, ``window_start``, or ``window_end``.
+
+    Returns:
+        float: Reference time for :class:`~template_fit.IntervalFitContext`.
+    """
+    if anchor_epoch == "window_centre":
+        return 0.5 * (window.t_min + window.t_max)
+    if anchor_epoch == "window_start":
+        return window.t_min
+    if anchor_epoch == "window_end":
+        return window.t_max
+    raise ValueError(f"unsupported anchor_epoch: {anchor_epoch!r}")
+
+
+def piece_template_window(piece: PieceConfig) -> TimeWindow:
+    """Return the Step 1 template window for a piece."""
+    if piece.template_window is not None:
+        return piece.template_window
+    if piece.timing_mode == "segment_anchor":
+        return piece.fit_window
+    raise ValueError(f"piece {piece.piece_id}: template_window required")
 
 
 def _gp_from_mapping(data: dict[str, Any] | None, defaults: GPTemplateDefaults) -> GPTemplateDefaults:
@@ -438,16 +491,59 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             raise ValueError("each piece must be a mapping")
         piece_id = str(entry["piece_id"])
         skip = bool(entry.get("skip", False))
-        template_window = _window_from_mapping(entry["template_window"])
         fit_window = _window_from_mapping(entry["fit_window"])
-        intervals_path = _resolve_path(base, str(entry["intervals_path"]))
-        if not skip and not intervals_path.is_file():
+        timing_mode = str(entry.get("timing_mode", "per_interval"))
+        if timing_mode not in TIMING_MODES:
+            raise ValueError(
+                f"piece {piece_id}: unknown timing_mode {timing_mode!r}; "
+                f"expected one of {sorted(TIMING_MODES)}"
+            )
+        anchor_epoch = str(entry.get("anchor_epoch", "window_centre"))
+        if anchor_epoch not in ANCHOR_EPOCH_KINDS:
+            raise ValueError(
+                f"piece {piece_id}: unknown anchor_epoch {anchor_epoch!r}; "
+                f"expected one of {sorted(ANCHOR_EPOCH_KINDS)}"
+            )
+        template_raw = entry.get("template_window")
+        if template_raw is not None:
+            template_window = _window_from_mapping(template_raw)
+        elif timing_mode == "segment_anchor":
+            template_window = TimeWindow(
+                t_min=fit_window.t_min,
+                t_max=fit_window.t_max,
+            )
+        else:
+            raise ValueError(f"piece {piece_id}: template_window required")
+        intervals_raw = entry.get("intervals_path")
+        if timing_mode == "segment_anchor":
+            intervals_path = (
+                None
+                if intervals_raw is None
+                else _resolve_path(base, str(intervals_raw))
+            )
+        else:
+            if intervals_raw is None:
+                raise ValueError(
+                    f"piece {piece_id}: intervals_path required for per_interval timing"
+                )
+            intervals_path = _resolve_path(base, str(intervals_raw))
+        if (
+            not skip
+            and timing_mode == "per_interval"
+            and intervals_path is not None
+            and not intervals_path.is_file()
+        ):
             raise FileNotFoundError(f"piece {piece_id}: intervals not found: {intervals_path}")
         local_period = entry.get("local_period")
         local_period = None if local_period is None else float(local_period)
         local_epoch = entry.get("local_epoch")
         local_epoch = None if local_epoch is None else float(local_epoch)
         fold_ephemeris = _parse_fold_ephemeris(entry, piece_id=piece_id)
+        if not skip and timing_mode == "segment_anchor" and fold_ephemeris is not None:
+            raise ValueError(
+                f"piece {piece_id}: segment_anchor ensemble ToM supports "
+                f"constant period only; omit fold_ephemeris"
+            )
         local_lc_raw = entry.get("local_lc_path")
         local_lc_path = (
             None if local_lc_raw is None else _resolve_path(base, str(local_lc_raw))
@@ -469,7 +565,8 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             )
         gp_piece = _gp_from_mapping(entry.get("gp_template"), gp_defaults)
         fit_piece = _fit_from_mapping(entry.get("fit"), fit_defaults)
-        if validate_intervals and not skip:
+        if validate_intervals and not skip and timing_mode == "per_interval":
+            assert intervals_path is not None
             _validate_intervals_in_window(intervals_path, fit_window, piece_id)
         pieces.append(
             PieceConfig(
@@ -477,6 +574,8 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 template_window=template_window,
                 fit_window=fit_window,
                 intervals_path=intervals_path,
+                timing_mode=timing_mode,
+                anchor_epoch=anchor_epoch,
                 local_period=local_period,
                 local_epoch=local_epoch,
                 fold_ephemeris=fold_ephemeris,

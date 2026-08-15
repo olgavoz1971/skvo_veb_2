@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 FONT_SIZE = 20
 FIGSIZE_TEMPLATE = (20, 12)
 FIGSIZE_INTERVAL = (36, 12)
+FIGSIZE_SEGMENT_ANCHOR = (36, 16)
 FIGSIZE_OVERVIEW = (24, 8)
 
 
