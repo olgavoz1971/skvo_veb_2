@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
@@ -95,39 +92,6 @@ def ensemble_calendar_from_delta_tau(
         tau_peak + delta_tau, t_ref=t_ref, period=period, cycle_index=cycle_index
     )
     return cycle_index, t_anchor, t_max
-
-
-def extended_tau_from_phase(phi: np.ndarray, period: float) -> np.ndarray:
-    """Map centred phase and +1 copy to tau = phi_ext * P (days, phase 0 at tau=0)."""
-    phi_ext = np.concatenate([phi, phi + 1.0])
-    return phi_ext * period
-
-
-def load_detrended_mag_dat(path: Path) -> tuple[pd.DataFrame, dict]:
-    """Load detrended ASCII LC with optional ``# JD0=`` and ``# mag0=`` header lines."""
-    jd0 = 0.0
-    mag0 = None
-    header_cols: list[str] | None = None
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.startswith("#"):
-                break
-            body = line[1:].strip()
-            if m := re.match(r"(?i)JD0\s*=\s*([-\d.]+)", body):
-                jd0 = float(m.group(1))
-            elif m := re.match(r"(?i)mag0\s*=\s*([-\d.]+)", body):
-                mag0 = float(m.group(1))
-            elif re.search(r"(?i)\bjd\b", body) and re.search(r"(?i)\bmag\b", body):
-                header_cols = body.split()
-
-    if header_cols:
-        names = [c.lower() for c in header_cols]
-    else:
-        names = ["jd", "mag", "dmag", "label"]
-
-    df = pd.read_csv(path, sep=r"\s+", comment="#", names=names)
-    meta = {"jd0": jd0, "mag0": mag0}
-    return df, meta
 
 
 def extended_tau_from_phase(phi: np.ndarray, period: float) -> np.ndarray:
@@ -265,8 +229,8 @@ def fold_for_template(
     t_ref: float,
     period: float,
     time_col: str = "jd",
-    mag_col: str = "mag",
-    err_col: str = "dmag",
+    phot_col: str = "phot",
+    err_col: str = "phot_err",
 ) -> pd.DataFrame:
     """Pre-fold time cut, phase fold with extended +1 copy, abscissa ``tau`` (days)."""
     if period <= 0:
@@ -279,13 +243,13 @@ def fold_for_template(
     times = piece[time_col].to_numpy(dtype=float)
     phi = phase_centred(times, t_ref, period)
     tau = extended_tau_from_phase(phi, period)
-    mag = np.concatenate([piece[mag_col].to_numpy(dtype=float)] * 2)
+    phot = np.concatenate([piece[phot_col].to_numpy(dtype=float)] * 2)
     if err_col in piece.columns:
         err = np.concatenate([piece[err_col].to_numpy(dtype=float)] * 2)
     else:
-        err = np.full_like(mag, np.nan)
+        err = np.full_like(phot, np.nan)
 
-    return pd.DataFrame({"tau": tau, "mag": mag, "dmag": err})
+    return pd.DataFrame({"tau": tau, "phot": phot, "phot_err": err})
 
 
 def fold_for_template_quadratic(
@@ -300,8 +264,8 @@ def fold_for_template_quadratic(
     oc_c: float,
     tau_period: float,
     time_col: str = "jd",
-    mag_col: str = "mag",
-    err_col: str = "dmag",
+    phot_col: str = "phot",
+    err_col: str = "phot_err",
 ) -> pd.DataFrame:
     """Pre-fold with quadratic O-C phase and separate ``P_τ`` for the tau axis.
 
@@ -316,11 +280,11 @@ def fold_for_template_quadratic(
         oc_c (float): Constant O-C offset.
         tau_period (float): ``P_τ`` scaling phase to days on the tau axis.
         time_col (str): Time column name.
-        mag_col (str): Magnitude column name.
+        phot_col (str): Photometry column name.
         err_col (str): Uncertainty column name.
 
     Returns:
-        pandas.DataFrame: Folded stack with ``tau``, ``mag``, ``dmag``.
+        pandas.DataFrame: Folded stack with ``tau``, ``phot``, ``phot_err``.
     """
     if tau_period <= 0:
         raise ValueError("tau_period must be positive")
@@ -339,10 +303,10 @@ def fold_for_template_quadratic(
         oc_c=oc_c,
     )
     tau = extended_tau_from_phase(phi, tau_period)
-    mag = np.concatenate([piece[mag_col].to_numpy(dtype=float)] * 2)
+    phot = np.concatenate([piece[phot_col].to_numpy(dtype=float)] * 2)
     if err_col in piece.columns:
         err = np.concatenate([piece[err_col].to_numpy(dtype=float)] * 2)
     else:
-        err = np.full_like(mag, np.nan)
+        err = np.full_like(phot, np.nan)
 
-    return pd.DataFrame({"tau": tau, "mag": mag, "dmag": err})
+    return pd.DataFrame({"tau": tau, "phot": phot, "phot_err": err})

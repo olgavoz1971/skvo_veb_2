@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from skvo_veb.utils.gp.intervals import load_intervals
+from skvo_veb.utils.lc_config import DOMAIN_MAG, JD_TO_MJD
 from fit_mask import validate_fit_mask_settings
 from template_reuse import _require_template_files
 
@@ -19,6 +20,8 @@ TIMING_METHODS = frozenset({"cc", "nls", "nls_clean", "nls_scale_clean"})
 ERROR_MODELS = frozenset({"rms_slope", "none"})
 TIMING_MODES = frozenset({"per_interval", "segment_anchor"})
 ANCHOR_EPOCH_KINDS = frozenset({"window_centre", "window_start", "window_end"})
+TIME_SCALES = frozenset({"jd", "mjd", "jd_offset"})
+PHOTOMETRY_DOMAINS = frozenset({"mag", "flux"})
 EXTREMA_MODES = frozenset({"max", "min"})
 PEAK_SELECT_RULES = frozenset({"dominant", "nearest_phase0"})
 
@@ -41,9 +44,39 @@ REMOVED_FIT_KEYS = {
 }
 
 
+@dataclass(frozen=True)
+class TimeScaleConfig:
+    """Input time coordinates before conversion to absolute Julian Date."""
+
+    scale: str
+    zero: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.scale not in TIME_SCALES:
+            raise ValueError(
+                f"time scale must be one of {sorted(TIME_SCALES)}, got {self.scale!r}"
+            )
+        if self.scale == "jd_offset" and self.zero is None:
+            raise ValueError("zero is required when scale is jd_offset")
+        if self.scale != "jd_offset" and self.zero is not None:
+            raise ValueError(
+                f"zero must be omitted unless scale is jd_offset "
+                f"(got scale={self.scale!r})"
+            )
+
+    def to_absolute_jd(self, value: float) -> float:
+        """Convert a manifest time value to absolute Julian Date (days)."""
+        if self.scale == "jd":
+            return float(value)
+        if self.scale == "mjd":
+            return float(value) + JD_TO_MJD
+        assert self.zero is not None
+        return float(value) + float(self.zero)
+
+
 @dataclass
 class TimeWindow:
-    """Truncated JD interval ``[t_min, t_max]`` inclusive."""
+    """Absolute JD interval ``[t_min, t_max]`` inclusive."""
 
     t_min: float
     t_max: float
@@ -181,7 +214,9 @@ class RunManifest:
 
     manifest_path: Path
     lc_path: Path
-    mag0: float | None
+    manifest_time: TimeScaleConfig
+    intervals_time: TimeScaleConfig | None
+    photometry_domain: str
     default_epoch: float
     default_period: float
     period_slope: float
@@ -232,8 +267,81 @@ def _parse_fold_ephemeris(
     )
 
 
-def _window_from_mapping(data: dict[str, Any]) -> TimeWindow:
-    return TimeWindow(t_min=float(data["t_min"]), t_max=float(data["t_max"]))
+def _parse_time_scale_block(raw: dict[str, Any], *, block_name: str) -> TimeScaleConfig:
+    """Parse a ``scale`` (+ optional ``zero``) mapping to :class:`TimeScaleConfig`."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{block_name} must be a mapping (scale: jd | mjd | jd_offset)")
+    if "scale" not in raw:
+        raise ValueError(f"{block_name}.scale required (jd | mjd | jd_offset)")
+    scale = str(raw["scale"])
+    zero_raw = raw.get("zero")
+    zero = None if zero_raw is None else float(zero_raw)
+    try:
+        return TimeScaleConfig(scale=scale, zero=zero)
+    except ValueError as exc:
+        raise ValueError(f"{block_name}: {exc}") from exc
+
+
+def _parse_manifest_time(global_cfg: dict[str, Any]) -> TimeScaleConfig:
+    """Parse ``global.manifest_time`` (epochs and windows written in the YAML)."""
+    if "time" in global_cfg:
+        raise ValueError(
+            "global.time is removed; use global.manifest_time for manifest "
+            "epochs/windows and global.intervals_time for interval .dat files"
+        )
+    raw = global_cfg.get("manifest_time")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "global.manifest_time required (scale: jd | mjd | jd_offset); "
+            "applies to template_fold.default_epoch, piece windows, and local_epoch"
+        )
+    return _parse_time_scale_block(raw, block_name="global.manifest_time")
+
+
+def _parse_intervals_time(
+    global_cfg: dict[str, Any],
+    *,
+    required: bool,
+) -> TimeScaleConfig | None:
+    """Parse ``global.intervals_time`` for two-column interval .dat files."""
+    raw = global_cfg.get("intervals_time")
+    if raw is None:
+        if required:
+            raise ValueError(
+                "global.intervals_time required when any active piece uses "
+                "timing_mode=per_interval (scale: jd | mjd | jd_offset)"
+            )
+        return None
+    return _parse_time_scale_block(raw, block_name="global.intervals_time")
+
+
+def _parse_photometry_domain(global_cfg: dict[str, Any]) -> str:
+    """Parse ``global.photometry_domain`` (default ``mag``)."""
+    domain = str(global_cfg.get("photometry_domain", DOMAIN_MAG))
+    if domain not in PHOTOMETRY_DOMAINS:
+        raise ValueError(
+            f"global.photometry_domain must be one of {sorted(PHOTOMETRY_DOMAINS)}, "
+            f"got {domain!r}"
+        )
+    return domain
+
+
+def _window_from_mapping(
+    data: dict[str, Any],
+    time: TimeScaleConfig,
+    *,
+    context: str,
+) -> TimeWindow:
+    """Parse ``t_min`` / ``t_max`` and convert to absolute JD."""
+    if "t_min" not in data or "t_max" not in data:
+        raise ValueError(f"{context}: time window requires t_min and t_max")
+    t_min_raw = data["t_min"]
+    t_max_raw = data["t_max"]
+    if t_min_raw is None or t_max_raw is None:
+        raise ValueError(f"{context}: t_min and t_max must not be null")
+    t_min = time.to_absolute_jd(float(t_min_raw))
+    t_max = time.to_absolute_jd(float(t_max_raw))
+    return TimeWindow(t_min=t_min, t_max=t_max)
 
 
 def resolve_anchor_jd(window: TimeWindow, anchor_epoch: str) -> float:
@@ -315,10 +423,37 @@ def interval_overlaps_fit_window(
     return hi >= fit_t_min and lo <= fit_t_max
 
 
-def _validate_intervals_in_window(intervals_path: Path, window: TimeWindow, piece_id: str) -> None:
+def load_intervals_absolute(
+    path: Path,
+    time: TimeScaleConfig,
+) -> list[tuple[float, float]]:
+    """Load interval pairs and convert file times to absolute JD.
+
+    Args:
+        path (Path): Two-column interval file.
+        time (TimeScaleConfig): ``global.intervals_time`` block.
+
+    Returns:
+        list[tuple[float, float]]: ``(t_start, t_end)`` pairs in absolute JD.
+    """
+    with path.open(encoding="utf-8") as handle:
+        raw = load_intervals(handle)
+    if not raw:
+        return []
+    return [
+        (time.to_absolute_jd(float(a)), time.to_absolute_jd(float(b)))
+        for a, b in raw
+    ]
+
+
+def _validate_intervals_in_window(
+    intervals_path: Path,
+    window: TimeWindow,
+    piece_id: str,
+    time: TimeScaleConfig,
+) -> None:
     """Require at least one interval overlapping ``fit_window``; extras may lie outside."""
-    with intervals_path.open(encoding="utf-8") as handle:
-        intervals = load_intervals(handle)
+    intervals = load_intervals_absolute(intervals_path, time)
     if not intervals:
         raise ValueError(f"piece {piece_id}: no intervals in {intervals_path}")
     n_overlap = 0
@@ -346,11 +481,14 @@ def _validate_intervals_in_window(intervals_path: Path, window: TimeWindow, piec
         )
 
 
-def _parse_template_fold_block(global_cfg: dict[str, Any]) -> tuple[float, float, float]:
+def _parse_template_fold_block(
+    global_cfg: dict[str, Any],
+    time: TimeScaleConfig,
+) -> tuple[float, float, float]:
     """Step 1 fold defaults: ``default_epoch``, ``default_period``, ``period_slope``.
 
-    Accepts ``global.template_fold`` (preferred) or legacy ``global.ephemeris``
-    (``p0`` → ``default_period``, ``t_ref`` → ``default_epoch``).
+    Accepts ``global.template_fold`` (preferred) or legacy ``global.ephemeris``.
+    Epoch values are converted to absolute JD via ``time``.
     """
     block = global_cfg.get("template_fold")
     if block is None:
@@ -361,9 +499,9 @@ def _parse_template_fold_block(global_cfg: dict[str, Any]) -> tuple[float, float
             "legacy global.ephemeris also accepted"
         )
     if "default_epoch" in block:
-        default_epoch = float(block["default_epoch"])
+        default_epoch = time.to_absolute_jd(float(block["default_epoch"]))
     elif "t_ref" in block:
-        default_epoch = float(block["t_ref"])
+        default_epoch = time.to_absolute_jd(float(block["t_ref"]))
         if global_cfg.get("template_fold") is not None:
             logger.warning(
                 "template_fold.t_ref is deprecated; use template_fold.default_epoch"
@@ -446,7 +584,30 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
     if not isinstance(global_cfg, dict):
         raise ValueError("global section required")
 
-    default_epoch, default_period, period_slope = _parse_template_fold_block(global_cfg)
+    if "mag0" in global_cfg:
+        raise ValueError(
+            "global.mag0 is removed; photometric zero points must come from "
+            "light-curve metadata (e.g. # MAG0= in .dat or VOTable photcal)"
+        )
+
+    manifest_time = _parse_manifest_time(global_cfg)
+    photometry_domain = _parse_photometry_domain(global_cfg)
+
+    pieces_raw = raw.get("pieces")
+    if not isinstance(pieces_raw, list) or not pieces_raw:
+        raise ValueError("pieces must be a non-empty list")
+
+    needs_intervals_time = any(
+        not bool(entry.get("skip", False))
+        and str(entry.get("timing_mode", "per_interval")) == "per_interval"
+        for entry in pieces_raw
+        if isinstance(entry, dict)
+    )
+    intervals_time = _parse_intervals_time(global_cfg, required=needs_intervals_time)
+
+    default_epoch, default_period, period_slope = _parse_template_fold_block(
+        global_cfg, manifest_time
+    )
 
     timing = global_cfg.get("timing")
     if not isinstance(timing, dict):
@@ -468,8 +629,16 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
     save_overview = bool(plots.get("save_overview", True))
     overview_t_min = plots.get("overview_t_min")
     overview_t_max = plots.get("overview_t_max")
-    overview_t_min = None if overview_t_min is None else float(overview_t_min)
-    overview_t_max = None if overview_t_max is None else float(overview_t_max)
+    overview_t_min = (
+        None
+        if overview_t_min is None
+        else manifest_time.to_absolute_jd(float(overview_t_min))
+    )
+    overview_t_max = (
+        None
+        if overview_t_max is None
+        else manifest_time.to_absolute_jd(float(overview_t_max))
+    )
 
     gp_defaults = _gp_from_mapping(raw.get("gp_template_defaults"), GPTemplateDefaults())
     fit_defaults = _fit_from_mapping(raw.get("fit_defaults"), FitDefaults())
@@ -478,42 +647,50 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
     if not lc_path.is_file():
         raise FileNotFoundError(f"lc_path not found: {lc_path}")
 
-    mag0_raw = global_cfg.get("mag0")
-    mag0 = None if mag0_raw is None else float(mag0_raw)
-
-    pieces_raw = raw.get("pieces")
-    if not isinstance(pieces_raw, list) or not pieces_raw:
-        raise ValueError("pieces must be a non-empty list")
-
     pieces: list[PieceConfig] = []
     for entry in pieces_raw:
         if not isinstance(entry, dict):
             raise ValueError("each piece must be a mapping")
         piece_id = str(entry["piece_id"])
         skip = bool(entry.get("skip", False))
-        fit_window = _window_from_mapping(entry["fit_window"])
         timing_mode = str(entry.get("timing_mode", "per_interval"))
         if timing_mode not in TIMING_MODES:
             raise ValueError(
                 f"piece {piece_id}: unknown timing_mode {timing_mode!r}; "
                 f"expected one of {sorted(TIMING_MODES)}"
             )
+        template_raw = entry.get("template_window")
+        fit_raw = entry.get("fit_window")
+        if template_raw is not None:
+            template_window = _window_from_mapping(
+                template_raw,
+                manifest_time,
+                context=f"piece {piece_id} template_window",
+            )
+        else:
+            template_window = None
+        if fit_raw is None or fit_raw.get("t_min") is None or fit_raw.get("t_max") is None:
+            if timing_mode == "segment_anchor" and template_window is not None:
+                fit_window = template_window
+            else:
+                raise ValueError(f"piece {piece_id}: fit_window required")
+        else:
+            fit_window = _window_from_mapping(
+                fit_raw,
+                manifest_time,
+                context=f"piece {piece_id} fit_window",
+            )
+        if template_window is None:
+            if timing_mode == "segment_anchor":
+                template_window = fit_window
+            else:
+                raise ValueError(f"piece {piece_id}: template_window required")
         anchor_epoch = str(entry.get("anchor_epoch", "window_centre"))
         if anchor_epoch not in ANCHOR_EPOCH_KINDS:
             raise ValueError(
                 f"piece {piece_id}: unknown anchor_epoch {anchor_epoch!r}; "
                 f"expected one of {sorted(ANCHOR_EPOCH_KINDS)}"
             )
-        template_raw = entry.get("template_window")
-        if template_raw is not None:
-            template_window = _window_from_mapping(template_raw)
-        elif timing_mode == "segment_anchor":
-            template_window = TimeWindow(
-                t_min=fit_window.t_min,
-                t_max=fit_window.t_max,
-            )
-        else:
-            raise ValueError(f"piece {piece_id}: template_window required")
         intervals_raw = entry.get("intervals_path")
         if timing_mode == "segment_anchor":
             intervals_path = (
@@ -536,8 +713,12 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             raise FileNotFoundError(f"piece {piece_id}: intervals not found: {intervals_path}")
         local_period = entry.get("local_period")
         local_period = None if local_period is None else float(local_period)
-        local_epoch = entry.get("local_epoch")
-        local_epoch = None if local_epoch is None else float(local_epoch)
+        local_epoch_raw = entry.get("local_epoch")
+        local_epoch = (
+            None
+            if local_epoch_raw is None
+            else manifest_time.to_absolute_jd(float(local_epoch_raw))
+        )
         fold_ephemeris = _parse_fold_ephemeris(entry, piece_id=piece_id)
         if not skip and timing_mode == "segment_anchor" and fold_ephemeris is not None:
             raise ValueError(
@@ -565,9 +746,16 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             )
         gp_piece = _gp_from_mapping(entry.get("gp_template"), gp_defaults)
         fit_piece = _fit_from_mapping(entry.get("fit"), fit_defaults)
-        if validate_intervals and not skip and timing_mode == "per_interval":
+        if (
+            validate_intervals
+            and not skip
+            and timing_mode == "per_interval"
+            and intervals_time is not None
+        ):
             assert intervals_path is not None
-            _validate_intervals_in_window(intervals_path, fit_window, piece_id)
+            _validate_intervals_in_window(
+                intervals_path, fit_window, piece_id, intervals_time
+            )
         pieces.append(
             PieceConfig(
                 piece_id=piece_id,
@@ -602,7 +790,9 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
     return RunManifest(
         manifest_path=manifest_path,
         lc_path=lc_path,
-        mag0=mag0,
+        manifest_time=manifest_time,
+        intervals_time=intervals_time,
+        photometry_domain=photometry_domain,
         default_epoch=default_epoch,
         default_period=default_period,
         period_slope=period_slope,

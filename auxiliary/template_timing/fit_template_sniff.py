@@ -17,7 +17,7 @@ import numpy as np
 
 from skvo_veb.utils.gp.intervals import load_intervals
 
-from lc_flux import load_lc_fragment, mag_to_normalised_flux
+from lc_flux import load_lc_window, photometry_to_normalised_flux
 from plot_style import FIGSIZE_INTERVAL, FONT_SIZE, apply_interval_plot_style
 from fit_mask import resolve_fit_mask
 from template_fit import (
@@ -48,6 +48,8 @@ P0 = 0.0591
 # T_OBS_MAX = 59866.7
 T_OBS_MIN = 59857.0
 T_OBS_MAX = 59857.7
+JD_OFFSET_ZERO = 2400000.0
+WORKING_DOMAIN = "mag"
 
 # Step 2 fit window around the peak: whole_period, or frac_period with a phase half-width.
 FIT_MASK_MODE = "whole_period"
@@ -234,12 +236,18 @@ def main() -> None:
 
     plot_template_preview(curve, meta, save_path=OUT_TEMPLATE_PREVIEW)
 
-    piece, header = load_lc_fragment(LC_PATH, T_OBS_MIN, T_OBS_MAX)
-    norm = mag_to_normalised_flux(
+    piece, lc_meta = load_lc_window(
+        LC_PATH,
+        JD_OFFSET_ZERO + T_OBS_MIN,
+        JD_OFFSET_ZERO + T_OBS_MAX,
+        working_domain=WORKING_DOMAIN,
+    )
+    norm = photometry_to_normalised_flux(
         piece,
-        header.get("mag0"),
+        lc_meta,
         float(meta["baseline_flux"]),
         float(meta["ampl_guess_flux"]),
+        context="fit_template_sniff",
     )
     t_all = norm["jd"].to_numpy(dtype=float)
     y_all = norm["y_norm"].to_numpy(dtype=float)

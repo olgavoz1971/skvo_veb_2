@@ -13,9 +13,15 @@
 version: 1
 
 global:
-  # Single detrended archive (or stitched) light curve; mag in file, mag0 from header unless overridden.
+  # Single detrended archive (or stitched) light curve; photcal from file metadata.
   lc_path: ../data/R_detrended.dat
-  mag0: null  # null = read # mag0= from LC header
+  manifest_time:
+    scale: jd_offset
+    zero: 2400000
+  intervals_time:
+    scale: jd_offset
+    zero: 2400000
+  photometry_domain: mag
 
   template_fold:
     default_epoch: 59866.41

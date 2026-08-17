@@ -1,4 +1,4 @@
-"""Overview plot: detrended light curve with template timing maxima marked."""
+"""Overview plot: light curve with template timing maxima marked."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from fold_stack import load_detrended_mag_dat
+from lc_io import load_lightcurve_frame
+from skvo_veb.utils.lc_config import DOMAIN_MAG
 
 from plot_style import FIGSIZE_OVERVIEW, apply_plot_style
 
@@ -20,14 +21,21 @@ def plot_lc_with_maxima(
     t_min: float,
     t_max: float,
     lc_segments: list[tuple[Path, float, float]],
+    working_domain: str,
     save_path: Path,
     show: bool = False,
 ) -> None:
-    """Plot detrended mag vs truncated JD with vertical markers at ``t_max``.
+    """Plot photometry vs absolute JD with vertical markers at ``t_max``.
 
     Args:
+        timing_rows: Accepted timing summary rows.
+        t_min: Overview lower bound (absolute JD).
+        t_max: Overview upper bound (absolute JD).
         lc_segments: ``(lc_path, segment_t_min, segment_t_max)`` per distinct LC file;
             each segment is clipped to ``[t_min, t_max]`` for plotting.
+        working_domain: Manifest ``photometry_domain`` (``mag`` or ``flux``).
+        save_path: Output PNG path.
+        show: Call ``plt.show()`` when true.
     """
     apply_plot_style()
     if not lc_segments:
@@ -40,7 +48,7 @@ def plot_lc_with_maxima(
         hi = min(t_max, seg_hi)
         if lo > hi:
             continue
-        df, _header = load_detrended_mag_dat(lc_path)
+        df, _meta = load_lightcurve_frame(lc_path, working_domain=working_domain)
         mask = (df["jd"] >= lo) & (df["jd"] <= hi)
         piece = df.loc[mask]
         if piece.empty:
@@ -48,7 +56,7 @@ def plot_lc_with_maxima(
             continue
         ax.scatter(
             piece["jd"].to_numpy(dtype=float),
-            piece["mag"].to_numpy(dtype=float),
+            piece["phot"].to_numpy(dtype=float),
             s=8,
             c="0.35",
             alpha=0.6,
@@ -77,9 +85,13 @@ def plot_lc_with_maxima(
         )
 
     ax.set_xlim(t_min, t_max)
-    ax.invert_yaxis()
-    ax.set_xlabel("truncated JD")
-    ax.set_ylabel("detrended magnitude")
+    if working_domain == DOMAIN_MAG:
+        ax.invert_yaxis()
+        y_label = "detrended magnitude"
+    else:
+        y_label = "flux"
+    ax.set_xlabel("Julian Date")
+    ax.set_ylabel(y_label)
     ax.set_title("Light curve with template timing maxima")
     fig.tight_layout()
     save_path.parent.mkdir(parents=True, exist_ok=True)

@@ -12,12 +12,17 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from skvo_veb.utils.gp.intervals import load_intervals
-
 from fold_stack import ensemble_calendar_from_delta_tau, observation_tau
 from fit_mask import FitMask, resolve_fit_mask, warn_fit_mask_support
-from manifest_config import FitDefaults, TimeWindow, interval_overlaps_fit_window, resolve_anchor_jd
-from lc_flux import load_lc_fragment, mag_to_normalised_flux
+from manifest_config import (
+    FitDefaults,
+    TimeScaleConfig,
+    TimeWindow,
+    interval_overlaps_fit_window,
+    load_intervals_absolute,
+    resolve_anchor_jd,
+)
+from lc_flux import load_lc_window, photometry_to_normalised_flux
 from plot_style import (
     FIGSIZE_INTERVAL,
     FIGSIZE_SEGMENT_ANCHOR,
@@ -889,7 +894,7 @@ def fit_piece_segment_anchor(
     piece_period: float,
     template_npz: Path,
     template_meta_path: Path,
-    mag0: float | None,
+    working_domain: str,
     fit_cfg: FitDefaults,
     timing_method: str,
     out_summary: Path,
@@ -912,7 +917,7 @@ def fit_piece_segment_anchor(
         piece_period (float): Manifest fold period; must match the template.
         template_npz (Path): Template bundle path.
         template_meta_path (Path): Template metadata JSON path.
-        mag0 (float | None): Reference magnitude for flux normalisation.
+        working_domain (str): Manifest ``photometry_domain`` (``mag`` or ``flux``).
         fit_cfg (FitDefaults): Step 2 fit settings.
         timing_method (str): Manifest default timing method.
         out_summary (Path): Output ``fit_summary.csv`` path.
@@ -941,13 +946,15 @@ def fit_piece_segment_anchor(
     )
     dt_min, dt_max = mask.dt_min, mask.dt_max
 
-    piece, header = load_lc_fragment(lc_path, fit_t_min, fit_t_max)
-    effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
-    norm = mag_to_normalised_flux(
+    piece, lc_meta = load_lc_window(
+        lc_path, fit_t_min, fit_t_max, working_domain=working_domain
+    )
+    norm = photometry_to_normalised_flux(
         piece,
-        effective_mag0,
+        lc_meta,
         float(meta["baseline_flux"]),
         float(meta["ampl_guess_flux"]),
+        context=f"Piece {piece_id}",
     )
     t_all = norm["jd"].to_numpy(dtype=float)
     y_all = norm["y_norm"].to_numpy(dtype=float)
@@ -1101,7 +1108,8 @@ def fit_piece_intervals(
     intervals_path: Path,
     template_npz: Path,
     template_meta_path: Path,
-    mag0: float | None,
+    working_domain: str,
+    time_scale: TimeScaleConfig,
     fit_cfg: FitDefaults,
     timing_method: str,
     out_summary: Path,
@@ -1110,6 +1118,10 @@ def fit_piece_intervals(
     review_fits: bool = False,
 ) -> list[dict]:
     """Run Step 2 for all intervals in a piece; write ``fit_summary.csv``."""
+    if time_scale is None:
+        raise ValueError(
+            f"Piece {piece_id}: global.intervals_time required for per_interval timing"
+        )
     curve, meta = load_template_bundle(
         template_npz, template_meta_path, context=f"Piece {piece_id}"
     )
@@ -1121,19 +1133,20 @@ def fit_piece_intervals(
     )
     dt_min, dt_max = mask.dt_min, mask.dt_max
 
-    piece, header = load_lc_fragment(lc_path, fit_t_min, fit_t_max)
-    effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
-    norm = mag_to_normalised_flux(
+    piece, lc_meta = load_lc_window(
+        lc_path, fit_t_min, fit_t_max, working_domain=working_domain
+    )
+    norm = photometry_to_normalised_flux(
         piece,
-        effective_mag0,
+        lc_meta,
         float(meta["baseline_flux"]),
         float(meta["ampl_guess_flux"]),
+        context=f"Piece {piece_id}",
     )
     t_all = norm["jd"].to_numpy(dtype=float)
     y_all = norm["y_norm"].to_numpy(dtype=float)
 
-    with intervals_path.open(encoding="utf-8") as handle:
-        intervals = load_intervals(handle)
+    intervals = load_intervals_absolute(intervals_path, time_scale)
     if not intervals:
         raise ValueError(f"no intervals in {intervals_path}")
 
@@ -1255,7 +1268,7 @@ def review_piece_from_summary(
     fit_t_max: float,
     template_npz: Path,
     template_meta_path: Path,
-    mag0: float | None,
+    working_domain: str,
     default_method: str,
     fit_cfg: FitDefaults,
     summary_table: FitSummaryTable,
@@ -1271,7 +1284,7 @@ def review_piece_from_summary(
         fit_t_max (float): Fit window upper bound.
         template_npz (Path): Template bundle path.
         template_meta_path (Path): Template metadata JSON path.
-        mag0 (float | None): Reference magnitude for flux normalisation.
+        working_domain (str): Manifest ``photometry_domain`` (``mag`` or ``flux``).
         default_method (str): Manifest default timing method.
         fit_cfg (FitDefaults): Step 2 fit settings for fit-mask resolution.
         summary_table (FitSummaryTable): Existing summary table for this piece.
@@ -1289,13 +1302,15 @@ def review_piece_from_summary(
     curve, meta = load_template_bundle(
         template_npz, template_meta_path, context=f"Piece {piece_id}"
     )
-    piece, header = load_lc_fragment(lc_path, fit_t_min, fit_t_max)
-    effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
-    norm = mag_to_normalised_flux(
+    piece, lc_meta = load_lc_window(
+        lc_path, fit_t_min, fit_t_max, working_domain=working_domain
+    )
+    norm = photometry_to_normalised_flux(
         piece,
-        effective_mag0,
+        lc_meta,
         float(meta["baseline_flux"]),
         float(meta["ampl_guess_flux"]),
+        context=f"Piece {piece_id}",
     )
     t_all = norm["jd"].to_numpy(dtype=float)
     y_all = norm["y_norm"].to_numpy(dtype=float)

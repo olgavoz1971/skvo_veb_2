@@ -8,19 +8,21 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parents[1]
+_AUX_ROOT = _SCRIPT_DIR.parent
+for _path in (_REPO_ROOT, _SCRIPT_DIR, _AUX_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy.modeling import fitting, models
 
-from fold_stack import load_detrended_mag_dat
+from lc_io import load_lightcurve_frame
 from plot_style import apply_plot_style
-
-_AUX_ROOT = Path(__file__).resolve().parents[1]
-if str(_AUX_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AUX_ROOT))
-
-from smart_folding.model_free_folding import (  # noqa: E402
+from smart_folding.model_free_folding import (
     TimingContinuityRules,
     WindowFit,
     fold_interpolated,
@@ -34,18 +36,23 @@ logger = logging.getLogger(__name__)
 RUN_STEP1 = True
 RUN_STEP2 = False
 RUN_STEP3 = False
-RUN_PERIOD_SEGMENTS = True
-# RUN_PERIOD_SEGMENTS = False
+# RUN_PERIOD_SEGMENTS = True
+RUN_PERIOD_SEGMENTS = False
 
-JD0 = 2400000
+# JD0 = 2400000
+JD0 = 0
+PHOTOMETRY_DOMAIN = "mag"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/runs/ground_R/timing.csv"
-TIMING_FILE = Path(__file__).resolve().parent / "data/runs/R_TESS_1/timing.csv"
+# TIMING_FILE = Path(__file__).resolve().parent / "data/runs/R_TESS_1/timing.csv"
+TIMING_FILE = Path(__file__).resolve().parent / "data/runs/NSV_807_30_TESS_SPOC_main/timing.csv"
+# TIMING_FILE = Path(__file__).resolve().parent / "data/runs/NSV_807_30_SPOC_main/timing.csv"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/R_detrended_corrected_max_gp.dat"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/timing_max_vlada.dat"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/runs/merged/timing_ensemble.csv"
 # TIMING_FILE = Path(__file__).resolve().parent / "data/GP_max/R_TESS_all.dat"
 # OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_vlada.csv")
-OC_EXPORT = TIMING_FILE.with_name("oc_max_template_ensemble_1.csv")
+OC_EXPORT = TIMING_FILE.with_name("oc_NSV_807_30_TESS_SPOC_main.csv")
+# OC_EXPORT = TIMING_FILE.with_name("oc_NSV_807_30_SPOC_main.csv")
 # OC_EXPORT = TIMING_FILE.with_name("oc_calculated_max_GP.csv")
 # TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_vlada.csv")
 TIMING_PAIRS_EXPORT = TIMING_FILE.with_name("oc_timing_pairs_max_template_merged.csv")
@@ -53,24 +60,38 @@ LC_DAT = Path(__file__).resolve().parent / "data/R_detrended_corrected.dat"
 LC_EXPORT = LC_DAT.with_name(f"{LC_DAT.stem}_smart_folded.dat")
 MF_LC_EXPORT = LC_DAT.with_name(f"{LC_DAT.stem}_model_free_folded.dat")
 
-T0 = JD0 + 59865.4936
+
+def _load_lc_mag_frame(path: Path) -> tuple[pd.DataFrame, dict]:
+    """Load a light curve and expose legacy ``mag`` / ``dmag`` column names."""
+    df, meta = load_lightcurve_frame(path, working_domain=PHOTOMETRY_DOMAIN)
+    out = df.rename(columns={"phot": "mag", "phot_err": "dmag"})
+    return out, {"photcal": meta.get("photcal")}
+
+
+def _export_header_lines(header: dict) -> list[str]:
+    """Build optional comment header lines for folded LC exports."""
+    photcal = header.get("photcal") or {}
+    zp_mag = photcal.get("zp_mag")
+    if zp_mag is None:
+        return []
+    return [f"# MAG0={zp_mag}"]
+
+
+# T0 = JD0 + 59865.4936
+T0 = 2457711.8539
 # P0 = 0.05937839
-P0 = 0.060
+# P0 = 0.060
+P0 = 0.3389614
 # CYCLE_SHIFTS: list[tuple[float, int]] = [
-#     (JD0 + 59865.642, -1),
-#     (JD0 + 59869.92, -1),
-#     (JD0 + 59874.92, -1),
-#     (JD0 + 59878.4, -1),
-#     (JD0 + 59883.1, -1),
+#     (JD0 + 59858.63, 1),
+#     (JD0 + 59865.38, 1),
+#     (JD0 + 59866.25, -1),
+#     # (JD0 + 59875.0, 1),
+#     (JD0 + 59878.4, 1),
+#     # (JD0 + 59880.34, -2),
 # ]
-CYCLE_SHIFTS: list[tuple[float, int]] = [
-    (JD0 + 59858.63, 1),
-    (JD0 + 59865.38, 1),
-    (JD0 + 59866.25, -1),
-    # (JD0 + 59875.0, 1),
-    (JD0 + 59878.4, 1),
-    # (JD0 + 59880.34, -2),
-]
+
+CYCLE_SHIFTS: list[tuple[float, int]] = []
 
 JD_OBS_FOR_FIT = (JD0 + 59865.0, JD0 + 59874.0)
 
@@ -671,9 +692,7 @@ def export_model_free_folded_lc(
 ) -> None:
     """Write LC with model-free fold columns (Step 3)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"# JD0={header.get('jd0', 0.0)}"]
-    if header.get("mag0") is not None:
-        lines.append(f"# mag0={header['mag0']}")
+    lines = _export_header_lines(header)
     lines.append("# JD mag dmag label fold_regime cycle_E phase period_local tau_days")
     with path.open("w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
@@ -1389,12 +1408,8 @@ def smart_fold_lightcurve(
 def export_smart_folded_lc(df: pd.DataFrame, path: Path, *, header: dict) -> None:
     """Write LC with smart-fold columns (Step 2)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [f"# JD0={header.get('jd0', 0.0)}"]
-    if header.get("mag0") is not None:
-        lines.append(f"# mag0={header['mag0']}")
-    lines.append(
-        "# JD mag dmag label fold_regime cycle_E phase period_local tau_days"
-    )
+    lines = _export_header_lines(header)
+    lines.append("# JD mag dmag label fold_regime cycle_E phase period_local tau_days")
     with path.open("w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
         for row in df.itertuples(index=False):
@@ -1505,8 +1520,7 @@ def run_step2(
     )
     logger.info("%s", piecewise.describe())
 
-    lc_df, lc_header = load_detrended_mag_dat(LC_DAT)
-    lc_df['jd'] += lc_header['jd0']
+    lc_df, lc_header = _load_lc_mag_frame(LC_DAT)
     folded_lc = smart_fold_lightcurve(lc_df, piecewise)
     export_smart_folded_lc(folded_lc, LC_EXPORT, header=lc_header)
     plot_smart_folded_lc(folded_lc)
@@ -1562,9 +1576,8 @@ def run_step3(
         float(np.std(phase_at_max)),
     )
 
-    lc_df, lc_header = load_detrended_mag_dat(LC_DAT)
+    lc_df, lc_header = _load_lc_mag_frame(LC_DAT)
     lc_df = lc_df.copy()
-    lc_df["jd"] = lc_df["jd"].to_numpy(dtype=float) + float(lc_header["jd0"])
 
     t_cov_lo = float(t_center.min())
     t_cov_hi = float(t_center.max())

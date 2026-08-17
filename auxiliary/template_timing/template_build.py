@@ -14,17 +14,15 @@ import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern
 
-from skvo_veb.utils.gp.config import GP_ZP_FLUX_DIMENSIONLESS
-from skvo_veb.utils.gp.flux import resolve_gp_photcal
 from skvo_veb.utils.gp.noise_policy import resolve_interval_noise_sigma_norm
 
 from fit_mask import FitMask, resolve_fit_mask, warn_fit_mask_support
 from fold_stack import (
     fold_for_template,
     fold_for_template_quadratic,
-    load_detrended_mag_dat,
     resolve_tau_period,
 )
+from lc_io import load_lightcurve_frame, require_photcal
 from manifest_config import FitDefaults, FoldEphemerisConfig, GPTemplateDefaults
 from template_peak import select_template_peak
 
@@ -33,30 +31,43 @@ from plot_style import FIGSIZE_TEMPLATE, apply_plot_style
 logger = logging.getLogger(__name__)
 
 
-def mag_fragment_to_flux(
+def photometry_fragment_to_flux(
     folded: pd.DataFrame,
-    mag0: float | None,
+    meta: dict,
+    *,
+    context: str = "Step 1 GP template",
 ) -> pd.DataFrame:
-    """Convert folded mag columns to GP ``flux`` / ``flux_err`` (instrumental flux)."""
-    meta: dict = {}
-    if mag0 is not None:
-        meta["photcal"] = {
-            "zp_mag": mag0,
-            "zp_flux": GP_ZP_FLUX_DIMENSIONLESS,
-        }
-    pc = resolve_gp_photcal(meta)
-    mag = folded["mag"].to_numpy(dtype=float) * u.mag
-    flux = np.asarray(pc.mag_to_flux(mag).value, dtype=float)
-    err_mag = folded["dmag"].to_numpy(dtype=float)
-    if np.any(np.isfinite(err_mag)):
-        err_q = np.where(np.isfinite(err_mag), err_mag, 0.0) * u.mag
-        flux_err = np.asarray(
-            pc.mag_err_to_flux_err(mag, err_q).value,
-            dtype=float,
-        )
-        flux_err = np.where(np.isfinite(err_mag), flux_err, np.nan)
+    """Convert folded photometry to GP ``flux`` / ``flux_err`` (instrumental flux)."""
+    from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG
+
+    domain = meta.get("active_domain")
+    phot = folded["phot"].to_numpy(dtype=float)
+    err_phot = folded["phot_err"].to_numpy(dtype=float)
+
+    if domain == DOMAIN_FLUX:
+        flux = phot
+        if np.any(np.isfinite(err_phot)):
+            flux_err = np.where(np.isfinite(err_phot), err_phot, np.nan)
+        else:
+            flux_err = np.full_like(flux, np.nan)
+    elif domain == DOMAIN_MAG:
+        pc = require_photcal(meta, context=context)
+        mag = phot * u.mag
+        flux = np.asarray(pc.mag_to_flux(mag).value, dtype=float)
+        if np.any(np.isfinite(err_phot)):
+            err_q = np.where(np.isfinite(err_phot), err_phot, 0.0) * u.mag
+            flux_err = np.asarray(
+                pc.mag_err_to_flux_err(mag, err_q).value,
+                dtype=float,
+            )
+            flux_err = np.where(np.isfinite(err_phot), flux_err, np.nan)
+        else:
+            flux_err = np.full_like(flux, np.nan)
     else:
-        flux_err = np.full_like(flux, np.nan)
+        raise ValueError(
+            f"{context}: unsupported active_domain {domain!r}; expected mag or flux"
+        )
+
     out = folded.copy()
     out["flux"] = flux
     out["flux_err"] = flux_err
@@ -400,6 +411,7 @@ def plot_fold_stack(
     fold_mode: str,
     tau_period: float,
     p0_ephemeris: float,
+    working_domain: str,
     save_path: Path | None,
     show: bool,
 ) -> None:
@@ -411,21 +423,26 @@ def plot_fold_stack(
         fold_mode (str): ``constant`` or quadratic ephemeris kind.
         tau_period (float): ``P_τ`` used for the tau axis (days).
         p0_ephemeris (float): Reference period ``P₀`` from the manifest.
+        working_domain (str): Manifest ``photometry_domain`` (``mag`` or ``flux``).
         save_path (Path | None): Where to write the figure, if anywhere.
         show (bool): Call ``plt.show()`` when true.
     """
+    from skvo_veb.utils.lc_config import DOMAIN_MAG
+
     apply_plot_style()
     tau = folded["tau"].to_numpy(dtype=float)
-    mag = folded["mag"].to_numpy(dtype=float)
-    has_err = "dmag" in folded.columns and np.any(np.isfinite(folded["dmag"].to_numpy()))
-    dmag = folded["dmag"].to_numpy(dtype=float) if has_err else None
+    phot = folded["phot"].to_numpy(dtype=float)
+    has_err = "phot_err" in folded.columns and np.any(
+        np.isfinite(folded["phot_err"].to_numpy())
+    )
+    phot_err = folded["phot_err"].to_numpy(dtype=float) if has_err else None
 
     fig, ax = plt.subplots(figsize=FIGSIZE_TEMPLATE)
-    if has_err and dmag is not None:
+    if has_err and phot_err is not None:
         ax.errorbar(
             tau,
-            mag,
-            yerr=dmag,
+            phot,
+            yerr=phot_err,
             fmt="o",
             markersize=3,
             ecolor="0.6",
@@ -435,13 +452,17 @@ def plot_fold_stack(
             label="folded stack",
         )
     else:
-        ax.plot(tau, mag, "o", markersize=3, alpha=0.45, color="C0", label="folded stack")
+        ax.plot(tau, phot, "o", markersize=3, alpha=0.45, color="C0", label="folded stack")
 
     ax.axvline(0.0, color="0.35", ls=":", lw=1.0)
     ax.axvline(tau_period, color="0.35", ls=":", lw=1.0, alpha=0.6)
     ax.set_xlabel("tau (days from phase 0)")
-    ax.set_ylabel("detrended mag")
-    ax.invert_yaxis()
+    if working_domain == DOMAIN_MAG:
+        ax.invert_yaxis()
+        y_label = "detrended mag"
+    else:
+        y_label = "flux"
+    ax.set_ylabel(y_label)
     if fold_mode == "constant":
         subtitle = f"constant P = {tau_period:.8f} d"
     else:
@@ -473,7 +494,7 @@ def build_piece_template(
     default_epoch: float,
     default_period: float,
     period_slope: float,
-    mag0: float | None,
+    working_domain: str,
     cfg: GPTemplateDefaults,
     fit_cfg: FitDefaults,
     fold_ephemeris: FoldEphemerisConfig | None = None,
@@ -485,7 +506,7 @@ def build_piece_template(
     """Run Step 1 for one piece; return GP result dict and write artefacts.
 
     Args:
-        fold_epoch: Fold epoch (truncated JD) used for this build (piece ``local_epoch``
+        fold_epoch: Fold epoch (absolute JD) used for this build (piece ``local_epoch``
             or manifest ``default_epoch``).
         fold_period: Reference period ``P₀`` for constant fold or quadratic ephemeris.
         default_epoch: Manifest ``template_fold.default_epoch`` at build time (provenance).
@@ -493,8 +514,7 @@ def build_piece_template(
         fit_cfg: Step 2 settings for this piece, used only to draw and record the fit
             window that Step 2 will resolve again from the manifest.
     """
-    df_raw, header = load_detrended_mag_dat(lc_path)
-    effective_mag0 = mag0 if mag0 is not None else header.get("mag0")
+    df_raw, lc_meta = load_lightcurve_frame(lc_path, working_domain=working_domain)
 
     if fold_ephemeris is None:
         tau_period = fold_period
@@ -553,11 +573,16 @@ def build_piece_template(
         fold_mode=fold_mode,
         tau_period=tau_period,
         p0_ephemeris=fold_period,
+        working_domain=working_domain,
         save_path=stack_plot,
         show=show_plot,
     )
 
-    frag = mag_fragment_to_flux(folded, effective_mag0)
+    frag = photometry_fragment_to_flux(
+        folded,
+        lc_meta,
+        context=f"Piece {piece_id} Step 1 GP",
+    )
     result = fit_gp_template(frag, cfg, fold_period=tau_period)
 
     mask = resolve_fit_mask(

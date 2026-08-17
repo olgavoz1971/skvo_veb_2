@@ -4,7 +4,13 @@ version: 1
 
 global:
   lc_path: ../data/R_detrended_corrected.dat
-  mag0: 10
+  manifest_time:
+    scale: jd_offset
+    zero: 2400000
+  intervals_time:
+    scale: jd_offset
+    zero: 2400000
+  photometry_domain: mag
 
   template_fold:
     default_epoch: 59866.41

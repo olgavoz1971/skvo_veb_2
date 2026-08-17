@@ -11,20 +11,19 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern
 
-from skvo_veb.utils.gp.config import GP_ZP_FLUX_DIMENSIONLESS
-from skvo_veb.utils.gp.flux import resolve_gp_photcal
 from skvo_veb.utils.gp.noise_policy import resolve_interval_noise_sigma_norm
 
-from fold_stack import fold_for_template, load_detrended_mag_dat
+from fold_stack import fold_for_template
+from lc_io import load_lightcurve_frame
 from plot_style import FIGSIZE_TEMPLATE as FIGSIZE, FONT_SIZE, apply_plot_style
 from fit_mask import resolve_fit_mask
+from template_build import photometry_fragment_to_flux
 from template_peak import select_template_peak
 
 logger = logging.getLogger(__name__)
@@ -69,39 +68,12 @@ PEAK_SELECT = "dominant"
 PEAK_TAU_HINT = None
 FIT_MASK_MODE = "whole_period"
 FIT_MASK_HALF_WIDTH_PHASE = 0.25
+JD_OFFSET_ZERO = 2400000.0
+WORKING_DOMAIN = "mag"
+
 
 def _apply_plot_style() -> None:
     apply_plot_style()
-
-
-def mag_fragment_to_flux(
-    folded: pd.DataFrame,
-    mag0: float | None,
-) -> pd.DataFrame:
-    """Convert folded mag columns to GP ``flux`` / ``flux_err`` (instrumental flux)."""
-    meta: dict = {}
-    if mag0 is not None:
-        meta["photcal"] = {
-            "zp_mag": mag0,
-            "zp_flux": GP_ZP_FLUX_DIMENSIONLESS,
-        }
-    pc = resolve_gp_photcal(meta)
-    mag = folded["mag"].to_numpy(dtype=float) * u.mag
-    flux = np.asarray(pc.mag_to_flux(mag).value, dtype=float)
-    err_mag = folded["dmag"].to_numpy(dtype=float)
-    if np.any(np.isfinite(err_mag)):
-        err_q = np.where(np.isfinite(err_mag), err_mag, 0.0) * u.mag
-        flux_err = np.asarray(
-            pc.mag_err_to_flux_err(mag, err_q).value,
-            dtype=float,
-        )
-        flux_err = np.where(np.isfinite(err_mag), flux_err, np.nan)
-    else:
-        flux_err = np.full_like(flux, np.nan)
-    out = folded.copy()
-    out["flux"] = flux
-    out["flux_err"] = flux_err
-    return out
 
 
 def fit_gp_template(frag: pd.DataFrame) -> dict:
@@ -308,25 +280,26 @@ def save_template(result: dict) -> None:
 def main() -> None:
     _apply_plot_style()
     logging.basicConfig(level=logging.INFO)
-    df_raw, header = load_detrended_mag_dat(LC_PATH)
+    df_raw, lc_meta = load_lightcurve_frame(LC_PATH, working_domain=WORKING_DOMAIN)
     logger.info(
-        "Loaded %s rows from %s (jd0=%s mag0=%s)",
+        "Loaded %s rows from %s (domain=%s)",
         len(df_raw),
         LC_PATH.name,
-        header.get("jd0"),
-        header.get("mag0"),
+        lc_meta.get("active_domain"),
     )
 
     folded = fold_for_template(
         df_raw,
-        t_min=T_OBS_MIN,
-        t_max=T_OBS_MAX,
-        t_ref=T_REF,
+        t_min=JD_OFFSET_ZERO + T_OBS_MIN,
+        t_max=JD_OFFSET_ZERO + T_OBS_MAX,
+        t_ref=JD_OFFSET_ZERO + T_REF,
         period=P0,
     )
     logger.info("Folded stack: %s points after extended fold", len(folded))
 
-    frag = mag_fragment_to_flux(folded, header.get("mag0"))
+    frag = photometry_fragment_to_flux(
+        folded, lc_meta, context="build_template scratch"
+    )
     result = fit_gp_template(frag)
     save_template(result)
     plot_template_fit(result, save_path=OUT_PLOT)
