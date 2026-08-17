@@ -602,24 +602,21 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
 
 
 def _transport_flag_column_to_labels(flag_values) -> np.ndarray:
-    """Maps transport flag cells to ``CurveDash`` uint8 label array.
+    """Maps transport flag cells to string labels for ``CurveDash`` export.
 
     Args:
         flag_values: Column from transport ``data`` (index 3).
 
     Returns:
-        numpy.ndarray: Label array aligned with photometry rows.
+        numpy.ndarray: Object-dtype label array aligned with photometry rows.
     """
     labels = []
     for raw in flag_values:
         if raw is None:
-            labels.append(0)
-            continue
-        try:
-            labels.append(int(raw))
-        except (TypeError, ValueError):
-            labels.append(0)
-    return np.asarray(labels, dtype=np.uint8)
+            labels.append("")
+        else:
+            labels.append(str(raw))
+    return np.asarray(labels, dtype=object)
 
 
 def curvedash_from_transport_json(
@@ -685,7 +682,7 @@ def curvedash_from_transport_json(
     if arr.shape[1] > 3 and schema.get("flag") is not None:
         label = _transport_flag_column_to_labels(arr[:, 3])
     else:
-        label = np.zeros(len(v_raw), dtype=np.uint8)
+        label = np.full(len(v_raw), "", dtype=object)
 
     active_domain = meta.get("active_domain") or DOMAIN_MAG
     photcal = meta.get("photcal") or {}
@@ -726,7 +723,6 @@ def curvedash_from_transport_json(
             flux=v_raw,
             flux_err=err,
             flux_unit=str(flux_unit) if flux_unit else "",
-            active_domain=DOMAIN_FLUX,
         )
 
     envelope = meta.get(METADATA_KEY_VO_ENVELOPE)

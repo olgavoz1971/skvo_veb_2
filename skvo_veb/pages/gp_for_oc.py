@@ -288,9 +288,20 @@ from skvo_veb.utils.gp import (
     figure_from_gp_result,
     format_intervals_download,
 )
-from skvo_veb.utils.gp.export import gp_lc_export_download_name
+from skvo_veb.utils.gp.export import (
+    export_stem_from_upload_filename,
+    gp_compact_extrema_download_name,
+    gp_extended_extrema_download_name,
+    gp_extrema_export_stem,
+    gp_intervals_export_download_name,
+    gp_lc_export_download_name,
+)
 from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
+from skvo_veb.utils.gp.results_export import (
+    build_extended_export_zip,
+    format_compact_extrema_dat,
+)
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
 from skvo_veb.utils.gp.review_page import (
     badges_from_specs,
@@ -907,7 +918,7 @@ sidebar_lc = html.Div([
                                 id="export-intervals-filename",
                                 placeholder="intervals_export",
                                 type="text",
-                                value="my_intervals",
+                                value="",
                             ),
                             dbc.Button(
                                 "Download",
@@ -1379,42 +1390,103 @@ graph_gp = html.Div([
     html.Div(id='final-review-container', style={'display': 'none'}, children=[
         html.Hr(className="my-4"),
         dbc.Card([
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col(html.H6("Review and export", className="gp-card-title"), width="auto"),
-                    dbc.Col(
-                        dbc.Button(
-                            "Select all", id="select-all-btn",
-                            size="sm", color="secondary", outline=True,
+            dbc.CardBody(
+                html.Div(
+                    [
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    html.H6(
+                                        "Review and export",
+                                        className="gp-card-title",
+                                    ),
+                                    width="auto",
+                                ),
+                                dbc.Col(
+                                    dbc.Button(
+                                        "Select all",
+                                        id="select-all-btn",
+                                        size="sm",
+                                        color="secondary",
+                                        outline=True,
+                                    ),
+                                    width="auto",
+                                ),
+                                dbc.Col(
+                                    dbc.Button(
+                                        "Unselect all",
+                                        id="unselect-all-btn",
+                                        size="sm",
+                                        color="secondary",
+                                        outline=True,
+                                    ),
+                                    width="auto",
+                                ),
+                                dbc.Col(
+                                    [
+                                        dbc.Button(
+                                            "Previous page",
+                                            id="gp-review-prev",
+                                            size="sm",
+                                            outline=True,
+                                            color="secondary",
+                                        ),
+                                        html.Span(
+                                            id="gp-review-page-label",
+                                            className="gp-review-page-caption",
+                                        ),
+                                        dbc.Button(
+                                            "Next page",
+                                            id="gp-review-next",
+                                            size="sm",
+                                            outline=True,
+                                            color="secondary",
+                                        ),
+                                    ],
+                                    width="auto",
+                                    className="gp-review-pager",
+                                ),
+                            ],
+                            className="align-items-center g-2",
                         ),
-                        width="auto",
-                    ),
-                    dbc.Col(
-                        dbc.Button(
-                            "Unselect all", id="unselect-all-btn",
-                            size="sm", color="secondary", outline=True,
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    dbc.Switch(
+                                        id="gp-extended-export",
+                                        value=False,
+                                        label="Extended export",
+                                    ),
+                                    width="auto",
+                                ),
+                                dbc.Col(
+                                    dbc.InputGroup(
+                                        [
+                                            dbc.Input(
+                                                id="export-filename",
+                                                placeholder="results_extrema",
+                                                type="text",
+                                                size="sm",
+                                            ),
+                                            dbc.Button(
+                                                "Download",
+                                                id="save-file-btn",
+                                                color="primary",
+                                                size="sm",
+                                            ),
+                                        ],
+                                        className="gp-export-group",
+                                    ),
+                                    width="auto",
+                                ),
+                            ],
+                            className="align-items-center g-2 justify-content-end",
                         ),
-                        width="auto",
-                    ),
-
-                    dbc.Col([
-                        dbc.Button("Previous page", id="gp-review-prev", size="sm", outline=True, color="secondary"),
-                        html.Span(id="gp-review-page-label", className="mx-2 small text-muted align-middle"),
-                        dbc.Button("Next page", id="gp-review-next", size="sm", outline=True, color="secondary"),
-                    ], width="auto", className="d-flex align-items-center"),
-
-                    # Compact Filename + Download Group
-                    dbc.Col([
-                        dbc.InputGroup([
-                            dbc.Input(id="export-filename", placeholder="results.dat", type="text", size="sm"),
-                            dbc.Button(
-                                "Download", id="save-file-btn",
-                                color="primary", size="sm",
-                            ),
-                        ], className="gp-export-group ms-auto")
-                    ], width="auto", className="ms-auto"),
-                ], className="align-items-center g-2"),
-            ], className="py-2")  # Thinner padding
+                    ],
+                    className="gp-review-toolbar",
+                ),
+                className="gp-review-toolbar-body",
+            )
         ], className="bg-light mb-3"),
 
         dbc.Row(id='graphs-container', className="g-2"),
@@ -2585,7 +2657,7 @@ def download_intervals(n_clicks, intervals, custom_name):
         return dash.no_update, dash.no_update, dash.no_update
 
     content = format_intervals_download(intervals)
-    export_name = custom_name if custom_name else "my_intervals.dat"
+    export_name = gp_intervals_export_download_name(custom_name)
 
     return (
         dict(content=content, filename=export_name),
@@ -3134,6 +3206,9 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
                 'jd_peak': gp_res["jd_peak"],
                 'jd_peak_std': gp_res["jd_peak_std"],
                 'badge_specs': badge_specs,
+                'kernel_type': kernel_type,
+                'length_scale': float(opt_l),
+                'amplitude': float(opt_ampl),
             })
 
         except Exception as e:
@@ -3210,13 +3285,15 @@ def guess_gp_parameters(n_clicks, ids, current_trigger):
 @callback(
     Output('export-intervals-filename', 'value'),
     Input('upload-intervals', 'filename'),
+    Input('upload-lc', 'filename'),
     prevent_initial_call=True,
 )
-def update_intervals_output_filename(filename):
-    """Default interval export stem from the uploaded intervals file name."""
-    if filename:
-        return filename.rsplit('.', 1)[0]
-    return "my_intervals"
+def update_intervals_output_filename(intervals_filename, lc_filename):
+    """Default interval export stem from intervals upload, else light curve basename."""
+    intervals_stem = export_stem_from_upload_filename(intervals_filename)
+    if intervals_stem:
+        return intervals_stem
+    return export_stem_from_upload_filename(lc_filename)
 
 
 @callback(
@@ -3300,10 +3377,9 @@ def download_gp_prep_lightcurve(
 )
 def update_default_filename(filename):
     if filename:
-        # Strip the old extension and add '_maxima.dat'
         base = filename.rsplit('.', 1)[0]
-        return f"{base}_extrema.dat"
-    return "results_extrema.dat"
+        return f"{base}_extrema"
+    return "results_extrema"
 
 
 @callback(
@@ -3313,11 +3389,16 @@ def update_default_filename(filename):
     State("export-filename", "value"),
     State('store-results-data', 'data'),
     State('extrema-mode', 'value'),
+    State("gp-extended-export", "value"),
     prevent_initial_call=True
     # endregion
 )
-def trigger_download(n_clicks, filename_input, store, extrema_mode):
-    logger.debug("GP download: filename=%s", filename_input)
+def trigger_download(n_clicks, filename_input, store, extrema_mode, extended_export):
+    logger.debug(
+        "GP download: filename=%s extended=%s",
+        filename_input,
+        extended_export,
+    )
     if not n_clicks or not store:
         return no_update
 
@@ -3326,22 +3407,34 @@ def trigger_download(n_clicks, filename_input, store, extrema_mode):
     if len(include) != len(rows):
         return no_update
 
-    mode_label = "Minimum" if extrema_mode == 'min' else "Maximum"
+    if extended_export:
+        run_id = store.get("run_id")
+        if not run_id:
+            return no_update
+        try:
+            entries = load_gp_review_run(run_id)
+        except KeyError as exc:
+            raise PreventUpdate from exc
+        if len(entries) != len(include):
+            return no_update
+        bundle_folder = gp_extrema_export_stem(filename_input)
+        zip_bytes = build_extended_export_zip(
+            entries,
+            include,
+            bundle_folder=bundle_folder,
+            display_epoch=jd0,
+            extrema_mode=extrema_mode or "max",
+        )
+        outfile = gp_extended_extrema_download_name(filename_input)
+        return dcc.send_bytes(zip_bytes, outfile)
 
-    final_filename = filename_input if filename_input else f"gp_results_{extrema_mode}.dat"
-
-    lines = [
-        f"# GP {mode_label} Results\n",
-        f"# JD_{mode_label}\tJD_Std\n"
-    ]
-
-    for is_selected, row in zip(include, rows):
-        if is_selected and not row.get("is_fail"):
-            lines.append(
-                f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n"
-            )
-
-    return dcc.send_string("".join(lines), final_filename)
+    body = format_compact_extrema_dat(
+        rows,
+        include,
+        extrema_mode=extrema_mode or "max",
+    )
+    outfile = gp_compact_extrema_download_name(filename_input)
+    return dcc.send_string(body, outfile)
 
 
 @callback(

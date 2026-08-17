@@ -256,6 +256,27 @@
     width: min(22rem, 100%);
 }
 
+.gp-review-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gp-space-sm);
+}
+
+.gp-review-toolbar-body {
+    padding-top: var(--gp-space-md);
+    padding-bottom: var(--gp-space-md);
+}
+
+.gp-review-pager {
+    display: flex;
+    align-items: center;
+    gap: var(--gp-space-sm);
+}
+
+.gp-review-page-caption {
+    color: var(--bs-secondary-color);
+}
+
 .gp-export-stack {
     display: flex;
     flex-direction: column;

@@ -63,6 +63,9 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
         "jd_min": res_entry.get("jd_min"),
         "jd_max": res_entry.get("jd_max"),
         "badge_specs": res_entry.get("badge_specs", []),
+        "kernel_type": res_entry.get("kernel_type"),
+        "length_scale": res_entry.get("length_scale"),
+        "amplitude": res_entry.get("amplitude"),
     }
     if row["is_fail"]:
         row["error"] = res_entry.get("error", "")
