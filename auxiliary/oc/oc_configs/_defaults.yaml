@@ -1,0 +1,12 @@
+version: 1
+
+plot:
+  show: true
+  dpi: 150
+
+segment_period_fit:
+  max_iter: 5
+  tol: 1.0e-8
+
+export:
+  write_provenance: true

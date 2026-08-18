@@ -1,0 +1,35 @@
+version: 1
+include: _defaults.yaml
+
+study:
+  label: "NSV 807 sector 30 TESS-SPOC template GP"
+
+  manifest_time:
+    scale: mjd
+
+  ephemeris:
+    T0: 57711.3539
+    P0: 0.3389614
+
+  cycle_shifts: []
+
+  tasks:
+    plot_oc_residuals: true
+    fit_segment_periods: false
+    fit_parabolic_ephemeris: false
+
+  inputs:
+    extrema:
+      # path: /home/voz/projects/UPJS/Shugarov/Vlada/NSV_807/res/timing/GP/lc_tess_nsv_807_sector_30_author_TESS_SPOC_methods_pdcsap_main_min.dat
+      path: /home/voz/projects/UPJS/Shugarov/Vlada/NSV_807/res/timing/GP/lc_tess_nsv_807_sector_30_author_SPOC_pdcsap_main_min.dat
+      format: gp_extrema_dat
+      file_time:
+        scale: jd
+        shift: 0.0
+
+  output_dir: ../data/runs/NSV_807_30_SPOC_main_GP/oc
+
+  exports:
+    plot_oc_residuals:
+      oc_table: oc.csv
+      figure: oc.png
