@@ -1,0 +1,10 @@
+version: 1
+include: _defaults.yaml
+
+study:
+  label: "NSV 807 sector 30 SPOC, original template, primary minimum"
+  template_dir: ../../data/runs/NSV_807_04_main/pieces/1
+  output_dir: ../../data/runs/NSV_807_04_main/epoch_spike
+
+export_template:
+  method: kvw

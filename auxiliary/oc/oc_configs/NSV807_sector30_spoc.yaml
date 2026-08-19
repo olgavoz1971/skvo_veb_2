@@ -35,5 +35,5 @@ study:
 
   exports:
     plot_oc_residuals:
-      oc_table: oc.csv
-      figure: oc.png
+      oc_table: oc_0_20.csv
+      figure: oc_0_20.png

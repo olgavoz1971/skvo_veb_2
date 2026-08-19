@@ -1,0 +1,58 @@
+# Shared profile included by study YAMLs (include: _defaults.yaml).
+# Paths, label, and template_dir live in the study file, not here.
+# version is recorded for humans; the loader does not read it.
+version: 1
+
+# Interactive windows and PNG resolution.
+plot:
+  # If true, each figure also calls plt.show(). --no-show forces this to false.
+  show: true
+  # PNG resolution for the four diagnostic figures.
+  dpi: 150
+
+# Bisector-of-chords ladder on the GP mean (not used by KvW).
+# Depth 0 = out-of-eclipse continuum, depth 1 = eclipse bottom/top of mu.
+bisector:
+  # Shallowest chord (near continuum / contacts). Lower values diagnose wing
+  # asymmetry but must not enter the epoch average if the ladder tilts.
+  depth_min: 0.40
+  # Deepest chord. Must stay above the noisy/flat floor (never 1.0); that floor
+  # is exactly where GP argmin is ill-posed.
+  depth_max: 0.90
+  # Number of equally spaced depths in [depth_min, depth_max], inclusive.
+  n_levels: 31
+  # Fail the run if fewer than this many depths yield a valid ingress/egress
+  # pair. Skipped levels are logged; they are not filled in.
+  min_accepted_levels: 8
+
+# Kwee-van Woerden: symmetric-pair cost on the GP mean.
+# Phase units: 1 = one fold period; converted to days as value * fold_period.
+kvw:
+  # Maximum lag in the pairs: compare mu(tau0-d) with mu(tau0+d) for d up to
+  # this half-width. Also the orange band on template_marks.png.
+  # Keep this narrower than the Step 2 fit mask (shape alignment). Too wide:
+  # wings/O'Connell pull the epoch. Too narrow: too few pairs, noisy centre.
+  half_width_phase: 0.07
+  # How far the KvW minimiser may walk from the stored tau_peak.
+  # Must be strictly smaller than half_width_phase so every trial centre still
+  # has a full set of lags inside this window. Too large: can slide into a wing.
+  search_half_width_phase: 0.04
+  # Minimum number of finite (left, right) pairs required at a trial centre.
+  # Also the minimum length of the lag grid; increase half_width_phase
+  # if the template grid is coarse and this check fails.
+  n_pairs_min: 8
+  # If true, each pair is weighted by 1 / (sigma_left^2 + sigma_right^2) using
+  # the stored GP sigma. If false, raw sum of squared mu differences.
+  weight_by_sigma: true
+
+# Write a new template folder for run_timing (existing_template_dir).
+# The source template_dir is never overwritten. The GP curve is copied;
+# only tau_peak is relabelled.
+export_template:
+  # Which clock to paint as the new tau_peak:
+  #   kvw              Kwee-van Woerden minimiser
+  #   bisector_core    weighted mean of the bisector ladder
+  #   bisector_extrap  linear ladder fit evaluated at depth 1 (floor)
+  method: kvw
+  # Optional. Default: {study.output_dir}/template_{method}
+  # output_dir: ../../data/runs/example/template_kvw
