@@ -24,6 +24,7 @@ TIME_SCALES = frozenset({"jd", "mjd", "jd_offset"})
 PHOTOMETRY_DOMAINS = frozenset({"mag", "flux"})
 EXTREMA_MODES = frozenset({"max", "min"})
 PEAK_SELECT_RULES = frozenset({"dominant", "nearest_phase0"})
+SECONDARY_DERIVE_METHODS = frozenset({"other_min_class"})
 
 # Peak-selection keys removed in the prominence-based rewrite, with migration advice.
 REMOVED_GP_KEYS = {
@@ -166,6 +167,38 @@ class FitDefaults:
         )
 
 
+@dataclass(frozen=True)
+class DeriveSecondaryConfig:
+    """Relabel a reused primary template onto the other eclipse class.
+
+    Attributes:
+        method (str): Selection rule. Only ``other_min_class`` is implemented.
+        phase_offset (float): Target offset from the painted primary phase.
+        phase_tolerance (float): Maximum circular distance from that target.
+    """
+
+    method: str
+    phase_offset: float
+    phase_tolerance: float
+
+    def __post_init__(self) -> None:
+        if self.method not in SECONDARY_DERIVE_METHODS:
+            raise ValueError(
+                f"derive_secondary.method must be one of "
+                f"{sorted(SECONDARY_DERIVE_METHODS)}, got {self.method!r}"
+            )
+        if not (0.0 < self.phase_offset < 1.0):
+            raise ValueError(
+                f"derive_secondary.phase_offset must be in (0, 1), "
+                f"got {self.phase_offset}"
+            )
+        if not (0.0 < self.phase_tolerance <= 0.5):
+            raise ValueError(
+                f"derive_secondary.phase_tolerance must be in (0, 0.5], "
+                f"got {self.phase_tolerance}"
+            )
+
+
 @dataclass
 class PieceConfig:
     """One dense segment: build template and fit intervals."""
@@ -182,6 +215,7 @@ class PieceConfig:
     local_lc_path: Path | None = None
     reuse_template_from: str | None = None
     existing_template_dir: Path | None = None
+    derive_secondary: DeriveSecondaryConfig | None = None
     skip: bool = False
     gp_template: GPTemplateDefaults = field(default_factory=GPTemplateDefaults)
     fit: FitDefaults = field(default_factory=FitDefaults)
@@ -481,6 +515,49 @@ def _validate_intervals_in_window(
         )
 
 
+def _parse_derive_secondary(
+    entry: dict[str, Any],
+    *,
+    piece_id: str,
+) -> DeriveSecondaryConfig | None:
+    """Parse an optional ``derive_secondary`` block on a piece.
+
+    Args:
+        entry (dict): Raw piece mapping from the YAML.
+        piece_id (str): Piece identifier for error messages.
+
+    Returns:
+        DeriveSecondaryConfig | None: Parsed block, or ``None`` if omitted.
+
+    Raises:
+        ValueError: If the block is present but incomplete or unknown keys appear.
+    """
+    raw = entry.get("derive_secondary")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"piece {piece_id}: derive_secondary must be a mapping"
+        )
+    required = ("method", "phase_offset", "phase_tolerance")
+    missing = [key for key in required if key not in raw]
+    if missing:
+        raise ValueError(
+            f"piece {piece_id}: derive_secondary missing keys {missing}"
+        )
+    unknown = set(raw) - set(required)
+    if unknown:
+        raise ValueError(
+            f"piece {piece_id}: derive_secondary unknown keys "
+            f"{sorted(unknown)}; allowed {sorted(required)}"
+        )
+    return DeriveSecondaryConfig(
+        method=str(raw["method"]),
+        phase_offset=float(raw["phase_offset"]),
+        phase_tolerance=float(raw["phase_tolerance"]),
+    )
+
+
 def _parse_template_fold_block(
     global_cfg: dict[str, Any],
     time: TimeScaleConfig,
@@ -521,7 +598,11 @@ def _parse_template_fold_block(
     return default_epoch, default_period, period_slope
 
 
-def _validate_piece_template_sources(pieces: list[PieceConfig]) -> None:
+def _validate_piece_template_sources(
+    pieces: list[PieceConfig],
+    *,
+    run_dir: Path,
+) -> None:
     """At most one Step 1 skip source per piece; paths and reuse graph valid."""
     ids = [p.piece_id for p in pieces]
     id_set = set(ids)
@@ -544,6 +625,27 @@ def _validate_piece_template_sources(pieces: list[PieceConfig]) -> None:
                 f"piece {piece.piece_id}: use only one of "
                 f"existing_template_dir or reuse_template_from"
             )
+
+        if piece.derive_secondary is not None:
+            if piece.existing_template_dir is None:
+                raise ValueError(
+                    f"piece {piece.piece_id}: derive_secondary requires "
+                    "existing_template_dir (the primary template directory; "
+                    "it is never overwritten)"
+                )
+            if piece.reuse_template_from is not None:
+                raise ValueError(
+                    f"piece {piece.piece_id}: derive_secondary cannot be "
+                    "combined with reuse_template_from"
+                )
+            dest = (run_dir / "pieces" / piece.piece_id).resolve()
+            source = piece.existing_template_dir.resolve()
+            if dest == source:
+                raise ValueError(
+                    f"piece {piece.piece_id}: derive_secondary destination "
+                    f"{dest} is the source template directory; use a different "
+                    "global.output.run_dir"
+                )
 
         if piece.existing_template_dir is not None:
             _require_template_files(
@@ -739,9 +841,15 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
         existing_template_dir = (
             None if existing_raw is None else _resolve_path(base, str(existing_raw))
         )
-        if skip and (reuse_template_from is not None or existing_template_dir is not None):
+        derive_secondary = _parse_derive_secondary(entry, piece_id=piece_id)
+        if skip and (
+            reuse_template_from is not None
+            or existing_template_dir is not None
+            or derive_secondary is not None
+        ):
             logger.warning(
-                "piece %s: skip=true ignores existing_template_dir / reuse_template_from",
+                "piece %s: skip=true ignores existing_template_dir / "
+                "reuse_template_from / derive_secondary",
                 piece_id,
             )
         gp_piece = _gp_from_mapping(entry.get("gp_template"), gp_defaults)
@@ -770,13 +878,14 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 local_lc_path=local_lc_path,
                 reuse_template_from=reuse_template_from,
                 existing_template_dir=existing_template_dir,
+                derive_secondary=derive_secondary,
                 skip=skip,
                 gp_template=gp_piece,
                 fit=fit_piece,
             )
         )
 
-    _validate_piece_template_sources(pieces)
+    _validate_piece_template_sources(pieces, run_dir=run_dir)
 
     n_active = sum(1 for p in pieces if not p.skip)
     logger.info(

@@ -34,6 +34,7 @@ from template_fit import (
     IntervalFitContext,
     ShiftFitResult,
     TemplateCurve,
+    failed_shift_fit,
     fit_cross_correlation,
     fit_nonlinear_least_squares,
     fit_nls_iterative_outlier_clean,
@@ -300,6 +301,8 @@ def _calendar_fit_from_fold(
     t_pick: float,
 ) -> ShiftFitResult:
     """Copy a fold-space fit with ``t_max`` converted to calendar time."""
+    if not fit.ok:
+        return fit
     _cycle, _t_anchor, t_max = ensemble_calendar_from_delta_tau(
         fit.delta_t,
         t_ref=t_ref,
@@ -444,6 +447,14 @@ def _plot_fit_panel(
             )
     else:
         ax.scatter(t, y, s=scatter_s, c="k", alpha=0.75, label="data")
+    if not fit.ok:
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("normalised flux")
+        reason = fit.fail_reason or "no valid fit"
+        ax.set_title(f"{title}\nFAILED: {reason}")
+        ax.legend()
+        return
     t_line = np.linspace(x_lo, x_hi, 300)
     t_ok, y_model = _model_flux_on_jd_grid(t_line, curve, fit)
     if gp_sigma_grid is not None:
@@ -658,6 +669,90 @@ def plot_segment_anchor_fits(
     return None
 
 
+def _delta_t_init(*fits: ShiftFitResult) -> float | None:
+    """Return the first successful ``delta_t``, else ``None``."""
+    for fit in fits:
+        if fit.ok:
+            return float(fit.delta_t)
+    return None
+
+
+def _run_fit_method(name: str, fn) -> ShiftFitResult:
+    """Run one timing method; convert a ``ValueError`` into a failed result.
+
+    Args:
+        name (str): Method label for the failed-result fallback.
+        fn: Zero-argument callable that returns :class:`ShiftFitResult`.
+
+    Returns:
+        ShiftFitResult: The method outcome, or ``ok=False`` if it raised.
+
+    Raises:
+        ValueError: If the error is invalid search bounds (a config fault, not
+            a per-cycle fit failure).
+    """
+    try:
+        return fn()
+    except ValueError as exc:
+        message = str(exc)
+        if "search bounds invalid" in message:
+            raise
+        return failed_shift_fit(name, message)
+
+
+def _fit_failure_note(*fits: ShiftFitResult) -> str:
+    """Join failed-method reasons for logs and ``fit_fail_reason``."""
+    return "; ".join(
+        f"{fit.method}: {fit.fail_reason}" for fit in fits if not fit.ok
+    )
+
+
+def _reject_if_selected_failed(
+    *,
+    piece_id: str,
+    interval: int,
+    selected_method: str,
+    rejected: str,
+    cc: ShiftFitResult,
+    nls: ShiftFitResult,
+    nls_clean: ShiftFitResult,
+    nls_scale_clean: ShiftFitResult,
+) -> tuple[str, str]:
+    """Force cycle rejection when the selected method has no usable fit.
+
+    Args:
+        piece_id (str): Piece identifier for log messages.
+        interval (int): Interval index for log messages.
+        selected_method (str): Official timing method after review (if any).
+        rejected (str): Current ``true`` / ``false`` rejection flag.
+        cc, nls, nls_clean, nls_scale_clean: Per-method results.
+
+    Returns:
+        tuple[str, str]: Updated ``rejected`` flag and a failure note (possibly empty).
+    """
+    note = _fit_failure_note(cc, nls, nls_clean, nls_scale_clean)
+    if note:
+        logger.warning(
+            "Piece %s interval %s: method failure(s): %s",
+            piece_id,
+            interval,
+            note,
+        )
+    official = official_fit_result(
+        selected_method, cc, nls, nls_clean, nls_scale_clean
+    )
+    if not official.ok:
+        logger.error(
+            "Piece %s interval %s: official method %s failed; "
+            "marking cycle rejected and continuing",
+            piece_id,
+            interval,
+            selected_method,
+        )
+        return "true", note
+    return rejected, note
+
+
 def fit_all_methods(
     curve: TemplateCurve,
     t_jd: np.ndarray,
@@ -670,58 +765,76 @@ def fit_all_methods(
     delta_t_hi: float,
     fit_cfg: FitDefaults,
 ) -> tuple[ShiftFitResult, ShiftFitResult, ShiftFitResult, ShiftFitResult]:
-    """Run CC, NLS, cleaned NLS, and scaled cleaned NLS."""
-    cc = fit_cross_correlation(
-        curve,
-        t_jd,
-        y,
-        ctx,
-        dt_min=dt_min,
-        dt_max=dt_max,
-        delta_t_min=delta_t_lo,
-        delta_t_max=delta_t_hi,
+    """Run CC, NLS, cleaned NLS, and scaled cleaned NLS.
+
+    A method that cannot fit (too few points in the mask, optimizer collapse)
+    returns ``ok=False`` with NaN timing fields. Later methods still run, using
+    the last successful ``delta_t`` as the initial guess when one exists.
+    """
+
+    cc = _run_fit_method(
+        "cc",
+        lambda: fit_cross_correlation(
+            curve,
+            t_jd,
+            y,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=delta_t_lo,
+            delta_t_max=delta_t_hi,
+        ),
     )
-    nls = fit_nonlinear_least_squares(
-        curve,
-        t_jd,
-        y,
-        ctx,
-        dt_min=dt_min,
-        dt_max=dt_max,
-        delta_t_min=delta_t_lo,
-        delta_t_max=delta_t_hi,
-        delta_t_init=cc.delta_t,
+    nls = _run_fit_method(
+        "nls",
+        lambda: fit_nonlinear_least_squares(
+            curve,
+            t_jd,
+            y,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=delta_t_lo,
+            delta_t_max=delta_t_hi,
+            delta_t_init=_delta_t_init(cc),
+        ),
     )
-    nls_clean = fit_nls_iterative_outlier_clean(
-        curve,
-        t_jd,
-        y,
-        ctx,
-        dt_min=dt_min,
-        dt_max=dt_max,
-        delta_t_min=delta_t_lo,
-        delta_t_max=delta_t_hi,
-        delta_t_init=nls.delta_t,
-        mad_k=fit_cfg.outlier_mad_k,
-        max_iter=fit_cfg.outlier_max_iter,
-        min_inliers=fit_cfg.outlier_min_inliers,
+    nls_clean = _run_fit_method(
+        "nls_clean",
+        lambda: fit_nls_iterative_outlier_clean(
+            curve,
+            t_jd,
+            y,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=delta_t_lo,
+            delta_t_max=delta_t_hi,
+            delta_t_init=_delta_t_init(nls, cc),
+            mad_k=fit_cfg.outlier_mad_k,
+            max_iter=fit_cfg.outlier_max_iter,
+            min_inliers=fit_cfg.outlier_min_inliers,
+        ),
     )
-    nls_scale_clean = fit_nls_scale_iterative_outlier_clean(
-        curve,
-        t_jd,
-        y,
-        ctx,
-        dt_min=dt_min,
-        dt_max=dt_max,
-        delta_t_min=delta_t_lo,
-        delta_t_max=delta_t_hi,
-        delta_t_init=nls_clean.delta_t,
-        scale_init=1.0,
-        mad_k=fit_cfg.outlier_mad_k,
-        max_iter=fit_cfg.outlier_max_iter,
-        min_inliers=fit_cfg.outlier_min_inliers,
-        scale_min=fit_cfg.scale_min,
-        scale_max=fit_cfg.scale_max,
+    nls_scale_clean = _run_fit_method(
+        "nls_scale_clean",
+        lambda: fit_nls_scale_iterative_outlier_clean(
+            curve,
+            t_jd,
+            y,
+            ctx,
+            dt_min=dt_min,
+            dt_max=dt_max,
+            delta_t_min=delta_t_lo,
+            delta_t_max=delta_t_hi,
+            delta_t_init=_delta_t_init(nls_clean, nls, cc),
+            scale_init=1.0,
+            mad_k=fit_cfg.outlier_mad_k,
+            max_iter=fit_cfg.outlier_max_iter,
+            min_inliers=fit_cfg.outlier_min_inliers,
+            scale_min=fit_cfg.scale_min,
+            scale_max=fit_cfg.scale_max,
+        ),
     )
     return cc, nls, nls_clean, nls_scale_clean
 
@@ -749,14 +862,18 @@ def fit_result_from_summary_row(row: dict, method: str) -> ShiftFitResult:
         scale = float(row["scale_nls_scale_clean"])
     else:
         scale = 1.0
+    t_max = float(row[f"t_max_{method}"])
+    ok = bool(np.isfinite(t_max))
     return ShiftFitResult(
         delta_t=float(row[f"delta_t_{method}"]),
         delta_y=float(row[f"delta_y_{method}"]),
-        t_max=float(row[f"t_max_{method}"]),
+        t_max=t_max,
         rms=float(row[f"rms_{method}"]),
         n_used=int(row["n_points"]),
         method=method,
         scale=scale,
+        ok=ok,
+        fail_reason=None if ok else str(row.get("fit_fail_reason") or "no valid fit"),
     )
 
 
@@ -876,6 +993,7 @@ def _fit_summary_row(
         "t_max_nls_scale_clean": nls_scale_clean.t_max,
         "rms_nls_scale_clean": nls_scale_clean.rms,
         "tau_peak": tau_peak,
+        "fit_fail_reason": _fit_failure_note(cc, nls, nls_clean, nls_scale_clean),
     }
     if anchor_epoch is not None:
         row["anchor_epoch"] = anchor_epoch
@@ -1044,6 +1162,17 @@ def fit_piece_segment_anchor(
         else:
             selected_method = decision.selected_method or timing_method
             rejected = "false"
+
+    rejected, _note = _reject_if_selected_failed(
+        piece_id=piece_id,
+        interval=0,
+        selected_method=selected_method,
+        rejected=rejected,
+        cc=cc_fold,
+        nls=nls_fold,
+        nls_clean=nls_clean_fold,
+        nls_scale_clean=nls_scale_clean_fold,
+    )
 
     cal_kw = {
         "t_ref": t_ref,
@@ -1229,6 +1358,16 @@ def fit_piece_intervals(
                 selected_method = decision.selected_method or timing_method
                 rejected = "false"
 
+        rejected, _note = _reject_if_selected_failed(
+            piece_id=piece_id,
+            interval=idx,
+            selected_method=selected_method,
+            rejected=rejected,
+            cc=cc,
+            nls=nls,
+            nls_clean=nls_clean,
+            nls_scale_clean=nls_scale_clean,
+        )
         official = official_fit_result(selected_method, cc, nls, nls_clean, nls_scale_clean)
         rows.append(
             _fit_summary_row(

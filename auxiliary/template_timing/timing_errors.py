@@ -23,7 +23,10 @@ def sigma_t_max_rms_slope(
     """Map normalised RMS to ``sigma_t_max`` (days) via ``|d mu / d t|`` at the peak.
 
     For ``y ≈ s·T + b``, ``sigma_t_max ≈ rms / (|s| · |dT/dt|)`` at the fitted maximum.
+    Returns NaN when the fit has no finite RMS or scale (a failed method).
     """
+    if not np.isfinite(fit.rms) or not np.isfinite(fit.scale):
+        return float("nan")
     slope = template_mu_slope_at_peak(curve)
     denom = abs(fit.scale * slope)
     if denom <= 0:

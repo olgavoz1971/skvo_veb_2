@@ -27,6 +27,7 @@ from manifest_config import (
 from plot_style import apply_plot_style
 from plot_overview import overview_time_span, plot_lc_with_maxima
 from template_build import build_piece_template, plot_template_artifacts
+from template_derive import derive_secondary_template
 from template_reuse import bind_reused_template_dir, resolve_piece_template_dir
 from template_fit import TemplateCurve
 from template_fit_pipeline import (
@@ -425,7 +426,38 @@ def run_manifest(
         fold_epoch = piece_fold_epoch(piece, manifest.default_epoch)
         piece_lc = piece_lc_path(piece, manifest.lc_path)
 
-        if piece.existing_template_dir is not None:
+        if piece.derive_secondary is not None:
+            if piece.existing_template_dir is None:
+                raise ValueError(
+                    f"piece {piece.piece_id}: derive_secondary requires "
+                    "existing_template_dir"
+                )
+            dest = piece_dir.resolve()
+            derive_secondary_template(
+                piece.existing_template_dir,
+                dest,
+                piece.derive_secondary,
+                piece_id=piece.piece_id,
+            )
+            template_dirs[piece.piece_id] = dest
+            derived_npz = dest / "template.npz"
+            derived_meta_path = dest / "template_meta.json"
+            derived_meta = json.loads(derived_meta_path.read_text(encoding="utf-8"))
+            derived_tau_peak = float(np.load(derived_npz)["tau_peak"])
+            mask = fit_mask_for_template(
+                derived_meta,
+                piece.fit,
+                tau_peak=derived_tau_peak,
+                context=f"Piece {piece.piece_id}",
+            )
+            plot_template_artifacts(
+                derived_npz,
+                derived_meta_path,
+                mask=mask,
+                save_path=dest / "template_gp.png",
+                show=show_plots,
+            )
+        elif piece.existing_template_dir is not None:
             template_dir = bind_reused_template_dir(
                 piece, template_dirs=template_dirs
             )

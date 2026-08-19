@@ -24,9 +24,25 @@ class IntervalFitContext:
         return float(self.t_anchor + delta_t)
 
 
+MIN_MASK_POINTS = 5
+
+
 @dataclass
 class ShiftFitResult:
-    """Outcome of a template alignment in time domain."""
+    """Outcome of a template alignment in time domain.
+
+    Attributes:
+        delta_t (float): Peak shift in days, or NaN when the fit failed.
+        delta_y (float): Additive offset, or NaN when the fit failed.
+        t_max (float): Calendar (or fold) peak time, or NaN when the fit failed.
+        rms (float): Residual RMS of the fit, or NaN when the fit failed.
+        n_used (int): Points used in the mask at the fitted shift.
+        method (str): Method label (``cc``, ``nls``, ...).
+        scale (float): Multiplicative scale; ``1`` when unused.
+        inlier_mask (numpy.ndarray | None): Per-point inliers for cleaned methods.
+        ok (bool): False when this method could not produce a usable fit.
+        fail_reason (str | None): Why the method failed, if it did.
+    """
 
     delta_t: float
     delta_y: float
@@ -36,6 +52,33 @@ class ShiftFitResult:
     method: str
     scale: float = 1.0
     inlier_mask: np.ndarray | None = field(default=None)
+    ok: bool = True
+    fail_reason: str | None = None
+
+
+def failed_shift_fit(method: str, reason: str) -> ShiftFitResult:
+    """Return a non-finite fit result so one failed method cannot abort a run.
+
+    Args:
+        method (str): Method label stored on the result.
+        reason (str): Human-readable failure cause.
+
+    Returns:
+        ShiftFitResult: ``ok=False`` with NaN timing fields.
+    """
+    logger.warning("%s fit failed: %s", method, reason)
+    nan = float("nan")
+    return ShiftFitResult(
+        delta_t=nan,
+        delta_y=nan,
+        t_max=nan,
+        rms=nan,
+        n_used=0,
+        method=method,
+        scale=nan,
+        ok=False,
+        fail_reason=reason,
+    )
 
 
 class TemplateCurve:
@@ -171,7 +214,7 @@ def fit_cross_correlation(
         dt = t_jd[mask] - (ctx.t_anchor + delta_t)
         t_vals = template.eval_from_peak(dt)
         ok = np.isfinite(t_vals)
-        if np.count_nonzero(ok) < 5:
+        if np.count_nonzero(ok) < MIN_MASK_POINTS:
             continue
         y_m = y[mask][ok]
         t_m = t_vals[ok]
@@ -186,8 +229,10 @@ def fit_cross_correlation(
             best_dt = float(delta_t)
             best_n = int(np.count_nonzero(ok))
 
-    if best_n < 5:
-        raise ValueError("cross-correlation: too few points in mask for all shifts")
+    if best_n < MIN_MASK_POINTS:
+        return failed_shift_fit(
+            "cc", "too few points in mask for all shifts"
+        )
 
     _, y_fit, t_fit = _subset_at_shift(
         template, t_jd, y, ctx.t_anchor, best_dt, dt_min, dt_max
@@ -243,7 +288,7 @@ def fit_nonlinear_least_squares(
         _, y_used, t_fit = _subset_at_shift(
             template, t_work, y_work, ctx.t_anchor, delta_t, dt_min, dt_max
         )
-        if len(y_used) < 5:
+        if len(y_used) < MIN_MASK_POINTS:
             return 1e12
         resid = y_used - scale * t_fit - delta_y
         return float(np.sum(resid**2))
@@ -272,8 +317,13 @@ def fit_nonlinear_least_squares(
     _, y_used, t_fit = _subset_at_shift(
         template, t_work, y_work, ctx.t_anchor, delta_t, dt_min, dt_max
     )
+    if len(y_used) < MIN_MASK_POINTS:
+        return failed_shift_fit(
+            method_label,
+            f"too few points in mask after NLS (n={len(y_used)})",
+        )
     resid = y_used - scale * t_fit - delta_y
-    rms = float(np.sqrt(np.mean(resid**2))) if len(resid) else float("nan")
+    rms = float(np.sqrt(np.mean(resid**2)))
 
     inlier_full = None
     if keep is not None:
@@ -328,6 +378,8 @@ def fit_nls_scale_iterative_outlier_clean(
         scale_min=scale_min,
         scale_max=scale_max,
     )
+    if not fit.ok:
+        return fit
 
     for iteration in range(max_iter):
         global_idx, y_sub, t_sub = _subset_indices_at_shift(
@@ -413,6 +465,8 @@ def fit_nls_iterative_outlier_clean(
         keep=keep,
         method_label="nls_clean",
     )
+    if not fit.ok:
+        return fit
 
     for iteration in range(max_iter):
         global_idx, y_sub, t_sub = _subset_indices_at_shift(

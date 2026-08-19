@@ -62,6 +62,36 @@ class PeakCandidate:
         }
 
 
+def peak_candidate_from_dict(raw: dict) -> PeakCandidate:
+    """Rebuild a :class:`PeakCandidate` from ``template_meta.json``.
+
+    Args:
+        raw (dict): One entry from ``peak_selection.candidates``.
+
+    Returns:
+        PeakCandidate: The reconstructed candidate.
+
+    Raises:
+        ValueError: If required keys are missing.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError(f"peak candidate must be a mapping, got {type(raw).__name__}")
+    required = ("tau", "mu", "prominence", "prominence_frac", "phase", "accepted")
+    missing = [key for key in required if key not in raw]
+    if missing:
+        raise ValueError(f"peak candidate missing keys {missing}")
+    reject = raw.get("reject_reason")
+    return PeakCandidate(
+        tau=float(raw["tau"]),
+        mu=float(raw["mu"]),
+        prominence=float(raw["prominence"]),
+        prominence_frac=float(raw["prominence_frac"]),
+        phase=float(raw["phase"]),
+        accepted=bool(raw["accepted"]),
+        reject_reason=None if reject is None else str(reject),
+    )
+
+
 @dataclass(frozen=True)
 class PeakSelection:
     """Outcome of :func:`select_template_peak`.
@@ -112,6 +142,27 @@ class PeakSelection:
             "reason": self.reason,
             "candidates": [c.as_dict() for c in self.candidates],
         }
+
+
+@dataclass(frozen=True)
+class SecondaryClassSelection:
+    """Outcome of :func:`select_secondary_class`.
+
+    Attributes:
+        chosen (PeakCandidate): Copy of the other-minimum class used for timing.
+        class_tau (tuple[float, ...]): All copies of that class.
+        phase_primary (float): Phase of the painted primary ``tau_peak``.
+        phase_target (float): ``(phase_primary + phase_offset) mod 1``.
+        phase_distance (float): Circular distance from the selected class to the target.
+        reason (str): Human-readable account of how the class was chosen.
+    """
+
+    chosen: PeakCandidate
+    class_tau: tuple[float, ...]
+    phase_primary: float
+    phase_target: float
+    phase_distance: float
+    reason: str
 
 
 def _extrema_sign(extrema_mode: str) -> float:
@@ -208,6 +259,134 @@ def _choose_copy(
             round(symmetric_support(c.tau, tau_data_min=tau_data_min, tau_data_max=tau_data_max), 12),
             -abs(c.tau),
         ),
+    )
+
+
+def select_secondary_class(
+    candidates: list[PeakCandidate],
+    *,
+    tau_primary: float,
+    period: float,
+    phase_offset: float,
+    phase_tolerance: float,
+    duplicate_phase_tol: float,
+    tau_data_min: float,
+    tau_data_max: float,
+) -> SecondaryClassSelection:
+    """Pick the accepted minimum class nearest ``primary + phase_offset``.
+
+    The GP grid is not rebuilt. Accepted candidates are grouped with the same
+    phase-class rule used at template build time. The painted primary class is
+    excluded; among the remaining classes the one nearest
+    ``(phi_primary + phase_offset) mod 1`` wins, then
+    :func:`_choose_copy` selects the best-centred copy.
+
+    Args:
+        candidates (list[PeakCandidate]): ``peak_selection.candidates`` from the
+            primary template.
+        tau_primary (float): Painted ``tau_peak`` on that primary template, in days.
+        period (float): Fold period in days.
+        phase_offset (float): Target offset from the primary class, in phase
+            (typically ``0.5``).
+        phase_tolerance (float): Maximum circular distance from the target phase.
+        duplicate_phase_tol (float): Phase tolerance for grouping copies.
+        tau_data_min (float): Lowest ``tau`` covered by folded data.
+        tau_data_max (float): Highest ``tau`` covered by folded data.
+
+    Returns:
+        SecondaryClassSelection: Chosen copy plus diagnostics.
+
+    Raises:
+        ValueError: If inputs are inconsistent, no other accepted class exists,
+            or the nearest other class lies outside ``phase_tolerance``.
+    """
+    if period <= 0:
+        raise ValueError(f"period must be positive, got {period}")
+    if not (0.0 < phase_offset < 1.0):
+        raise ValueError(
+            f"phase_offset must be in (0, 1), got {phase_offset}"
+        )
+    if not (0.0 < phase_tolerance <= 0.5):
+        raise ValueError(
+            f"phase_tolerance must be in (0, 0.5], got {phase_tolerance}"
+        )
+    if duplicate_phase_tol <= 0:
+        raise ValueError(
+            f"duplicate_phase_tol must be positive, got {duplicate_phase_tol}"
+        )
+
+    phi_primary = float((tau_primary / period) % 1.0)
+    phase_target = float((phi_primary + phase_offset) % 1.0)
+    accepted = [c for c in candidates if c.accepted]
+    if not accepted:
+        raise ValueError(
+            "no accepted peak candidates on the source template; cannot derive "
+            f"a secondary class. Candidates:\n{_format_candidates(candidates)}"
+        )
+
+    classes = _group_by_phase(accepted, duplicate_phase_tol)
+
+    def _is_primary(members: list[PeakCandidate]) -> bool:
+        return min(_phase_distance(c.phase, phi_primary) for c in members) <= duplicate_phase_tol
+
+    other_classes = [members for members in classes if not _is_primary(members)]
+    if not other_classes:
+        raise ValueError(
+            "no accepted minimum class other than the painted primary "
+            f"(phase={phi_primary:.4f}, tau_peak={tau_primary:+.5f} d). "
+            "Windowed argmin is not used automatically; rebuild with a lower "
+            "peak_min_prominence_frac if the secondary was rejected. "
+            f"Candidates:\n{_format_candidates(candidates)}"
+        )
+
+    scored: list[tuple[float, float, list[PeakCandidate]]] = []
+    for members in other_classes:
+        class_phase = members[0].phase
+        dist = _phase_distance(class_phase, phase_target)
+        prominence = max(c.prominence for c in members)
+        scored.append((dist, -prominence, members))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    best_dist, _, members = scored[0]
+    if best_dist > phase_tolerance:
+        class_lines = "\n".join(
+            f"  class phase={m[0].phase:.4f} distance_to_target={d:.4f} "
+            f"n_copies={len(m)}"
+            for d, _, m in scored
+        )
+        raise ValueError(
+            f"no accepted class within phase_tolerance={phase_tolerance} of "
+            f"primary_phase+offset = {phase_target:.4f} "
+            f"(primary phase {phi_primary:.4f}, offset {phase_offset}). "
+            f"Nearest other class is {best_dist:.4f} away.\n"
+            f"Other classes:\n{class_lines}\n"
+            f"Candidates:\n{_format_candidates(candidates)}"
+        )
+
+    chosen = _choose_copy(
+        members,
+        tau_data_min=tau_data_min,
+        tau_data_max=tau_data_max,
+    )
+    support = symmetric_support(
+        chosen.tau, tau_data_min=tau_data_min, tau_data_max=tau_data_max
+    )
+    reason = (
+        f"other_min_class: primary phase {phi_primary:.3f} -> target "
+        f"{phase_target:.3f} (offset {phase_offset}); selected class phase "
+        f"{chosen.phase:.3f} at tau={chosen.tau:+.5f} "
+        f"(distance {best_dist:.3f}, prominence {chosen.prominence_frac:.3f} "
+        f"of amplitude, symmetric support +/-{support:.5f} d = "
+        f"{support / period:.3f} in phase)"
+    )
+    logger.info("Secondary class selection: %s", reason)
+    logger.debug("Peak candidates:\n%s", _format_candidates(candidates))
+    return SecondaryClassSelection(
+        chosen=chosen,
+        class_tau=tuple(sorted(c.tau for c in members)),
+        phase_primary=phi_primary,
+        phase_target=phase_target,
+        phase_distance=float(best_dist),
+        reason=reason,
     )
 
 

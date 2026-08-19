@@ -247,7 +247,7 @@ instruction to rebuild; the photometric support of the fold cannot be recovered 
 - **`skip`** — optional; if **`true`**, this piece is listed but Step 1 and Step 2 are not run (no output under `pieces/<id>/`, no rows in `timing.csv`). Intervals file is not checked. Another piece cannot `reuse_template_from` a skipped piece.
 - **`timing_mode`** — optional; default **`per_interval`**. Set to **`segment_anchor`** for sparse segments where you want **one** Step 2 timing point over the whole **`fit_window`** (no **`intervals_path`**). See [Segment-anchor timing](#segment-anchor-timing-sparse-segments) below.
 - **`anchor_epoch`** — optional; used only when **`timing_mode: segment_anchor`**. Which cycle the ensemble ToM is written on: **`window_centre`** (default), **`window_start`**, or **`window_end`**. The fit itself is in fold space (all cycles); this only chooses **E** for `t_max = T0 + E P + tau_peak + delta_t`. Step 1 still uses **`local_epoch`** / **`default_epoch`** for building the template. Quadratic **`fold_ephemeris`** is not allowed with **`segment_anchor`**.
-- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build. Required for **`per_interval`**; for **`segment_anchor`**, defaults to **`fit_window`** if omitted. Ignored when reusing a template (`existing_template_dir` / `reuse_template_from`).
+- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build. Required for **`per_interval`**; for **`segment_anchor`**, defaults to **`fit_window`** if omitted. Ignored when reusing a template (`existing_template_dir` / `reuse_template_from`) or when **`derive_secondary`** is set.
 - **`fit_window`** — truncated JD range where Step 2 loads the LC. For **`per_interval`**, intervals in the file that **do not overlap** this window are **skipped** (logged); at least **one** interval must overlap or manifest load fails. For **`segment_anchor`**, every point in the window is folded and used in the ensemble fit (interval index **`0`** in outputs).
 - **`intervals_path`** — file with interval start/end times; **required** for **`per_interval`**, **not used** for **`segment_anchor`** (may be omitted).
 - **`local_period`** — optional; Step 1 fold period for this piece. If omitted, **`default_period`** is used. **Not used in Step 2 fitting.**
@@ -311,6 +311,25 @@ reuse_template_from: "59857"
 
 The orchestrator does **not** check that a loaded template’s **`fold_period`** meta matches the piece; that is your responsibility.
 
+### Secondary eclipse from the same template (no GP rebuild)
+
+After the **primary** template exists, a secondary-eclipse piece can reuse that grid and paint the other accepted minimum class (~0.5 phase). The GP is **not** rebuilt. Interval `.dat` files stay in calendar time; do not shift them by 0.5 phase.
+
+```yaml
+existing_template_dir: ../data/runs/NSV_807_30_SPOC_main/pieces/1
+derive_secondary:
+  method: other_min_class   # only method implemented
+  phase_offset: 0.5
+  phase_tolerance: 0.15
+```
+
+- **`existing_template_dir`** — primary template folder (`template.npz` + `template_meta.json`). **Never overwritten.**
+- **`derive_secondary`** — writes a **new** bundle into **this** run’s `pieces/<id>/` with the same `tau` / `mu` / `sigma` and a relabelled `tau_peak`. Step 2 then fits that copy against the secondary interval file.
+- **`method: other_min_class`** — among **accepted** `peak_selection.candidates`, take the class nearest `(primary_phase + phase_offset) mod 1`. Fail if none lies within **`phase_tolerance`** (no silent 0.5 shift, no windowed argmin fallback).
+- **`run_dir`** must differ from the primary run, otherwise the write would clobber the source.
+
+Do **not** set `peak_tau_hint` for this path; the painted mark is chosen from the stored candidate table. Epoch-spike (KvW / bisector) is a later, optional correction of *this* eclipse, not part of derivation.
+
 ---
 
 ## Timing methods (which column wins)
@@ -348,6 +367,8 @@ Common fixes:
 
 - **No interval overlaps fit window** — widen `fit_window`, or add intervals that intersect it; extras outside the window are skipped, not errors.
 - **`existing_template_dir` not found or missing npz/meta** — check the path relative to the manifest.
+- **`derive_secondary` cannot find the other class** — inspect `peak_selection.candidates` on the primary template; do not lower prominence silently. Rebuild the primary if the secondary was rejected.
+- **One interval has too few points in the fit mask** — that cycle is marked **rejected** (`#` in the CSV) and the run continues. Check `fit_fail_reason` on the summary row.
 - **LC empty in window** — wrong `t_min`/`t_max` or wrong `lc_path`.
 
 ---
