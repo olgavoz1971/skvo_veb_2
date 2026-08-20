@@ -644,6 +644,48 @@ def create_shapes(target_mask):
     return shapes
 
 
+def _cutout_ra_dec(pixel_data):
+    """Extract cutout centre RA/Dec in degrees from a Lightkurve pixel file.
+
+    Args:
+        pixel_data: Downloaded ``TargetPixelFile`` or FFI cutout object.
+
+    Returns:
+        tuple[float, float]: ``(ra_deg, dec_deg)``.
+    """
+    ra_val = float(pixel_data.ra.value) if hasattr(pixel_data.ra, 'value') else float(pixel_data.ra)
+    dec_val = float(pixel_data.dec.value) if hasattr(pixel_data.dec, 'value') else float(pixel_data.dec)
+    return ra_val, dec_val
+
+
+def aladin_target_from_cutout(pixel_metadata, wcs_dict=None):
+    """Build an Aladin ``target`` string from persisted cutout metadata.
+
+    Args:
+        pixel_metadata (dict): Serialised ``store_pixel_metadata`` payload.
+        wcs_dict (dict, optional): FITS WCS header for legacy sessions without
+            stored RA/Dec values.
+
+    Returns:
+        str | None: Aladin target string ``\"ra dec\"`` in degrees, or ``None``.
+    """
+    if not pixel_metadata or not pixel_metadata.get('path'):
+        return None
+
+    ra = pixel_metadata.get('ra')
+    dec = pixel_metadata.get('dec')
+    if ra is not None and dec is not None:
+        return f'{ra} {dec}'
+
+    if wcs_dict:
+        wcs_ra = wcs_dict.get('CRVAL1')
+        wcs_dec = wcs_dict.get('CRVAL2')
+        if wcs_ra is not None and wcs_dec is not None:
+            return f'{wcs_ra} {wcs_dec}'
+
+    return None
+
+
 # Helper functions moved to skvo_veb/utils/tess_processor.py
 
 
@@ -722,10 +764,13 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         pixel_metadata['shape'] = pixel_data.shape
         pixel_metadata['n_cadences'] = int(pixel_data.shape[0])
         pixel_metadata['pipeline_mask'] = pixel_data.pipeline_mask
+        ra_val, dec_val = _cutout_ra_dec(pixel_data)
+        pixel_metadata['ra'] = ra_val
+        pixel_metadata['dec'] = dec_val
         output['wcs'] = dict(pixel_data.wcs.to_header())
         output['pixel_metadata'] = pixel_metadata
         output['px_graph'] = go.Figure()  # clean the widget
-        output['aladin_target'] = f'{pixel_data.ra} {pixel_data.dec}'
+        output['aladin_target'] = aladin_target_from_cutout(pixel_metadata)
         output['sector_results'] = 'Success. Switch to the next Tab'
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_graph_tab'
@@ -1485,48 +1530,45 @@ def plot_difference(n_clicks, jsons_1, jsons_2, comparison_method):
     return dict(fig3=fig, accordion_active=accordion_active)
 
 
-def mark_cross(fig, x, y, cross_size=0.3, line_width=2, color='cyan'):
-    """Adds a cyan cross marker at pixel coordinates on a Plotly figure copy.
+ALADIN_MARK_TRACE_NAME = "aladin-click-mark"
+
+
+def add_aladin_mark(fig, x, y, cross_size=0.3, line_width=2, color="cyan"):
+    """Adds or replaces a temporary Aladin-click cross on the pixel cutout.
+
+    The cross is drawn as a line scatter trace so clientside mask shape updates,
+    which replace ``layout.shapes`` only, do not remove it.
 
     Args:
-        fig (dict): Serialised Plotly figure from a ``dcc.Graph`` store.
-        x (float): Pixel x coordinate.
-        y (float): Pixel y coordinate.
+        fig (dict | go.Figure): Current pixel graph figure from ``dcc.Graph``.
+        x (float): Pixel x coordinate in cutout image space.
+        y (float): Pixel y coordinate in cutout image space.
         cross_size (float): Half-length of each cross arm in pixel units.
         line_width (int): Stroke width of the cross lines.
         color (str): Line colour.
 
     Returns:
-        dict: Deep-copied figure with cross shapes appended.
+        go.Figure: Figure copy with the Aladin mark trace applied.
     """
-    import copy
-    new_fig = copy.deepcopy(fig)
-    shapes = [
-        {
-            "type": "line",
-            "x0": x - cross_size,
-            "y0": y,
-            "x1": x + cross_size,
-            "y1": y,
-            "line": {"color": color, "width": line_width},
-        },
-        {
-            "type": "line",
-            "x0": x,
-            "y0": y - cross_size,
-            "x1": x,
-            "y1": y + cross_size,
-            "line": {"color": color, "width": line_width},
-        }
-    ]
-
-    # add mark to layout
-    if "shapes" not in new_fig["layout"]:
-        new_fig["layout"]["shapes"] = shapes
-    else:
-        new_fig["layout"]["shapes"].extend(shapes)
-
-    return new_fig
+    x = float(x)
+    y = float(y)
+    figure = go.Figure(fig)
+    figure.data = tuple(
+        trace for trace in figure.data
+        if trace.name != ALADIN_MARK_TRACE_NAME
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=[x - cross_size, x + cross_size, None, x, x],
+            y=[y, y, None, y - cross_size, y + cross_size],
+            mode="lines",
+            name=ALADIN_MARK_TRACE_NAME,
+            line=dict(color=color, width=line_width),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+    return figure
 
 
 @callback(
@@ -1557,11 +1599,16 @@ def mark_star(coord, fig, wcs_dict):
     if ra is None or dec is None:
         logger.warning(f'mark_star: ra or dec is None')
         raise PreventUpdate
+    if fig is None or wcs_dict is None:
+        logger.warning('mark_star: pixel figure or WCS is unavailable')
+        raise PreventUpdate
+    if not go.Figure(fig).data:
+        logger.warning('mark_star: pixel figure has no traces')
+        raise PreventUpdate
     # noinspection PyUnresolvedReferences
     sky_coord = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame='icrs')
     x, y = WCS(wcs_dict).world_to_pixel(sky_coord)
-    # fig = add_marker(fig, x, y, marker_symbol="diamond", color="blue", size=12)
-    fig = mark_cross(fig, x, y)
+    fig = add_aladin_mark(fig, x, y)
     return coord.get('ra'), coord.get('dec'), fig
 
 
@@ -1779,27 +1826,41 @@ def restore_search_table(store_data):
     output=dict(
         graph_tab_disabled=Output('tess_graph_tab', 'disabled', allow_duplicate=True),
         active_tab=Output('tess_tabs', 'active_tab', allow_duplicate=True),
+        aladin_target=Output('aladin_tess', 'target', allow_duplicate=True),
     ),
     inputs=dict(
         pixel_metadata=Input('store_pixel_metadata', 'data'),
         lc1=Input('store_tess_cutout_lightcurve', 'data'),
+        wcs_dict=Input('wcs_store', 'data'),
     ),
     prevent_initial_call='initial_duplicate',
 )
-def restore_tess_cutout_tabs(pixel_metadata, lc1):
+def restore_tess_cutout_tabs(pixel_metadata, lc1, wcs_dict):
     """Re-enables the plot tab when persisted cutout or lightcurve data exists.
+
+    Also restores the Aladin sky field from persisted cutout coordinates.
 
     Args:
         pixel_metadata (dict): Persisted sector download metadata.
         lc1 (str): Serialised primary lightcurve, if any.
+        wcs_dict (dict): Persisted FITS WCS header for legacy session restore.
 
     Returns:
-        dict: Graph tab disabled flag and active tab id.
+        dict: Graph tab disabled flag, active tab id, and optional Aladin target.
     """
     if pixel_metadata and pixel_metadata.get('path'):
-        return {'graph_tab_disabled': False, 'active_tab': 'tess_graph_tab'}
+        output = {
+            'graph_tab_disabled': False,
+            'active_tab': 'tess_graph_tab',
+            'aladin_target': aladin_target_from_cutout(pixel_metadata, wcs_dict) or no_update,
+        }
+        return output
     if lc1:
-        return {'graph_tab_disabled': False, 'active_tab': 'tess_graph_tab'}
+        return {
+            'graph_tab_disabled': False,
+            'active_tab': 'tess_graph_tab',
+            'aladin_target': no_update,
+        }
     raise PreventUpdate
 
 
