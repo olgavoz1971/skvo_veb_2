@@ -29,6 +29,7 @@ from plot_overview import overview_time_span, plot_lc_with_maxima
 from template_build import build_piece_template, plot_template_artifacts
 from template_derive import derive_secondary_template
 from template_reuse import bind_reused_template_dir, resolve_piece_template_dir
+from template_tom_rectify import rectify_template_tom, resolve_fit_template_dir
 from template_fit import TemplateCurve
 from template_fit_pipeline import (
     fit_mask_for_template,
@@ -399,8 +400,25 @@ def run_manifest(
     dry_run: bool = False,
     show_plots: bool = False,
     review_fits: bool = False,
+    template_only: bool = False,
+    fit_only: bool = False,
 ) -> Path:
-    """Execute full pipeline; return path to ``timing.csv``."""
+    """Execute full pipeline; return path to ``timing.csv``.
+
+    Args:
+        manifest_path (Path): Timing manifest YAML.
+        dry_run (bool): Validate only.
+        show_plots (bool): Interactive figures where supported.
+        review_fits (bool): Interactive interval review after each fit.
+        template_only (bool): Run Step 1a and optional 1b; skip fitting.
+        fit_only (bool): Skip Step 1a/1b rebuild; fit using on-disk templates
+            (prefer ``tom_rectified/`` when present).
+
+    Returns:
+        Path: Last piece ``timing.csv`` path (or run-level placeholder).
+    """
+    if template_only and fit_only:
+        raise ValueError("use only one of --template-only and --fit-only")
     manifest = load_manifest(manifest_path)
     apply_plot_style()
     if dry_run:
@@ -413,6 +431,7 @@ def run_manifest(
     last_piece: PieceConfig | None = None
     last_rows: list[dict] = []
     piece_dirs: dict[str, Path] = {}
+    obtained_dirs: dict[str, Path] = {}
     template_dirs: dict[str, Path] = {}
 
     for piece in manifest.pieces:
@@ -426,71 +445,140 @@ def run_manifest(
         fold_epoch = piece_fold_epoch(piece, manifest.default_epoch)
         piece_lc = piece_lc_path(piece, manifest.lc_path)
 
-        if piece.derive_secondary is not None:
-            if piece.existing_template_dir is None:
-                raise ValueError(
-                    f"piece {piece.piece_id}: derive_secondary requires "
-                    "existing_template_dir"
+        if fit_only:
+            if piece.reuse_template_from is not None:
+                source_id = piece.reuse_template_from
+                if source_id not in obtained_dirs:
+                    raise ValueError(
+                        f"piece {piece.piece_id}: --fit-only reuse_template_from "
+                        f"{source_id!r} must appear earlier in the manifest"
+                    )
+                obtained_dir = obtained_dirs[source_id]
+            else:
+                obtained_dir = resolve_piece_template_dir(
+                    piece,
+                    run_dir=manifest.run_dir,
+                    pieces=manifest.pieces,
                 )
-            dest = piece_dir.resolve()
-            derive_secondary_template(
-                piece.existing_template_dir,
-                dest,
-                piece.derive_secondary,
+            obtained_dirs[piece.piece_id] = obtained_dir
+            if piece.reuse_template_from is not None and not piece.rectify_template_tom.enabled:
+                fit_piece_dir = piece_dirs[piece.reuse_template_from]
+            else:
+                fit_piece_dir = piece_dir
+            template_dirs[piece.piece_id] = resolve_fit_template_dir(
+                piece_dir=fit_piece_dir,
+                obtained_dir=obtained_dir,
+                fit_template=piece.fit_template,
                 piece_id=piece.piece_id,
             )
-            template_dirs[piece.piece_id] = dest
-            derived_npz = dest / "template.npz"
-            derived_meta_path = dest / "template_meta.json"
-            derived_meta = json.loads(derived_meta_path.read_text(encoding="utf-8"))
-            derived_tau_peak = float(np.load(derived_npz)["tau_peak"])
-            mask = fit_mask_for_template(
-                derived_meta,
-                piece.fit,
-                tau_peak=derived_tau_peak,
-                context=f"Piece {piece.piece_id}",
+            logger.info(
+                "Piece %s: --fit-only fit_template=%s -> %s",
+                piece.piece_id,
+                piece.fit_template,
+                template_dirs[piece.piece_id],
             )
-            plot_template_artifacts(
-                derived_npz,
-                derived_meta_path,
-                mask=mask,
-                save_path=dest / "template_gp.png",
-                show=show_plots,
-            )
-        elif piece.existing_template_dir is not None:
-            template_dir = bind_reused_template_dir(
-                piece, template_dirs=template_dirs
-            )
-            template_dirs[piece.piece_id] = template_dir
-            _show_reused_template(template_dir, piece, show_plots=show_plots)
-        elif piece.reuse_template_from is not None:
-            template_dir = bind_reused_template_dir(
-                piece, template_dirs=template_dirs
-            )
-            template_dirs[piece.piece_id] = template_dir
-            _show_reused_template(template_dir, piece, show_plots=show_plots)
         else:
-            tw = piece_template_window(piece)
-            build_piece_template(
-                piece_lc,
+            if piece.derive_secondary is not None:
+                if piece.existing_template_dir is None:
+                    raise ValueError(
+                        f"piece {piece.piece_id}: derive_secondary requires "
+                        "existing_template_dir"
+                    )
+                dest = piece_dir.resolve()
+                derive_secondary_template(
+                    piece.existing_template_dir,
+                    dest,
+                    piece.derive_secondary,
+                    piece_id=piece.piece_id,
+                )
+                obtained_dir = dest
+                derived_npz = dest / "template.npz"
+                derived_meta_path = dest / "template_meta.json"
+                derived_meta = json.loads(derived_meta_path.read_text(encoding="utf-8"))
+                derived_tau_peak = float(np.load(derived_npz)["tau_peak"])
+                mask = fit_mask_for_template(
+                    derived_meta,
+                    piece.fit,
+                    tau_peak=derived_tau_peak,
+                    context=f"Piece {piece.piece_id}",
+                )
+                plot_template_artifacts(
+                    derived_npz,
+                    derived_meta_path,
+                    mask=mask,
+                    save_path=dest / "template_gp.png",
+                    show=show_plots,
+                )
+            elif piece.existing_template_dir is not None:
+                obtained_dir = bind_reused_template_dir(
+                    piece, template_dirs=obtained_dirs
+                )
+                _show_reused_template(obtained_dir, piece, show_plots=show_plots)
+            elif piece.reuse_template_from is not None:
+                obtained_dir = bind_reused_template_dir(
+                    piece, template_dirs=obtained_dirs
+                )
+                _show_reused_template(obtained_dir, piece, show_plots=show_plots)
+            else:
+                tw = piece_template_window(piece)
+                build_piece_template(
+                    piece_lc,
+                    piece_id=piece.piece_id,
+                    t_obs_min=tw.t_min,
+                    t_obs_max=tw.t_max,
+                    fold_epoch=fold_epoch,
+                    fold_period=fold_p,
+                    default_epoch=manifest.default_epoch,
+                    default_period=manifest.default_period,
+                    period_slope=manifest.period_slope,
+                    working_domain=manifest.photometry_domain,
+                    cfg=piece.gp_template,
+                    fit_cfg=piece.fit,
+                    fold_ephemeris=piece.fold_ephemeris,
+                    out_npz=piece_dir / "template.npz",
+                    out_meta=piece_dir / "template_meta.json",
+                    out_plot=piece_dir / "template_gp.png",
+                    show_plot=show_plots,
+                )
+                obtained_dir = piece_dir.resolve()
+
+            obtained_dirs[piece.piece_id] = obtained_dir
+
+            if piece.rectify_template_tom.enabled:
+                rectify_template_tom(
+                    obtained_dir,
+                    piece_dir,
+                    piece.rectify_template_tom,
+                    piece_id=piece.piece_id,
+                    show_plots=show_plots,
+                )
+
+            fit_piece_dir = piece_dir
+            if (
+                piece.reuse_template_from is not None
+                and not piece.rectify_template_tom.enabled
+            ):
+                fit_piece_dir = piece_dirs[piece.reuse_template_from]
+            template_dirs[piece.piece_id] = resolve_fit_template_dir(
+                piece_dir=fit_piece_dir,
+                obtained_dir=obtained_dir,
+                fit_template=piece.fit_template,
                 piece_id=piece.piece_id,
-                t_obs_min=tw.t_min,
-                t_obs_max=tw.t_max,
-                fold_epoch=fold_epoch,
-                fold_period=fold_p,
-                default_epoch=manifest.default_epoch,
-                default_period=manifest.default_period,
-                period_slope=manifest.period_slope,
-                working_domain=manifest.photometry_domain,
-                cfg=piece.gp_template,
-                fit_cfg=piece.fit,
-                fold_ephemeris=piece.fold_ephemeris,
-                out_npz=piece_dir / "template.npz",
-                out_meta=piece_dir / "template_meta.json",
-                out_plot=piece_dir / "template_gp.png",
-                show_plot=show_plots,
             )
-            template_dirs[piece.piece_id] = piece_dir.resolve()
+            logger.info(
+                "Piece %s: Step 2 will use fit_template=%s -> %s",
+                piece.piece_id,
+                piece.fit_template,
+                template_dirs[piece.piece_id],
+            )
+
+        if template_only:
+            logger.info(
+                "Piece %s: --template-only; skipping Step 2 (template=%s)",
+                piece.piece_id,
+                template_dirs[piece.piece_id],
+            )
+            continue
 
         template_dir = template_dirs[piece.piece_id]
         template_npz = template_dir / "template.npz"
@@ -736,9 +824,36 @@ def main() -> None:
         action="store_true",
         help="Rebuild run_dir/timing.csv from all pieces/*/fit_summary.csv (explicit merge; does not run fits)",
     )
+    parser.add_argument(
+        "--template-only",
+        action="store_true",
+        help="Run Step 1a and optional ToM rectification (1b); skip interval/segment fitting",
+    )
+    parser.add_argument(
+        "--fit-only",
+        action="store_true",
+        help=(
+            "Skip Step 1a/1b rebuild; fit using on-disk templates. "
+            "Which folder is used is controlled by fit_template "
+            "(obtained | tom_rectified), not by auto-preference."
+        ),
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     config = args.config.resolve()
+    exclusive = sum(
+        bool(flag)
+        for flag in (
+            args.export_only,
+            args.review_only,
+            args.template_only,
+            args.fit_only,
+        )
+    )
+    if exclusive > 1:
+        parser.error(
+            "use only one of --export-only, --review-only, --template-only, --fit-only"
+        )
     if args.export_only:
         export_manifest(config, show_plots=args.show_plots)
     elif args.review_only:
@@ -749,6 +864,8 @@ def main() -> None:
             dry_run=args.dry_run,
             show_plots=args.show_plots,
             review_fits=args.review_fits,
+            template_only=args.template_only,
+            fit_only=args.fit_only,
         )
 
 

@@ -21,6 +21,8 @@ from manifest_config import (
     interval_overlaps_fit_window,
     load_intervals_absolute,
     resolve_anchor_jd,
+    resolve_delta_t_margin_days,
+    resolve_delta_t_max_days,
 )
 from lc_flux import load_lc_window, photometry_to_normalised_flux
 from plot_style import (
@@ -313,18 +315,26 @@ def _calendar_fit_from_fold(
     return replace(fit, t_max=float(t_max))
 
 
-def delta_tau_search_bounds(fit: FitDefaults) -> tuple[float, float]:
+def delta_tau_search_bounds(fit: FitDefaults, *, period: float) -> tuple[float, float]:
     """Allowed fold-space peak shift (days) for ensemble ToM."""
-    half = fit.delta_tau_max
+    half = resolve_delta_t_max_days(fit, period)
     if half <= 0:
-        raise ValueError(f"delta_tau_max must be positive, got {half}")
+        raise ValueError(f"resolved delta_t max must be positive, got {half}")
     return -half, half
 
 
-def delta_t_search_bounds(t_start: float, t_end: float, fit: FitDefaults) -> tuple[float, float]:
+def delta_t_search_bounds(
+    t_start: float,
+    t_end: float,
+    fit: FitDefaults,
+    *,
+    period: float,
+) -> tuple[float, float]:
     """Allowed peak shift from interval centre (days, same unit as LC)."""
     span = max(t_end - t_start, 1e-9)
-    half = min(fit.delta_tau_max, 0.5 * span + fit.delta_tau_margin)
+    max_half = resolve_delta_t_max_days(fit, period)
+    margin = resolve_delta_t_margin_days(fit, period)
+    half = min(max_half, 0.5 * span + margin)
     return -half, half
 
 
@@ -1098,7 +1108,7 @@ def fit_piece_segment_anchor(
         t_pick=t_pick,
     )
     ctx = IntervalFitContext(t_anchor=curve.tau_peak)
-    delta_t_lo, delta_t_hi = delta_tau_search_bounds(fit_cfg)
+    delta_t_lo, delta_t_hi = delta_tau_search_bounds(fit_cfg, period=period)
     cc_fold, nls_fold, nls_clean_fold, nls_scale_clean_fold = fit_all_methods(
         curve,
         tau,
@@ -1303,7 +1313,9 @@ def fit_piece_intervals(
 
         t_centre = 0.5 * (t_start + t_end)
         ctx = IntervalFitContext(t_anchor=t_centre)
-        delta_t_lo, delta_t_hi = delta_t_search_bounds(t_start, t_end, fit_cfg)
+        delta_t_lo, delta_t_hi = delta_t_search_bounds(
+            t_start, t_end, fit_cfg, period=float(meta["fold_period"])
+        )
         cc, nls, nls_clean, nls_scale_clean = fit_all_methods(
             curve,
             t,

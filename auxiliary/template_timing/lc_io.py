@@ -89,6 +89,27 @@ def lightcurve_to_frame(lcd) -> pd.DataFrame:
     )
 
 
+def lightcurve_jd_extent(path: Path) -> tuple[float, float]:
+    """Return absolute JD bounds ``[t_min, t_max]`` for all points in a light curve.
+
+    Domain conversion is not applied; times are read as stored in the file.
+
+    Args:
+        path (Path): Light-curve file path.
+
+    Returns:
+        tuple[float, float]: Inclusive JD range covering every point.
+
+    Raises:
+        ValueError: When the file contains no time samples.
+    """
+    lcd = load_lightcurve(path)
+    jd = np.asarray(lcd.jd, dtype=float)
+    if jd.size == 0:
+        raise ValueError(f"empty light curve: {path}")
+    return float(np.min(jd)), float(np.max(jd))
+
+
 def load_lightcurve_frame(path: Path, *, working_domain: str) -> tuple[pd.DataFrame, dict]:
     """Load a file and return the full LC as a normalised DataFrame.
 

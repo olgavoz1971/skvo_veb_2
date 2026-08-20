@@ -27,16 +27,17 @@ Paths in the YAML are **relative to the manifest file**, not to where you run th
 
 ---
 
-## The two steps (what the program does)
+## The pipeline (what the program does)
 
 | Step | Name | Slow? | Output |
 |------|------|-------|--------|
-| **1** | Build GP **template** per piece | Yes (minutes per piece) | `template.npz`, `template_meta.json`, `template_gp.png` |
-| **2** | **Fit** template in each interval | Faster | `fit_summary.csv`, optional `fits/interval_XX.png` |
+| **1a** | Obtain GP **template** per piece (build, reuse, or `derive_secondary`) | Yes if building | `pieces/<id>/template.npz`, `template_meta.json`, `template_gp.png` |
+| **1b** | Optional **ToM rectification** (`rectify_template_tom`) | Seconds | `pieces/<id>/tom_rectified/` (+ diagnostics under `tom_rectify/`) |
+| **2** | **Fit** template in each interval / segment | Faster | `fit_summary.csv`, optional `fits/interval_XX.png` |
+
+Step 2 loads the template named by **`fit_template`** (`obtained` or `tom_rectified`). That choice is independent of whether Step 1b ran.
 
 At the end of each active segment, official timing is written under **`pieces/<piece_id>/timing.csv`**. A merged **`run_dir/timing.csv`** is **not** updated automatically; use **`--export-only`** when you want the combined run file.
-
----
 
 ## Run it
 
@@ -57,6 +58,8 @@ cd auxiliary/template_timing
 | **`--review-fits`** | After each interval fit, open a **4-panel review** window. Press **`1`/`c`**, **`2`/`n`**, **`3`/`l`**, or **`4`/`s`** to accept that method as the official timing for **this interval only**. Press **`r`** to **reject** (the row is kept but written as a **`#`-commented line** in all timing CSVs and `fit_summary.csv`). **Enter** or **space** accepts the manifest default method. |
 | **`--review-only`** | Skip Step 1 and refitting. Reload existing `pieces/<id>/fit_summary.csv`, run interactive review, then rewrite **that segment's** `pieces/<id>/timing.csv` only. Opens that segment's overview when review ends. |
 | **`--export-only`** | **Explicit merge:** rebuild `run_dir/timing.csv` and run overview from all `pieces/*/fit_summary.csv`. Does not refit or re-review. |
+| **`--template-only`** | Run Step **1a** and optional ToM rectification (**1b**); skip fitting. |
+| **`--fit-only`** | Skip rebuild / rectify; fit using on-disk templates chosen by **`fit_template`** (`obtained` or `tom_rectified`). |
 
 **Interactive pop-ups while you work on the machine:**
 
@@ -187,9 +190,14 @@ candidate list in the error message — there is no fallback to the grid extremu
 - **`peak_duplicate_phase_tol`** — phase tolerance for treating two candidates as copies of the
   same extremum (default `0.05`)
 - **`peak_select`** — `dominant` (most prominent class, default) or `nearest_phase0`
-- **`peak_tau_hint`** — optional τ in days; when set, the class nearest this value wins and
-  `peak_select` is ignored. Use it for double-humped light curves where only you can say which
-  hump is "the" maximum.
+- **`peak_phase_hint`** — optional phase in `[0, 1)`; when set, the class nearest
+  `peak_phase_hint · P` wins and `peak_select` is ignored. Prefer this over the
+  legacy absolute-day `peak_tau_hint`.
+- **`length_scale_init_frac_period` / `_min_` / `_max_`** — GP Matérn/RBF length
+  scale as a **fraction of P** (defaults `0.02` / `0.01` / `0.03`). Change **P**
+  only when moving EB → Mira; do not retune absolute days. Legacy
+  `length_scale_init` / `_min` / `_max` (days) still load with a deprecation warning.
+
 `template_meta.json` records the whole decision under `peak_selection`: the search window, the
 in-range amplitude, the symmetric photometric support of the chosen copy, every candidate with its
 τ, μ, prominence and phase, the rejection reason for those that were dropped, and a plain-language
@@ -210,9 +218,20 @@ so you can switch between a full cycle and a narrow flank without rebuilding any
 - **`fit_mask_half_width_phase`** — half width **in phase units**, used only by `frac_period`.
   Must be in `(0, 0.5]`; e.g. `0.3` means ±0.3 P around the peak. Values above `0.5` are
   **rejected** at manifest load rather than clamped — use `whole_period` for a full cycle.
+- **`delta_t_max_phase`** — half-width of the allowed peak shift from the interval
+  **midpoint**, as a **fraction of P** (default `0.05`). Resolved to days as
+  `delta_t_max_phase · fold_period`. This is what stops a truncated first cycle
+  from latching on the search edge when the eclipse is far from the window centre.
+- **`delta_t_margin_phase`** — small phase pad used when the interval is shorter
+  than `2 · delta_t_max` (default `0.01`). Legacy `delta_tau_max` /
+  `delta_tau_margin` (absolute days) still load with a deprecation warning.
 
-**P** is the template's own `fold_period` (the axis the shape was stacked on), so the window
-matches the τ axis exactly. Piece-level `local_period` still plays no part in Step 2.
+**Rule of thumb:** anything that means “how far in the cycle” is **phase** (or
+`*_frac_period`). Only epoch, LC windows, and **period** stay in days.
+
+**P** for masks and ``delta_t`` limits is the template's own ``fold_period``
+(the axis the shape was stacked on). Piece-level ``local_period`` still plays no
+part in Step 2 fitting.
 
 Example, whole cycle everywhere except one piece that wants only the flank:
 
@@ -247,12 +266,22 @@ instruction to rebuild; the photometric support of the fold cannot be recovered 
 - **`skip`** — optional; if **`true`**, this piece is listed but Step 1 and Step 2 are not run (no output under `pieces/<id>/`, no rows in `timing.csv`). Intervals file is not checked. Another piece cannot `reuse_template_from` a skipped piece.
 - **`timing_mode`** — optional; default **`per_interval`**. Set to **`segment_anchor`** for sparse segments where you want **one** Step 2 timing point over the whole **`fit_window`** (no **`intervals_path`**). See [Segment-anchor timing](#segment-anchor-timing-sparse-segments) below.
 - **`anchor_epoch`** — optional; used only when **`timing_mode: segment_anchor`**. Which cycle the ensemble ToM is written on: **`window_centre`** (default), **`window_start`**, or **`window_end`**. The fit itself is in fold space (all cycles); this only chooses **E** for `t_max = T0 + E P + tau_peak + delta_t`. Step 1 still uses **`local_epoch`** / **`default_epoch`** for building the template. Quadratic **`fold_ephemeris`** is not allowed with **`segment_anchor`**.
-- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build. Required for **`per_interval`**; for **`segment_anchor`**, defaults to **`fit_window`** if omitted. Ignored when reusing a template (`existing_template_dir` / `reuse_template_from`) or when **`derive_secondary`** is set.
-- **`fit_window`** — truncated JD range where Step 2 loads the LC. For **`per_interval`**, intervals in the file that **do not overlap** this window are **skipped** (logged); at least **one** interval must overlap or manifest load fails. For **`segment_anchor`**, every point in the window is folded and used in the ensemble fit (interval index **`0`** in outputs).
+- **`template_window`** — `{ t_min, t_max }` for Step 1 GP build. Required for **`per_interval`**; for **`segment_anchor`**, defaults to **`fit_window`** if omitted. Ignored when reusing a template (`existing_template_dir` / `reuse_template_from`) or when **`derive_secondary`** is set. Set **both** to **`null`** to use the full time span of the piece LC file (`local_lc_path` or global **`lc_path`**); bounds are read from the file at manifest load (logged as absolute JD).
+- **`fit_window`** — time range where Step 2 loads the LC (manifest time scale, or **`null`/`null`** for full LC as above). For **`per_interval`**, intervals in the file that **do not overlap** this window are **skipped** (logged); at least **one** interval must overlap or manifest load fails. For **`segment_anchor`**, every point in the window is folded and used in the ensemble fit (interval index **`0`** in outputs).
 - **`intervals_path`** — file with interval start/end times; **required** for **`per_interval`**, **not used** for **`segment_anchor`** (may be omitted).
 - **`local_period`** — optional; Step 1 fold period for this piece. If omitted, **`default_period`** is used. **Not used in Step 2 fitting.**
 - **`local_lc_path`** — optional; detrended LC file for this piece only (relative to the manifest directory). If omitted, global **`lc_path`** is used for Step 1 and Step 2 on this piece. Useful for a pre-cut segment file (e.g. one epoch’s `.dat`) while other pieces use the full archive.
 - **`local_epoch`** — optional; Step 1 fold epoch (truncated JD) for this piece. If omitted, **`template_fold.default_epoch`** is used. Use when you want phase 0 centred on a known maximum/minimum in that LC segment for a sharper template. **Not used in Step 2.** You are responsible for using a sensible template when reusing paths.
+
+**Full LC window** (optional convenience; Step 1 on an entire sector is slow and often worse than a dense hump slice):
+
+```yaml
+fit_window:
+  t_min: null
+  t_max: null
+```
+
+Both keys must be **`null`** together; one null and one number is rejected. Extent comes from **`local_lc_path`** when set, otherwise global **`lc_path`**.
 
 ### Segment-anchor timing (sparse segments)
 
@@ -327,8 +356,46 @@ derive_secondary:
 - **`derive_secondary`** — writes a **new** bundle into **this** run’s `pieces/<id>/` with the same `tau` / `mu` / `sigma` and a relabelled `tau_peak`. Step 2 then fits that copy against the secondary interval file.
 - **`method: other_min_class`** — among **accepted** `peak_selection.candidates`, take the class nearest `(primary_phase + phase_offset) mod 1`. Fail if none lies within **`phase_tolerance`** (no silent 0.5 shift, no windowed argmin fallback).
 - **`run_dir`** must differ from the primary run, otherwise the write would clobber the source.
+- Prefer pointing **`existing_template_dir`** at the primary’s **`tom_rectified/`** when that folder exists (whatever **`method`** produced it). Fall back to the primary `pieces/<id>/` only if ToM was never rectified.
+- Order when both apply: **`derive_secondary` → `rectify_template_tom`** on the derived secondary bundle.
 
-Do **not** set `peak_tau_hint` for this path; the painted mark is chosen from the stored candidate table. Epoch-spike (KvW / bisector) is a later, optional correction of *this* eclipse, not part of derivation.
+Do **not** set `peak_phase_hint` / `peak_tau_hint` for this path; the painted mark is chosen from the stored candidate table.
+
+### ToM rectification (optional Step 1b)
+
+After Step 1a, you can relabel **`tau_peak`** with KvW or a bisector estimate **without rebuilding the GP**. The source Step 1a artefacts are never overwritten.
+
+**Two independent knobs:**
+
+| Key | Role |
+|-----|------|
+| **`rectify_template_tom.enabled`** | Whether to **run/update** Step 1b into `tom_rectified/` |
+| **`fit_template`** | Which folder Step 2 **loads**: `obtained` (1a / GP-argmin or derived) or `tom_rectified` |
+
+```yaml
+fit_template: tom_rectified   # or obtained; default is obtained
+
+rectify_template_tom_defaults:
+  include: epoch_spike/configs/_defaults.yaml   # shared scientific profile
+  enabled: false
+  method: kvw   # kvw | bisector_core | bisector_extrap
+
+pieces:
+  - piece_id: "1"
+    fit_template: tom_rectified   # optional per-piece override
+    rectify_template_tom:
+      enabled: true
+      # method: bisector_core   # optional override
+```
+
+- **`method`** — algorithm that paints the new template ToM (stored in meta; **not** part of the folder name).
+- Product path is always **`pieces/<id>/tom_rectified/`**.
+- Diagnostics (marks, ladder, KvW cost) go under **`pieces/<id>/tom_rectify/`**.
+- Re-fit intervals on the GP-argmin template after a rectified product exists: set **`fit_template: obtained`** (and optionally `rectify_template_tom.enabled: false` if you do not want to refresh 1b). Leftover `tom_rectified/` is ignored when `fit_template` is `obtained`.
+- Re-fit on the rectified mark without re-running KvW: **`fit_template: tom_rectified`** and **`enabled: false`** (folder must already exist; otherwise the run fails fast).
+- Works the same for **`per_interval`** and **`segment_anchor`**.
+
+Standalone experiments can still use `epoch_spike/run_epoch_spike.py`; for production timing runs prefer this manifest block.
 
 ---
 

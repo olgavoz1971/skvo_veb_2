@@ -23,7 +23,13 @@ from fold_stack import (
     resolve_tau_period,
 )
 from lc_io import load_lightcurve_frame, require_photcal
-from manifest_config import FitDefaults, FoldEphemerisConfig, GPTemplateDefaults
+from manifest_config import (
+    FitDefaults,
+    FoldEphemerisConfig,
+    GPTemplateDefaults,
+    resolve_length_scale_days,
+    resolve_peak_tau_hint,
+)
 from template_peak import select_template_peak
 
 from plot_style import FIGSIZE_TEMPLATE, apply_plot_style
@@ -105,17 +111,18 @@ def fit_gp_template(frag: pd.DataFrame, cfg: GPTemplateDefaults, *, fold_period:
         constant_value=cfg.amplitude_init,
         constant_value_bounds=(cfg.amplitude_min, cfg.amplitude_max),
     )
+    ls_init, ls_min, ls_max = resolve_length_scale_days(cfg, fold_period)
     if cfg.kernel_type == "rbf":
         from sklearn.gaussian_process.kernels import RBF
 
         smooth_kern = RBF(
-            length_scale=cfg.length_scale_init,
-            length_scale_bounds=(cfg.length_scale_min, cfg.length_scale_max),
+            length_scale=ls_init,
+            length_scale_bounds=(ls_min, ls_max),
         )
     else:
         smooth_kern = Matern(
-            length_scale=cfg.length_scale_init,
-            length_scale_bounds=(cfg.length_scale_min, cfg.length_scale_max),
+            length_scale=ls_init,
+            length_scale_bounds=(ls_min, ls_max),
             nu=2.5,
         )
     kernel = ckern * smooth_kern
@@ -152,7 +159,7 @@ def fit_gp_template(frag: pd.DataFrame, cfg: GPTemplateDefaults, *, fold_period:
         min_prominence_frac=cfg.peak_min_prominence_frac,
         duplicate_phase_tol=cfg.peak_duplicate_phase_tol,
         select=cfg.peak_select,
-        tau_hint=cfg.peak_tau_hint,
+        tau_hint=resolve_peak_tau_hint(cfg, fold_period),
     )
     return {
         "gp": gp,

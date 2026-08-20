@@ -12,6 +12,7 @@ import yaml
 from skvo_veb.utils.gp.intervals import load_intervals
 from skvo_veb.utils.lc_config import DOMAIN_MAG, JD_TO_MJD
 from fit_mask import validate_fit_mask_settings
+from lc_io import lightcurve_jd_extent
 from template_reuse import _require_template_files
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,8 @@ PHOTOMETRY_DOMAINS = frozenset({"mag", "flux"})
 EXTREMA_MODES = frozenset({"max", "min"})
 PEAK_SELECT_RULES = frozenset({"dominant", "nearest_phase0"})
 SECONDARY_DERIVE_METHODS = frozenset({"other_min_class"})
+TOM_RECTIFY_METHODS = frozenset({"kvw", "bisector_core", "bisector_extrap"})
+FIT_TEMPLATES = frozenset({"obtained", "tom_rectified"})
 
 # Peak-selection keys removed in the prominence-based rewrite, with migration advice.
 REMOVED_GP_KEYS = {
@@ -42,6 +45,17 @@ REMOVED_GP_KEYS = {
 REMOVED_FIT_KEYS = {
     "tau_mask_min_fallback": "the fit window is now always resolved from fit_mask_mode",
     "tau_mask_max_fallback": "the fit window is now always resolved from fit_mask_mode",
+}
+
+# Legacy absolute-day keys remapped at parse time (prefer *_phase / *_frac_period).
+LEGACY_GP_LENGTH_SCALE_KEYS = {
+    "length_scale_init": "length_scale_init_days",
+    "length_scale_min": "length_scale_min_days",
+    "length_scale_max": "length_scale_max_days",
+}
+LEGACY_FIT_DELTA_KEYS = {
+    "delta_tau_max": "delta_tau_max_days",
+    "delta_tau_margin": "delta_tau_margin_days",
 }
 
 
@@ -110,14 +124,23 @@ class FoldEphemerisConfig:
 
 @dataclass
 class GPTemplateDefaults:
-    """Step 1 Gaussian process template hyperparameters."""
+    """Step 1 Gaussian process template hyperparameters.
+
+    Length scales are fractions of the fold period by default so that changing
+    ``default_period`` / ``local_period`` retunes the GP without rewriting
+    absolute day lengths. Legacy ``length_scale_*`` YAML keys (days) are still
+    accepted and stored in the ``*_days`` fields.
+    """
 
     extended_fold: bool = True
     extrema_mode: str = "max"
     kernel_type: str = "matern"
-    length_scale_init: float = 0.02
-    length_scale_min: float = 0.01
-    length_scale_max: float = 0.026
+    length_scale_init_frac_period: float = 0.02
+    length_scale_min_frac_period: float = 0.01
+    length_scale_max_frac_period: float = 0.03
+    length_scale_init_days: float | None = None
+    length_scale_min_days: float | None = None
+    length_scale_max_days: float | None = None
     amplitude_init: float = 0.3
     amplitude_min: float = 0.1
     amplitude_max: float = 0.7
@@ -130,6 +153,7 @@ class GPTemplateDefaults:
     peak_min_prominence_frac: float = 0.25
     peak_duplicate_phase_tol: float = 0.05
     peak_select: str = "dominant"
+    peak_phase_hint: float | None = None
     peak_tau_hint: float | None = None
 
     def __post_init__(self) -> None:
@@ -143,16 +167,44 @@ class GPTemplateDefaults:
                 f"gp_template.peak_select must be one of {sorted(PEAK_SELECT_RULES)}, "
                 f"got {self.peak_select!r}"
             )
+        if self.peak_phase_hint is not None and self.peak_tau_hint is not None:
+            raise ValueError(
+                "gp_template: use only one of peak_phase_hint or peak_tau_hint"
+            )
+        for name, frac in (
+            ("length_scale_init_frac_period", self.length_scale_init_frac_period),
+            ("length_scale_min_frac_period", self.length_scale_min_frac_period),
+            ("length_scale_max_frac_period", self.length_scale_max_frac_period),
+        ):
+            if frac <= 0:
+                raise ValueError(f"gp_template.{name} must be positive, got {frac}")
+        if (
+            self.length_scale_min_frac_period > self.length_scale_init_frac_period
+            or self.length_scale_init_frac_period > self.length_scale_max_frac_period
+        ):
+            if self.length_scale_init_days is None:
+                raise ValueError(
+                    "gp_template: require "
+                    "length_scale_min_frac_period <= length_scale_init_frac_period "
+                    "<= length_scale_max_frac_period"
+                )
 
 
 @dataclass
 class FitDefaults:
-    """Step 2 template shift fit controls."""
+    """Step 2 template shift fit controls.
+
+    ``delta_t_*_phase`` are fractions of the fold period. Legacy
+    ``delta_tau_max`` / ``delta_tau_margin`` YAML keys (absolute days) map to
+    ``delta_tau_*_days`` and override the phase values when set.
+    """
 
     fit_mask_mode: str = "whole_period"
     fit_mask_half_width_phase: float = 0.25
-    delta_tau_margin: float = 0.003
-    delta_tau_max: float = 0.02
+    delta_t_max_phase: float = 0.05
+    delta_t_margin_phase: float = 0.01
+    delta_tau_max_days: float | None = None
+    delta_tau_margin_days: float | None = None
     outlier_mad_k: float = 3.0
     outlier_max_iter: int = 8
     outlier_min_inliers: int = 8
@@ -165,6 +217,22 @@ class FitDefaults:
             self.fit_mask_half_width_phase,
             context="fit",
         )
+        if self.delta_t_max_phase <= 0:
+            raise ValueError(
+                f"fit.delta_t_max_phase must be positive, got {self.delta_t_max_phase}"
+            )
+        if self.delta_t_margin_phase < 0:
+            raise ValueError(
+                f"fit.delta_t_margin_phase must be >= 0, got {self.delta_t_margin_phase}"
+            )
+        if self.delta_tau_max_days is not None and self.delta_tau_max_days <= 0:
+            raise ValueError(
+                f"fit.delta_tau_max (days) must be positive, got {self.delta_tau_max_days}"
+            )
+        if self.delta_tau_margin_days is not None and self.delta_tau_margin_days < 0:
+            raise ValueError(
+                f"fit.delta_tau_margin (days) must be >= 0, got {self.delta_tau_margin_days}"
+            )
 
 
 @dataclass(frozen=True)
@@ -199,6 +267,72 @@ class DeriveSecondaryConfig:
             )
 
 
+@dataclass(frozen=True)
+class RectifyTemplateTomConfig:
+    """Optional Step 1b: rectify the painted template ToM without rebuilding the GP.
+
+    Attributes:
+        enabled (bool): When true, run ToM rectification after Step 1a.
+        method (str): Algorithm ``kvw``, ``bisector_core``, or ``bisector_extrap``.
+        show_plots (bool): Interactive figures for diagnostics.
+        plot_dpi (int): PNG resolution for diagnostic figures.
+        kvw_half_width_phase (float): KvW pair half-width in phase.
+        kvw_search_half_width_phase (float): KvW search half-width in phase.
+        depth_min (float): Bisector ladder shallow depth.
+        depth_max (float): Bisector ladder deep depth.
+        n_levels (int): Bisector ladder level count.
+        min_accepted_levels (int): Minimum accepted bisector chords.
+        kvw_n_pairs_min (int): Minimum KvW pairs at a trial centre.
+        weight_by_sigma (bool): Weight KvW pairs by GP sigma.
+    """
+
+    enabled: bool = False
+    method: str = "kvw"
+    show_plots: bool = False
+    plot_dpi: int = 150
+    kvw_half_width_phase: float = 0.07
+    kvw_search_half_width_phase: float = 0.04
+    depth_min: float = 0.40
+    depth_max: float = 0.90
+    n_levels: int = 31
+    min_accepted_levels: int = 8
+    kvw_n_pairs_min: int = 8
+    weight_by_sigma: bool = True
+
+    def __post_init__(self) -> None:
+        if self.method not in TOM_RECTIFY_METHODS:
+            raise ValueError(
+                f"rectify_template_tom.method must be one of "
+                f"{sorted(TOM_RECTIFY_METHODS)}, got {self.method!r}"
+            )
+        if not (0.0 < self.depth_min < self.depth_max < 1.0):
+            raise ValueError(
+                "rectify_template_tom: require 0 < depth_min < depth_max < 1; "
+                f"got {self.depth_min}, {self.depth_max}"
+            )
+        if self.n_levels < 3:
+            raise ValueError(
+                f"rectify_template_tom.n_levels must be >= 3, got {self.n_levels}"
+            )
+        if self.min_accepted_levels < 3:
+            raise ValueError(
+                "rectify_template_tom.min_accepted_levels must be >= 3, "
+                f"got {self.min_accepted_levels}"
+            )
+        if self.kvw_half_width_phase <= 0 or self.kvw_search_half_width_phase <= 0:
+            raise ValueError("rectify_template_tom KvW half-widths must be positive")
+        if self.kvw_search_half_width_phase >= self.kvw_half_width_phase:
+            raise ValueError(
+                "rectify_template_tom: kvw search_half_width_phase must be "
+                "smaller than half_width_phase"
+            )
+        if self.kvw_n_pairs_min < 2:
+            raise ValueError(
+                f"rectify_template_tom.kvw_n_pairs_min must be >= 2, "
+                f"got {self.kvw_n_pairs_min}"
+            )
+
+
 @dataclass
 class PieceConfig:
     """One dense segment: build template and fit intervals."""
@@ -216,6 +350,10 @@ class PieceConfig:
     reuse_template_from: str | None = None
     existing_template_dir: Path | None = None
     derive_secondary: DeriveSecondaryConfig | None = None
+    rectify_template_tom: RectifyTemplateTomConfig = field(
+        default_factory=RectifyTemplateTomConfig
+    )
+    fit_template: str = "obtained"
     skip: bool = False
     gp_template: GPTemplateDefaults = field(default_factory=GPTemplateDefaults)
     fit: FitDefaults = field(default_factory=FitDefaults)
@@ -230,6 +368,11 @@ class PieceConfig:
             raise ValueError(
                 f"piece {self.piece_id}: anchor_epoch must be one of "
                 f"{sorted(ANCHOR_EPOCH_KINDS)}, got {self.anchor_epoch!r}"
+            )
+        if self.fit_template not in FIT_TEMPLATES:
+            raise ValueError(
+                f"piece {self.piece_id}: fit_template must be one of "
+                f"{sorted(FIT_TEMPLATES)}, got {self.fit_template!r}"
             )
         if self.timing_mode == "per_interval" and self.intervals_path is None:
             raise ValueError(
@@ -360,19 +503,62 @@ def _parse_photometry_domain(global_cfg: dict[str, Any]) -> str:
     return domain
 
 
+def _is_full_lc_window(data: dict[str, Any]) -> bool:
+    """True when both ``t_min`` and ``t_max`` are ``null`` (use entire LC file)."""
+    return data.get("t_min") is None and data.get("t_max") is None
+
+
 def _window_from_mapping(
     data: dict[str, Any],
     time: TimeScaleConfig,
     *,
     context: str,
+    lc_path: Path | None = None,
 ) -> TimeWindow:
-    """Parse ``t_min`` / ``t_max`` and convert to absolute JD."""
+    """Parse ``t_min`` / ``t_max`` and convert to absolute JD.
+
+    When both bounds are ``null``, resolve ``[t_min, t_max]`` from ``lc_path``
+    (the piece LC file: ``local_lc_path`` or global ``lc_path``).
+
+    Args:
+        data (dict): Window mapping from the manifest.
+        time (TimeScaleConfig): Manifest time scale for numeric bounds.
+        context (str): Label for error messages.
+        lc_path (Path | None): Required when both bounds are ``null``.
+
+    Returns:
+        TimeWindow: Absolute JD interval.
+
+    Raises:
+        ValueError: When bounds are incomplete, mixed null/numeric, or the LC
+            is empty.
+        FileNotFoundError: When ``lc_path`` is required but missing on disk.
+    """
     if "t_min" not in data or "t_max" not in data:
         raise ValueError(f"{context}: time window requires t_min and t_max")
     t_min_raw = data["t_min"]
     t_max_raw = data["t_max"]
+    if _is_full_lc_window(data):
+        if lc_path is None:
+            raise ValueError(
+                f"{context}: t_min and t_max null (full LC) requires an lc_path"
+            )
+        if not lc_path.is_file():
+            raise FileNotFoundError(f"{context}: lc not found: {lc_path}")
+        t_min, t_max = lightcurve_jd_extent(lc_path)
+        logger.info(
+            "%s: full LC extent [%.5f, %.5f] from %s",
+            context,
+            t_min,
+            t_max,
+            lc_path.name,
+        )
+        return TimeWindow(t_min=t_min, t_max=t_max)
     if t_min_raw is None or t_max_raw is None:
-        raise ValueError(f"{context}: t_min and t_max must not be null")
+        raise ValueError(
+            f"{context}: set both t_min and t_max to null for the full LC, "
+            "or specify numeric bounds for both"
+        )
     t_min = time.to_absolute_jd(float(t_min_raw))
     t_max = time.to_absolute_jd(float(t_max_raw))
     return TimeWindow(t_min=t_min, t_max=t_max)
@@ -397,6 +583,112 @@ def resolve_anchor_jd(window: TimeWindow, anchor_epoch: str) -> float:
     raise ValueError(f"unsupported anchor_epoch: {anchor_epoch!r}")
 
 
+def resolve_delta_t_max_days(fit: FitDefaults, period: float) -> float:
+    """Half-width of the Step 2 ``delta_t`` search, in days.
+
+    Args:
+        fit (FitDefaults): Fit settings.
+        period (float): Fold period in days.
+
+    Returns:
+        float: Absolute half-width in days.
+
+    Raises:
+        ValueError: If ``period`` is not positive.
+    """
+    if period <= 0:
+        raise ValueError(f"period must be positive, got {period}")
+    if fit.delta_tau_max_days is not None:
+        return float(fit.delta_tau_max_days)
+    return float(fit.delta_t_max_phase) * period
+
+
+def resolve_delta_t_margin_days(fit: FitDefaults, period: float) -> float:
+    """Extra pad on short intervals for the ``delta_t`` search, in days.
+
+    Args:
+        fit (FitDefaults): Fit settings.
+        period (float): Fold period in days.
+
+    Returns:
+        float: Absolute margin in days.
+
+    Raises:
+        ValueError: If ``period`` is not positive.
+    """
+    if period <= 0:
+        raise ValueError(f"period must be positive, got {period}")
+    if fit.delta_tau_margin_days is not None:
+        return float(fit.delta_tau_margin_days)
+    return float(fit.delta_t_margin_phase) * period
+
+
+def resolve_length_scale_days(
+    cfg: GPTemplateDefaults,
+    period: float,
+) -> tuple[float, float, float]:
+    """GP length-scale init and bounds in days on the ``tau`` axis.
+
+    Args:
+        cfg (GPTemplateDefaults): Step 1 GP settings.
+        period (float): Fold period in days.
+
+    Returns:
+        tuple[float, float, float]: ``(init, min, max)`` in days.
+
+    Raises:
+        ValueError: If ``period`` is not positive or bounds are inconsistent.
+    """
+    if period <= 0:
+        raise ValueError(f"period must be positive, got {period}")
+    init = (
+        float(cfg.length_scale_init_days)
+        if cfg.length_scale_init_days is not None
+        else float(cfg.length_scale_init_frac_period) * period
+    )
+    lo = (
+        float(cfg.length_scale_min_days)
+        if cfg.length_scale_min_days is not None
+        else float(cfg.length_scale_min_frac_period) * period
+    )
+    hi = (
+        float(cfg.length_scale_max_days)
+        if cfg.length_scale_max_days is not None
+        else float(cfg.length_scale_max_frac_period) * period
+    )
+    if not (lo <= init <= hi):
+        raise ValueError(
+            f"resolved length scales inconsistent: min={lo}, init={init}, max={hi} "
+            f"(period={period})"
+        )
+    return init, lo, hi
+
+
+def resolve_peak_tau_hint(
+    cfg: GPTemplateDefaults,
+    period: float,
+) -> float | None:
+    """Absolute ``tau`` hint for peak selection, if any.
+
+    Args:
+        cfg (GPTemplateDefaults): Step 1 GP settings.
+        period (float): Fold period in days.
+
+    Returns:
+        float | None: ``tau`` in days, or ``None``.
+
+    Raises:
+        ValueError: If ``period`` is not positive.
+    """
+    if period <= 0:
+        raise ValueError(f"period must be positive, got {period}")
+    if cfg.peak_phase_hint is not None:
+        return float(cfg.peak_phase_hint) * period
+    if cfg.peak_tau_hint is not None:
+        return float(cfg.peak_tau_hint)
+    return None
+
+
 def piece_template_window(piece: PieceConfig) -> TimeWindow:
     """Return the Step 1 template window for a piece."""
     if piece.template_window is not None:
@@ -409,7 +701,7 @@ def piece_template_window(piece: PieceConfig) -> TimeWindow:
 def _gp_from_mapping(data: dict[str, Any] | None, defaults: GPTemplateDefaults) -> GPTemplateDefaults:
     if not data:
         return defaults
-    kept = {}
+    kept: dict[str, Any] = {}
     for key, value in data.items():
         if key in REMOVED_GP_KEYS:
             logger.warning(
@@ -418,7 +710,32 @@ def _gp_from_mapping(data: dict[str, Any] | None, defaults: GPTemplateDefaults) 
                 REMOVED_GP_KEYS[key],
             )
             continue
+        if key in LEGACY_GP_LENGTH_SCALE_KEYS:
+            new_key = LEGACY_GP_LENGTH_SCALE_KEYS[key]
+            logger.warning(
+                "gp_template.%s is deprecated (absolute days); prefer "
+                "%s (fraction of period)",
+                key,
+                key + "_frac_period",
+            )
+            kept[new_key] = value
+            continue
         kept[key] = value
+    phase_ls = {
+        "length_scale_init_frac_period",
+        "length_scale_min_frac_period",
+        "length_scale_max_frac_period",
+    }
+    day_ls = {
+        "length_scale_init_days",
+        "length_scale_min_days",
+        "length_scale_max_days",
+    }
+    if any(k in kept for k in phase_ls) and any(k in kept for k in day_ls):
+        raise ValueError(
+            "gp_template: do not mix length_scale_*_frac_period with legacy "
+            "length_scale_* (days); choose one convention"
+        )
     merged = {**defaults.__dict__, **kept}
     return GPTemplateDefaults(**merged)
 
@@ -426,7 +743,7 @@ def _gp_from_mapping(data: dict[str, Any] | None, defaults: GPTemplateDefaults) 
 def _fit_from_mapping(data: dict[str, Any] | None, defaults: FitDefaults) -> FitDefaults:
     if not data:
         return defaults
-    kept = {}
+    kept: dict[str, Any] = {}
     for key, value in data.items():
         if key in REMOVED_FIT_KEYS:
             logger.warning(
@@ -435,7 +752,32 @@ def _fit_from_mapping(data: dict[str, Any] | None, defaults: FitDefaults) -> Fit
                 REMOVED_FIT_KEYS[key],
             )
             continue
+        if key in LEGACY_FIT_DELTA_KEYS:
+            new_key = LEGACY_FIT_DELTA_KEYS[key]
+            phase_key = (
+                "delta_t_max_phase"
+                if key == "delta_tau_max"
+                else "delta_t_margin_phase"
+            )
+            logger.warning(
+                "fit.%s is deprecated (absolute days); prefer %s (phase)",
+                key,
+                phase_key,
+            )
+            kept[new_key] = value
+            continue
         kept[key] = value
+    if (
+        "delta_t_max_phase" in kept
+        and "delta_tau_max_days" in kept
+    ) or (
+        "delta_t_margin_phase" in kept
+        and "delta_tau_margin_days" in kept
+    ):
+        raise ValueError(
+            "fit: do not mix delta_t_*_phase with legacy delta_tau_* (days); "
+            "choose one convention"
+        )
     merged = {**defaults.__dict__, **kept}
     return FitDefaults(**merged)
 
@@ -556,6 +898,296 @@ def _parse_derive_secondary(
         phase_offset=float(raw["phase_offset"]),
         phase_tolerance=float(raw["phase_tolerance"]),
     )
+
+
+def _deep_merge_mapping(
+    base: dict[str, Any], overlay: dict[str, Any]
+) -> dict[str, Any]:
+    """Recursively merge ``overlay`` onto a copy of ``base`` (skip ``include``)."""
+    out = dict(base)
+    for key, value in overlay.items():
+        if key == "include":
+            continue
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_mapping(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _resolve_rectify_include(base: Path, raw: str) -> Path:
+    """Resolve an include path against ``base``, then the package root.
+
+    Args:
+        base (Path): Directory of the YAML file that declared ``include``.
+        raw (str): Relative or absolute include path.
+
+    Returns:
+        Path: Existing YAML file path.
+
+    Raises:
+        FileNotFoundError: If neither candidate exists.
+    """
+    path = Path(raw)
+    if path.is_absolute():
+        if not path.is_file():
+            raise FileNotFoundError(f"rectify_template_tom include not found: {path}")
+        return path.resolve()
+    cand = (base / path).resolve()
+    if cand.is_file():
+        return cand
+    pkg = Path(__file__).resolve().parent
+    cand_pkg = (pkg / path).resolve()
+    if cand_pkg.is_file():
+        return cand_pkg
+    raise FileNotFoundError(
+        f"rectify_template_tom include not found: {raw!r} "
+        f"(tried {cand} and {cand_pkg})"
+    )
+
+
+def _load_rectify_yaml_with_includes(
+    path: Path, *, _seen: set[Path] | None = None
+) -> dict[str, Any]:
+    """Load a YAML profile and merge nested ``include:`` entries.
+
+    Args:
+        path (Path): Profile file path.
+        _seen (set[Path] | None): Paths already visited (cycle detection).
+
+    Returns:
+        dict: Merged mapping.
+    """
+    path = path.resolve()
+    seen = set() if _seen is None else _seen
+    if path in seen:
+        raise ValueError(f"circular rectify_template_tom include at {path}")
+    seen.add(path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: root must be a mapping")
+    merged: dict[str, Any] = {}
+    include_raw = raw.get("include")
+    if include_raw is not None:
+        include_path = _resolve_rectify_include(path.parent, str(include_raw))
+        merged = _load_rectify_yaml_with_includes(include_path, _seen=seen)
+    return _deep_merge_mapping(merged, raw)
+
+
+def _flatten_rectify_mapping(raw: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """Flatten nested plot/kvw/bisector/export_template keys into one mapping.
+
+    Args:
+        raw (dict): Merged YAML block (includes resolved).
+        context (str): Error prefix.
+
+    Returns:
+        dict: Flat keys matching :class:`RectifyTemplateTomConfig` fields plus
+        ``enabled``.
+
+    Raises:
+        ValueError: If unknown keys appear.
+    """
+    allowed_top = {
+        "include",
+        "enabled",
+        "method",
+        "show_plots",
+        "plot_dpi",
+        "kvw_half_width_phase",
+        "kvw_search_half_width_phase",
+        "depth_min",
+        "depth_max",
+        "n_levels",
+        "min_accepted_levels",
+        "kvw_n_pairs_min",
+        "weight_by_sigma",
+        "plot",
+        "kvw",
+        "bisector",
+        "export_template",
+        "study",
+        "version",
+    }
+    unknown = set(raw) - allowed_top
+    if unknown:
+        raise ValueError(
+            f"{context}: unknown rectify_template_tom keys {sorted(unknown)}"
+        )
+
+    flat: dict[str, Any] = {}
+    if "enabled" in raw:
+        flat["enabled"] = bool(raw["enabled"])
+    if "method" in raw:
+        flat["method"] = str(raw["method"])
+    if "show_plots" in raw:
+        flat["show_plots"] = bool(raw["show_plots"])
+    if "plot_dpi" in raw:
+        flat["plot_dpi"] = int(raw["plot_dpi"])
+    for key in (
+        "kvw_half_width_phase",
+        "kvw_search_half_width_phase",
+        "depth_min",
+        "depth_max",
+        "n_levels",
+        "min_accepted_levels",
+        "kvw_n_pairs_min",
+        "weight_by_sigma",
+    ):
+        if key in raw:
+            flat[key] = raw[key]
+
+    plot_cfg = raw.get("plot") or {}
+    if plot_cfg is not None and not isinstance(plot_cfg, dict):
+        raise ValueError(f"{context}: plot must be a mapping")
+    if isinstance(plot_cfg, dict):
+        if "show" in plot_cfg:
+            flat["show_plots"] = bool(plot_cfg["show"])
+        if "dpi" in plot_cfg:
+            flat["plot_dpi"] = int(plot_cfg["dpi"])
+
+    kvw_cfg = raw.get("kvw") or {}
+    if kvw_cfg is not None and not isinstance(kvw_cfg, dict):
+        raise ValueError(f"{context}: kvw must be a mapping")
+    if isinstance(kvw_cfg, dict):
+        if "half_width_phase" in kvw_cfg:
+            flat["kvw_half_width_phase"] = float(kvw_cfg["half_width_phase"])
+        if "search_half_width_phase" in kvw_cfg:
+            flat["kvw_search_half_width_phase"] = float(
+                kvw_cfg["search_half_width_phase"]
+            )
+        if "n_pairs_min" in kvw_cfg:
+            flat["kvw_n_pairs_min"] = int(kvw_cfg["n_pairs_min"])
+        if "weight_by_sigma" in kvw_cfg:
+            flat["weight_by_sigma"] = bool(kvw_cfg["weight_by_sigma"])
+
+    bis_cfg = raw.get("bisector") or {}
+    if bis_cfg is not None and not isinstance(bis_cfg, dict):
+        raise ValueError(f"{context}: bisector must be a mapping")
+    if isinstance(bis_cfg, dict):
+        if "depth_min" in bis_cfg:
+            flat["depth_min"] = float(bis_cfg["depth_min"])
+        if "depth_max" in bis_cfg:
+            flat["depth_max"] = float(bis_cfg["depth_max"])
+        if "n_levels" in bis_cfg:
+            flat["n_levels"] = int(bis_cfg["n_levels"])
+        if "min_accepted_levels" in bis_cfg:
+            flat["min_accepted_levels"] = int(bis_cfg["min_accepted_levels"])
+
+    export_cfg = raw.get("export_template") or {}
+    if export_cfg is not None and not isinstance(export_cfg, dict):
+        raise ValueError(f"{context}: export_template must be a mapping")
+    if isinstance(export_cfg, dict) and "method" in export_cfg and "method" not in flat:
+        flat["method"] = str(export_cfg["method"])
+
+    return flat
+
+
+def _rectify_from_mapping(
+    data: dict[str, Any] | None,
+    defaults: RectifyTemplateTomConfig,
+    *,
+    base: Path,
+    context: str,
+) -> RectifyTemplateTomConfig:
+    """Build :class:`RectifyTemplateTomConfig` from a YAML block over ``defaults``.
+
+    Args:
+        data (dict | None): Raw ``rectify_template_tom`` / defaults mapping.
+        defaults (RectifyTemplateTomConfig): Values to inherit.
+        base (Path): Directory for resolving ``include`` paths.
+        context (str): Error prefix.
+
+    Returns:
+        RectifyTemplateTomConfig: Merged configuration.
+    """
+    if data is None:
+        return defaults
+    if not isinstance(data, dict):
+        raise ValueError(f"{context}: must be a mapping")
+
+    merged: dict[str, Any] = {}
+    include_raw = data.get("include")
+    if include_raw is not None:
+        include_path = _resolve_rectify_include(base, str(include_raw))
+        merged = _load_rectify_yaml_with_includes(include_path)
+    merged = _deep_merge_mapping(merged, data)
+    flat = _flatten_rectify_mapping(merged, context=context)
+
+    return RectifyTemplateTomConfig(
+        enabled=bool(flat.get("enabled", defaults.enabled)),
+        method=str(flat.get("method", defaults.method)),
+        show_plots=bool(flat.get("show_plots", defaults.show_plots)),
+        plot_dpi=int(flat.get("plot_dpi", defaults.plot_dpi)),
+        kvw_half_width_phase=float(
+            flat.get("kvw_half_width_phase", defaults.kvw_half_width_phase)
+        ),
+        kvw_search_half_width_phase=float(
+            flat.get(
+                "kvw_search_half_width_phase", defaults.kvw_search_half_width_phase
+            )
+        ),
+        depth_min=float(flat.get("depth_min", defaults.depth_min)),
+        depth_max=float(flat.get("depth_max", defaults.depth_max)),
+        n_levels=int(flat.get("n_levels", defaults.n_levels)),
+        min_accepted_levels=int(
+            flat.get("min_accepted_levels", defaults.min_accepted_levels)
+        ),
+        kvw_n_pairs_min=int(flat.get("kvw_n_pairs_min", defaults.kvw_n_pairs_min)),
+        weight_by_sigma=bool(flat.get("weight_by_sigma", defaults.weight_by_sigma)),
+    )
+
+
+def _parse_rectify_template_tom(
+    entry: dict[str, Any],
+    *,
+    piece_id: str,
+    defaults: RectifyTemplateTomConfig,
+    base: Path,
+) -> RectifyTemplateTomConfig:
+    """Parse optional per-piece ``rectify_template_tom`` over shared defaults.
+
+    Args:
+        entry (dict): Raw piece mapping.
+        piece_id (str): Piece identifier for error messages.
+        defaults (RectifyTemplateTomConfig): Manifest-level defaults.
+        base (Path): Manifest directory for includes.
+
+    Returns:
+        RectifyTemplateTomConfig: Resolved Step 1b settings for the piece.
+    """
+    return _rectify_from_mapping(
+        entry.get("rectify_template_tom"),
+        defaults,
+        base=base,
+        context=f"piece {piece_id} rectify_template_tom",
+    )
+
+
+def _parse_fit_template(
+    entry: dict[str, Any],
+    *,
+    piece_id: str,
+    default: str,
+) -> str:
+    """Parse ``fit_template`` for one piece.
+
+    Args:
+        entry (dict): Raw piece mapping.
+        piece_id (str): Piece identifier for error messages.
+        default (str): Manifest-level default (``obtained`` or ``tom_rectified``).
+
+    Returns:
+        str: Resolved Step 2 template source key.
+    """
+    raw = entry.get("fit_template", default)
+    value = str(raw)
+    if value not in FIT_TEMPLATES:
+        raise ValueError(
+            f"piece {piece_id}: fit_template must be one of "
+            f"{sorted(FIT_TEMPLATES)}, got {value!r}"
+        )
+    return value
 
 
 def _parse_template_fold_block(
@@ -744,6 +1376,18 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
 
     gp_defaults = _gp_from_mapping(raw.get("gp_template_defaults"), GPTemplateDefaults())
     fit_defaults = _fit_from_mapping(raw.get("fit_defaults"), FitDefaults())
+    rectify_defaults = _rectify_from_mapping(
+        raw.get("rectify_template_tom_defaults"),
+        RectifyTemplateTomConfig(),
+        base=base,
+        context="rectify_template_tom_defaults",
+    )
+    fit_template_default = str(raw.get("fit_template", "obtained"))
+    if fit_template_default not in FIT_TEMPLATES:
+        raise ValueError(
+            f"fit_template must be one of {sorted(FIT_TEMPLATES)}, "
+            f"got {fit_template_default!r}"
+        )
 
     lc_path = _resolve_path(base, str(global_cfg["lc_path"]))
     if not lc_path.is_file():
@@ -763,15 +1407,43 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             )
         template_raw = entry.get("template_window")
         fit_raw = entry.get("fit_window")
+        local_lc_raw = entry.get("local_lc_path")
+        local_lc_path = (
+            None if local_lc_raw is None else _resolve_path(base, str(local_lc_raw))
+        )
+        if local_lc_path is not None and not local_lc_path.is_file():
+            raise FileNotFoundError(
+                f"piece {piece_id}: local_lc_path not found: {local_lc_path}"
+            )
+        piece_lc_path_resolved = local_lc_path if local_lc_path is not None else lc_path
+
         if template_raw is not None:
+            if not isinstance(template_raw, dict):
+                raise ValueError(f"piece {piece_id}: template_window must be a mapping")
             template_window = _window_from_mapping(
                 template_raw,
                 manifest_time,
                 context=f"piece {piece_id} template_window",
+                lc_path=piece_lc_path_resolved,
             )
         else:
             template_window = None
-        if fit_raw is None or fit_raw.get("t_min") is None or fit_raw.get("t_max") is None:
+
+        if fit_raw is None:
+            if timing_mode == "segment_anchor" and template_window is not None:
+                fit_window = template_window
+            else:
+                raise ValueError(f"piece {piece_id}: fit_window required")
+        elif not isinstance(fit_raw, dict):
+            raise ValueError(f"piece {piece_id}: fit_window must be a mapping")
+        elif _is_full_lc_window(fit_raw):
+            fit_window = _window_from_mapping(
+                fit_raw,
+                manifest_time,
+                context=f"piece {piece_id} fit_window",
+                lc_path=piece_lc_path_resolved,
+            )
+        elif fit_raw.get("t_min") is None or fit_raw.get("t_max") is None:
             if timing_mode == "segment_anchor" and template_window is not None:
                 fit_window = template_window
             else:
@@ -781,6 +1453,7 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 fit_raw,
                 manifest_time,
                 context=f"piece {piece_id} fit_window",
+                lc_path=piece_lc_path_resolved,
             )
         if template_window is None:
             if timing_mode == "segment_anchor":
@@ -827,14 +1500,6 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 f"piece {piece_id}: segment_anchor ensemble ToM supports "
                 f"constant period only; omit fold_ephemeris"
             )
-        local_lc_raw = entry.get("local_lc_path")
-        local_lc_path = (
-            None if local_lc_raw is None else _resolve_path(base, str(local_lc_raw))
-        )
-        if local_lc_path is not None and not local_lc_path.is_file():
-            raise FileNotFoundError(
-                f"piece {piece_id}: local_lc_path not found: {local_lc_path}"
-            )
         reuse_raw = entry.get("reuse_template_from")
         reuse_template_from = None if reuse_raw is None else str(reuse_raw)
         existing_raw = entry.get("existing_template_dir")
@@ -842,14 +1507,24 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
             None if existing_raw is None else _resolve_path(base, str(existing_raw))
         )
         derive_secondary = _parse_derive_secondary(entry, piece_id=piece_id)
+        rectify_template_tom = _parse_rectify_template_tom(
+            entry,
+            piece_id=piece_id,
+            defaults=rectify_defaults,
+            base=base,
+        )
+        fit_template = _parse_fit_template(
+            entry, piece_id=piece_id, default=fit_template_default
+        )
         if skip and (
             reuse_template_from is not None
             or existing_template_dir is not None
             or derive_secondary is not None
+            or rectify_template_tom.enabled
         ):
             logger.warning(
                 "piece %s: skip=true ignores existing_template_dir / "
-                "reuse_template_from / derive_secondary",
+                "reuse_template_from / derive_secondary / rectify_template_tom",
                 piece_id,
             )
         gp_piece = _gp_from_mapping(entry.get("gp_template"), gp_defaults)
@@ -879,6 +1554,8 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
                 reuse_template_from=reuse_template_from,
                 existing_template_dir=existing_template_dir,
                 derive_secondary=derive_secondary,
+                rectify_template_tom=rectify_template_tom,
+                fit_template=fit_template,
                 skip=skip,
                 gp_template=gp_piece,
                 fit=fit_piece,

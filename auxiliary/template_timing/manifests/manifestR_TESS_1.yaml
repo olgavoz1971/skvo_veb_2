@@ -35,9 +35,9 @@ gp_template_defaults:
   extended_fold: true
   extrema_mode: max
   kernel_type: matern
-  length_scale_init: 0.02
-  length_scale_min: 0.01
-  length_scale_max: 0.026
+  length_scale_init_frac_period: 0.02
+  length_scale_min_frac_period: 0.01
+  length_scale_max_frac_period: 0.026
   amplitude_init: 0.3
   amplitude_min: 0.1
   amplitude_max: 0.7
@@ -60,8 +60,8 @@ fit_defaults:
   # fit_mask_mode: whole_period   # frac_period
   fit_mask_mode: frac_period
   fit_mask_half_width_phase: 0.25
-  delta_tau_margin: 0.003
-  delta_tau_max: 0.02
+  delta_t_margin_phase: 0.01
+  delta_t_max_phase: 0.05
   outlier_mad_k: 3.0
   outlier_max_iter: 8
   outlier_min_inliers: 8
