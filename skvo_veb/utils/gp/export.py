@@ -1,9 +1,14 @@
-"""GP prep sidebar download filename helpers."""
+"""GP prep sidebar download helpers."""
 
 from __future__ import annotations
 
+import logging
+
 from skvo_veb.utils.lc_bridge import export_file_extension
-from skvo_veb.utils.my_tools import sanitize_filename
+from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, absolute_jd_from_display_epoch
+from skvo_veb.utils.my_tools import safe_float, sanitize_filename
+
+logger = logging.getLogger(__name__)
 
 GP_INTERVALS_EXPORT_EXTENSION = "dat"
 GP_EXTREMA_COMPACT_EXTENSION = "dat"
@@ -98,3 +103,37 @@ def gp_lc_export_download_name(stem: str | None, table_format: str) -> str:
         return safe
     ext = export_file_extension(table_format)
     return f"{safe}.{ext}"
+
+
+def apply_prep_fold_ephemeris(
+    lcd,
+    period,
+    epoch_display,
+    *,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+):
+    """Applies GP sidebar P / Epoch widgets to a CurveDash before export.
+
+    User-entered values win over ingest-time transport metadata, matching
+    ``docs/lightcurve_data_flow.md``. Empty widgets leave existing metadata.
+
+    Args:
+        lcd: ``CurveDash`` rebuilt from GP transport JSON.
+        period: Sidebar period in days, or empty.
+        epoch_display: Sidebar epoch as MJD offset (``JD - display_epoch``), or empty.
+        display_epoch (float): Same offset as the GP prep plot and Epoch field.
+
+    Returns:
+        CurveDash: The same instance, mutated in place.
+    """
+    period_val = safe_float(period)
+    if period_val is not None and period_val > 0:
+        lcd.period = period_val
+        lcd.period_unit = "d"
+        logger.debug("GP export period set from sidebar: %s d", period_val)
+
+    epoch_abs = absolute_jd_from_display_epoch(epoch_display, display_epoch)
+    if epoch_abs is not None:
+        lcd.epoch = epoch_abs
+        logger.debug("GP export epoch set from sidebar: JD %s", epoch_abs)
+    return lcd

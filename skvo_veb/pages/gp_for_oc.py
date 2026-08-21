@@ -289,6 +289,7 @@ from skvo_veb.utils.gp import (
     format_intervals_download,
 )
 from skvo_veb.utils.gp.export import (
+    apply_prep_fold_ephemeris,
     export_stem_from_upload_filename,
     gp_compact_extrema_download_name,
     gp_extended_extrema_download_name,
@@ -3327,6 +3328,8 @@ def gate_lc_export_button(lc_json_string):
     State("export-lc-filename", "value"),
     State("upload-lc", "filename"),
     State("store-gp-prep-working-window", "data"),
+    State("input-period", "value"),
+    State("input-epoch", "value"),
     prevent_initial_call=True,
 )
 def download_gp_prep_lightcurve(
@@ -3336,6 +3339,8 @@ def download_gp_prep_lightcurve(
     filename_stem,
     upload_filename,
     working_window_store,
+    period,
+    epoch,
 ):
     """Exports the stored prep light curve (including manual detrend) via lc_bridge."""
     if not n_clicks or not lc_json_string:
@@ -3349,6 +3354,12 @@ def download_gp_prep_lightcurve(
         lcd = curvedash_from_transport_json(
             export_json,
             source_name=upload_filename,
+        )
+        apply_prep_fold_ephemeris(
+            lcd,
+            period,
+            epoch,
+            display_epoch=jd0,
         )
         file_bytes = export_curvedash(lcd, fmt)
         outfile = gp_lc_export_download_name(filename_stem, fmt)

@@ -50,6 +50,7 @@ from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
     build_curvedash_title,
+    format_user_upload_error,
     ingest_lightcurve_file,
     export_file_extension,
 )
@@ -1778,8 +1779,8 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
             output['epoch_val'] = dash.no_update
         set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
     except Exception as e:
-        logger.warning(f'lightcurve_tess.handle_upload {e}')
-        alert_message = message.warning_alert(e)
+        logger.warning('lightcurve_tess.handle_upload: %s', e, exc_info=True)
+        alert_message = message.warning_alert(format_user_upload_error(e))
         output['graph_tab_disabled'] = True
         output['message_results'] = ''
         set_props('div_tess_lc_srv_download_alert', {'children': alert_message, 'style': {'display': 'block'}})

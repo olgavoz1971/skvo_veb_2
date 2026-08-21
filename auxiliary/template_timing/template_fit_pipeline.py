@@ -436,12 +436,19 @@ def _plot_fit_panel(
     x_hi: float,
     title: str,
     *,
+    dt_min: float,
+    dt_max: float,
     xlabel: str = "time (LC units)",
     peak_label: str = "t_max",
     scatter_s: float = 40,
     gp_sigma_grid: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> None:
-    """One method panel: data, shifted template, and fitted peak."""
+    """One method panel: data, shifted template, fit-mask band, and fitted peak.
+
+    The fit mask is the template abscissa window ``[dt_min, dt_max]`` about the
+    fitted peak. The template curve outside that window is drawn muted; the
+    participating segment is drawn in full colour with an orange band behind it.
+    """
     inlier = fit.inlier_mask
     if inlier is not None and len(inlier) == len(t):
         ax.scatter(t[inlier], y[inlier], s=scatter_s, c="k", alpha=0.75, label="inliers")
@@ -465,12 +472,41 @@ def _plot_fit_panel(
         ax.set_title(f"{title}\nFAILED: {reason}")
         ax.legend()
         return
+
+    mask_lo = float(fit.t_max + dt_min)
+    mask_hi = float(fit.t_max + dt_max)
+    ax.axvspan(
+        mask_lo,
+        mask_hi,
+        color="tab:orange",
+        alpha=0.18,
+        zorder=0,
+        label="fit mask",
+    )
+
     t_line = np.linspace(x_lo, x_hi, 300)
     t_ok, y_model = _model_flux_on_jd_grid(t_line, curve, fit)
     if gp_sigma_grid is not None:
         gp_tau, gp_sigma = gp_sigma_grid
         _plot_shifted_gp_sigma_band(ax, curve, fit, t_line, gp_tau, gp_sigma)
-    ax.plot(t_ok, y_model, color="tab:blue", lw=2, label="template + shift")
+    if t_ok.size:
+        ax.plot(
+            t_ok,
+            y_model,
+            color="0.7",
+            lw=1.2,
+            label="template (outside mask)",
+        )
+        dt_ok = t_ok - fit.t_max
+        in_mask = (dt_ok >= dt_min) & (dt_ok <= dt_max)
+        if np.any(in_mask):
+            ax.plot(
+                t_ok[in_mask],
+                y_model[in_mask],
+                color="tab:blue",
+                lw=2.5,
+                label="template in fit",
+            )
     ax.axvline(fit.t_max, color="magenta", ls="--", label=f"{peak_label}={fit.t_max:.6f}")
     ax.set_xlim(x_lo, x_hi)
     ax.set_xlabel(xlabel)
@@ -479,7 +515,7 @@ def _plot_fit_panel(
         f"{title}\nRMS={fit.rms:.4f}, n={fit.n_used}, "
         f"delta_t={fit.delta_t * 86400:.1f}s, s={fit.scale:.3f}"
     )
-    ax.legend()
+    ax.legend(fontsize=FONT_SIZE * 0.55)
 
 
 def plot_interval_fits(
@@ -494,6 +530,8 @@ def plot_interval_fits(
     nls_clean: ShiftFitResult,
     nls_scale_clean: ShiftFitResult,
     *,
+    dt_min: float,
+    dt_max: float,
     save_path: Path | None,
     show: bool,
     return_figure: bool = False,
@@ -502,6 +540,8 @@ def plot_interval_fits(
     """Four-panel comparison for one interval.
 
     Args:
+        dt_min (float): Lower fit-mask edge in days from the fitted peak.
+        dt_max (float): Upper fit-mask edge in days from the fitted peak.
         fit_zoom (tuple[float, float] | None): Optional ``(x_lo, x_hi)`` calendar-time
             limits for the fit panels. When omitted, the full ``[t_start, t_end]`` span
             is used (appropriate for short per-interval windows).
@@ -513,16 +553,37 @@ def plot_interval_fits(
     """
     apply_interval_plot_style()
     x_lo, x_hi = fit_zoom if fit_zoom is not None else (t_start, t_end)
+    panel_kw = {"dt_min": dt_min, "dt_max": dt_max}
     fig, (ax_cc, ax_nls, ax_clean, ax_scale) = plt.subplots(
         1, 4, figsize=FIGSIZE_INTERVAL, sharey=True
     )
-    _plot_fit_panel(ax_cc, t, y, curve, cc, x_lo, x_hi, "Cross-correlation")
-    _plot_fit_panel(ax_nls, t, y, curve, nls, x_lo, x_hi, "Nonlinear least squares")
     _plot_fit_panel(
-        ax_clean, t, y, curve, nls_clean, x_lo, x_hi, "NLS + iterative outlier clean"
+        ax_cc, t, y, curve, cc, x_lo, x_hi, "Cross-correlation", **panel_kw
     )
     _plot_fit_panel(
-        ax_scale, t, y, curve, nls_scale_clean, x_lo, x_hi, "NLS + scale + outlier clean"
+        ax_nls, t, y, curve, nls, x_lo, x_hi, "Nonlinear least squares", **panel_kw
+    )
+    _plot_fit_panel(
+        ax_clean,
+        t,
+        y,
+        curve,
+        nls_clean,
+        x_lo,
+        x_hi,
+        "NLS + iterative outlier clean",
+        **panel_kw,
+    )
+    _plot_fit_panel(
+        ax_scale,
+        t,
+        y,
+        curve,
+        nls_scale_clean,
+        x_lo,
+        x_hi,
+        "NLS + scale + outlier clean",
+        **panel_kw,
     )
     fig.suptitle(f"Interval {index}: [{t_start:.5f}, {t_end:.5f}]", fontsize=FONT_SIZE)
     fig.tight_layout()
@@ -604,6 +665,8 @@ def plot_segment_anchor_fits(
         "peak_label": "tau_max",
         "scatter_s": 14,
         "gp_sigma_grid": gp_sigma_grid,
+        "dt_min": dt_min,
+        "dt_max": dt_max,
     }
     fig = plt.figure(figsize=FIGSIZE_SEGMENT_ANCHOR)
     gs = fig.add_gridspec(2, 4, height_ratios=[1.0, 1.15], hspace=0.38, wspace=0.25)
@@ -1340,6 +1403,8 @@ def fit_piece_intervals(
                 nls,
                 nls_clean,
                 nls_scale_clean,
+                dt_min=dt_min,
+                dt_max=dt_max,
                 save_path=fits_dir / f"interval_{idx:02d}.png" if fits_dir else None,
                 show=show_plots and not review_fits,
             )
@@ -1360,6 +1425,8 @@ def fit_piece_intervals(
                 nls,
                 nls_clean,
                 nls_scale_clean,
+                dt_min=dt_min,
+                dt_max=dt_max,
                 default_method=timing_method,
                 piece_id=piece_id,
             )
@@ -1453,6 +1520,12 @@ def review_piece_from_summary(
     curve, meta = load_template_bundle(
         template_npz, template_meta_path, context=f"Piece {piece_id}"
     )
+    mask = fit_mask_for_template(
+        meta,
+        fit_cfg,
+        tau_peak=curve.tau_peak,
+        context=f"Piece {piece_id}",
+    )
     piece, lc_meta = load_lc_window(
         lc_path, fit_t_min, fit_t_max, working_domain=working_domain
     )
@@ -1500,12 +1573,6 @@ def review_piece_from_summary(
         if str(row.get("timing_mode")) == "segment_anchor":
             from fit_review import review_segment_anchor_fits
 
-            mask = fit_mask_for_template(
-                meta,
-                fit_cfg,
-                tau_peak=curve.tau_peak,
-                context=f"Piece {piece_id}",
-            )
             anchor_epoch = str(row.get("anchor_epoch") or "window_centre")
             t_anchor = float(row["t_anchor"])
             tau = segment_tau_from_meta(t, meta, tau_peak=curve.tau_peak)
@@ -1540,6 +1607,8 @@ def review_piece_from_summary(
                 nls,
                 nls_clean,
                 nls_scale_clean,
+                dt_min=mask.dt_min,
+                dt_max=mask.dt_max,
                 default_method=default_method,
                 piece_id=piece_id,
             )

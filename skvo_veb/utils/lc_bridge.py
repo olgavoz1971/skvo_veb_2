@@ -113,21 +113,70 @@ _DAT_METADATA_COMMENT = re.compile(
 )
 
 
+_UPLOAD_ERROR_MAX_CHARS = 400
+_UPLOAD_ERROR_MAX_LINES = 6
+_UPLOAD_ERROR_DUMP_TAIL = " Full details were logged on the server."
+
+
+def _first_nonempty_line(text: str) -> str:
+    """Returns the first non-empty line of ``text``, or a stripped copy.
+
+    Args:
+        text (str): Exception text.
+
+    Returns:
+        str: First non-blank line, or the stripped original text.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return text.strip()
+
+
+def _is_noisy_parser_dump(text: str) -> bool:
+    """True when exception text looks like a parser dump, not a short reason.
+
+    Args:
+        text (str): Raw ``str(exc)``.
+
+    Returns:
+        bool: True for long, multi-line, or traceback-like messages.
+    """
+    if len(text) > _UPLOAD_ERROR_MAX_CHARS:
+        return True
+    if text.count("\n") >= _UPLOAD_ERROR_MAX_LINES:
+        return True
+    if "Traceback" in text:
+        return True
+    if text.lower().count("at line") >= 3:
+        return True
+    return False
+
+
 def format_user_upload_error(exc: BaseException) -> str:
     """Returns a short user-facing message for failed lightcurve uploads.
+
+    Shows the exception text. Parser dumps (Astropy/XML traces) are truncated
+    to the first line; the full text remains in the server log.
 
     Args:
         exc (BaseException): Error raised during ingest.
 
     Returns:
-        str: ``PipeException`` text unchanged; otherwise a generic line without Astropy dumps.
+        str: User-facing reason. ``PipeException`` text is kept unless it is a dump.
     """
-    if isinstance(exc, PipeException):
-        return str(exc)
-    return (
-        "Upload failed. The file could not be read. "
-        "Details were logged on the server."
-    )
+    raw = str(exc).strip() or exc.__class__.__name__
+    if isinstance(exc, PipeException) and not _is_noisy_parser_dump(raw):
+        return raw
+    if not _is_noisy_parser_dump(raw):
+        return raw
+    first = _first_nonempty_line(raw)
+    if len(first) > _UPLOAD_ERROR_MAX_CHARS:
+        first = first[:_UPLOAD_ERROR_MAX_CHARS].rstrip() + "..."
+    if _UPLOAD_ERROR_DUMP_TAIL.strip() not in first:
+        return first + _UPLOAD_ERROR_DUMP_TAIL
+    return first
 
 
 def _is_dat_metadata_comment_line(line: str) -> bool:

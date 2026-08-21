@@ -71,6 +71,8 @@ def review_interval_fits(
     nls_clean: ShiftFitResult,
     nls_scale_clean: ShiftFitResult,
     *,
+    dt_min: float,
+    dt_max: float,
     default_method: str,
     piece_id: str,
 ) -> ReviewDecision:
@@ -87,6 +89,8 @@ def review_interval_fits(
         nls (ShiftFitResult): Nonlinear least-squares fit.
         nls_clean (ShiftFitResult): NLS with iterative outlier cleaning.
         nls_scale_clean (ShiftFitResult): NLS with scale and outlier cleaning.
+        dt_min (float): Lower fit-mask edge in days from the fitted peak.
+        dt_max (float): Upper fit-mask edge in days from the fitted peak.
         default_method (str): Manifest default; used when Enter is pressed.
         piece_id (str): Piece identifier for the window title.
 
@@ -107,6 +111,8 @@ def review_interval_fits(
         nls,
         nls_clean,
         nls_scale_clean,
+        dt_min=dt_min,
+        dt_max=dt_max,
         save_path=None,
         show=False,
         return_figure=True,

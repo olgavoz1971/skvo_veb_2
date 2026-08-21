@@ -10,6 +10,7 @@ import numpy as np
 from skvo_veb.tests.test_gp_manual_detrend import _minimal_mag_packet
 from skvo_veb.tests.volightcurve.test_time_reference import _gaia_style_votable
 from skvo_veb.utils.gp.export import (
+    apply_prep_fold_ephemeris,
     export_stem_from_upload_filename,
     gp_intervals_export_download_name,
     gp_lc_export_download_name,
@@ -152,3 +153,35 @@ def test_export_after_flux_detrend_preserves_string_labels():
     lcd = curvedash_from_transport_json(detrended, source_name="detrended.dat")
     assert list(lcd.label) == labels
     assert export_curvedash(lcd, "ascii.ecsv")
+
+
+def test_apply_prep_fold_ephemeris_overrides_ingest_metadata():
+    """Sidebar P / Epoch win over empty ingest transport meta."""
+    payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
+    lcd = curvedash_from_transport_json(payload, source_name="t.dat")
+    assert lcd.period is None
+    apply_prep_fold_ephemeris(lcd, 2.5, 58000.0, display_epoch=DEFAULT_EPOCH_JD)
+    assert lcd.period == 2.5
+    assert lcd.period_unit == "d"
+    assert lcd.epoch == 58000.0 + DEFAULT_EPOCH_JD
+
+
+def test_apply_prep_fold_ephemeris_empty_widgets_leave_ingest_values():
+    """Empty sidebar fields do not wipe period/epoch already on CurveDash."""
+    payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
+    lcd = curvedash_from_transport_json(payload, source_name="t.dat")
+    lcd.period = 1.23
+    lcd.epoch = 2451234.5
+    apply_prep_fold_ephemeris(lcd, None, None, display_epoch=DEFAULT_EPOCH_JD)
+    assert lcd.period == 1.23
+    assert lcd.epoch == 2451234.5
+
+
+def test_ecsv_export_includes_sidebar_period_and_epoch():
+    """ECSV header carries stamped fold ephemeris."""
+    payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
+    lcd = curvedash_from_transport_json(payload, source_name="t.dat")
+    apply_prep_fold_ephemeris(lcd, 0.41, 59883.12, display_epoch=DEFAULT_EPOCH_JD)
+    text = export_curvedash(lcd, "ascii.ecsv").decode("utf-8")
+    assert "period: 0.41" in text
+    assert f"epoch: {59883.12 + DEFAULT_EPOCH_JD}" in text

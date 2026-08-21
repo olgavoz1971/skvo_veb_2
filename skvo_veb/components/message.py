@@ -1,6 +1,5 @@
 import dash_bootstrap_components as dbc
 
-from skvo_veb.utils.lc_bridge import format_user_upload_error
 # DEBUG_EXCEPTION = True
 DEBUG_EXCEPTION = False
 
@@ -23,13 +22,24 @@ if DEBUG_EXCEPTION:
 
 
 def warning_alert(arg: Exception | str):
+    """Builds a Bootstrap warning alert from a string or exception.
+
+    Upload catch sites should pass a pre-sanitised string from
+    ``format_user_upload_error``; this helper does not hide exception text.
+
+    Args:
+        arg (Exception | str): User-facing message, or an exception whose
+            ``str()`` is shown (traceback when ``DEBUG_EXCEPTION`` is true).
+
+    Returns:
+        dbc.Alert: Warning-coloured alert with preserved newlines.
+    """
     if not isinstance(arg, BaseException):
         message = arg
+    elif DEBUG_EXCEPTION:
+        message = traceback.format_exc()
     else:
-        if DEBUG_EXCEPTION:
-            message = traceback.format_exc()
-        else:
-            message = format_user_upload_error(arg)
+        message = str(arg).strip() or arg.__class__.__name__
     return dbc.Alert(f'{message}', color='warning', style={'white-space': 'pre-wrap'})
 
 
