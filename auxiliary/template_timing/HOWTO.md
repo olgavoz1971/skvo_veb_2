@@ -31,9 +31,26 @@ Paths in the YAML are **relative to the manifest file**, not to where you run th
 
 | Step | Name | Slow? | Output |
 |------|------|-------|--------|
-| **1a** | Obtain GP **template** per piece (build, reuse, or `derive_secondary`) | Yes if building | `pieces/<id>/template.npz`, `template_meta.json`, `template_gp.png` |
-| **1b** | Optional **ToM rectification** (`rectify_template_tom`) | Seconds | `pieces/<id>/tom_rectified/` (+ diagnostics under `tom_rectify/`) |
+| **1a** | Obtain **template** per piece (`template_engine: gp` or `mavka`) | Yes if building | `pieces/<id>/template.npz`, `template_meta.json`, diagnostic PNG |
+| **1b** | Optional **ToM rectification** (`rectify_template_tom`; **GP only**) | Seconds | `pieces/<id>/tom_rectified/` (+ diagnostics under `tom_rectify/`) |
 | **2** | **Fit** template in each interval / segment | Faster | `fit_summary.csv`, optional `fits/interval_XX.png` |
+
+**Template engine (global).** Set top-level ``template_engine: gp`` (default) or
+``mavka``. A run is never mixed. For ``mavka``, points inside the piece’s
+**timing intervals** are folded (single phase copy), AP/WSAP/WSL are fit on that
+stack, and ``tau_peak`` is the **MAVKA TOM** (not an argmin). ``mavka_template.method``
+is ``best`` (smallest formal σ among ok fits **without** quality warnings) or a
+fixed ``ap`` / ``wsap`` / ``wsl``. ``rectify_template_tom`` is skipped with a log
+line; ``derive_secondary`` is not supported (rebuild secondary with its own
+intervals). Uncertainties on the MAVKA μ grid are deferred (placeholder RMS).
+Prefer ``timing.error_model: none`` for now: ``rms_slope`` is undefined at a
+symmetric MAVKA TOM (zero template slope).
+
+MAVKA smoke test (short MJD cut)::
+
+```bash
+python run_timing.py --config manifests/manifest_NSV807_sector97_ffi_main_mavka_cut.yaml --template-only
+```
 
 Step 2 loads the template named by **`fit_template`** (`obtained` or `tom_rectified`). That choice is independent of whether Step 1b ran.
 

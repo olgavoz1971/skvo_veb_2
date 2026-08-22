@@ -1,0 +1,11 @@
+python run_batch_approx.py --lc ../data/NSV_807_sector_30_SPOC_pdcsap.vot --intervals /home/voz/Downloads/NSV807_30_wsap_sec.dat --domain flux --max-intervals 0 --out-dir ../data/runs/NSV807_30_sec --show-plots
+
+python run_oc_step1.py   --tom-csv ../data/runs/NSV807_30_prim/approx_batch.csv   --method WSAP   --t0 57711.3539 --p0 0.3389614 --time-scale mjd   --save-plot --show
+
+Cycle correction example: --cycle-shift 60940:1 (repeatable; times in --time-scale)
+
+
+python run_timing.py --config manifests/manifest_NSV807_sector97_ffi_main_mavka_cut.yaml --template-only
+python run_timing.py --config manifests/manifest_NSV807_sector97_ffi_main_mavka_cut.yaml --fit-only
+
+python run_timing.py --config /home/voz/projects/UPJS/Shugarov/Vlada/NSV_807/manifest_NSV807_sector97_ffi_prim_mavka.yaml --template-only --show-plots

@@ -28,6 +28,8 @@ PEAK_SELECT_RULES = frozenset({"dominant", "nearest_phase0"})
 SECONDARY_DERIVE_METHODS = frozenset({"other_min_class"})
 TOM_RECTIFY_METHODS = frozenset({"kvw", "bisector_core", "bisector_extrap"})
 FIT_TEMPLATES = frozenset({"obtained", "tom_rectified"})
+TEMPLATE_ENGINES = frozenset({"gp", "mavka"})
+MAVKA_METHODS = frozenset({"best", "ap", "wsap", "wsl"})
 
 # Peak-selection keys removed in the prominence-based rewrite, with migration advice.
 REMOVED_GP_KEYS = {
@@ -267,6 +269,41 @@ class DeriveSecondaryConfig:
             )
 
 
+@dataclass
+class MavkaTemplateConfig:
+    """Global Step 1a MAVKA template settings (used when ``template_engine: mavka``).
+
+    Attributes:
+        method (str): ``best`` (min σ among ok fits without warnings) or a fixed
+            ``ap`` / ``wsap`` / ``wsl``.
+        n_grid (int): Dense τ grid size for μ(τ).
+        extrema_mode (str): Must be ``min`` for now (eclipse trough).
+    """
+
+    method: str = "best"
+    n_grid: int = 2000
+    extrema_mode: str = "min"
+
+    def __post_init__(self) -> None:
+        method = str(self.method).strip().lower()
+        if method not in MAVKA_METHODS:
+            raise ValueError(
+                f"mavka_template.method must be one of {sorted(MAVKA_METHODS)}, "
+                f"got {self.method!r}"
+            )
+        self.method = method
+        if int(self.n_grid) < 64:
+            raise ValueError(f"mavka_template.n_grid must be >= 64, got {self.n_grid}")
+        self.n_grid = int(self.n_grid)
+        mode = str(self.extrema_mode).strip().lower()
+        if mode not in EXTREMA_MODES:
+            raise ValueError(
+                f"mavka_template.extrema_mode must be one of {sorted(EXTREMA_MODES)}, "
+                f"got {self.extrema_mode!r}"
+            )
+        self.extrema_mode = mode
+
+
 @dataclass(frozen=True)
 class RectifyTemplateTomConfig:
     """Optional Step 1b: rectify the painted template ToM without rebuilding the GP.
@@ -405,6 +442,8 @@ class RunManifest:
     overview_t_min: float | None
     overview_t_max: float | None
     gp_template_defaults: GPTemplateDefaults
+    mavka_template: MavkaTemplateConfig
+    template_engine: str
     fit_defaults: FitDefaults
     pieces: list[PieceConfig]
 
@@ -1230,6 +1269,40 @@ def _parse_template_fold_block(
     return default_epoch, default_period, period_slope
 
 
+def _validate_template_engine_pieces(
+    pieces: list[PieceConfig],
+    *,
+    template_engine: str,
+) -> None:
+    """Enforce engine-specific rules (global; never mix GP and MAVKA in one run).
+
+    Args:
+        pieces (list[PieceConfig]): Parsed pieces.
+        template_engine (str): ``gp`` or ``mavka``.
+
+    Raises:
+        ValueError: If MAVKA rules are violated.
+    """
+    if template_engine != "mavka":
+        return
+    for piece in pieces:
+        if piece.skip:
+            continue
+        if piece.derive_secondary is not None:
+            raise ValueError(
+                f"piece {piece.piece_id}: derive_secondary is not supported with "
+                "template_engine: mavka (rebuild the secondary with its own intervals)"
+            )
+        building = (
+            piece.existing_template_dir is None
+            and piece.reuse_template_from is None
+        )
+        if building and piece.intervals_path is None:
+            raise ValueError(
+                f"piece {piece.piece_id}: MAVKA template build requires intervals_path"
+            )
+
+
 def _validate_piece_template_sources(
     pieces: list[PieceConfig],
     *,
@@ -1376,6 +1449,27 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
 
     gp_defaults = _gp_from_mapping(raw.get("gp_template_defaults"), GPTemplateDefaults())
     fit_defaults = _fit_from_mapping(raw.get("fit_defaults"), FitDefaults())
+    mavka_raw = raw.get("mavka_template") or {}
+    if mavka_raw is None:
+        mavka_raw = {}
+    if not isinstance(mavka_raw, dict):
+        raise ValueError("mavka_template must be a mapping when present")
+    try:
+        mavka_defaults = MavkaTemplateConfig(
+            method=str(mavka_raw.get("method", "best")),
+            n_grid=int(mavka_raw.get("n_grid", 2000)),
+            extrema_mode=str(mavka_raw.get("extrema_mode", "min")),
+        )
+    except ValueError as exc:
+        raise ValueError(f"mavka_template: {exc}") from exc
+
+    template_engine = str(raw.get("template_engine", "gp")).strip().lower()
+    if template_engine not in TEMPLATE_ENGINES:
+        raise ValueError(
+            f"template_engine must be one of {sorted(TEMPLATE_ENGINES)}, "
+            f"got {template_engine!r}"
+        )
+
     rectify_defaults = _rectify_from_mapping(
         raw.get("rectify_template_tom_defaults"),
         RectifyTemplateTomConfig(),
@@ -1563,11 +1657,13 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
         )
 
     _validate_piece_template_sources(pieces, run_dir=run_dir)
+    _validate_template_engine_pieces(pieces, template_engine=template_engine)
 
     n_active = sum(1 for p in pieces if not p.skip)
     logger.info(
-        "Loaded manifest %s: %s piece(s) (%s active), lc=%s, method=%s",
+        "Loaded manifest %s: engine=%s, %s piece(s) (%s active), lc=%s, method=%s",
         manifest_path.name,
+        template_engine,
         len(pieces),
         n_active,
         lc_path.name,
@@ -1590,6 +1686,8 @@ def load_manifest(path: Path, *, validate_intervals: bool = True) -> RunManifest
         overview_t_min=overview_t_min,
         overview_t_max=overview_t_max,
         gp_template_defaults=gp_defaults,
+        mavka_template=mavka_defaults,
+        template_engine=template_engine,
         fit_defaults=fit_defaults,
         pieces=pieces,
     )

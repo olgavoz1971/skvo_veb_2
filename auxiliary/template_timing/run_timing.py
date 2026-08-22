@@ -18,6 +18,7 @@ if str(_ROOT) not in sys.path:
 from manifest_config import (
     TIMING_METHODS,
     PieceConfig,
+    load_intervals_absolute,
     load_manifest,
     piece_fold_epoch,
     piece_fold_period,
@@ -28,6 +29,7 @@ from plot_style import apply_plot_style
 from plot_overview import overview_time_span, plot_lc_with_maxima
 from template_build import build_piece_template, plot_template_artifacts
 from template_derive import derive_secondary_template
+from mavka_template import build_piece_template_mavka
 from template_reuse import bind_reused_template_dir, resolve_piece_template_dir
 from template_tom_rectify import rectify_template_tom, resolve_fit_template_dir
 from template_fit import TemplateCurve
@@ -521,37 +523,78 @@ def run_manifest(
                 _show_reused_template(obtained_dir, piece, show_plots=show_plots)
             else:
                 tw = piece_template_window(piece)
-                build_piece_template(
-                    piece_lc,
-                    piece_id=piece.piece_id,
-                    t_obs_min=tw.t_min,
-                    t_obs_max=tw.t_max,
-                    fold_epoch=fold_epoch,
-                    fold_period=fold_p,
-                    default_epoch=manifest.default_epoch,
-                    default_period=manifest.default_period,
-                    period_slope=manifest.period_slope,
-                    working_domain=manifest.photometry_domain,
-                    cfg=piece.gp_template,
-                    fit_cfg=piece.fit,
-                    fold_ephemeris=piece.fold_ephemeris,
-                    out_npz=piece_dir / "template.npz",
-                    out_meta=piece_dir / "template_meta.json",
-                    out_plot=piece_dir / "template_gp.png",
-                    show_plot=show_plots,
-                )
+                if manifest.template_engine == "mavka":
+                    if piece.intervals_path is None:
+                        raise ValueError(
+                            f"piece {piece.piece_id}: MAVKA build requires intervals_path"
+                        )
+                    if manifest.intervals_time is None:
+                        raise ValueError(
+                            "global.intervals_time required for MAVKA template build"
+                        )
+                    intervals = load_intervals_absolute(
+                        piece.intervals_path, manifest.intervals_time
+                    )
+                    build_piece_template_mavka(
+                        piece_lc,
+                        piece_id=piece.piece_id,
+                        t_obs_min=tw.t_min,
+                        t_obs_max=tw.t_max,
+                        fold_epoch=fold_epoch,
+                        fold_period=fold_p,
+                        default_epoch=manifest.default_epoch,
+                        default_period=manifest.default_period,
+                        period_slope=manifest.period_slope,
+                        working_domain=manifest.photometry_domain,
+                        intervals=intervals,
+                        intervals_path=piece.intervals_path,
+                        mavka_cfg=manifest.mavka_template,
+                        fit_cfg=piece.fit,
+                        out_npz=piece_dir / "template.npz",
+                        out_meta=piece_dir / "template_meta.json",
+                        out_plot=piece_dir / "template_mavka.png",
+                        show_plot=show_plots,
+                    )
+                else:
+                    build_piece_template(
+                        piece_lc,
+                        piece_id=piece.piece_id,
+                        t_obs_min=tw.t_min,
+                        t_obs_max=tw.t_max,
+                        fold_epoch=fold_epoch,
+                        fold_period=fold_p,
+                        default_epoch=manifest.default_epoch,
+                        default_period=manifest.default_period,
+                        period_slope=manifest.period_slope,
+                        working_domain=manifest.photometry_domain,
+                        cfg=piece.gp_template,
+                        fit_cfg=piece.fit,
+                        fold_ephemeris=piece.fold_ephemeris,
+                        out_npz=piece_dir / "template.npz",
+                        out_meta=piece_dir / "template_meta.json",
+                        out_plot=piece_dir / "template_gp.png",
+                        show_plot=show_plots,
+                    )
                 obtained_dir = piece_dir.resolve()
 
             obtained_dirs[piece.piece_id] = obtained_dir
 
             if piece.rectify_template_tom.enabled:
-                rectify_template_tom(
-                    obtained_dir,
-                    piece_dir,
-                    piece.rectify_template_tom,
-                    piece_id=piece.piece_id,
-                    show_plots=show_plots,
-                )
+                if manifest.template_engine == "mavka":
+                    logger.info(
+                        "Piece %s: skipping rectify_template_tom "
+                        "(not used with template_engine: mavka; "
+                        "tau_peak is the MAVKA TOM)",
+                        piece.piece_id,
+                    )
+                else:
+                    rectify_template_tom(
+                        obtained_dir,
+                        piece_dir,
+                        piece.rectify_template_tom,
+                        piece_id=piece.piece_id,
+                        show_plots=show_plots,
+                    )
 
             fit_piece_dir = piece_dir
             if (
