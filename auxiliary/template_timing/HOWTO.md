@@ -37,14 +37,21 @@ Paths in the YAML are **relative to the manifest file**, not to where you run th
 
 **Template engine (global).** Set top-level ``template_engine: gp`` (default) or
 ``mavka``. A run is never mixed. For ``mavka``, points inside the piece’s
-**timing intervals** are folded (single phase copy), AP/WSAP/WSL are fit on that
-stack, and ``tau_peak`` is the **MAVKA TOM** (not an argmin). ``mavka_template.method``
-is ``best`` (smallest formal σ among ok fits **without** quality warnings) or a
-fixed ``ap`` / ``wsap`` / ``wsl``. ``rectify_template_tom`` is skipped with a log
-line; ``derive_secondary`` is not supported (rebuild secondary with its own
-intervals). Uncertainties on the MAVKA μ grid are deferred (placeholder RMS).
-Prefer ``timing.error_model: none`` for now: ``rms_slope`` is undefined at a
-symmetric MAVKA TOM (zero template slope).
+**timing intervals** are folded with the **common** ``default_epoch`` /
+``local_epoch`` (single phase copy). The phase window is then **shifted** so the
+stacked extremum is contiguous near τ≈0 (circular mean phase of interval
+midpoints) — secondary near phase 0.5 is fine without a second epoch or
+``eclipse_phase``. This is **not** the GP multi-copy extended fold. AP/WSAP/WSL
+are fit on that stack; ``tau_peak`` is the **MAVKA TOM** (not an argmin). Meta
+stores ``fold_epoch`` as the τ-axis origin (ephemeris epoch + shift) and
+``mavka.phase_window_shift`` / ``mavka.fold_epoch_ephemeris`` for provenance.
+``mavka_template.method`` is ``best`` (smallest formal σ among ok fits
+**without** quality warnings) or a fixed ``ap`` / ``wsap`` / ``wsl``.
+``rectify_template_tom`` is skipped with a log line; ``derive_secondary`` is not
+supported (rebuild secondary with its own intervals). Uncertainties on the
+MAVKA μ grid are deferred (placeholder RMS). Prefer ``timing.error_model: none``
+for now: ``rms_slope`` is undefined at a symmetric MAVKA TOM (zero template
+slope).
 
 MAVKA smoke test (short MJD cut)::
 

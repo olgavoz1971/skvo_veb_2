@@ -324,6 +324,46 @@ from skvo_veb.utils.gp.live_page import (
     live_slot_waiting,
     live_visible_page_for_done_count,
 )
+from skvo_veb.utils.mavka import (
+    DEFAULT_EXTREMA_MODE,
+    DEFAULT_METHOD,
+    MAVKA_LIVE_PAGE_SIZE,
+    MAXIMA_NOT_AVAILABLE,
+    METHOD_OPTIONS,
+    figure_from_mavka_result,
+    fit_interval as mavka_fit_interval,
+    slice_interval_photometry,
+)
+from skvo_veb.utils.mavka.config import MAVKA_PIECE_COLOURS, MAVKA_REVIEW_PAGE_SIZE
+from skvo_veb.utils.mavka.export import (
+    build_extended_export_zip as build_mavka_extended_export_zip,
+    format_compact_extrema_dat as format_mavka_compact_extrema_dat,
+    mavka_compact_extrema_download_name,
+    mavka_extended_extrema_download_name,
+    mavka_extrema_export_stem,
+)
+from skvo_veb.utils.mavka.live_page import (
+    build_live_page_slot_children as build_mavka_live_page_slot_children,
+    live_progress_label as mavka_live_progress_label,
+    live_slot_waiting as mavka_live_slot_waiting,
+    live_visible_page_for_done_count as mavka_live_visible_page_for_done_count,
+)
+from skvo_veb.utils.mavka.review_cache import (
+    load_mavka_review_run,
+    save_mavka_review_run,
+)
+from skvo_veb.utils.mavka.review_page import (
+    build_review_store_payload as build_mavka_review_store_payload,
+    render_review_page as render_mavka_review_page,
+    review_entry_from_fit as mavka_review_entry_from_fit,
+    review_page_label as mavka_review_page_label,
+    serialise_review_entry as serialise_mavka_review_entry,
+)
+from skvo_veb.utils.mavka.run_control import (
+    clear_mavka_batch_stop,
+    mavka_batch_stop_requested,
+    request_mavka_batch_stop,
+)
 from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
 from skvo_veb.utils.gp.intervals import format_interval_display_pair
 from skvo_veb.utils.gp.working_window import (
@@ -362,6 +402,10 @@ logger = logging.getLogger(__name__)
 _LIVE_SLOT_PROGRESS_OUTPUTS = [
     Output({"type": "gp-live-slot", "index": i}, "children")
     for i in range(GP_LIVE_PAGE_SIZE)
+]
+_MAVKA_LIVE_SLOT_PROGRESS_OUTPUTS = [
+    Output({"type": "mavka-live-slot", "index": i}, "children")
+    for i in range(MAVKA_LIVE_PAGE_SIZE)
 ]
 # Gaia Eclipsing Binary Catalog - IGEBC
 dash.register_page(__name__, name='GP',
@@ -674,6 +718,48 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "GP vertical scale (y-axis). Sets the 'headroom' for peak height. "
     "Since flux is normalised to 1.0, values between 0.1 and 10.0 are usually safe. "
     "Best left alone unless the model is failing to reach the top of your peak!",
+)
+(
+    _mavka_method_help_btn,
+    _mavka_method_help_pop,
+) = _gp_click_help(
+    "mavka_method",
+    "Approximation method",
+    [
+        html.P(
+            "AP: asymptotic parabola with a tilted core. TOM is the vertex, "
+            "kept only if it lies between the junction times C4 and C5.",
+            className="mb-2",
+        ),
+        html.P(
+            "WSAP (default): wall-supported asymptotic parabola. TOM is the "
+            "midpoint of C4 and C5.",
+            className="mb-2",
+        ),
+        html.P(
+            "WSL: wall-supported flat bottom. TOM is the midpoint of the flat part.",
+            className="mb-2",
+        ),
+        html.P(
+            "A: broken linear model; two slopes meet at C4.",
+            className="mb-2",
+        ),
+        html.P(
+            "Fits ignore photometric uncertainties; σ(TOM) comes from the "
+            "parameter covariance. One method is fitted at a time.",
+            className="mb-0",
+        ),
+    ],
+)
+(
+    _mavka_extrema_help_btn,
+    _mavka_extrema_help_pop,
+) = _gp_click_help(
+    "mavka_extrema",
+    "Search extrema",
+    "Times a trough in the current Magnitudes/Flux view from accordion 1. "
+    "Search maxima is listed to match the GP control; it is not implemented "
+    "in this version.",
 )
 
 
@@ -1498,6 +1584,258 @@ graph_gp = html.Div([
 ], className="p-2")
 
 
+sidebar_mavka = html.Div(
+    [
+        dbc.Button(
+            "Show legend",
+            id="toggle-mavka-legend-btn",
+            color="link",
+            size="sm",
+            className="p-0 text-decoration-none",
+        ),
+        dbc.Collapse(
+            html.Div(
+                [
+                    LegendItem("black", "Data points", mode="circle"),
+                    LegendItem(MAVKA_PIECE_COLOURS["left"], "Left wing", mode="line"),
+                    LegendItem(MAVKA_PIECE_COLOURS["core"], "Core", mode="line"),
+                    LegendItem(MAVKA_PIECE_COLOURS["right"], "Right wing", mode="line"),
+                    LegendItem("magenta", "TOM estimate", mode="dashed"),
+                    LegendItem("maroon", "C4 / C5 junctions", mode="dashed"),
+                ],
+                className="p-2 border rounded bg-white",
+            ),
+            id="mavka-legend-collapse",
+            is_open=False,
+            className="gp-sidebar-group",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    dbc.Button(
+                        "Run MAVKA",
+                        id="mavka-run-btn",
+                        color="primary",
+                        className="w-100",
+                        size="sm",
+                    ),
+                    width=7,
+                ),
+                dbc.Col(
+                    dbc.Button(
+                        "Stop",
+                        id="mavka-stop-btn",
+                        color="danger",
+                        outline=True,
+                        className="w-100",
+                        size="sm",
+                    ),
+                    width=5,
+                ),
+            ],
+            className="g-2 gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Search extrema", className="gp-section-label mb-0"),
+                html.Div(
+                    _mavka_extrema_help_btn, className="lc-discovery-field-help"
+                ),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.Select(
+            id="mavka-extrema-mode",
+            options=[  # type: ignore
+                {"label": "Search minima", "value": "min"},
+                {"label": "Search maxima", "value": "max"},
+            ],
+            value=DEFAULT_EXTREMA_MODE,
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Approximation method", className="gp-section-label mb-0"),
+                html.Div(
+                    _mavka_method_help_btn, className="lc-discovery-field-help"
+                ),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.Select(
+            id="mavka-method",
+            options=list(METHOD_OPTIONS),  # type: ignore
+            value=DEFAULT_METHOD,
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        _mavka_method_help_pop,
+        _mavka_extrema_help_pop,
+    ],
+    className="gp-sidebar bg-light border rounded shadow-sm",
+)
+
+
+def _mavka_live_processing_layout():
+    """Fixed-slot grid for MAVKA processing view."""
+    return dbc.Row(
+        [
+            dbc.Col(
+                html.Div(
+                    id={"type": "mavka-live-slot", "index": slot_idx},
+                    children=mavka_live_slot_waiting(),
+                ),
+                width=6,
+                className="px-1 mb-2",
+            )
+            for slot_idx in range(MAVKA_LIVE_PAGE_SIZE)
+        ],
+        id="mavka-live-graphs-container",
+        className="g-2",
+    )
+
+
+graph_mavka = html.Div(
+    [
+        html.Div(id="mavka-finished-signal", style={"display": "none"}),
+        html.Div(
+            id="mavka-header-area",
+            children=[
+                html.Div(
+                    [
+                        html.H6("MAVKA processing view", className="gp-card-title"),
+                        dbc.Badge(
+                            "Waiting for run",
+                            color="secondary",
+                            id="mavka-view-badge",
+                            className="ms-2",
+                        ),
+                    ],
+                    className="d-flex align-items-center",
+                ),
+            ],
+            className="mb-1",
+        ),
+        html.Div(id="mavka-live-progress-label", className="small text-muted mb-3"),
+        _mavka_live_processing_layout(),
+        html.Div(
+            id="mavka-final-review-container",
+            style={"display": "none"},
+            children=[
+                html.Hr(className="my-4"),
+                dbc.Card(
+                    [
+                        dbc.CardBody(
+                            html.Div(
+                                [
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(
+                                                html.H6(
+                                                    "Review and export",
+                                                    className="gp-card-title",
+                                                ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.Button(
+                                                    "Select all",
+                                                    id="mavka-select-all-btn",
+                                                    size="sm",
+                                                    color="secondary",
+                                                    outline=True,
+                                                ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.Button(
+                                                    "Unselect all",
+                                                    id="mavka-unselect-all-btn",
+                                                    size="sm",
+                                                    color="secondary",
+                                                    outline=True,
+                                                ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                [
+                                                    dbc.Button(
+                                                        "Previous page",
+                                                        id="mavka-review-prev",
+                                                        size="sm",
+                                                        outline=True,
+                                                        color="secondary",
+                                                    ),
+                                                    html.Span(
+                                                        id="mavka-review-page-label",
+                                                        className="gp-review-page-caption",
+                                                    ),
+                                                    dbc.Button(
+                                                        "Next page",
+                                                        id="mavka-review-next",
+                                                        size="sm",
+                                                        outline=True,
+                                                        color="secondary",
+                                                    ),
+                                                ],
+                                                width="auto",
+                                                className="gp-review-pager",
+                                            ),
+                                        ],
+                                        className="align-items-center g-2",
+                                    ),
+                                    dbc.Row(
+                                        [
+                                            dbc.Col(
+                                                dbc.Switch(
+                                                    id="mavka-extended-export",
+                                                    value=False,
+                                                    label="Extended export",
+                                                ),
+                                                width="auto",
+                                            ),
+                                            dbc.Col(
+                                                dbc.InputGroup(
+                                                    [
+                                                        dbc.Input(
+                                                            id="mavka-export-filename",
+                                                            placeholder="results_mavka",
+                                                            type="text",
+                                                            size="sm",
+                                                        ),
+                                                        dbc.Button(
+                                                            "Download",
+                                                            id="mavka-save-file-btn",
+                                                            color="primary",
+                                                            size="sm",
+                                                        ),
+                                                    ],
+                                                    className="gp-export-group",
+                                                ),
+                                                width="auto",
+                                            ),
+                                        ],
+                                        className="align-items-center g-2 justify-content-end",
+                                    ),
+                                ],
+                                className="gp-review-toolbar",
+                            ),
+                            className="gp-review-toolbar-body",
+                        )
+                    ],
+                    className="bg-light mb-3",
+                ),
+                dbc.Row(id="mavka-graphs-container", className="g-2"),
+            ],
+        ),
+        dcc.Download(id="mavka-download-results"),
+        dcc.Store(id="store-mavka-results-data"),
+    ],
+    className="p-2",
+)
+
+
 def layout():
     return dbc.Container([
         # --- HEADER SECTION ---
@@ -1615,11 +1953,21 @@ def layout():
                         ]),
                         html.Div(id="main-analysis-wrapper")
                     ],
-                )
+                ),
+                dbc.AccordionItem(
+                    item_id="accordion-mavka",
+                    title="MAVKA",
+                    children=[
+                        dbc.Row([
+                            dbc.Col(sidebar_mavka, width=3),
+                            dbc.Col(graph_mavka, width=9),
+                        ]),
+                    ],
+                ),
             ],
             id="main-workflow-accordion",
             always_open=True,  # Allows multiple items to stay open simultaneously
-            active_item=["accordion-lc", "accordion-gp"],  # Opens both by default on load
+            active_item=["accordion-lc"],
         ),
 
     ], fluid=True, className="gp-page")
@@ -1669,6 +2017,20 @@ def toggle_registry(n_clicks, is_open):
     # endregion
 )
 def toggle_gp_legend(n_clicks, is_open):
+    if is_open:
+        return False, "Show legend"
+    return True, "Hide legend"
+
+
+@callback(
+    Output("mavka-legend-collapse", "is_open"),
+    Output("toggle-mavka-legend-btn", "children"),
+    Input("toggle-mavka-legend-btn", "n_clicks"),
+    State("mavka-legend-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_mavka_legend(n_clicks, is_open):
+    """Shows or hides the MAVKA fit legend in the sidebar."""
     if is_open:
         return False, "Show legend"
     return True, "Hide legend"
@@ -3554,3 +3916,466 @@ def switch_modes(signal):
     if signal in ("FINISHED", "FINISHED_STOPPED"):
         return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}
     return {'display': 'none'}, {'display': 'flex'}, {'display': 'block'}
+
+
+# ================= MAVKA callbacks ===================
+
+@callback(
+    Input("mavka-stop-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def mavka_request_batch_stop(_n_clicks):
+    """Cooperative stop: finish the current fit, then exit the MAVKA batch loop."""
+    request_mavka_batch_stop()
+
+
+@callback(
+    Output("mavka-header-area", "children"),
+    Input("mavka-run-btn", "n_clicks"),
+    Input("mavka-stop-btn", "n_clicks"),
+    Input("mavka-finished-signal", "children"),
+    prevent_initial_call=True,
+)
+def update_mavka_status_ui(run_clicks, stop_clicks, signal_status):
+    """Updates the MAVKA working-area header badge for run, stop, and finish."""
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if trigger_id == "mavka-run-btn" and run_clicks > 0:
+        return html.Div(
+            [
+                html.H6("MAVKA processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-hourglass-split me-2"),
+                        "RUNNING - Modelling...",
+                    ],
+                    color="warning",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "mavka-stop-btn" and stop_clicks > 0:
+        return html.Div(
+            [
+                html.H6("MAVKA processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-pause-circle me-2"),
+                        "STOPPING - finishing current fit…",
+                    ],
+                    color="warning",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "mavka-finished-signal" and signal_status == "WAITING":
+        return html.Div(
+            [
+                html.H6("MAVKA processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-gear-wide-connected me-2"),
+                        "GENERATING PLOTS...",
+                    ],
+                    color="info",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "mavka-finished-signal" and signal_status in (
+        "FINISHED",
+        "FINISHED_STOPPED",
+    ):
+        stopped = signal_status == "FINISHED_STOPPED"
+        badge_text = (
+            "STOPPED - review completed fits" if stopped else "FINISHED"
+        )
+        badge_color = "warning" if stopped else "success"
+        return html.Div(
+            [
+                html.H6("Results: photometry vs JD", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-check-all me-2"),
+                        badge_text,
+                    ],
+                    color=badge_color,
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    return dash.no_update
+
+
+@callback(
+    Output("mavka-graphs-container", "children", allow_duplicate=True),
+    Output("mavka-finished-signal", "children", allow_duplicate=True),
+    Output("store-mavka-results-data", "data"),
+    Output("mavka-review-page-label", "children"),
+    Input("mavka-run-btn", "n_clicks"),
+    State("store-lc-data", "data"),
+    State("store-intervals-data", "data"),
+    State("view-mode-radio", "value"),
+    State("mavka-extrema-mode", "value"),
+    State("mavka-method", "value"),
+    background=True,
+    running=[
+        (Output("mavka-run-btn", "disabled"), True, False),
+        (Output("mavka-stop-btn", "disabled"), False, True),
+    ],
+    progress=[
+        Output("mavka-live-progress-label", "children"),
+        *_MAVKA_LIVE_SLOT_PROGRESS_OUTPUTS,
+        Output("mavka-finished-signal", "children"),
+    ],
+    prevent_initial_call=True,
+)
+def run_mavka(
+    set_progress,
+    n_clicks,
+    lc_json_string,
+    intervals,
+    view_mode,
+    extrema_mode,
+    method,
+):
+    """Fits one MAVKA method on every interval; sparse and failed windows become cards."""
+
+    def _push_live(stored_entries: list, total_work: int) -> None:
+        done = len(stored_entries)
+        visible_page = mavka_live_visible_page_for_done_count(done)
+        slots = build_mavka_live_page_slot_children(stored_entries, visible_page)
+        label = mavka_live_progress_label(done, total_work)
+        set_progress((label, *slots, "WAITING"))
+
+    empty_slots = build_mavka_live_page_slot_children([], 0)
+    set_progress((mavka_live_progress_label(0, 0), *empty_slots, "WAITING"))
+    clear_mavka_batch_stop()
+    logger.debug("run_mavka started")
+
+    if extrema_mode != "min":
+        error_alert = dbc.Alert(MAXIMA_NOT_AVAILABLE, color="warning")
+        return error_alert, "FINISHED", None, ""
+
+    if not method:
+        error_alert = dbc.Alert(
+            "Select an approximation method.", color="warning", className="py-2 small mb-0"
+        )
+        return error_alert, "FINISHED", None, ""
+
+    if not lc_json_string or not intervals:
+        error_alert = dbc.Alert(
+            "Please upload both lightcurve and intervals files.", color="warning"
+        )
+        return error_alert, "FINISHED", None, ""
+
+    view_mode = view_mode or "mag"
+    try:
+        lc = unpack_json_for_gp_plot(lc_json_string, view_mode=view_mode)
+    except Exception as exc:
+        logger.exception("MAVKA light curve unpack failed")
+        error_alert = dbc.Alert(str(exc), color="danger")
+        return error_alert, "FINISHED", None, ""
+
+    invert_y = bool(lc.get("is_mag"))
+    y_label = lc.get("y_label") or ("Magnitude" if invert_y else "Flux")
+    times_jd = np.asarray(lc["x"], dtype=float)
+    photometry = np.asarray(lc["y"], dtype=float)
+
+    total_work = len(intervals)
+    _push_live([], total_work)
+
+    stored_entries: list[dict] = []
+    stopped_early = False
+
+    for piece in intervals:
+        if mavka_batch_stop_requested():
+            stopped_early = True
+            logger.info(
+                "MAVKA batch stopped before interval (%s done)", len(stored_entries)
+            )
+            break
+
+        jd_min, jd_max = piece[0], piece[1]
+        t_obs, y_obs = slice_interval_photometry(times_jd, photometry, jd_min, jd_max)
+
+        fig = None
+        try:
+            fit = mavka_fit_interval(
+                method, t_obs, y_obs, extrema_mode=extrema_mode
+            )
+            res_entry = mavka_review_entry_from_fit(fit, jd_min, jd_max)
+        except Exception as exc:
+            logger.warning("MAVKA interval %s–%s failed: %s", jd_min, jd_max, exc)
+            res_entry = {
+                "jd_min": jd_min,
+                "jd_max": jd_max,
+                "is_fail": True,
+                "error": str(exc),
+                "badge_specs": [{"label": "FAILED", "color": "danger"}],
+                "method": method,
+            }
+        else:
+            if not res_entry["is_fail"]:
+                try:
+                    fig = figure_from_mavka_result(
+                        t_obs,
+                        y_obs,
+                        fit,
+                        display_epoch=jd0,
+                        invert_y=invert_y,
+                        y_label=y_label,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "MAVKA plot failed for interval %s–%s: %s",
+                        jd_min,
+                        jd_max,
+                        exc,
+                    )
+                    res_entry["is_fail"] = True
+                    res_entry["error"] = (
+                        f"Fit succeeded (TOM={fit.t_ext}) but plot failed: {exc}"
+                    )
+                    res_entry["badge_specs"] = [
+                        {"label": "FAILED", "color": "danger"}
+                    ]
+
+        figure_json = None
+        if not res_entry["is_fail"]:
+            if fig is None:
+                res_entry["is_fail"] = True
+                res_entry["error"] = "Missing plot for a successful MAVKA fit"
+                res_entry["badge_specs"] = [{"label": "FAILED", "color": "danger"}]
+            else:
+                figure_json = fig.to_plotly_json()
+        stored_entries.append(
+            serialise_mavka_review_entry(res_entry, figure_json=figure_json)
+        )
+        _push_live(stored_entries, total_work)
+
+        if mavka_batch_stop_requested():
+            stopped_early = True
+            logger.info("MAVKA batch stopped after %s fits", len(stored_entries))
+            break
+
+    if not stored_entries:
+        msg = (
+            "No fits completed before stop."
+            if stopped_early
+            else "No fits to review."
+        )
+        return (
+            dbc.Alert(msg, color="warning"),
+            "FINISHED_STOPPED" if stopped_early else "FINISHED",
+            None,
+            "",
+        )
+
+    run_id = uuid.uuid4().hex
+    save_mavka_review_run(run_id, stored_entries)
+    store_payload = build_mavka_review_store_payload(
+        run_id, stored_entries, stopped_early=stopped_early
+    )
+    page_children = render_mavka_review_page(
+        stored_entries, 0, store_payload["include"]
+    )
+    page_label = mavka_review_page_label(0, len(stored_entries))
+    finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
+    return page_children, finish_signal, store_payload, page_label
+
+
+@callback(
+    Output("mavka-export-filename", "value"),
+    Input("upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def update_mavka_default_filename(filename):
+    """Default MAVKA export stem from the uploaded light curve name."""
+    if filename:
+        base = filename.rsplit(".", 1)[0]
+        return f"{base}_mavka"
+    return "results_mavka"
+
+
+@callback(
+    Output("mavka-download-results", "data"),
+    Input("mavka-save-file-btn", "n_clicks"),
+    State("mavka-export-filename", "value"),
+    State("store-mavka-results-data", "data"),
+    State("mavka-extrema-mode", "value"),
+    State("mavka-extended-export", "value"),
+    State("input-period", "value"),
+    State("input-epoch", "value"),
+    prevent_initial_call=True,
+)
+def trigger_mavka_download(
+    n_clicks,
+    filename_input,
+    store,
+    extrema_mode,
+    extended_export,
+    period,
+    epoch,
+):
+    """Downloads compact selected TOMs or an extended ZIP of the MAVKA run."""
+    logger.debug(
+        "MAVKA download: filename=%s extended=%s",
+        filename_input,
+        extended_export,
+    )
+    if not n_clicks or not store:
+        return no_update
+
+    rows = store.get("rows") or []
+    include = store.get("include") or []
+    if len(include) != len(rows):
+        return no_update
+
+    if extended_export:
+        run_id = store.get("run_id")
+        if not run_id:
+            return no_update
+        try:
+            entries = load_mavka_review_run(run_id)
+        except KeyError as exc:
+            raise PreventUpdate from exc
+        if len(entries) != len(include):
+            return no_update
+        bundle_folder = mavka_extrema_export_stem(filename_input)
+        zip_bytes = build_mavka_extended_export_zip(
+            entries,
+            include,
+            bundle_folder=bundle_folder,
+            display_epoch=jd0,
+            extrema_mode=extrema_mode or "min",
+            period=None if period in (None, "") else str(period),
+            epoch=None if epoch in (None, "") else str(epoch),
+        )
+        outfile = mavka_extended_extrema_download_name(filename_input)
+        return dcc.send_bytes(zip_bytes, outfile)
+
+    body = format_mavka_compact_extrema_dat(
+        rows,
+        include,
+        extrema_mode=extrema_mode or "min",
+        period=None if period in (None, "") else str(period),
+        epoch=None if epoch in (None, "") else str(epoch),
+    )
+    outfile = mavka_compact_extrema_download_name(filename_input)
+    return dcc.send_string(body, outfile)
+
+
+@callback(
+    Output("mavka-graphs-container", "children", allow_duplicate=True),
+    Output("store-mavka-results-data", "data", allow_duplicate=True),
+    Output("mavka-review-page-label", "children", allow_duplicate=True),
+    Input("mavka-review-prev", "n_clicks"),
+    Input("mavka-review-next", "n_clicks"),
+    State("store-mavka-results-data", "data"),
+    prevent_initial_call=True,
+)
+def change_mavka_review_page(prev_clicks, next_clicks, store):
+    """Shows the previous or next page of MAVKA fit cards in Review and Export."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    if triggered not in ("mavka-review-prev", "mavka-review-next"):
+        raise PreventUpdate
+
+    page = int(store.get("page", 0))
+    total = len(store.get("include") or [])
+    if total == 0:
+        raise PreventUpdate
+
+    import math
+
+    total_pages = max(1, math.ceil(total / MAVKA_REVIEW_PAGE_SIZE))
+    if triggered == "mavka-review-prev":
+        page = max(0, page - 1)
+    else:
+        page = min(total_pages - 1, page + 1)
+
+    entries = load_mavka_review_run(store["run_id"])
+    children = render_mavka_review_page(entries, page, store["include"])
+    label = mavka_review_page_label(page, total)
+    new_store = {**store, "page": page}
+    return children, new_store, label
+
+
+@callback(
+    Output("store-mavka-results-data", "data", allow_duplicate=True),
+    Output("mavka-graphs-container", "children", allow_duplicate=True),
+    Input("mavka-select-all-btn", "n_clicks"),
+    Input("mavka-unselect-all-btn", "n_clicks"),
+    State("store-mavka-results-data", "data"),
+    prevent_initial_call=True,
+)
+def mavka_review_select_all(select_clicks, unselect_clicks, store):
+    """Toggles include-in-export flags for every MAVKA fit, then refreshes the page."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    rows = store.get("rows") or []
+    n = len(rows)
+    if n == 0:
+        raise PreventUpdate
+
+    if triggered == "mavka-unselect-all-btn":
+        include = [False] * n
+    else:
+        include = [not row.get("is_fail") for row in rows]
+
+    page = int(store.get("page", 0))
+    entries = load_mavka_review_run(store["run_id"])
+    children = render_mavka_review_page(entries, page, include)
+    return {**store, "include": include}, children
+
+
+@callback(
+    Output("store-mavka-results-data", "data", allow_duplicate=True),
+    Input({"type": "mavka-fit-selector", "index": ALL}, "value"),
+    State({"type": "mavka-fit-selector", "index": ALL}, "id"),
+    State("store-mavka-results-data", "data"),
+    prevent_initial_call=True,
+)
+def mavka_review_sync_include_checkbox(values, ids, store):
+    """Persists include-in-export toggles for MAVKA fits on the visible review page."""
+    if not store or not ids:
+        raise PreventUpdate
+
+    include = list(store.get("include") or [])
+    for val, comp_id in zip(values, ids):
+        idx = comp_id["index"]
+        if 0 <= idx < len(include):
+            include[idx] = bool(val)
+    return {**store, "include": include}
+
+
+@callback(
+    Output("mavka-final-review-container", "style"),
+    Output("mavka-live-graphs-container", "style"),
+    Output("mavka-live-progress-label", "style"),
+    Input("mavka-finished-signal", "children"),
+    prevent_initial_call=True,
+)
+def switch_mavka_modes(signal):
+    """Toggles MAVKA live grid versus review once the batch finishes or stops."""
+    logger.debug("switch_mavka_modes signal=%s", signal)
+    if signal in ("FINISHED", "FINISHED_STOPPED"):
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}
+    return {"display": "none"}, {"display": "flex"}, {"display": "block"}

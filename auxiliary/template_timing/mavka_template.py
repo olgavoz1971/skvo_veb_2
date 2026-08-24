@@ -43,6 +43,88 @@ def _points_in_intervals(
     return mask
 
 
+def _interval_midpoints(
+    intervals: list[tuple[float, float]],
+    *,
+    t_min: float,
+    t_max: float,
+) -> np.ndarray:
+    """Midpoints of intervals that overlap the template window.
+
+    Args:
+        intervals (list[tuple[float, float]]): Absolute JD interval pairs.
+        t_min (float): Template window start (absolute JD).
+        t_max (float): Template window end (absolute JD).
+
+    Returns:
+        numpy.ndarray: Midpoint JD values.
+
+    Raises:
+        ValueError: If no interval overlaps the window.
+    """
+    mids: list[float] = []
+    for t0, t1 in intervals:
+        lo, hi = (t0, t1) if t0 <= t1 else (t1, t0)
+        if hi < t_min or lo > t_max:
+            continue
+        mids.append(0.5 * (lo + hi))
+    if not mids:
+        raise ValueError(
+            f"no timing intervals overlap the template window [{t_min}, {t_max}]"
+        )
+    return np.asarray(mids, dtype=float)
+
+
+def circular_mean_phase(
+    phases: np.ndarray,
+) -> float:
+    """Circular mean of centred phases in ``[-0.5, 0.5]``.
+
+    Args:
+        phases (numpy.ndarray): Phase values (typically from :func:`phase_centred`).
+
+    Returns:
+        float: Mean phase in ``(-0.5, 0.5]``.
+
+    Raises:
+        ValueError: If ``phases`` is empty.
+    """
+    phi = np.asarray(phases, dtype=float).ravel()
+    if phi.size == 0:
+        raise ValueError("circular_mean_phase requires at least one phase")
+    angles = 2.0 * np.pi * phi
+    mean = float(np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles))))
+    return mean / (2.0 * np.pi)
+
+
+def mavka_phase_window_shift(
+    intervals: list[tuple[float, float]],
+    *,
+    fold_epoch: float,
+    fold_period: float,
+    t_min: float,
+    t_max: float,
+) -> float:
+    """Phase shift that centres the interval stack away from the ±0.5 wrap.
+
+    Uses the common ephemeris epoch; the shift is the circular mean phase of
+    interval midpoints (one extremum per interval). Secondary stacks near
+    phase 0.5 get ``≈±0.5`` so τ stays contiguous after re-centring.
+
+    Args:
+        intervals (list[tuple[float, float]]): Absolute JD interval pairs.
+        fold_epoch (float): Common fold / ephemeris epoch (absolute JD).
+        fold_period (float): Fold period (days).
+        t_min (float): Template window start (absolute JD).
+        t_max (float): Template window end (absolute JD).
+
+    Returns:
+        float: Phase shift ``φ_anchor`` in ``(-0.5, 0.5]``.
+    """
+    mids = _interval_midpoints(intervals, t_min=t_min, t_max=t_max)
+    return circular_mean_phase(phase_centred(mids, fold_epoch, fold_period))
+
+
 def fold_interval_stack(
     df: pd.DataFrame,
     *,
@@ -51,25 +133,29 @@ def fold_interval_stack(
     intervals: list[tuple[float, float]],
     fold_epoch: float,
     fold_period: float,
-) -> pd.DataFrame:
-    """Fold LC points that fall in any timing interval (single phase copy).
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Fold LC points in timing intervals (single contiguous phase copy).
 
-    Unlike the GP extended fold, MAVKA models one extremum, so each point is
-    kept once at centred phase ``τ = φ P``.
+    Keeps the common ``fold_epoch``, then shifts the phase window so the stacked
+    extremum is contiguous near τ≈0 (avoids splitting a feature at the centred
+    phase wrap ±0.5). Unlike the GP extended fold, each point is kept once.
 
     Args:
         df (pandas.DataFrame): Full light curve with ``jd`` / ``phot`` / ``phot_err``.
         t_min (float): Template window start (absolute JD).
         t_max (float): Template window end (absolute JD).
         intervals (list[tuple[float, float]]): Absolute JD interval pairs.
-        fold_epoch (float): Fold epoch (absolute JD).
+        fold_epoch (float): Common fold epoch (absolute JD).
         fold_period (float): Fold period (days).
 
     Returns:
-        pandas.DataFrame: Columns ``tau``, ``phot``, ``phot_err``.
+        tuple[pandas.DataFrame, dict[str, float]]: Folded ``tau`` / ``phot`` /
+        ``phot_err``, and fold diagnostics (``phase_window_shift``,
+        ``fold_epoch_ephemeris``, ``fold_epoch_tau``).
 
     Raises:
-        ValueError: If the window or interval mask yields no points.
+        ValueError: If the window or interval mask yields no points, or the
+            folded stack still spans nearly a full period (wrap split).
     """
     if fold_period <= 0:
         raise ValueError("fold_period must be positive")
@@ -82,23 +168,49 @@ def fold_interval_stack(
         raise ValueError(
             "no LC points fall inside any timing interval within the template window"
         )
+    phi_anchor = mavka_phase_window_shift(
+        intervals,
+        fold_epoch=fold_epoch,
+        fold_period=fold_period,
+        t_min=t_min,
+        t_max=t_max,
+    )
+    fold_epoch_tau = float(fold_epoch + phi_anchor * fold_period)
     sel = piece.loc[in_int]
     times = sel["jd"].to_numpy(dtype=float)
-    phi = phase_centred(times, fold_epoch, fold_period)
+    phi = phase_centred(times, fold_epoch_tau, fold_period)
     tau = phi * fold_period
+    tau_span = float(np.max(tau) - np.min(tau))
+    if tau_span >= 0.95 * fold_period:
+        raise ValueError(
+            "MAVKA interval stack still spans "
+            f"{tau_span:.5f} d (>= 0.95 P={fold_period:.5f} d) after phase-window "
+            f"shift {phi_anchor:+.5f}; the folded support is not a single contiguous "
+            "extremum (check intervals / period)"
+        )
     phot = sel["phot"].to_numpy(dtype=float)
     if "phot_err" in sel.columns:
         err = sel["phot_err"].to_numpy(dtype=float)
     else:
         err = np.full_like(phot, np.nan)
     logger.info(
-        "MAVKA stack: %s / %s points in intervals (window [%s, %s])",
+        "MAVKA stack: %s / %s points in intervals (window [%s, %s]); "
+        "phase_window_shift=%+.5f (τ origin JD=%s, ephemeris epoch JD=%s)",
         int(np.count_nonzero(in_int)),
         len(piece),
         t_min,
         t_max,
+        phi_anchor,
+        fold_epoch_tau,
+        fold_epoch,
     )
-    return pd.DataFrame({"tau": tau, "phot": phot, "phot_err": err})
+    folded = pd.DataFrame({"tau": tau, "phot": phot, "phot_err": err})
+    fold_info = {
+        "phase_window_shift": float(phi_anchor),
+        "fold_epoch_ephemeris": float(fold_epoch),
+        "fold_epoch_tau": fold_epoch_tau,
+    }
+    return folded, fold_info
 
 
 def _eligible_for_best(result: ApproxFitResult) -> bool:
@@ -374,7 +486,8 @@ def build_piece_template_mavka(
         piece_id (str): Piece id.
         t_obs_min (float): Template window start JD.
         t_obs_max (float): Template window end JD.
-        fold_epoch (float): Fold epoch JD.
+        fold_epoch (float): Common fold / ephemeris epoch JD (phase window may
+            shift for a contiguous stack; meta ``fold_epoch`` is the τ origin).
         fold_period (float): Fold period (days).
         default_epoch (float): Manifest default epoch (provenance).
         default_period (float): Manifest default period (provenance).
@@ -404,7 +517,7 @@ def build_piece_template_mavka(
         raise ValueError(f"piece {piece_id}: MAVKA template requires timing intervals")
 
     df_raw, lc_meta = load_lightcurve_frame(lc_path, working_domain=working_domain)
-    folded = fold_interval_stack(
+    folded, fold_info = fold_interval_stack(
         df_raw,
         t_min=t_obs_min,
         t_max=t_obs_max,
@@ -412,6 +525,7 @@ def build_piece_template_mavka(
         fold_epoch=fold_epoch,
         fold_period=fold_period,
     )
+    fold_epoch_tau = float(fold_info["fold_epoch_tau"])
     frag = photometry_fragment_to_flux(
         folded,
         lc_meta,
@@ -479,8 +593,9 @@ def build_piece_template_mavka(
         "piece_id": piece_id,
         "template_engine": "mavka",
         "fold_mode": "constant",
-        "fold_epoch": fold_epoch,
-        "t_ref": fold_epoch,
+        # τ-axis origin for Step 2 (common epoch + phase-window shift).
+        "fold_epoch": fold_epoch_tau,
+        "t_ref": fold_epoch_tau,
         "default_epoch": default_epoch,
         "P0_ephemeris": fold_period,
         "fold_period": fold_period,
@@ -491,7 +606,10 @@ def build_piece_template_mavka(
         "t_obs_min": t_obs_min,
         "t_obs_max": t_obs_max,
         "extended_fold": False,
-        "tau_units": "days (phi * P, phase 0 at tau=0; single copy, interval stack)",
+        "tau_units": (
+            "days (single copy, interval stack; phase window shifted so the "
+            "stacked extremum is contiguous near tau=0)"
+        ),
         "extrema_mode": mavka_cfg.extrema_mode,
         "tau_peak": tau_peak,
         "tau_peak_source": "mavka_tom",
@@ -517,6 +635,9 @@ def build_piece_template_mavka(
             "rms": winner.rms,
             "sigma_t_ext_d": winner.sigma_t_ext,
             "n_points": winner.n_points,
+            "phase_window_shift": fold_info["phase_window_shift"],
+            "fold_epoch_ephemeris": fold_info["fold_epoch_ephemeris"],
+            "fold_epoch_tau": fold_epoch_tau,
             "trials": trial_summary,
             "sigma_grid_note": (
                 "placeholder = fit residual RMS; formal template σ deferred"

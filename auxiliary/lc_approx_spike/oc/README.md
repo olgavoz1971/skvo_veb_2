@@ -28,11 +28,15 @@ Same rule as ``auxiliary/oc``: for every TOM with ``jd_ext >= at_time``, add
 
 ### Outputs
 
-Written next to the TOM CSV (or ``--out-dir``):
+Written next to the TOM CSV (or ``--out-dir`` / beside ``--out-csv``):
 
 | File | Content |
 |------|---------|
-| ``oc_<method>.csv`` | ``cycle_number``, ``jd_ext``, ``OC``, ``sigma_jd_ext``, ``sigma_s`` |
+| ``oc_<method>.csv`` (default) | ``cycle_number``, ``jd_ext``, ``OC``, ``sigma_jd_ext``, ``sigma_s`` |
+| ``<csv_stem>_<method>.dat`` | xmgrace beside the CSV: ``cycle_number  OC  sigma_jd_ext`` (``  `` separators; header/provenance ``#``-commented) |
 | ``oc_<method>.png`` | O-C vs E with σ(TOM) error bars (if ``--save-plot``) |
+
+Example: ``--out-csv .../oc_prim.csv --method WSAP`` also writes ``.../oc_prim_wsap.dat``.
+Override the dat name with ``--out-dat`` if needed; ``--out-fig`` for the PNG.
 
 ``approx_compare.csv`` is also accepted (wide columns).

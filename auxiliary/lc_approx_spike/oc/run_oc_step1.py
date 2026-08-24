@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from oc_step1 import (  # noqa: E402
     compute_step1_oc,
     export_step1_oc_csv,
+    export_step1_oc_dat,
     parse_cycle_shifts,
     plot_step1_oc,
     to_absolute_jd,
@@ -102,7 +103,19 @@ def main() -> None:
         "--out-csv",
         type=str,
         default=None,
-        help="O-C table filename (default: oc_<method>.csv)",
+        help=(
+            "O-C CSV path or filename (default: oc_<method>.csv under --out-dir). "
+            "The xmgrace .dat is written beside it as <csv_stem>_<method>.dat"
+        ),
+    )
+    parser.add_argument(
+        "--out-dat",
+        type=str,
+        default=None,
+        help=(
+            "Optional xmgrace .dat path override; default is "
+            "<out-csv stem>_<method>.dat in the same folder as the CSV"
+        ),
     )
     parser.add_argument(
         "--out-fig",
@@ -136,7 +149,23 @@ def main() -> None:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     method_tag = method.lower()
-    out_csv = out_dir / (args.out_csv if args.out_csv else f"oc_{method_tag}.csv")
+    if args.out_csv is not None:
+        out_csv = Path(args.out_csv)
+        if not out_csv.is_absolute():
+            out_csv = out_dir / out_csv
+    else:
+        out_csv = out_dir / f"oc_{method_tag}.csv"
+    out_csv = out_csv.resolve()
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.out_dat is not None:
+        out_dat = Path(args.out_dat)
+        if not out_dat.is_absolute():
+            out_dat = out_csv.parent / out_dat
+        out_dat = out_dat.resolve()
+    else:
+        out_dat = out_csv.with_name(f"{out_csv.stem}_{method_tag}.dat")
+
     out_fig = out_dir / (args.out_fig if args.out_fig else f"oc_{method_tag}.png")
 
     t0_jd = to_absolute_jd(float(args.t0), scale=args.time_scale)
@@ -159,6 +188,16 @@ def main() -> None:
         jd_ext=jd_ext,
         sigma_jd=sigma_jd,
         intervals=intervals,
+        method=method,
+        t0_jd=t0_jd,
+        p0=p0,
+        cycle_shifts=cycle_shifts,
+    )
+    export_step1_oc_dat(
+        out_dat,
+        E=E,
+        OC=OC,
+        sigma_jd=sigma_jd,
         method=method,
         t0_jd=t0_jd,
         p0=p0,

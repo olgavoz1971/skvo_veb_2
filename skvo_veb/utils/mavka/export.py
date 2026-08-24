@@ -1,4 +1,4 @@
-"""GP extrema timing compact and extended (ZIP) result exports."""
+"""MAVKA extrema timing compact and extended (ZIP) result exports."""
 
 from __future__ import annotations
 
@@ -9,16 +9,60 @@ from typing import Any
 import plotly.graph_objects as go
 
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
-from skvo_veb.utils.my_tools import PipeException
+from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
 EXTENDED_RESULTS_FILENAME = "results.tsv"
 EXTENDED_PLOTS_DIR = "plots"
 EXTENDED_README_FILENAME = "README.txt"
+MAVKA_EXTREMA_COMPACT_EXTENSION = "dat"
+MAVKA_EXTREMA_EXTENDED_SUFFIX = "_mavka_extrema"
 
 _RESULTS_HEADER = (
     "jd_peak\tjd_peak_std\tjd_interval_start\tjd_interval_stop\t"
-    "status\tkernel\tlength_scale\tamplitude\tplot_file\terror\n"
+    "status\trms\tc4\tc5\ty_ext\twarning\tplot_file\terror\n"
 )
+
+
+def mavka_extrema_export_stem(stem: str | None) -> str:
+    """Normalises the MAVKA extrema export basename from the review filename field.
+
+    Args:
+        stem (str | None): User-entered stem or legacy filename with extension.
+
+    Returns:
+        str: Sanitised basename without ``.dat`` / ``.zip`` suffixes.
+    """
+    raw = (stem or "results_mavka").strip() or "results_mavka"
+    safe = sanitize_filename(raw) or "results_mavka"
+    for suffix in (".dat", ".zip"):
+        if safe.lower().endswith(suffix):
+            safe = safe[: -len(suffix)]
+    return safe or "results_mavka"
+
+
+def mavka_compact_extrema_download_name(stem: str | None) -> str:
+    """Resolves the compact MAVKA extrema ``.dat`` download filename.
+
+    Args:
+        stem (str | None): User-entered export stem.
+
+    Returns:
+        str: Sanitised ``*.dat`` filename.
+    """
+    return f"{mavka_extrema_export_stem(stem)}.{MAVKA_EXTREMA_COMPACT_EXTENSION}"
+
+
+def mavka_extended_extrema_download_name(stem: str | None) -> str:
+    """Resolves the extended MAVKA extrema ZIP download filename.
+
+    Args:
+        stem (str | None): User-entered export stem.
+
+    Returns:
+        str: Sanitised ``*_mavka_extrema.zip`` filename.
+    """
+    base = mavka_extrema_export_stem(stem)
+    return f"{base}{MAVKA_EXTREMA_EXTENDED_SUFFIX}.zip"
 
 
 def jd_to_display_mjd(jd: float, display_epoch: float = DEFAULT_EPOCH_JD) -> float:
@@ -71,7 +115,7 @@ def assign_plot_filenames(
     Args:
         entries (list[dict]): Full review cache rows.
         include_flags (list[bool]): Per-row include flags from the UI store.
-        display_epoch (float): GP prep plot epoch offset.
+        display_epoch (float): Prep plot epoch offset.
 
     Returns:
         list[str]: Relative ZIP paths aligned with ``entries``.
@@ -96,7 +140,7 @@ def figure_json_to_png_bytes(figure_json: dict) -> bytes:
     Uses Kaleido defaults (review-card layout size; no upscale).
 
     Args:
-        figure_json (dict): Serialised figure from the GP review cache.
+        figure_json (dict): Serialised figure from the MAVKA review cache.
 
     Returns:
         bytes: PNG image data.
@@ -114,11 +158,11 @@ def figure_json_to_png_bytes(figure_json: dict) -> bytes:
 
 
 def format_failure_plot_stub(entry: dict, display_epoch: float) -> str:
-    """Builds a text stub for a failed fit (no GP figure available).
+    """Builds a text stub for a failed fit (no MAVKA figure available).
 
     Args:
         entry (dict): Failed review row.
-        display_epoch (float): GP prep plot epoch offset.
+        display_epoch (float): Prep plot epoch offset.
 
     Returns:
         str: Human-readable failure summary.
@@ -127,12 +171,37 @@ def format_failure_plot_stub(entry: dict, display_epoch: float) -> str:
     jd_max = entry.get("jd_max")
     mjd_lo = jd_to_display_mjd(jd_min, display_epoch)
     mjd_hi = jd_to_display_mjd(jd_max, display_epoch)
+    method = entry.get("method") or ""
     return (
-        "GP fit failed\n"
+        "MAVKA fit failed\n"
+        f"Method: {method}\n"
         f"Interval MJD: {mjd_lo:.6f} – {mjd_hi:.6f}\n"
         f"Interval JD: {jd_min} – {jd_max}\n"
         f"Error: {entry.get('error', '')}\n"
     )
+
+
+def _method_comment_line(entries: list[dict]) -> str:
+    """Builds a ``# Method:`` metadata line from the fitted method ids.
+
+    A hash comment is not a TSV data row. Pandas, Astropy and ``numpy.loadtxt``
+    skip ``#`` lines, so the header and table below stay valid TSV.
+
+    Args:
+        entries (list[dict]): Review cache rows (may include failures).
+
+    Returns:
+        str: One comment line ending in a newline.
+    """
+    methods: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        method = str(entry.get("method") or "").strip()
+        if method and method not in seen:
+            seen.add(method)
+            methods.append(method)
+    used = ", ".join(methods)
+    return f"# Method: {used}\n"
 
 
 def _format_float_cell(value: Any) -> str:
@@ -155,15 +224,18 @@ def build_extended_results_tsv(
 ) -> str:
     """Builds the extended results table (tab-separated, one row per fit).
 
+    A ``# Method:`` comment precedes the header. That line is metadata, not a
+    table row; TSV parsers that honour ``#`` comments will skip it.
+
     Args:
         entries (list[dict]): Full review cache rows.
         include_flags (list[bool]): Per-row include flags.
         plot_files (list[str]): Relative plot paths from ``assign_plot_filenames``.
 
     Returns:
-        str: TSV body including header row.
+        str: TSV body including comment, header, and data rows.
     """
-    lines = [_RESULTS_HEADER]
+    lines = [_method_comment_line(entries), _RESULTS_HEADER]
     for entry, included, plot_file in zip(
         entries, include_flags, plot_files, strict=True
     ):
@@ -176,9 +248,7 @@ def build_extended_results_tsv(
         else:
             jd_peak = _format_float_cell(entry.get("jd_peak"))
             jd_peak_std = _format_float_cell(entry.get("jd_peak_std"))
-        kernel = entry.get("kernel_type") or ""
-        length_scale = _format_float_cell(entry.get("length_scale"))
-        amplitude = _format_float_cell(entry.get("amplitude"))
+        warning = (entry.get("warning") or "").replace("\t", " ").replace("\n", " ")
         error = (entry.get("error") or "").replace("\t", " ").replace("\n", " ")
         lines.append(
             "\t".join(
@@ -188,9 +258,11 @@ def build_extended_results_tsv(
                     _format_float_cell(jd_min),
                     _format_float_cell(jd_max),
                     status,
-                    str(kernel),
-                    length_scale,
-                    amplitude,
+                    _format_float_cell(entry.get("rms")),
+                    _format_float_cell(entry.get("c4")),
+                    _format_float_cell(entry.get("c5")),
+                    _format_float_cell(entry.get("y_ext")),
+                    warning,
                     plot_file,
                     error,
                 ]
@@ -205,41 +277,70 @@ def format_compact_extrema_dat(
     include_flags: list[bool],
     *,
     extrema_mode: str,
+    period: str | None = None,
+    epoch: str | None = None,
 ) -> str:
-    """Formats the legacy compact extrema timing file (selected successes only).
+    """Formats the compact extrema timing file (selected successes only).
 
     Args:
-        rows (list[dict]): Slim rows from ``store-results-data``.
+        rows (list[dict]): Slim rows from ``store-mavka-results-data``.
         include_flags (list[bool]): Per-row include flags.
-        extrema_mode (str): ``min`` or ``max`` from the GP sidebar.
+        extrema_mode (str): ``min`` or ``max`` from the MAVKA sidebar.
+        period (str | None): Folding period from accordion 1 (comment only).
+        epoch (str | None): Display epoch from accordion 1 (comment only).
 
     Returns:
         str: ``.dat`` file body.
+
+    Raises:
+        PipeException: If a selected success row has no TOM.
     """
     mode_label = "Minimum" if extrema_mode == "min" else "Maximum"
     lines = [
-        f"# GP {mode_label} Results\n",
-        f"# JD_{mode_label}\tJD_Std\n",
+        f"# MAVKA {mode_label} Results\n",
     ]
+    if period:
+        lines.append(f"# PERIOD = {period}\n")
+    if epoch:
+        lines.append(f"# EPOCH = {epoch}\n")
+    lines.append(f"# JD_{mode_label}\tJD_Std\n")
     for is_selected, row in zip(include_flags, rows, strict=True):
         if is_selected and not row.get("is_fail"):
-            lines.append(
-                f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n"
-            )
+            jd_peak = row.get("jd_peak")
+            if jd_peak is None:
+                raise PipeException(
+                    "Selected MAVKA result is missing TOM (jd_peak)."
+                )
+            jd_std = row.get("jd_peak_std")
+            std_txt = "" if jd_std is None else f"{float(jd_std):.6f}"
+            lines.append(f"{float(jd_peak):.6f}\t{std_txt}\n")
     return "".join(lines)
 
 
-def _extended_readme(extrema_mode: str) -> str:
+def _extended_readme(
+    extrema_mode: str,
+    *,
+    period: str | None = None,
+    epoch: str | None = None,
+) -> str:
     """Returns a short README for the extended export bundle."""
     mode_label = "minimum" if extrema_mode == "min" else "maximum"
+    period_line = f"Period (days): {period}\n" if period else "Period (days): (not set)\n"
+    epoch_line = (
+        f"Epoch (display units): {epoch}\n" if epoch else "Epoch: (not set)\n"
+    )
     return (
-        "GP extrema extended export\n"
-        "==========================\n"
+        "MAVKA extrema extended export\n"
+        "=============================\n"
         f"Timing mode: {mode_label}\n"
+        f"{period_line}"
+        f"{epoch_line}"
         "Plot format: PNG (review-card size, ~700×400 px).\n"
-        f"{EXTENDED_RESULTS_FILENAME}: one row per interval fit (accepted, rejected, failed).\n"
+        f"{EXTENDED_RESULTS_FILENAME}: ``# Method:`` comment, then one TSV row per fit "
+        "(accepted, rejected, failed).\n"
         f"{EXTENDED_PLOTS_DIR}/: PNG fit plots or failure stubs (.txt).\n"
         "Link rows to plots via the plot_file column.\n"
+        "Photometric uncertainties are not used in the fit; σ(TOM) is from covariance.\n"
     )
 
 
@@ -249,7 +350,9 @@ def build_extended_export_zip(
     *,
     bundle_folder: str,
     display_epoch: float = DEFAULT_EPOCH_JD,
-    extrema_mode: str = "max",
+    extrema_mode: str = "min",
+    period: str | None = None,
+    epoch: str | None = None,
 ) -> bytes:
     """Builds a ZIP archive with results table and per-fit plot artefacts.
 
@@ -257,8 +360,10 @@ def build_extended_export_zip(
         entries (list[dict]): Full review cache rows.
         include_flags (list[bool]): Per-row include flags (for status labelling).
         bundle_folder (str): Root folder name inside the ZIP.
-        display_epoch (float): GP prep plot epoch offset.
-        extrema_mode (str): ``min`` or ``max`` from the GP sidebar.
+        display_epoch (float): Prep plot epoch offset.
+        extrema_mode (str): ``min`` or ``max`` from the MAVKA sidebar.
+        period (str | None): Folding period from accordion 1 (metadata only).
+        epoch (str | None): Display epoch from accordion 1 (metadata only).
 
     Returns:
         bytes: ZIP file content.
@@ -271,13 +376,14 @@ def build_extended_export_zip(
         include_flags,
         display_epoch=display_epoch,
     )
-    tsv = build_extended_results_tsv(
-        entries, include_flags, plot_files
-    )
+    tsv = build_extended_results_tsv(entries, include_flags, plot_files)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         prefix = f"{bundle_folder}/"
-        zf.writestr(f"{prefix}{EXTENDED_README_FILENAME}", _extended_readme(extrema_mode))
+        zf.writestr(
+            f"{prefix}{EXTENDED_README_FILENAME}",
+            _extended_readme(extrema_mode, period=period, epoch=epoch),
+        )
         zf.writestr(f"{prefix}{EXTENDED_RESULTS_FILENAME}", tsv)
         for entry, plot_path in zip(entries, plot_files, strict=True):
             full_path = f"{prefix}{plot_path}"

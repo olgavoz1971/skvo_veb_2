@@ -272,3 +272,55 @@ def export_step1_oc_csv(
                 }
             )
     logger.info("Wrote %s (%s row(s))", path, len(E))
+
+
+def export_step1_oc_dat(
+    path: Path,
+    *,
+    E: np.ndarray,
+    OC: np.ndarray,
+    sigma_jd: np.ndarray,
+    method: str,
+    t0_jd: float,
+    p0: float,
+    cycle_shifts: list[tuple[float, int]],
+) -> None:
+    """Write a compact xmgrace ``.dat`` (double-space columns).
+
+    Non-data lines (provenance and the column header) are ``#``-commented.
+    Columns, in order: ``cycle_number``, ``OC``, ``sigma_jd_ext``.
+
+    Args:
+        path (Path): Output ``.dat`` path.
+        E (numpy.ndarray): Cycles.
+        OC (numpy.ndarray): Residuals (days).
+        sigma_jd (numpy.ndarray): TOM σ (days).
+        method (str): Method id.
+        t0_jd (float): Trial epoch JD.
+        p0 (float): Trial period (days).
+        cycle_shifts (list[tuple[float, int]]): Applied shifts.
+    """
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sep = "  "
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write("# oc_tool: lc_approx_spike/oc/run_oc_step1\n")
+        handle.write("# task: plot_oc_residuals (step 1 only)\n")
+        handle.write(
+            "# algorithm: O-C = jd_ext - (T0 + E*P0); "
+            "E = round((jd_ext-T0)/P0) after cycle_shifts\n"
+        )
+        handle.write(f"# method: {method}\n")
+        handle.write(f"# ephemeris_T0_JD: {t0_jd:.8f}\n")
+        handle.write(f"# ephemeris_P0_d: {p0:.10f}\n")
+        handle.write(f"# cycle_shifts_applied: {len(cycle_shifts)}\n")
+        for at_jd, delta in cycle_shifts:
+            handle.write(f"# cycle_shift: at_jd={at_jd:.8f} delta_E={delta}\n")
+        handle.write(f"# cycle_number{sep}OC{sep}sigma_jd_ext\n")
+        for i in range(len(E)):
+            sig = float(sigma_jd[i])
+            sig_txt = f"{sig:.10e}" if np.isfinite(sig) else "nan"
+            handle.write(
+                f"{int(E[i])}{sep}{float(OC[i]):.10e}{sep}{sig_txt}\n"
+            )
+    logger.info("Wrote %s (%s row(s))", path, len(E))

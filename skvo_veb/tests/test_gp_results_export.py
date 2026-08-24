@@ -18,9 +18,7 @@ from skvo_veb.utils.gp.results_export import (
     figure_json_to_png_bytes,
     fit_export_status,
     format_compact_extrema_dat,
-    jd_to_display_mjd,
 )
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
 
 
 def _sample_success_entry(
@@ -61,21 +59,23 @@ def test_assign_plot_filenames_uses_png():
     assert paths[0].endswith(".png")
 
 
-def test_build_extended_results_tsv_includes_interval_mjd_and_fit_params():
-    """Extended table carries MJD interval bounds and GP hyper-parameters."""
+def test_build_extended_results_tsv_includes_interval_jd_and_fit_params():
+    """Extended table carries JD interval bounds and GP hyper-parameters, not MJD."""
     entry = _sample_success_entry()
     plot_files = assign_plot_filenames([entry], [True])
     tsv = build_extended_results_tsv([entry], [True], plot_files)
     header, row = tsv.strip().splitlines()
-    assert "mjd_interval_start" in header
+    assert "mjd_peak" not in header
+    assert "mjd_interval_start" not in header
+    assert "mjd_interval_stop" not in header
     assert "length_scale" in header
     cells = row.split("\t")
-    assert cells[0] == f"{jd_to_display_mjd(entry['jd_peak'], DEFAULT_EPOCH_JD):.2f}"
-    assert cells[1] == "50998.50000000"
-    assert cells[2] == "51000.50000000"
-    assert cells[7] == "accepted"
-    assert cells[8] == "matern"
-    assert cells[9] == "0.12000000"
+    assert cells[0] == "2451000.12345600"
+    assert cells[2] == "2450999.00000000"
+    assert cells[3] == "2451001.00000000"
+    assert cells[4] == "accepted"
+    assert cells[5] == "matern"
+    assert cells[6] == "0.12000000"
 
 
 def test_format_compact_extrema_dat_keeps_selected_successes_only():
