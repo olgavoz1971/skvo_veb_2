@@ -230,22 +230,33 @@ Use About for this overview. Each accordion has its own help for that step.
 MAVKA_HELP_MARKDOWN = """
 ## About the MAVKA minima-timing tool
 
-The underlying method was developed by **I. L. Andronov**, together with co-authors, as a statistically optimal approach to determining the phenomenological parameters of light-curve extrema — that is, parameters describing the *shape* of an eclipse or minimum as observed, without assuming an underlying physical (geometric or radiative) model of the star system.
+The underlying method was developed by **I. L. Andronov**, together with co-authors, as a statistically optimal approach to determining the **phenomenological** parameters of light-curve extrema — that is, parameters describing the *shape* of an eclipse or minimum as observed, without assuming an underlying physical (geometric or radiative) model of the star system.
 
 The light curve is fitted piecewise: a smooth central function covers the region around the extremum, and — where the shape requires it — separate "wing" functions cover the branches on either side, joined at one or two **knots** (transition points between the pieces). The knot positions are not fixed in advance; they are solved for as part of the fit, together with the timing and depth of the minimum.
 
 Four fitting methods are available:
 
-- **Asymptotic Parabola (AP)** — a single smooth, gently rounded curve for typical minima.
-- **Wall-Supported Asymptotic Parabola (WSAP)** — for minima with a flat or near-flat base (e.g. total eclipses). The wings are modelled with a power-law exponent of **1.5**, a deliberate compromise between a straight line (exponent 1) and a full parabola (exponent 2): it lets the branches curve near the minimum while flattening further out, avoiding the unrealistically steep rise a pure parabola would give far from the extremum.
-- **Wall-Supported Line (WSL)** — for minima with a genuinely flat base and steep, straight sides.
+- **Asymptotic Parabola (AP)** - a single smooth, gently rounded curve for typical minima.
+- **Wall-Supported Asymptotic Parabola (WSAP)** - for minima with a flat or near-flat base (e.g. total eclipses). The wings are modelled with a power-law exponent of **1.5**, which is not an arbitrary numerical choice: it is the theoretically expected rate at which the eclipsed area — and hence the flux — changes near the moment of first/last contact between two circular stellar disks (see 2, and 3). (In the special case of two stars of equal radius, the exponent at inner contact reduces to 1, i.e. a straight line.)
+- **Wall-Supported Line (WSL)** - for minima with a genuinely flat base and steep, straight sides, using the same 1.5-power "wall."
 - **Two-line fit (A)** — a simpler method for sparse or noisy data, approximating the branches as two straight lines meeting near the minimum.
 
 The tool reports the time of minimum with its formal uncertainty, the magnitude (depth) at minimum, and — where applicable — the eclipse duration, together with a plot of the fit for visual verification.
 
 ## Acknowledgements
 
-The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chinarova for the statistically optimal determination of phenomenological parameters of light-curve extrema (Andrych, Andronov & Chinarova, 2020, *Journal of Physical Studies*, 24, 1902). This implementation builds on the open-source Python realisation of the method by Maxim Pyatnytskyy (github.com/mpyat2/lc_approx). We gratefully acknowledge the authors of both the original algorithm and its Python implementation.
+The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chinarova (and co-authors) for the statistically optimal determination of phenomenological parameters of light-curve extrema. This implementation builds on the open-source Python realisation of the method by Maxim Pyatnytskyy. We gratefully acknowledge the authors of both the original algorithm and its Python implementation.
+
+**If you use results obtained with this tool, please cite** the original MAVKA method paper and, where the WSAP or WSL methods are used, the paper introducing the "wall-supported" functions. If you use this specific implementation, please also acknowledge the Python code.
+
+## References
+
+1. Marsakova, V. I., Andronov, I. L. 1996, *Odessa Astronomical Publications*, 9, 127.
+2. Andronov, I. L. 2012, *Astrophysics*, 55, 536. DOI: [10.1007/s10511-012-9259-0](https://doi.org/10.1007/s10511-012-9259-0)
+3. Andrych, K. D., Andronov, I. L., Chinarova, L. L. 2018, *Statistically Optimal Modeling of Flat Eclipses and Exoplanet Transitions. The "Wall-Supported Polynomial" (WSP) Algorithms*. arXiv: [1712.05030](https://arxiv.org/abs/1712.05030)
+4. Andronov, I. L., Tkachenko, M. G. 2013, *Odessa Astronomical Publications*, 26, 204.
+5. Andrych, K. D., Andronov, I. L., Chinarova, L. L. 2020, *MAVKA: Program of Statistically Optimal Determination of Phenomenological Parameters of Extrema. Parabolic Spline Algorithm and Analysis of Variability of the Semi-Regular Star Z UMa*, *Journal of Physical Studies*, 24, article 1902. DOI: [10.30970/jps.24.1902](https://doi.org/10.30970/jps.24.1902)
+6. Pyatnytskyy, M. *lc_approx*: Python implementation of MAVKA light-curve approximation methods. [github.com/mpyat2/lc_approx](https://github.com/mpyat2/lc_approx)
 """
 
 _ACCORDION_HELP_SPECS = (
@@ -483,11 +494,10 @@ _MAVKA_LIVE_SLOT_PROGRESS_OUTPUTS = [
     for i in range(MAVKA_LIVE_PAGE_SIZE)
 ]
 # Gaia Eclipsing Binary Catalog - IGEBC
-dash.register_page(__name__, name='GP',
+dash.register_page(__name__, name='O-C',
                    order=7,
-                   title='Gaussian Process for O-C',
-                   description='Determination of individual maxima timings in a light curve '
-                               'using Gaussian Process Regression',
+                   title='Extrema modeller for O-C',
+                   description='Determination of individual extrema timings in a light curve',
                    in_navbar=True,
                    path='/gp')
 
