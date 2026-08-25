@@ -534,3 +534,26 @@
 .gp-fail-hint {
     cursor: help;
 }
+
+/* Accordion header: title + ? just left of the Bootstrap chevron */
+.gp-page .gp-accordion-title-row {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: var(--gp-space-sm);
+    padding-right: var(--gp-space-sm);
+}
+
+.gp-page .gp-accordion-title-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.gp-page .gp-accordion-help {
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.gp-page .gp-accordion-help-proxies {
+    display: none;
+}

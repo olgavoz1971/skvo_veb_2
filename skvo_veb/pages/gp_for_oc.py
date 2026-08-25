@@ -1,5 +1,5 @@
 # --- Documentation Content ---
-DOC_MARKDOWN = """
+GP_HELP_MARKDOWN = """
 
 # Lightcurve Extrema Modeller
 
@@ -217,6 +217,69 @@ Specifically the `GaussianProcessRegressor` module.
 (http://www.gaussianprocess.org/gpml/), MIT Press. (The "Bible" of GPs).
 """
 
+PAGE_ABOUT_MARKDOWN = """
+# Lightcurve Extrema Modeller
+
+This page times minima (or maxima) on a light curve and plots O-C against a trial ephemeris.
+
+Work from the top: load the light curve and mark intervals; time each extremum with a Gaussian Process or with MAVKA and keep the measurements you trust; then plot O-C (observed minus calculated times) and apply cycle corrections if a cycle has slipped.
+
+Use About for this overview. Each accordion has its own help for that step.
+"""
+
+MAVKA_HELP_MARKDOWN = """
+## About the MAVKA minima-timing tool
+
+The underlying method was developed by **I. L. Andronov**, together with co-authors, as a statistically optimal approach to determining the phenomenological parameters of light-curve extrema — that is, parameters describing the *shape* of an eclipse or minimum as observed, without assuming an underlying physical (geometric or radiative) model of the star system.
+
+The light curve is fitted piecewise: a smooth central function covers the region around the extremum, and — where the shape requires it — separate "wing" functions cover the branches on either side, joined at one or two **knots** (transition points between the pieces). The knot positions are not fixed in advance; they are solved for as part of the fit, together with the timing and depth of the minimum.
+
+Four fitting methods are available:
+
+- **Asymptotic Parabola (AP)** — a single smooth, gently rounded curve for typical minima.
+- **Wall-Supported Asymptotic Parabola (WSAP)** — for minima with a flat or near-flat base (e.g. total eclipses). The wings are modelled with a power-law exponent of **1.5**, a deliberate compromise between a straight line (exponent 1) and a full parabola (exponent 2): it lets the branches curve near the minimum while flattening further out, avoiding the unrealistically steep rise a pure parabola would give far from the extremum.
+- **Wall-Supported Line (WSL)** — for minima with a genuinely flat base and steep, straight sides.
+- **Two-line fit (A)** — a simpler method for sparse or noisy data, approximating the branches as two straight lines meeting near the minimum.
+
+The tool reports the time of minimum with its formal uncertainty, the magnitude (depth) at minimum, and — where applicable — the eclipse duration, together with a plot of the fit for visual verification.
+
+## Acknowledgements
+
+The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chinarova for the statistically optimal determination of phenomenological parameters of light-curve extrema (Andrych, Andronov & Chinarova, 2020, *Journal of Physical Studies*, 24, 1902). This implementation builds on the open-source Python realisation of the method by Maxim Pyatnytskyy (github.com/mpyat2/lc_approx). We gratefully acknowledge the authors of both the original algorithm and its Python implementation.
+"""
+
+_ACCORDION_HELP_SPECS = (
+    {
+        "index": "lc",
+        "title": "Lightcurve and intervals",
+        "modal_title": "Lightcurve and intervals",
+        "body": "Help for Lightcurve and intervals",
+        "is_gp_essay": False,
+    },
+    {
+        "index": "gp",
+        "title": "Gaussian Process",
+        "modal_title": "Description",
+        "body": None,
+        "is_gp_essay": True,
+    },
+    {
+        "index": "mavka",
+        "title": "MAVKA",
+        "modal_title": "MAVKA",
+        "body": MAVKA_HELP_MARKDOWN,
+        "is_gp_essay": False,
+        "is_markdown": True,
+    },
+    {
+        "index": "oc",
+        "title": "O-C",
+        "modal_title": "O-C",
+        "body": "Help for O-C",
+        "is_gp_essay": False,
+    },
+)
+
 import dash
 # import diskcache
 from dash import (
@@ -364,6 +427,18 @@ from skvo_veb.utils.mavka.run_control import (
     mavka_batch_stop_requested,
     request_mavka_batch_stop,
 )
+from skvo_veb.utils.oc.compute import compute_step1_oc, cycle_shifts_from_store
+from skvo_veb.utils.oc.export import (
+    format_oc_dat,
+    oc_default_export_stem,
+    oc_export_download_name,
+    oc_source_filename,
+)
+from skvo_veb.utils.oc.tom_io import (
+    parse_compact_tom_dat,
+    toms_from_review_store,
+    uploaded_toms_from_store,
+)
 from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
 from skvo_veb.utils.gp.intervals import format_interval_display_pair
 from skvo_veb.utils.gp.working_window import (
@@ -469,6 +544,109 @@ def _gp_click_help(
         className="lc-discovery-help-popover",
     )
     return button, popover
+
+
+def _accordion_title_with_help(label: str, help_index: str) -> html.Div:
+    """Builds an accordion header: title text and a right-aligned ``?``.
+
+    The visible ``?`` is not a Dash target. Page JS opens the matching modal
+    without toggling the accordion.
+
+    Args:
+        label (str): Accordion item title.
+        help_index (str): ``index`` of the matching help modal.
+
+    Returns:
+        dash.html.Div: Header row for ``dbc.AccordionItem.title``.
+    """
+    return html.Div(
+        [
+            html.Span(label, className="gp-accordion-title-text"),
+            html.Span(
+                "?",
+                className=(
+                    "lc-discovery-help-btn gp-accordion-help "
+                    f"gp-accordion-help--{help_index}"
+                ),
+                role="button",
+                tabIndex=0,
+                **{
+                    "data-gp-accordion-help": help_index,
+                    "aria-label": f"Help: {label}",
+                },
+            ),
+        ],
+        className="gp-accordion-title-row",
+    )
+
+
+def _accordion_help_modal(spec: dict) -> dbc.Modal:
+    """Builds one accordion help modal from a spec dict.
+
+    Args:
+        spec (dict): Keys ``index``, ``modal_title``, ``body``, ``is_gp_essay``,
+            and optional ``is_markdown``.
+
+    Returns:
+        dbc.Modal: Closed on load.
+    """
+    index = spec["index"]
+    if spec["is_gp_essay"]:
+        body = dcc.Markdown(GP_HELP_MARKDOWN, dangerously_allow_html=True)
+        close_label = "Stop talking!"
+        size = "xl"
+    elif spec.get("is_markdown"):
+        body = dcc.Markdown(spec["body"])
+        close_label = "Close"
+        size = "xl"
+    else:
+        body = html.P(spec["body"], className="mb-0")
+        close_label = "Close"
+        size = "md"
+    return dbc.Modal(
+        [
+            dbc.ModalHeader(dbc.ModalTitle(spec["modal_title"])),
+            dbc.ModalBody(body),
+            dbc.ModalFooter(
+                dbc.Button(
+                    close_label,
+                    id={"type": "gp-accordion-help-close", "index": index},
+                    color="secondary",
+                    size="sm",
+                    className="ms-auto",
+                    n_clicks=0,
+                )
+            ),
+        ],
+        id={"type": "gp-accordion-help-modal", "index": index},
+        size=size,
+        is_open=False,
+    )
+
+
+def _accordion_help_proxies() -> html.Div:
+    """Hidden buttons the header ``?`` clicks so Dash can open each modal.
+
+    Returns:
+        dash.html.Div: One proxy button per accordion help spec.
+    """
+    return html.Div(
+        [
+            html.Button(
+                type="button",
+                id={"type": "gp-accordion-help-open", "index": spec["index"]},
+                className=f"gp-help-proxy--{spec['index']}",
+                n_clicks=0,
+                tabIndex=-1,
+                **{
+                    "data-gp-help-proxy": spec["index"],
+                    "aria-hidden": "true",
+                },
+            )
+            for spec in _ACCORDION_HELP_SPECS
+        ],
+        className="gp-accordion-help-proxies",
+    )
 
 
 GP_UPLOAD_STATUS_ICONS = {
@@ -760,6 +938,35 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "Times a trough in the current Magnitudes/Flux view from accordion 1. "
     "Search maxima is listed to match the GP control; it is not implemented "
     "in this version.",
+)
+(
+    _oc_source_help_btn,
+    _oc_source_help_pop,
+) = _gp_click_help(
+    "oc_source",
+    "ToM source",
+    "Gaussian Process and MAVKA use Keep-marked successes from those "
+    "accordions. Upload reads a compact ToM .dat exported from GP or MAVKA "
+    "(JD and σ in days, # comments skipped).",
+)
+(
+    _oc_ephemeris_help_btn,
+    _oc_ephemeris_help_pop,
+) = _gp_click_help(
+    "oc_ephemeris",
+    "Trial ephemeris",
+    "P and Epoch are independent of accordion 1. Take from lightcurve copies "
+    "the current folding P and Epoch into these fields and overwrites them.",
+)
+(
+    _oc_shift_help_btn,
+    _oc_shift_help_pop,
+) = _gp_click_help(
+    "oc_cycle_shift",
+    "Cycle corrections",
+    "For every ToM at or after the given time (display MJD, same scale as "
+    "Epoch), add integer ΔE to the rounded cycle. Several rows accumulate. "
+    "Use +1 or −1 to fix a cycle slip.",
 )
 
 
@@ -1836,6 +2043,354 @@ graph_mavka = html.Div(
 )
 
 
+def _oc_empty_figure() -> go.Figure:
+    """Returns a blank O-C axes figure before the first Plot."""
+    fig = go.Figure()
+    fig.update_layout(
+        template="plotly_white",
+        xaxis_title="Cycle number E",
+        yaxis_title="O-C (days)",
+        xaxis2=dict(
+            overlaying="x",
+            side="top",
+            title="Calculated JD (T0 + E × P0)",
+        ),
+        margin=dict(l=50, r=20, t=60, b=50),
+        showlegend=False,
+    )
+    return fig
+
+
+def _build_oc_figure(payload: dict) -> go.Figure:
+    """Builds the O-C Plotly figure from a ``compute_step1_oc`` payload.
+
+    Args:
+        payload (dict): Arrays and ephemeris metadata from the utils layer.
+
+    Returns:
+        plotly.graph_objects.Figure: O-C vs E with calculated-JD top axis.
+    """
+    cycle_e = np.asarray(payload["E"], dtype=float)
+    oc_days = np.asarray(payload["OC"], dtype=float)
+    jd_obs = np.asarray(payload["jd_ext"], dtype=float)
+    jd_calc = np.asarray(payload["jd_calc"], dtype=float)
+    sigma_jd = np.asarray(payload["sigma_jd"], dtype=float)
+    custom = np.column_stack(
+        [
+            oc_days * 86400.0,
+            jd_obs,
+            jd_calc,
+            sigma_jd,
+            sigma_jd * 86400.0,
+        ]
+    )
+    hover = (
+        "E: %{x:.0f}<br>"
+        "O-C: %{y:.6f} d (%{customdata[0]:.1f} s)<br>"
+        "jd_obs: %{customdata[1]:.6f}<br>"
+        "jd_calc: %{customdata[2]:.6f}<br>"
+        "σ: %{customdata[3]:.8f} d (%{customdata[4]:.1f} s)"
+        "<extra></extra>"
+    )
+    fig = go.Figure()
+    finite = np.isfinite(sigma_jd)
+    if np.any(finite):
+        fig.add_trace(
+            go.Scatter(
+                x=cycle_e[finite],
+                y=oc_days[finite],
+                mode="markers",
+                marker=dict(size=8),
+                error_y=dict(
+                    type="data",
+                    array=sigma_jd[finite],
+                    visible=True,
+                    thickness=1,
+                    width=3,
+                    color="grey",
+                ),
+                customdata=custom[finite],
+                hovertemplate=hover,
+                name="O-C",
+            )
+        )
+    if np.any(~finite):
+        fig.add_trace(
+            go.Scatter(
+                x=cycle_e[~finite],
+                y=oc_days[~finite],
+                mode="markers",
+                marker=dict(size=8, color="#fd7e14"),
+                customdata=custom[~finite],
+                hovertemplate=hover,
+                name="O-C (no σ)",
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=cycle_e,
+            y=oc_days,
+            xaxis="x2",
+            visible=False,
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    fig.add_hline(y=0.0, line_dash="dash", line_color="grey", line_width=1)
+    e_min = float(np.min(cycle_e))
+    e_max = float(np.max(cycle_e))
+    tick_e = (
+        np.array([e_min])
+        if e_min == e_max
+        else np.linspace(e_min, e_max, 6)
+    )
+    t0_jd = float(payload["t0_jd"])
+    p0 = float(payload["p0"])
+    tick_jd = t0_jd + tick_e * p0
+    source_label = {"gp": "GP", "mavka": "MAVKA", "upload": "Upload"}.get(
+        str(payload.get("source")), str(payload.get("source"))
+    )
+    fig.update_layout(
+        title=dict(
+            text=(
+                f"O-C [{source_label}] "
+                f"(T0={t0_jd:.5f} JD, P0={p0:.8f} d)"
+            ),
+            font=dict(size=14),
+        ),
+        xaxis=dict(title="Cycle number E"),
+        xaxis2=dict(
+            overlaying="x",
+            side="top",
+            title="Calculated JD (T0 + E × P0)",
+            tickmode="array",
+            tickvals=tick_e.tolist(),
+            ticktext=[f"{value:.2f}" for value in tick_jd],
+        ),
+        yaxis_title="O-C (days)",
+        template="plotly_white",
+        showlegend=False,
+        margin=dict(l=50, r=20, t=70, b=50),
+        annotations=[
+            dict(
+                text=(
+                    f"N={payload['n']}  RMS={payload['rms_d']:.5f} d "
+                    f"({payload['rms_s']:.1f} s)"
+                ),
+                xref="paper",
+                yref="paper",
+                x=0.98,
+                y=0.02,
+                showarrow=False,
+                xanchor="right",
+                yanchor="bottom",
+            )
+        ],
+    )
+    return fig
+
+
+def _render_oc_shift_list(rows: list | None) -> list:
+    """Builds sidebar rows for stored cycle corrections.
+
+    Args:
+        rows (list | None): ``{at_mjd, delta_e}`` dicts.
+
+    Returns:
+        list: Dash children for ``oc-cycle-shift-list``.
+    """
+    if not rows:
+        return [html.P("No cycle corrections.", className="text-muted small mb-0")]
+    items = []
+    for index, row in enumerate(rows):
+        delta = int(row["delta_e"])
+        sign = f"+{delta}" if delta >= 0 else str(delta)
+        items.append(
+            html.Div(
+                [
+                    html.Span(f"at ≥ {float(row['at_mjd']):.2f}, ΔE = {sign}"),
+                    dbc.Button(
+                        "Remove",
+                        id={"type": "oc-shift-remove", "index": index},
+                        color="link",
+                        size="sm",
+                    ),
+                ],
+                className="gp-sidebar-heading-row",
+            )
+        )
+    return items
+
+
+sidebar_oc = html.Div(
+    [
+        html.Div(
+            [
+                html.Label("ToM source", className="gp-section-label mb-0"),
+                html.Div(_oc_source_help_btn, className="lc-discovery-field-help"),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.RadioItems(
+            id="oc-tom-source",
+            options=[
+                {"label": "Gaussian Process", "value": "gp"},
+                {"label": "MAVKA", "value": "mavka"},
+                {"label": "Upload", "value": "upload"},
+            ],
+            value="gp",
+            className="gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                _gp_upload_slot("upload-oc-toms", "Load timings", "oc-toms"),
+                _gp_upload_detail_row("oc-toms"),
+            ],
+            className="gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Trial ephemeris", className="gp-section-label mb-0"),
+                html.Div(_oc_ephemeris_help_btn, className="lc-discovery-field-help"),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.InputGroup(
+            [
+                dbc.InputGroupText("P"),
+                dbc.Input(
+                    id="oc-input-period",
+                    type="number",
+                    placeholder="Period (days)",
+                ),
+            ],
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        dbc.InputGroup(
+            [
+                dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
+                dbc.Input(
+                    id="oc-input-epoch",
+                    type="number",
+                    placeholder="MJD offset",
+                ),
+            ],
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        dbc.Button(
+            "Take from lightcurve",
+            id="oc-take-from-lc-btn",
+            color="secondary",
+            outline=True,
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Cycle corrections", className="gp-section-label mb-0"),
+                html.Div(_oc_shift_help_btn, className="lc-discovery-field-help"),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.InputGroup(
+            [
+                dbc.InputGroupText("At ≥"),
+                dbc.Input(
+                    id="oc-shift-at-time",
+                    type="number",
+                    placeholder="MJD",
+                ),
+            ],
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        dbc.InputGroup(
+            [
+                dbc.InputGroupText("ΔE"),
+                dbc.Input(
+                    id="oc-shift-delta-e",
+                    type="number",
+                    step=1,
+                    placeholder="±1",
+                ),
+            ],
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        dbc.Button(
+            "Add",
+            id="oc-shift-add-btn",
+            color="primary",
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        html.Div(id="oc-cycle-shift-list", className="gp-sidebar-group"),
+        html.Div(id="oc-sidebar-feedback", className="gp-export-feedback"),
+        dbc.Button(
+            "Plot",
+            id="oc-plot-btn",
+            color="primary",
+            size="sm",
+            className="w-100 gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Export", className="gp-section-label"),
+                dbc.InputGroup(
+                    [
+                        dbc.Input(
+                            id="oc-export-filename",
+                            placeholder="results_oc",
+                            type="text",
+                            value="results_oc",
+                        ),
+                        dbc.Button(
+                            "Download",
+                            id="oc-download-btn",
+                            color="primary",
+                            size="sm",
+                        ),
+                    ],
+                    size="sm",
+                    className="gp-export-group",
+                ),
+            ],
+            className="gp-sidebar-block gp-export-stack",
+        ),
+        _oc_source_help_pop,
+        _oc_ephemeris_help_pop,
+        _oc_shift_help_pop,
+        dcc.Download(id="oc-download-results"),
+        dcc.Store(id="store-oc-uploaded-toms"),
+        dcc.Store(id="store-oc-cycle-shifts", data=[]),
+        dcc.Store(id="store-oc-plot-data"),
+    ],
+    className="gp-sidebar bg-light border rounded shadow-sm",
+)
+
+
+graph_oc = html.Div(
+    [
+        html.Div(
+            [
+                html.H6("O-C view", className="gp-card-title"),
+            ],
+            className="mb-1",
+        ),
+        html.Div(id="oc-plot-feedback", className="gp-export-feedback"),
+        dcc.Graph(
+            id="oc-graph",
+            figure=_oc_empty_figure(),
+            className="gp-prep-graph",
+            config={"displaylogo": False},
+        ),
+    ],
+    className="p-2",
+)
+
+
 def layout():
     return dbc.Container([
         # --- HEADER SECTION ---
@@ -1866,17 +2421,19 @@ def layout():
             className="gp-page-header align-items-center",
         ),
 
-        # --- THE HELP MODAL ---
+        # --- PAGE ABOUT + ACCORDION HELP ---
         dbc.Modal([
-            dbc.ModalHeader(dbc.ModalTitle("Description")),
-            dbc.ModalBody(dcc.Markdown(DOC_MARKDOWN, dangerously_allow_html=True)),
+            dbc.ModalHeader(dbc.ModalTitle("About")),
+            dbc.ModalBody(dcc.Markdown(PAGE_ABOUT_MARKDOWN)),
             dbc.ModalFooter(
                 dbc.Button(
-                    "Stop talking!", id="close-help",
+                    "Close", id="close-help",
                     color="secondary", size="sm", className="ms-auto", n_clicks=0,
                 )
             ),
-        ], id="help-modal", size="xl", is_open=False),
+        ], id="help-modal", size="lg", is_open=False),
+        *[ _accordion_help_modal(spec) for spec in _ACCORDION_HELP_SPECS ],
+        _accordion_help_proxies(),
 
         dcc.Store(id='store-lc-data'),
         dcc.Store(id='store-gp-prep-working-window', data=WORKING_WINDOW_DISABLED),
@@ -1912,7 +2469,9 @@ def layout():
             [
                 dbc.AccordionItem(
                     item_id="accordion-lc",
-                    title="Lightcurve and intervals",
+                    title=_accordion_title_with_help(
+                        "Lightcurve and intervals", "lc"
+                    ),
                     children=[
                         dbc.Row([
                             # Sidebar (Column 1 - Fixed)
@@ -1945,7 +2504,7 @@ def layout():
                 # --- STEP 2: ANALYSIS (The "Monster") ---
                 dbc.AccordionItem(
                     item_id="accordion-gp",
-                    title="Gaussian Process",
+                    title=_accordion_title_with_help("Gaussian Process", "gp"),
                     children=[
                         dbc.Row([
                             dbc.Col(sidebar_gp, width=3),
@@ -1956,11 +2515,21 @@ def layout():
                 ),
                 dbc.AccordionItem(
                     item_id="accordion-mavka",
-                    title="MAVKA",
+                    title=_accordion_title_with_help("MAVKA", "mavka"),
                     children=[
                         dbc.Row([
                             dbc.Col(sidebar_mavka, width=3),
                             dbc.Col(graph_mavka, width=9),
+                        ]),
+                    ],
+                ),
+                dbc.AccordionItem(
+                    item_id="accordion-oc",
+                    title=_accordion_title_with_help("O-C", "oc"),
+                    children=[
+                        dbc.Row([
+                            dbc.Col(sidebar_oc, width=3),
+                            dbc.Col(graph_oc, width=9),
                         ]),
                     ],
                 ),
@@ -1983,7 +2552,40 @@ def layout():
     # endregion
 )
 def toggle_modal(n1, n2, is_open):
+    """Opens or closes the page-level About modal.
+
+    Args:
+        n1: Clicks on the header About button.
+        n2: Clicks on the modal Close button.
+        is_open: Current modal state.
+
+    Returns:
+        bool: Toggled open state.
+    """
     if n1 or n2:
+        return not is_open
+    return is_open
+
+
+@callback(
+    Output({"type": "gp-accordion-help-modal", "index": MATCH}, "is_open"),
+    Input({"type": "gp-accordion-help-open", "index": MATCH}, "n_clicks"),
+    Input({"type": "gp-accordion-help-close", "index": MATCH}, "n_clicks"),
+    State({"type": "gp-accordion-help-modal", "index": MATCH}, "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_accordion_help_modal(n_open, n_close, is_open):
+    """Opens or closes the help modal for one accordion item.
+
+    Args:
+        n_open: Clicks on the hidden proxy fired by the header ``?``.
+        n_close: Clicks on the modal Close / Stop talking! button.
+        is_open: Current modal state.
+
+    Returns:
+        bool: Toggled open state.
+    """
+    if n_open or n_close:
         return not is_open
     return is_open
 
@@ -3454,6 +4056,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     Output('finished-signal', 'children', allow_duplicate=True),  # Final signal
     Output('store-results-data', 'data'),  # Export metadata and include flags
     Output('gp-review-page-label', 'children'),
+    Output("oc-export-filename", "value", allow_duplicate=True),
     Input('run-btn', 'n_clicks'),
     State('store-lc-data', 'data'),
     State('store-intervals-data', 'data'),
@@ -3462,6 +4065,8 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     State('kernel-type', 'value'),
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
+    State("upload-lc", "filename"),
+    State("oc-tom-source", "value"),
     background=True,
     running=[
         (Output("run-btn", "disabled"), True, False),
@@ -3477,7 +4082,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     # endregion
 )
 def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, kernel_type, ids,
-           float_values):
+           float_values, lc_filename, oc_source):
     def _push_live(stored_entries: list, total_work: int) -> None:
         done = len(stored_entries)
         visible_page = live_visible_page_for_done_count(done)
@@ -3495,7 +4100,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
         error_alert = dbc.Alert(
             str(exc), color="warning", className="py-2 small mb-0"
         )
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
     p['extrema_mode'] = extrema_mode
@@ -3505,7 +4110,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     # 1. Validation: Ensure files are loaded
     if not lc_json_string or not intervals:
         error_alert = dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
         # return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
     # di = json.loads(lc_json_string)
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
@@ -3605,13 +4210,17 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
             "FINISHED_STOPPED" if stopped_early else "FINISHED",
             None,
             "",
+            no_update,
         )
 
     # --- FINAL PHASE (Review): one page of cards; full list on server cache ---
     run_id = uuid.uuid4().hex
     save_gp_review_run(run_id, stored_entries)
     store_payload = build_review_store_payload(
-        run_id, stored_entries, stopped_early=stopped_early
+        run_id,
+        stored_entries,
+        stopped_early=stopped_early,
+        source_filename=lc_filename,
     )
     page_children = render_review_page(
         stored_entries, 0, store_payload["include"]
@@ -3619,7 +4228,10 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     page_label = review_page_label(0, len(stored_entries))
 
     finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
-    return page_children, finish_signal, store_payload, page_label
+    oc_name = no_update
+    if (oc_source or "gp") == "gp":
+        oc_name = oc_default_export_stem(lc_filename)
+    return page_children, finish_signal, store_payload, page_label, oc_name
 
 
 @callback(
@@ -4024,12 +4636,15 @@ def update_mavka_status_ui(run_clicks, stop_clicks, signal_status):
     Output("mavka-finished-signal", "children", allow_duplicate=True),
     Output("store-mavka-results-data", "data"),
     Output("mavka-review-page-label", "children"),
+    Output("oc-export-filename", "value", allow_duplicate=True),
     Input("mavka-run-btn", "n_clicks"),
     State("store-lc-data", "data"),
     State("store-intervals-data", "data"),
     State("view-mode-radio", "value"),
     State("mavka-extrema-mode", "value"),
     State("mavka-method", "value"),
+    State("upload-lc", "filename"),
+    State("oc-tom-source", "value"),
     background=True,
     running=[
         (Output("mavka-run-btn", "disabled"), True, False),
@@ -4050,6 +4665,8 @@ def run_mavka(
     view_mode,
     extrema_mode,
     method,
+    lc_filename,
+    oc_source,
 ):
     """Fits one MAVKA method on every interval; sparse and failed windows become cards."""
 
@@ -4067,19 +4684,19 @@ def run_mavka(
 
     if extrema_mode != "min":
         error_alert = dbc.Alert(MAXIMA_NOT_AVAILABLE, color="warning")
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
 
     if not method:
         error_alert = dbc.Alert(
             "Select an approximation method.", color="warning", className="py-2 small mb-0"
         )
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
 
     if not lc_json_string or not intervals:
         error_alert = dbc.Alert(
             "Please upload both lightcurve and intervals files.", color="warning"
         )
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
 
     view_mode = view_mode or "mag"
     try:
@@ -4087,7 +4704,7 @@ def run_mavka(
     except Exception as exc:
         logger.exception("MAVKA light curve unpack failed")
         error_alert = dbc.Alert(str(exc), color="danger")
-        return error_alert, "FINISHED", None, ""
+        return error_alert, "FINISHED", None, "", no_update
 
     invert_y = bool(lc.get("is_mag"))
     y_label = lc.get("y_label") or ("Magnitude" if invert_y else "Flux")
@@ -4182,19 +4799,26 @@ def run_mavka(
             "FINISHED_STOPPED" if stopped_early else "FINISHED",
             None,
             "",
+            no_update,
         )
 
     run_id = uuid.uuid4().hex
     save_mavka_review_run(run_id, stored_entries)
     store_payload = build_mavka_review_store_payload(
-        run_id, stored_entries, stopped_early=stopped_early
+        run_id,
+        stored_entries,
+        stopped_early=stopped_early,
+        source_filename=lc_filename,
     )
     page_children = render_mavka_review_page(
         stored_entries, 0, store_payload["include"]
     )
     page_label = mavka_review_page_label(0, len(stored_entries))
     finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
-    return page_children, finish_signal, store_payload, page_label
+    oc_name = no_update
+    if oc_source == "mavka":
+        oc_name = oc_default_export_stem(lc_filename)
+    return page_children, finish_signal, store_payload, page_label, oc_name
 
 
 @callback(
@@ -4379,3 +5003,259 @@ def switch_mavka_modes(signal):
     if signal in ("FINISHED", "FINISHED_STOPPED"):
         return {"display": "block"}, {"display": "none"}, {"display": "none"}
     return {"display": "none"}, {"display": "flex"}, {"display": "block"}
+
+
+def _oc_parse_delta_e(value) -> int:
+    """Parses a cycle-shift ΔE from the sidebar number input.
+
+    Args:
+        value: Raw ``oc-shift-delta-e`` value.
+
+    Returns:
+        int: Integer cycle offset.
+
+    Raises:
+        ValueError: If the value is missing or not an integer.
+    """
+    if value is None or value == "":
+        raise ValueError("Set ΔE to an integer (for example +1 or −1).")
+    as_float = float(value)
+    as_int = int(as_float)
+    if as_int != as_float:
+        raise ValueError("ΔE must be an integer.")
+    return as_int
+
+
+@callback(
+    Output("oc-input-period", "value"),
+    Output("oc-input-epoch", "value"),
+    Input("oc-take-from-lc-btn", "n_clicks"),
+    State("input-period", "value"),
+    State("input-epoch", "value"),
+    prevent_initial_call=True,
+)
+def oc_take_from_lightcurve(n_clicks, period, epoch):
+    """Copies accordion 1 P and Epoch into the O-C fields, overwriting them."""
+    if not n_clicks:
+        raise PreventUpdate
+    return period, epoch
+
+
+@callback(
+    Output("oc-export-filename", "value"),
+    Input("oc-tom-source", "value"),
+    State("store-results-data", "data"),
+    State("store-mavka-results-data", "data"),
+    State("store-oc-uploaded-toms", "data"),
+    prevent_initial_call=True,
+)
+def update_oc_export_filename(source, gp_store, mavka_store, uploaded):
+    """Sets the O-C export stem from the ToM source that is currently selected.
+
+    Args:
+        source: Radio value ``gp``, ``mavka``, or ``upload``.
+        gp_store: GP review store (filename stamped at GP run time).
+        mavka_store: MAVKA review store (filename stamped at MAVKA run time).
+        uploaded: Compact ToM upload payload.
+
+    Returns:
+        str: Default ``{stem}_oc`` (or ``results_oc``).
+    """
+    return oc_default_export_stem(
+        oc_source_filename(
+            source or "gp",
+            gp_store=gp_store,
+            mavka_store=mavka_store,
+            uploaded=uploaded,
+        )
+    )
+
+
+@callback(
+    Output("store-oc-uploaded-toms", "data"),
+    Output("upload-oc-toms-text", "children"),
+    Output({"type": "gp-upload-detail", "index": "oc-toms"}, "children"),
+    Output("oc-tom-source", "value"),
+    Output("oc-export-filename", "value", allow_duplicate=True),
+    Input("upload-oc-toms", "contents"),
+    State("upload-oc-toms", "filename"),
+    prevent_initial_call=True,
+)
+def upload_oc_toms(contents, filename):
+    """Parses a compact GP/MAVKA ToM file and selects the Upload source."""
+    if contents is None:
+        raise PreventUpdate
+    try:
+        _content_type, content_string = contents.split(",", 1)
+        decoded = base64.b64decode(content_string)
+        text = decoded.decode("utf-8")
+        records = parse_compact_tom_dat(text)
+        logger.info("O-C timings upload: %s (%s ToMs)", filename, len(records))
+        return (
+            {"filename": filename, "records": records},
+            _gp_upload_status(filename or "timings.dat", tone="ok"),
+            None,
+            "upload",
+            oc_default_export_stem(filename),
+        )
+    except Exception as exc:
+        logger.error("O-C timings upload failed: %s", filename)
+        logger.error(traceback.format_exc())
+        return (
+            no_update,
+            _gp_upload_status(filename or "timings.dat", tone="error"),
+            _gp_upload_failure_detail(
+                "Timings upload failed",
+                str(exc),
+            ),
+            no_update,
+            no_update,
+        )
+
+
+@callback(
+    Output("store-oc-cycle-shifts", "data"),
+    Output("oc-sidebar-feedback", "children"),
+    Input("oc-shift-add-btn", "n_clicks"),
+    State("oc-shift-at-time", "value"),
+    State("oc-shift-delta-e", "value"),
+    State("store-oc-cycle-shifts", "data"),
+    prevent_initial_call=True,
+)
+def oc_add_cycle_shift(n_clicks, at_time, delta_e, rows):
+    """Appends one cycle correction from the sidebar fields."""
+    if not n_clicks:
+        raise PreventUpdate
+    try:
+        if at_time is None or at_time == "":
+            raise ValueError("Set the at-time (display MJD).")
+        at_mjd = float(at_time)
+        if not np.isfinite(at_mjd):
+            raise ValueError("At-time must be a finite MJD.")
+        delta = _oc_parse_delta_e(delta_e)
+    except (TypeError, ValueError) as exc:
+        return no_update, dbc.Alert(str(exc), color="warning", className="py-2 small mb-0")
+    stored = list(rows or [])
+    stored.append({"at_mjd": at_mjd, "delta_e": delta})
+    return stored, None
+
+
+@callback(
+    Output("store-oc-cycle-shifts", "data", allow_duplicate=True),
+    Input({"type": "oc-shift-remove", "index": ALL}, "n_clicks"),
+    State("store-oc-cycle-shifts", "data"),
+    prevent_initial_call=True,
+)
+def oc_remove_cycle_shift(n_clicks, rows):
+    """Removes one cycle correction from the stored list."""
+    triggered = callback_context.triggered_id
+    if not isinstance(triggered, dict) or not rows:
+        raise PreventUpdate
+    if not n_clicks or not any(n_clicks):
+        raise PreventUpdate
+    index = triggered.get("index")
+    stored = list(rows)
+    if not isinstance(index, int) or index < 0 or index >= len(stored):
+        raise PreventUpdate
+    stored.pop(index)
+    return stored
+
+
+@callback(
+    Output("oc-cycle-shift-list", "children"),
+    Input("store-oc-cycle-shifts", "data"),
+)
+def oc_render_cycle_shift_list(rows):
+    """Redraws the cycle-correction list from the store."""
+    return _render_oc_shift_list(rows)
+
+
+@callback(
+    Output("oc-graph", "figure"),
+    Output("store-oc-plot-data", "data"),
+    Output("oc-plot-feedback", "children"),
+    Input("oc-plot-btn", "n_clicks"),
+    State("oc-tom-source", "value"),
+    State("oc-input-period", "value"),
+    State("oc-input-epoch", "value"),
+    State("store-oc-cycle-shifts", "data"),
+    State("store-results-data", "data"),
+    State("store-mavka-results-data", "data"),
+    State("store-oc-uploaded-toms", "data"),
+    prevent_initial_call=True,
+)
+def oc_plot(
+    n_clicks,
+    source,
+    period,
+    epoch,
+    shift_rows,
+    gp_store,
+    mavka_store,
+    uploaded,
+):
+    """Computes Step 1 O-C for the selected ToM source and draws the figure."""
+    if not n_clicks:
+        raise PreventUpdate
+    try:
+        t0_jd = absolute_jd_from_display_epoch(epoch, jd0)
+        if t0_jd is None:
+            raise ValueError("Set the O-C epoch (display MJD).")
+        if period is None or period == "":
+            raise ValueError("Set the O-C period P (days).")
+        p0 = float(period)
+        source_key = source or "gp"
+        if source_key == "gp":
+            records = toms_from_review_store(gp_store)
+        elif source_key == "mavka":
+            records = toms_from_review_store(mavka_store)
+        elif source_key == "upload":
+            records = uploaded_toms_from_store(uploaded)
+        else:
+            raise ValueError(f"Unknown ToM source: {source_key!r}.")
+        shifts = cycle_shifts_from_store(shift_rows, display_epoch=jd0)
+        payload = compute_step1_oc(
+            records,
+            t0_jd=t0_jd,
+            p0=p0,
+            cycle_shifts=shifts or None,
+            source=source_key,
+        )
+        figure = _build_oc_figure(payload)
+        return figure, payload, None
+    except Exception as exc:
+        logger.error("O-C plot failed: %s", exc)
+        return (
+            no_update,
+            no_update,
+            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+        )
+
+
+@callback(
+    Output("oc-download-results", "data"),
+    Output("oc-plot-feedback", "children", allow_duplicate=True),
+    Input("oc-download-btn", "n_clicks"),
+    State("oc-export-filename", "value"),
+    State("store-oc-plot-data", "data"),
+    prevent_initial_call=True,
+)
+def oc_download(n_clicks, filename_input, payload):
+    """Downloads the last plotted O-C table as an xmgrace ``.dat``."""
+    if not n_clicks:
+        raise PreventUpdate
+    if not payload:
+        return no_update, dbc.Alert(
+            "Plot O-C first, then download.",
+            color="warning",
+            className="py-2 small mb-0",
+        )
+    try:
+        body = format_oc_dat(payload)
+        outfile = oc_export_download_name(filename_input)
+        return dcc.send_string(body, outfile), None
+    except Exception as exc:
+        logger.error("O-C export failed: %s", exc)
+        return no_update, dbc.Alert(
+            str(exc), color="danger", className="py-2 small mb-0"
+        )

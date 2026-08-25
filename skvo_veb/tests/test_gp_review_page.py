@@ -27,9 +27,12 @@ def test_build_review_store_payload_include_defaults():
         {"is_fail": False, "jd_peak": 1.0, "jd_peak_std": 0.1},
         {"is_fail": True},
     ]
-    payload = build_review_store_payload("run1", entries)
+    payload = build_review_store_payload(
+        "run1", entries, source_filename="NSV807.vot"
+    )
     assert payload["include"] == [True, False]
     assert payload["rows"][0]["jd_peak"] == 1.0
+    assert payload["source_filename"] == "NSV807.vot"
 
 
 def test_review_page_label():

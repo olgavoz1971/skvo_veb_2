@@ -163,6 +163,7 @@ def build_review_store_payload(
     entries: list[dict],
     *,
     stopped_early: bool = False,
+    source_filename: str | None = None,
 ) -> dict:
     """Builds ``store-mavka-results-data`` content for a finished MAVKA run.
 
@@ -170,9 +171,10 @@ def build_review_store_payload(
         run_id (str): Cache key for full review rows.
         entries (list[dict]): Serialised review entries (same order as intervals).
         stopped_early (bool): True when the user stopped the batch before all intervals.
+        source_filename (str | None): Light-curve filename at the time of this run.
 
     Returns:
-        dict: Run id, page index, include flags, and export rows.
+        dict: Run id, page index, include flags, export rows, and source filename.
     """
     include = [not row["is_fail"] for row in entries]
     rows = []
@@ -193,6 +195,7 @@ def build_review_store_payload(
         "include": include,
         "rows": rows,
         "stopped_early": stopped_early,
+        "source_filename": source_filename,
     }
 
 
