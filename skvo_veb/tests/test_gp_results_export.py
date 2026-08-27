@@ -18,6 +18,10 @@ from skvo_veb.utils.gp.results_export import (
     figure_json_to_png_bytes,
     fit_export_status,
     format_compact_extrema_dat,
+    scale_limit_flag,
+    SCALE_LIMIT_HIT_MAX,
+    SCALE_LIMIT_HIT_MIN,
+    SCALE_LIMIT_OK,
 )
 
 
@@ -81,13 +85,26 @@ def test_build_extended_results_tsv_includes_interval_jd_and_fit_params():
 def test_format_compact_extrema_dat_keeps_selected_successes_only():
     """Compact export ignores rejected and failed rows."""
     rows = [
-        {"is_fail": False, "jd_peak": 2451000.0, "jd_peak_std": 0.01},
+        {"is_fail": False, "jd_peak": 2451000.0, "jd_peak_std": 0.01, "scale_limit_flag": 1},
         {"is_fail": True},
     ]
     include = [True, False]
     body = format_compact_extrema_dat(rows, include, extrema_mode="max")
     assert "2451000.000000" in body
-    assert body.count("\n") == 3  # header lines + one data row
+    data = [line for line in body.splitlines() if line and not line.startswith("#")]
+    assert len(data) == 1
+    cols = data[0].split("\t")
+    assert cols[2] == "1"
+    assert "# scale_limit:" in body
+    header = [line for line in body.splitlines() if line.startswith("# JD_")]
+    assert header and header[0].endswith("scale_limit")
+
+
+def test_scale_limit_flag_matches_badge_slack():
+    """Integer codes: 0 ok, 1 hit min, 2 hit max (1% slack)."""
+    assert scale_limit_flag(0.05, 0.01, 1.0) == SCALE_LIMIT_OK
+    assert scale_limit_flag(0.0101, 0.01, 1.0) == SCALE_LIMIT_HIT_MIN
+    assert scale_limit_flag(0.990, 0.01, 1.0) == SCALE_LIMIT_HIT_MAX
 
 
 def test_gp_extrema_download_names():

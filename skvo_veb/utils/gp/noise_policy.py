@@ -20,7 +20,7 @@ def resolve_interval_noise_sigma_norm(
     extrema_mode: str,
     *,
     guess_sigma: bool,
-    noise_scale_divisor: float,
+    noise_scale: float,
     min_finite_fraction: float = GP_MIN_FINITE_ERROR_FRACTION,
 ) -> np.ndarray | float:
     """Chooses guessed or tabulated noise for one GP interval fragment.
@@ -38,7 +38,8 @@ def resolve_interval_noise_sigma_norm(
         ampl_guess (float): Amplitude scale for normalisation.
         extrema_mode (str): ``min`` or ``max``.
         guess_sigma (bool): User **Guess sigma** flag.
-        noise_scale_divisor (float): Empirical noise scaling from GP params.
+        noise_scale (float): Multiplier for guessed or tabulated errors
+            (``effective_error = original * noise_scale``). Must be positive.
         min_finite_fraction (float): Minimum fraction of finite errors to impute.
 
     Returns:
@@ -48,12 +49,16 @@ def resolve_interval_noise_sigma_norm(
     n = len(y_err)
     if n == 0:
         raise ValueError("resolve_interval_noise_sigma_norm requires at least one row.")
+    if not np.isfinite(noise_scale) or noise_scale <= 0:
+        raise ValueError(
+            f"noise_scale must be a positive finite number, got {noise_scale!r}"
+        )
 
     def _mad_scalar() -> float:
         from skvo_veb.utils.gp.pipeline import residual_noise_estimate
 
         noise_sigma = residual_noise_estimate(x, y, baseline, ampl_guess, extrema_mode)
-        noise_sigma /= noise_scale_divisor
+        noise_sigma *= noise_scale
         logger.info("Interval noise: MAD guess (sigma=%.4f flux units)", noise_sigma)
         return noise_sigma / ampl_guess
 
@@ -78,7 +83,7 @@ def resolve_interval_noise_sigma_norm(
     median_err = float(np.nanmedian(y_err[finite]))
     filled = y_err.copy()
     filled[~finite] = median_err
-    filled /= noise_scale_divisor
+    filled *= noise_scale
     if n_finite < n:
         logger.info(
             "Interval noise: %.1f%% finite flux_err; imputed median=%.4g for %d row(s)",
@@ -89,6 +94,6 @@ def resolve_interval_noise_sigma_norm(
     else:
         logger.info(
             "Interval noise: tabulated flux_err (mean=%.4g flux units)",
-            float(np.mean(filled * noise_scale_divisor)),
+            float(np.mean(filled / noise_scale)),
         )
     return filled / ampl_guess

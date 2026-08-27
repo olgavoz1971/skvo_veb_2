@@ -72,6 +72,7 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
         return row
     row["jd_peak"] = res_entry["jd_peak"]
     row["jd_peak_std"] = res_entry["jd_peak_std"]
+    row["scale_limit_flag"] = int(res_entry["scale_limit_flag"])
     row["figure_json"] = figure_json
     return row
 
@@ -105,6 +106,7 @@ def build_review_store_payload(
                     "is_fail": False,
                     "jd_peak": row["jd_peak"],
                     "jd_peak_std": row["jd_peak_std"],
+                    "scale_limit_flag": int(row["scale_limit_flag"]),
                 }
             )
     return {

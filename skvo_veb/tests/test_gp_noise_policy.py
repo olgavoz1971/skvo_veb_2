@@ -34,7 +34,7 @@ def test_guess_sigma_forces_mad(xy_baseline):
             ampl,
             mode,
             guess_sigma=True,
-            noise_scale_divisor=1.0,
+            noise_scale=1.0,
         )
     assert isinstance(out, float)
     assert out == pytest.approx(0.05 / ampl)
@@ -56,7 +56,7 @@ def test_all_nan_errors_use_mad(xy_baseline):
             ampl,
             mode,
             guess_sigma=False,
-            noise_scale_divisor=1.0,
+            noise_scale=1.0,
         )
     assert isinstance(out, float)
     assert out == pytest.approx(0.02 / ampl)
@@ -78,7 +78,7 @@ def test_below_threshold_uses_mad_for_all(xy_baseline):
             ampl,
             mode,
             guess_sigma=False,
-            noise_scale_divisor=1.0,
+            noise_scale=1.0,
             min_finite_fraction=0.7,
         )
     assert isinstance(out, float)
@@ -96,7 +96,7 @@ def test_at_threshold_median_impute(xy_baseline):
         ampl,
         mode,
         guess_sigma=False,
-        noise_scale_divisor=1.0,
+        noise_scale=1.0,
         min_finite_fraction=0.7,
     )
     assert isinstance(out, np.ndarray)
@@ -118,5 +118,71 @@ def test_empty_interval_raises():
             1.0,
             "min",
             guess_sigma=False,
-            noise_scale_divisor=1.0,
+            noise_scale=1.0,
+        )
+
+
+def test_noise_scale_multiplies_tabulated_errors(xy_baseline):
+    """Noise scale is a multiplier of tabulated flux errors."""
+    x, y, baseline, ampl, mode = xy_baseline
+    y_err = np.array([0.02, 0.04, np.nan, 0.04])
+    out_unit = resolve_interval_noise_sigma_norm(
+        y_err,
+        x,
+        y,
+        baseline,
+        ampl,
+        mode,
+        guess_sigma=False,
+        noise_scale=1.0,
+        min_finite_fraction=0.7,
+    )
+    out_double = resolve_interval_noise_sigma_norm(
+        y_err,
+        x,
+        y,
+        baseline,
+        ampl,
+        mode,
+        guess_sigma=False,
+        noise_scale=2.0,
+        min_finite_fraction=0.7,
+    )
+    np.testing.assert_allclose(out_double, 2.0 * out_unit)
+
+
+def test_noise_scale_multiplies_mad_guess(xy_baseline):
+    """Noise scale is a multiplier of the MAD guess."""
+    x, y, baseline, ampl, mode = xy_baseline
+    y_err = np.array([0.01, 0.02, 0.03, 0.04])
+    with patch(
+        "skvo_veb.utils.gp.pipeline.residual_noise_estimate",
+        return_value=0.05,
+    ):
+        out = resolve_interval_noise_sigma_norm(
+            y_err,
+            x,
+            y,
+            baseline,
+            ampl,
+            mode,
+            guess_sigma=True,
+            noise_scale=2.0,
+        )
+    assert out == pytest.approx(0.10 / ampl)
+
+
+def test_noise_scale_must_be_positive(xy_baseline):
+    """Non-positive noise scale is invalid."""
+    x, y, baseline, ampl, mode = xy_baseline
+    with pytest.raises(ValueError, match="noise_scale must be a positive"):
+        resolve_interval_noise_sigma_norm(
+            np.array([0.01]),
+            np.array([1.0]),
+            np.array([0.9]),
+            baseline,
+            ampl,
+            mode,
+            guess_sigma=False,
+            noise_scale=0.0,
         )

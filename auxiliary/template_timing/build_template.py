@@ -53,7 +53,7 @@ AMPLITUDE_INIT = 0.3
 AMPLITUDE_MIN = 0.1
 AMPLITUDE_MAX = 0.7
 GUESS_SIGMA = False
-NOISE_SCALE_DIVISOR = 1.0
+NOISE_SCALE = 1.0
 EXTREMA_MODE = "max"
 
 N_GRID = 2000
@@ -100,7 +100,7 @@ def fit_gp_template(frag: pd.DataFrame) -> dict:
         ampl_guess,
         EXTREMA_MODE,
         guess_sigma=GUESS_SIGMA,
-        noise_scale_divisor=NOISE_SCALE_DIVISOR,
+        noise_scale=NOISE_SCALE,
     )
 
     ckern = ConstantKernel(

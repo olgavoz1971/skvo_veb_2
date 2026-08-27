@@ -56,7 +56,7 @@ When you upload a light curve, the modeller needs a noise level to weight the
 Gaussian Process fit. 
 
 **If your file includes a magnitude or flux error column and every point in a selected interval has a usable value**, those uncertainties are
-converted to flux space and used (scaled by the **Noise divisor** on the page),
+converted to flux space and used (multiplied by the **Noise scale** on the page),
 unless you turn on **Guess sigma**, which deliberately ignores the column and
 estimates scatter from the data. 
 
@@ -75,12 +75,23 @@ it does not change how the GP run uses uncertainties.
 
 ## Marking intervals on the prep plot (unfolded)
 
-Enable **Mark bands** in the toolbar above the prep plot, then **double-click**
-(on or very near) a photometry point inside a green interval band. Marked bands
-turn red; double-click again to unmark. **Remove marked** applies to the registry;
-**Mark bands** and **Remove trend** cannot both be active (they share the same
-clicks). Marks are kept when the plot is redrawn (view mode, error bars, and so
-on) until you remove them or change the interval list.
+Enable **Mark bands** in the toolbar above the prep plot, then **drag a box**
+across the green interval bands you want to drop. Every band the box touches
+turns red, so one drag can mark many bands at once and no photometry point has
+to be hit. Dragging across a group that is already marked unmarks it.
+
+Marking is applied entirely in the browser: the marked band rectangles are
+recoloured in place and only the marked index list crosses to the server, so the
+plot is never rebuilt while you mark. **Remove marked** is the single
+server round trip, applying the whole marked set to the registry at once.
+
+**Mark bands** and **Remove trend** cannot both be active, since both use the
+drag gesture. Marks survive plot redraws (view mode, error bars, and so on)
+until you remove them or change the interval list.
+
+Marking is unavailable on a folded curve: one interval maps to several phase
+rectangles, so a mark has no unique band to colour. Existing marks are kept
+untouched and reappear when you unfold.
 
 ---
 
@@ -108,7 +119,7 @@ errors where applicable).
 |-----------------------------------|-----------|
 | **None** (all ``NaN``) | Same as leaving errors blank: scatter is estimated from the data (MAD), as if Guess sigma were on for that interval. |
 | **Below 70%** | Not enough tabulated coverage: **MAD guess for every point** in the interval. |
-| **70% or more** | Tabulated errors are used: each missing row gets the **median** of the finite ``flux_err`` values in that interval, then all points are scaled by the **Noise divisor**. |
+| **70% or more** | Tabulated errors are used: each missing row gets the **median** of the finite ``flux_err`` values in that interval, then all points are multiplied by the **Noise scale**. |
 
 Turning **Guess sigma** on still ignores the error column for the whole interval
 and always uses the MAD estimate. The 70% threshold is fixed in application

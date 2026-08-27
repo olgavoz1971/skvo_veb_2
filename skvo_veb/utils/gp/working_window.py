@@ -130,15 +130,12 @@ def count_observations_in_jd_window(
     packet = json.loads(lc_json_string)
     jd0 = float(packet.get("meta", {}).get("jd0") or 0.0)
     lo, hi = sorted((float(jd_min), float(jd_max)))
-    count = 0
-    for row in packet.get("data") or []:
-        t = float(row[0])
-        if not np.isfinite(t):
-            continue
-        jd_abs = t + jd0
-        if lo <= jd_abs <= hi:
-            count += 1
-    return count
+    rows = packet.get("data") or []
+    if not rows:
+        return 0
+    times = np.asarray([row[0] for row in rows], dtype=float) + jd0
+    finite = np.isfinite(times)
+    return int(np.count_nonzero(finite & (times >= lo) & (times <= hi)))
 
 
 def build_working_window_store(

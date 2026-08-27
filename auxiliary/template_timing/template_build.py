@@ -104,7 +104,7 @@ def fit_gp_template(frag: pd.DataFrame, cfg: GPTemplateDefaults, *, fold_period:
         ampl_guess,
         cfg.extrema_mode,
         guess_sigma=cfg.guess_sigma,
-        noise_scale_divisor=cfg.noise_scale_divisor,
+        noise_scale=cfg.noise_scale,
     )
 
     ckern = ConstantKernel(

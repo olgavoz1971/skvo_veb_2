@@ -23,9 +23,10 @@ def test_parse_compact_tom_dat_gp_and_mavka():
     """GP and MAVKA compact files share JD / σ columns after ``#`` comments."""
     gp_text = (
         "# GP Minimum Results\n"
-        "# JD_Minimum\tJD_Std\n"
-        "2458749.729000\t0.000150\n"
-        "2458750.068000\t0.000200\n"
+        "# scale_limit: 0=ok 1=length_scale_min 2=length_scale_max\n"
+        "# JD_Minimum\tJD_Std\tscale_limit\n"
+        "2458749.729000\t0.000150\t1\n"
+        "2458750.068000\t0.000200\t0\n"
     )
     mavka_text = (
         "# MAVKA Minimum Results\n"

@@ -2,6 +2,7 @@
 
 from skvo_veb.utils.gp.intervals import (
     format_interval_display_pair,
+    format_interval_display_pairs,
     format_intervals_download,
 )
 
@@ -20,6 +21,32 @@ def test_format_interval_display_pair_mjd():
     )
     assert s == f"{JD_START - JD0:.6f}"
     assert e == f"{JD_END - JD0:.6f}"
+
+
+def test_format_interval_display_pairs_matches_one_at_a_time():
+    """Batch labels match the single-interval helper."""
+    intervals = [
+        [JD_START, JD_END],
+        [JD_START + 1.0, JD_END + 1.0],
+    ]
+    batched = format_interval_display_pairs(
+        intervals,
+        time_axis_mode="mjd",
+        display_epoch=JD0,
+    )
+    one_by_one = [
+        format_interval_display_pair(
+            row[0], row[1], time_axis_mode="mjd", display_epoch=JD0
+        )
+        for row in intervals
+    ]
+    assert batched == one_by_one
+
+
+def test_format_interval_display_pairs_empty():
+    assert format_interval_display_pairs(
+        [], time_axis_mode="mjd", display_epoch=JD0
+    ) == []
 
 
 def test_format_intervals_download_keeps_full_jd():

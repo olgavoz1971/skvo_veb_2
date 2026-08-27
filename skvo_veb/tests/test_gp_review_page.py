@@ -24,7 +24,7 @@ def test_render_review_page_respects_page_size():
 
 def test_build_review_store_payload_include_defaults():
     entries = [
-        {"is_fail": False, "jd_peak": 1.0, "jd_peak_std": 0.1},
+        {"is_fail": False, "jd_peak": 1.0, "jd_peak_std": 0.1, "scale_limit_flag": 2},
         {"is_fail": True},
     ]
     payload = build_review_store_payload(
@@ -32,6 +32,7 @@ def test_build_review_store_payload_include_defaults():
     )
     assert payload["include"] == [True, False]
     assert payload["rows"][0]["jd_peak"] == 1.0
+    assert payload["rows"][0]["scale_limit_flag"] == 2
     assert payload["source_filename"] == "NSV807.vot"
 
 

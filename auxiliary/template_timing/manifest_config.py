@@ -147,7 +147,7 @@ class GPTemplateDefaults:
     amplitude_min: float = 0.1
     amplitude_max: float = 0.7
     guess_sigma: bool = False
-    noise_scale_divisor: float = 1.0
+    noise_scale: float = 1.0
     n_grid: int = 2000
     n_restarts: int = 3
     peak_edge_margin_frac_period: float = 0.05
@@ -172,6 +172,10 @@ class GPTemplateDefaults:
         if self.peak_phase_hint is not None and self.peak_tau_hint is not None:
             raise ValueError(
                 "gp_template: use only one of peak_phase_hint or peak_tau_hint"
+            )
+        if self.noise_scale <= 0:
+            raise ValueError(
+                f"gp_template.noise_scale must be positive, got {self.noise_scale!r}"
             )
         for name, frac in (
             ("length_scale_init_frac_period", self.length_scale_init_frac_period),
@@ -742,6 +746,13 @@ def _gp_from_mapping(data: dict[str, Any] | None, defaults: GPTemplateDefaults) 
         return defaults
     kept: dict[str, Any] = {}
     for key, value in data.items():
+        if key == "noise_scale_divisor":
+            raise ValueError(
+                "gp_template.noise_scale_divisor was renamed to noise_scale "
+                "(multiplier: effective_error = original * noise_scale). "
+                "Replace the key and invert the old value: "
+                "noise_scale = 1 / old_divisor."
+            )
         if key in REMOVED_GP_KEYS:
             logger.warning(
                 "gp_template key %r was removed and is ignored (%s)",

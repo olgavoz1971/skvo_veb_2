@@ -146,7 +146,7 @@ def gp_peak_pipeline(
         - 'guess_sigma' If guess_sigma=True → MAD for the interval. If false, tabulated
           ``flux_err`` when sufficient coverage (see ``GP_MIN_FINITE_ERROR_FRACTION``),
           otherwise MAD; mixed NaN rows may receive median imputation.
-        - 'noise_scale_divisor' Empirical factor, allow user tune sigma estimated by algorthm
+        - 'noise_scale' Multiplier for guessed or tabulated errors (effective = original * scale)
         - 'length_scale_init' Initial guess about GP lenght scale
         - 'length_scale_min', 'length_scale_max'    Bounds
         - 'white_noise_level_init' Initial guess about White Kernel noise level
@@ -227,7 +227,7 @@ def gp_peak_pipeline(
         ampl_guess,
         extrema_mode,
         guess_sigma=bool(params["guess_sigma"]),
-        noise_scale_divisor=float(params["noise_scale_divisor"]),
+        noise_scale=float(params["noise_scale"]),
     )
 
     # --- 5. kernel ---

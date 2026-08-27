@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import astropy.units as u
@@ -96,6 +97,26 @@ def _unpack_with_gp_photcal(json_str: str, view_mode: str) -> dict:
         "timescale": meta.get("timescale"),
         "refposition": meta.get("refposition"),
     }
+
+
+def transport_revision_token(json_str: str) -> str:
+    """Short stable identity for a transport packet, for Plotly ``uirevision``.
+
+    ``uirevision`` only has to *change* when the light curve changes; it does not
+    have to contain it. Interpolating the transport string adds its full size to
+    every figure payload, which for a 20 000-row light curve is close to a
+    megabyte per plot update. The digest is a change detector, not a checksum for
+    integrity or security.
+
+    Args:
+        json_str (str): Serialised lightcurve transport JSON.
+
+    Returns:
+        str: Short hex digest, or an empty string when there is no light curve.
+    """
+    if not json_str:
+        return ""
+    return hashlib.sha1(json_str.encode("utf-8")).hexdigest()[:16]
 
 
 def folding_metadata_from_transport(json_str: str) -> tuple[float | None, float | None, str]:

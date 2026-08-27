@@ -43,6 +43,46 @@ def prep_interval_band_shape_style(*, marked: bool) -> dict:
     }
 
 
+def prep_interval_band_shape(
+    x0,
+    x1,
+    *,
+    name: str | None = None,
+    marked: bool = False,
+) -> dict:
+    """Builds one Plotly rectangle shape dict for an interval band.
+
+    Returned dicts are meant to be collected into a list and assigned in a single
+    ``fig.update_layout(shapes=...)`` call. Adding bands one at a time with
+    ``fig.add_shape`` or ``fig.add_vrect`` is quadratic in the band count, because
+    each call re-validates the whole existing shapes tuple.
+
+    Args:
+        x0: Left edge in plot x coordinates (MJD offset, phase, or datetime).
+        x1: Right edge in plot x coordinates.
+        name (str, optional): Stable shape name for clientside styling; omitted
+            when ``None`` so bands that are never marked stay anonymous.
+        marked (bool): Whether the interval is marked for removal.
+
+    Returns:
+        dict: Shape kwargs spanning the full plot height (``yref="paper"``).
+    """
+    shape = {
+        "type": "rect",
+        "xref": "x",
+        "yref": "paper",
+        "x0": x0,
+        "x1": x1,
+        "y0": 0,
+        "y1": 1,
+        "layer": "below",
+        **prep_interval_band_shape_style(marked=marked),
+    }
+    if name is not None:
+        shape["name"] = name
+    return shape
+
+
 def _plot_x_for_pick_store(value) -> float | str:
     """Serialises a plot x bound for JSON ``Store`` transport.
 
@@ -76,12 +116,23 @@ def build_unfolded_interval_pick_payload(
             the closed window are omitted (indices unchanged for survivors).
 
     Returns:
-        dict: ``{enabled, axis, bands: [{i, x0, x1}, ...]}`` for ``dcc.Store``.
+        dict: ``{enabled, axis, styles, bands: [{i, x0, x1}, ...]}`` for
+            ``dcc.Store``. ``styles`` carries the plain and marked band
+            appearance so the clientside recolour has a single source of truth.
     """
     from skvo_veb.utils.lc_figure import absolute_jd_to_plot_x
 
+    styles = {
+        "plain": prep_interval_band_shape_style(marked=False),
+        "marked": prep_interval_band_shape_style(marked=True),
+    }
     if not intervals:
-        return {"enabled": True, "axis": time_axis_mode, "bands": []}
+        return {
+            "enabled": True,
+            "axis": time_axis_mode,
+            "styles": styles,
+            "bands": [],
+        }
 
     bands = []
     for index, interval in enumerate(intervals):
@@ -102,7 +153,12 @@ def build_unfolded_interval_pick_payload(
                 "x1": _plot_x_for_pick_store(x1),
             }
         )
-    return {"enabled": True, "axis": time_axis_mode, "bands": bands}
+    return {
+        "enabled": True,
+        "axis": time_axis_mode,
+        "styles": styles,
+        "bands": bands,
+    }
 
 
 def intervals_without_marked_indices(

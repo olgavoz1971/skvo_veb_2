@@ -42,7 +42,7 @@ gp_template_defaults:
   amplitude_min: 0.1
   amplitude_max: 0.7
   guess_sigma: true
-  noise_scale_divisor: 1.25
+  noise_scale: 0.8
   n_grid: 2000
   n_restarts: 3
   # Peak search: local extrema of the GP mean inside the folded data range only,

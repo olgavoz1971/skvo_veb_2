@@ -210,6 +210,36 @@ def phase_vrect_bounds_extended(
     return extended
 
 
+def merge_overlapping_phase_segments(
+    segments: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Merges overlapping or touching segments on the extended phase axis.
+
+    Existing registry intervals stack at nearly the same phase, so drawing one
+    rectangle per interval (and its three extended-axis copies) floods the
+    browser with hundreds of identical SVG shapes. Adding a *new* interval on
+    an already-folded curve only appends a few shapes and stays cheap; this
+    merge is what makes *showing* the registry on a folded curve cheap too.
+
+    Args:
+        segments: ``(x0, x1)`` pairs, not necessarily ordered or unique.
+
+    Returns:
+        list[tuple[float, float]]: Disjoint segments, sorted by left edge.
+    """
+    if not segments:
+        return []
+    ordered = sorted((min(a, b), max(a, b)) for a, b in segments)
+    merged = [ordered[0]]
+    for lo, hi in ordered[1:]:
+        last_lo, last_hi = merged[-1]
+        if lo <= last_hi + _PHASE_AXIS_EPS:
+            merged[-1] = (last_lo, max(last_hi, hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
 def _canonical_phase_segments(
     start_jd: float,
     end_jd: float,

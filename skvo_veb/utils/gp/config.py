@@ -13,8 +13,8 @@ EXTREMA_MODE = "max"
 
 KERNEL_TYPE = "matern"  # or "rbf"
 
-# Scaling factor applied to estimated or tabulated noise.
-NOISE_SCALE_DIVISOR = 1
+# Multiplier applied to estimated or tabulated noise (effective = original * scale).
+NOISE_SCALE = 1
 
 # Minimum fraction of rows with finite ``flux_err`` in a GP interval (Guess sigma off)
 # to use tabulated errors; missing rows get the median of finite values. Below this
@@ -46,7 +46,7 @@ DEFAULT_REFERENCE_MAG = 20.0
 GP_ZP_FLUX_DIMENSIONLESS = 1.0
 
 DEFAULT_FLOAT_PARAMS = {
-    "noise_scale_divisor": NOISE_SCALE_DIVISOR,
+    "noise_scale": NOISE_SCALE,
     "length_scale_init": 0.1,
     "length_scale_min": 0.01,
     "length_scale_max": 1.0,
@@ -56,7 +56,7 @@ DEFAULT_FLOAT_PARAMS = {
 }
 
 GP_FLOAT_PARAM_LABELS = {
-    "noise_scale_divisor": "Noise divisor",
+    "noise_scale": "Noise scale",
     "length_scale_init": "Length scale (initial)",
     "length_scale_min": "Length scale (minimum)",
     "length_scale_max": "Length scale (maximum)",

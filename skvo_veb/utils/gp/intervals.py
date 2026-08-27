@@ -68,6 +68,45 @@ def format_interval_display_pair(
     return (f"{float(x0):.6f}", f"{float(x1):.6f}")
 
 
+def format_interval_display_pairs(
+    intervals: list,
+    *,
+    time_axis_mode: str,
+    display_epoch: float,
+    timescale: str | None = None,
+) -> list[tuple[str, str]]:
+    """Formats every registry row in one vectorised axis conversion.
+
+    ``format_interval_display_pair`` converts one bound at a time. On the date
+    axis that is two Astropy ``Time`` constructions per interval, which stalls
+    the registry rebuild (and therefore restore-full-light-curve) at a few
+    hundred rows. One conversion of all starts and all ends avoids that.
+
+    Args:
+        intervals (list): ``[[jd_start, jd_end], ...]`` in absolute JD.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        display_epoch (float): MJD reference subtracted on the MJD axis.
+        timescale (str, optional): ``TIMESYS/@timescale`` for date mode.
+
+    Returns:
+        list[tuple[str, str]]: One ``(start_label, end_label)`` per interval.
+    """
+    if not intervals:
+        return []
+    starts = [float(row[0]) for row in intervals]
+    ends = [float(row[1]) for row in intervals]
+    mode = normalize_time_axis_mode(time_axis_mode)
+    x0s = absolute_jd_to_plot_x(starts, mode, display_epoch, timescale=timescale)
+    x1s = absolute_jd_to_plot_x(ends, mode, display_epoch, timescale=timescale)
+    labels: list[tuple[str, str]] = []
+    for x0, x1 in zip(x0s, x1s, strict=True):
+        if mode == TIME_AXIS_DATE:
+            labels.append((_format_plot_date_label(x0), _format_plot_date_label(x1)))
+        else:
+            labels.append((f"{float(x0):.6f}", f"{float(x1):.6f}"))
+    return labels
+
+
 def _format_plot_date_label(value) -> str:
     """Turns a Plotly calendar x value into a compact date string.
 

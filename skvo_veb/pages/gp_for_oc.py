@@ -1,7 +1,7 @@
 # --- Documentation Content ---
 GP_HELP_MARKDOWN = """
 
-# Lightcurve Extrema Modeller
+# Lightcurve Extrema Modeller (Gaussian Process regression)
 
 ## What this tool does
 This tool models a selected fragment of a light curve and determines the time of a minimum or maximum, 
@@ -28,7 +28,7 @@ This method is useful when:
 ---
 
 ## How the model behaves
-The model is controlled by a few parameters that define how “flexible” or “smooth” the curve is, 
+The model is controlled by a few parameters that define how "flexible" or "smooth" the curve is, 
 and how much it trusts the data.
 
 Internally, we use a kernel of the form:
@@ -43,21 +43,30 @@ You do not need to work with this directly — the parameters below are the prac
 
 **GUESS_SIGMA**
 
-If enabled, the model ignores provided uncertainties and estimates noise from the data scatter 
-(MAD). Use this if errors are missing or clearly unreliable.
+If enabled, the model ignores provided uncertainties and estimates noise from the data scatter (MAD). 
+Use this if errors are missing or clearly unreliable. (TBD)
 
 ---
 
-**NOISE_SCALE_DIVISOR**
+**ASSUMED_NOISE_SCALE**
 
-A handy "trust factor" for measurement noise. This empirical divisor 
-is applied to both guessed noise or provided observation errors.
+A handy "trust factor" for measurement noise.
+Encodes your own judgement about whether the provided (or guessed) errors are trustworthy. Applied as
+a multiplier to both guessed noise and provided observation errors: `effective error = original error × ASSUMED_NOISE_SCALE`.
 
-- *Higher (>1.0)*: You trust the data more than the errors suggest. 
-  Results in a more sensitive (wiggly) fit;
-- *Lower (<1.0)*: You suspect the errors are underestimated. Results in a smoother fit.
+This is not a cosmetic dial — it's how you feed the model information it cannot get from the data alone.
+Two visual symptoms tell you which way to move it:
 
-Use this to tweak" the fit if the model is ignoring real structure or, conversely, over-fitting noise.
+- **Fit looks saw-toothed / chases individual points** → the assumed noise is too small for the model
+  to trust its own smoothness. Increase the value — this raises the effective error and removes the
+  wiggle by letting the fit lean on more points at once.
+
+- **Fit looks blunt/shallow, doesn't reach the visible extremum, or the error-bar fence obscures the
+  feature itself** → the assumed noise is too large. Decrease the value.
+
+*Caveat:* if you find yourself needing extreme values to get a sane-looking fit, check first whether
+`LENGTH_SCALE` bounds (below) are fighting this parameter for the same job -- the two are not
+interchangeable and correcting one with the other can mask what's actually wrong.
 
 ---
 
@@ -70,8 +79,20 @@ Controls the smoothness in time (x-axis).
 - *MAX*: prevents the model from becoming so stiff it misses the peak.
 
 Practical tuning:
-- Too wiggly --> increase values  
-- Too smooth --> decrease values  
+- Fit is too wiggly --> increase values  
+- Fit is too smooth --> decrease values
+
+**On sparsely-covered features:** for extrema with too few points to constrain a scale on their own, 
+we sometimes import a scale learned from well-covered cycles of the *same* light curve, narrowing 
+MIN/MAX around it rather than fitting freely. With very few points, a freely-fit scale can lock onto 
+a value that fits those points well but has nothing to do with the real shape of the feature. 
+Borrowed shape information from the same star is usually more trustworthy than what a handful of points can tell you on their own.
+
+The trade-off: the reported timing uncertainty for such an extremum reflects noise only, conditional on 
+the imported shape — it does **not** include how much the answer would shift if that imported shape is 
+itself slightly wrong for this particular cycle. **Any extremum where the fitted scale sits at (or 
+against) its MIN/MAX bound is flagged in the output** as scale-constrained, precisely because its 
+uncertainty is of this weaker, conditional kind rather than a locally-estimated one.
 
 ---
 
@@ -113,33 +134,16 @@ Select what to detect:
 3. **Final error**  
    The spread of these extrema gives the uncertainty in time.
 
-We hope, this approach naturally accounts for noise, sampling, and shape of the feature.
+4. **Constrained-scale flag**  
+   If `LENGTH_SCALE` was imported/narrowed rather than freely fit (see above) and the optimiser sits at 
+   its bound, the extremum is marked accordingly. Its quoted uncertainty should be read as noise-only, 
+   not as including shape uncertainty.
+
+We hope this approach naturally accounts for noise, sampling, and shape of the feature — and where it 
+can't, we try to say so rather than hide it in a single number.
 
 ---
 
-## Supported lightcurve file formats
-
-Upload uses the **same ingest path** as the TESS lightcurve page: VOTable (`.vot`), CSV, ECSV, and `.dat`.
-
-### `.dat` comment headers (ASCII)
-
-For **`.dat` files only**, you may include metadata in ``#`` comment lines (case-insensitive):
-
-| Pattern | Meaning |
-|---------|---------|
-| ``JD0 = <value>`` | Time origin added to the time column to obtain absolute Julian Date (default **0** if omitted). |
-| ``MAG0 = <value>`` | Reference magnitude for photometric calibration when converting to the normalised flux used internally by the GP (paired with a dimensionless instrumental zero point). |
-| ``PERIOD = <value>`` | Folding period in days (populates the **P** field after upload). |
-| ``EPOCH = <value>`` | Reference epoch in the same units and scale as the time column (populates **Epoch-2400000.5**; combined with ``JD0`` when forming absolute JD). |
-| ``FILTER=`` / ``BAND=`` | Filter or band label stored in metadata. |
-
-You may also put a **header comment** whose words match the column count (e.g. ``# jd mag mag_err``). Otherwise columns default to time, magnitude, and magnitude error by position.
-
-The GP fit works on **normalised flux**; timing (JD) is what matters for O-C. The y-axis in fit panels is not labelled with physical flux units (Jy or e/s).
-
-See also the project document ``docs/dat_lightcurve_comments.md``.
-
----
 ## If you are curious how it works
 
 ### What is a Gaussian Process
@@ -163,7 +167,7 @@ To turn this abstract probability into a concrete measurement, we look at the "P
 <img src="assets/samples.png" style="width:100%; max-width:600px; display:block; margin:auto;"/>
 
 As you can see in the image above, the GP isn't just one particular curve. 
-We draw three hundreds of these "valid" realisations from the model. 
+We draw three hundred of these "valid" realisations from the model. 
 Each one is a smooth function that fits your data but has a slightly different peak position 
 (marked by the red dots).
 The "Peak JD" you see in the results is the extremum of the Blue Mean Curve.
@@ -225,6 +229,32 @@ This page times minima (or maxima) on a light curve and plots O-C against a tria
 Work from the top: load the light curve and mark intervals; time each extremum with a Gaussian Process or with MAVKA and keep the measurements you trust; then plot O-C (observed minus calculated times) and apply cycle corrections if a cycle has slipped.
 
 Use About for this overview. Each accordion has its own help for that step.
+
+"""
+
+LC_INTERVALS_HELP_MARKDOWN = """
+
+## Supported lightcurve file formats
+
+Upload uses the **same ingest path** as the TESS lightcurve page: VOTable (`.vot`), CSV, ECSV, and `.dat`.
+
+### `.dat` comment headers (ASCII)
+
+For **`.dat` files only**, you may include metadata in ``#`` comment lines (case-insensitive):
+
+| Pattern | Meaning |
+|---------|---------|
+| ``JD0 = <value>`` | Time origin added to the time column to obtain absolute Julian Date (default **0** if omitted). |
+| ``MAG0 = <value>`` | Reference magnitude for photometric calibration when converting to the normalised flux used internally by the GP (paired with a dimensionless instrumental zero point). |
+| ``PERIOD = <value>`` | Folding period in days (populates the **P** field after upload). |
+| ``EPOCH = <value>`` | Reference epoch in the same units and scale as the time column (populates **Epoch-2400000.5**; combined with ``JD0`` when forming absolute JD). |
+| ``FILTER=`` / ``BAND=`` | Filter or band label stored in metadata. |
+
+You may also put a **header comment** whose words match the column count (e.g. ``# jd mag mag_err``). Otherwise columns default to time, magnitude, and magnitude error by position.
+
+The GP fit works on **normalised flux**; timing (JD) is what matters for O-C. The y-axis in fit panels is not labelled with physical flux units (Jy or e/s).
+
+See also the project document ``docs/dat_lightcurve_comments.md``.
 """
 
 MAVKA_HELP_MARKDOWN = """
@@ -259,37 +289,48 @@ The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chi
 6. Pyatnytskyy, M. *lc_approx*: Python implementation of MAVKA light-curve approximation methods. [github.com/mpyat2/lc_approx](https://github.com/mpyat2/lc_approx)
 """
 
+# One row per workflow accordion. The factory reads only these keys.
+# Page-level About (PAGE_ABOUT_MARKDOWN) is a separate modal, not in this table.
 _ACCORDION_HELP_SPECS = (
     {
         "index": "lc",
         "title": "Lightcurve and intervals",
         "modal_title": "Lightcurve and intervals",
-        "body": "Help for Lightcurve and intervals",
-        "is_gp_essay": False,
+        "markdown": LC_INTERVALS_HELP_MARKDOWN,
+        "allow_html": False,
+        "close_label": "Close",
+        "size": "xl",
     },
     {
         "index": "gp",
         "title": "Gaussian Process",
         "modal_title": "Description",
-        "body": None,
-        "is_gp_essay": True,
+        "markdown": GP_HELP_MARKDOWN,
+        "allow_html": True,
+        "close_label": "Stop talking!",
+        "size": "xl",
     },
     {
         "index": "mavka",
         "title": "MAVKA",
         "modal_title": "MAVKA",
-        "body": MAVKA_HELP_MARKDOWN,
-        "is_gp_essay": False,
-        "is_markdown": True,
+        "markdown": MAVKA_HELP_MARKDOWN,
+        "allow_html": False,
+        "close_label": "Close",
+        "size": "xl",
     },
     {
         "index": "oc",
         "title": "O-C",
         "modal_title": "O-C",
-        "body": "Help for O-C",
-        "is_gp_essay": False,
+        "markdown": "Help for O-C",
+        "allow_html": False,
+        "close_label": "Close",
+        "size": "md",
     },
 )
+_ACCORDION_HELP_BY_INDEX = {spec["index"]: spec for spec in _ACCORDION_HELP_SPECS}
+ACCORDION_LC_ITEM_ID = "accordion-lc"
 
 import dash
 # import diskcache
@@ -333,6 +374,7 @@ from skvo_veb.utils.gp.prep_phase_plot import (
     assert_phase_intervals_not_duplicates,
     build_extended_phase_plot_arrays,
     build_extended_phase_plot_arrays_from_phi,
+    merge_overlapping_phase_segments,
     phase_vrect_bounds_extended,
     phase_vrect_bounds_extended_quadratic,
     validate_extended_phase_selection,
@@ -347,18 +389,18 @@ from skvo_veb.utils.gp.prep_interval_bands import (
     build_unfolded_interval_pick_payload,
     interval_shape_name,
     intervals_without_marked_indices,
-    prep_interval_band_shape_style,
+    prep_interval_band_shape,
 )
 
 from skvo_veb.utils.gp import (
     GUESS_SIGMA, LEN_MIN,
     load_intervals, gp_peak_pipeline,
-    NOISE_SCALE_DIVISOR,
     KERNEL_TYPE, EXTREMA_MODE, guess_length_scale,
     AMPLITUDE_INIT, AMPLITUDE_MIN, AMPLITUDE_MAX,
     DEFAULT_FLOAT_PARAMS,
     pack_uploaded_lightcurve,
-    get_gp_flux_fragment,
+    decode_gp_flux_arrays,
+    slice_gp_flux_arrays,
     figure_from_gp_result,
     format_intervals_download,
 )
@@ -376,6 +418,7 @@ from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.gp.results_export import (
     build_extended_export_zip,
     format_compact_extrema_dat,
+    scale_limit_flag,
 )
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
 from skvo_veb.utils.gp.review_page import (
@@ -450,8 +493,15 @@ from skvo_veb.utils.oc.tom_io import (
     toms_from_review_store,
     uploaded_toms_from_store,
 )
-from skvo_veb.utils.gp.plot_data import unpack_json_for_gp_plot, folding_metadata_from_transport
-from skvo_veb.utils.gp.intervals import format_interval_display_pair
+from skvo_veb.utils.gp.plot_data import (
+    folding_metadata_from_transport,
+    transport_revision_token,
+    unpack_json_for_gp_plot,
+)
+from skvo_veb.utils.gp.intervals import (
+    format_interval_display_pair,
+    format_interval_display_pairs,
+)
 from skvo_veb.utils.gp.working_window import (
     WORKING_WINDOW_DISABLED,
     build_working_window_store,
@@ -556,19 +606,20 @@ def _gp_click_help(
     return button, popover
 
 
-def _accordion_title_with_help(label: str, help_index: str) -> html.Div:
+def _accordion_title_with_help(spec: dict) -> html.Div:
     """Builds an accordion header: title text and a right-aligned ``?``.
 
     The visible ``?`` is not a Dash target. Page JS opens the matching modal
     without toggling the accordion.
 
     Args:
-        label (str): Accordion item title.
-        help_index (str): ``index`` of the matching help modal.
+        spec (dict): One row of ``_ACCORDION_HELP_SPECS``.
 
     Returns:
         dash.html.Div: Header row for ``dbc.AccordionItem.title``.
     """
+    label = spec["title"]
+    help_index = spec["index"]
     return html.Div(
         [
             html.Span(label, className="gp-accordion-title-text"),
@@ -591,35 +642,27 @@ def _accordion_title_with_help(label: str, help_index: str) -> html.Div:
 
 
 def _accordion_help_modal(spec: dict) -> dbc.Modal:
-    """Builds one accordion help modal from a spec dict.
+    """Builds the help modal for one accordion item from its spec row.
 
     Args:
-        spec (dict): Keys ``index``, ``modal_title``, ``body``, ``is_gp_essay``,
-            and optional ``is_markdown``.
+        spec (dict): One row of ``_ACCORDION_HELP_SPECS``.
 
     Returns:
         dbc.Modal: Closed on load.
     """
     index = spec["index"]
-    if spec["is_gp_essay"]:
-        body = dcc.Markdown(GP_HELP_MARKDOWN, dangerously_allow_html=True)
-        close_label = "Stop talking!"
-        size = "xl"
-    elif spec.get("is_markdown"):
-        body = dcc.Markdown(spec["body"])
-        close_label = "Close"
-        size = "xl"
-    else:
-        body = html.P(spec["body"], className="mb-0")
-        close_label = "Close"
-        size = "md"
     return dbc.Modal(
         [
             dbc.ModalHeader(dbc.ModalTitle(spec["modal_title"])),
-            dbc.ModalBody(body),
+            dbc.ModalBody(
+                dcc.Markdown(
+                    spec["markdown"],
+                    dangerously_allow_html=bool(spec["allow_html"]),
+                )
+            ),
             dbc.ModalFooter(
                 dbc.Button(
-                    close_label,
+                    spec["close_label"],
                     id={"type": "gp-accordion-help-close", "index": index},
                     color="secondary",
                     size="sm",
@@ -629,7 +672,7 @@ def _accordion_help_modal(spec: dict) -> dbc.Modal:
             ),
         ],
         id={"type": "gp-accordion-help-modal", "index": index},
-        size=size,
+        size=spec["size"],
         is_open=False,
     )
 
@@ -657,6 +700,27 @@ def _accordion_help_proxies() -> html.Div:
         ],
         className="gp-accordion-help-proxies",
     )
+
+
+def _active_items_opening_lc(active_item) -> list:
+    """Returns the always-open accordion set with Lightcurve and intervals included.
+
+    Args:
+        active_item: Current ``active_item`` from ``main-workflow-accordion``
+            (list, single id, or ``None``).
+
+    Returns:
+        list: Item ids that should be open, including ``ACCORDION_LC_ITEM_ID``.
+    """
+    if active_item is None:
+        items = []
+    elif isinstance(active_item, (list, tuple)):
+        items = [item for item in active_item if item]
+    else:
+        items = [active_item]
+    if ACCORDION_LC_ITEM_ID not in items:
+        items.append(ACCORDION_LC_ITEM_ID)
+    return items
 
 
 GP_UPLOAD_STATUS_ICONS = {
@@ -819,16 +883,22 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
             className="mb-2",
         ),
         html.P(
-            "To drop intervals, switch on Mark bands and double-click on (or very "
-            "near) a photometry point inside a green band; clicks inside the band but "
-            "far from any point have no effect. Double-click again to unmark. Then "
-            "press Remove marked in the toolbar, or use Remove empty and Clear all in "
-            "the Selected intervals panel.",
+            "To drop intervals, unfold the curve, switch on Mark bands, and click "
+            "inside a green vertical strip (anywhere in its time range, not only "
+            "the outline). It turns rose; click again to unmark. Then press "
+            "Remove marked. Do not use the Plotly pan/zoom tools for this. "
+            "Marking is unavailable while the curve is folded.",
             className="mb-2",
         ),
         html.P(
-            "Mark bands, Remove trend and box-select all compete for the same click, "
-            "so only one of them can be active at a time.",
+            "Marking is unavailable on a folded curve, because one interval maps to "
+            "several phase rectangles. Existing marks are kept and reappear when you "
+            "unfold.",
+            className="mb-2",
+        ),
+        html.P(
+            "Mark bands and Remove trend both use the pointer on the plot, so only "
+            "one of them can be active at a time.",
             className="mb-2",
         ),
         html.P(
@@ -871,12 +941,12 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "Auto-estimate noise (ignore provided uncertainties)",
 )
 (
-    _noise_divisor_help_btn,
-    _noise_divisor_help_pop,
+    _noise_scale_help_btn,
+    _noise_scale_help_pop,
 ) = _gp_click_help(
-    "noise_divisor",
-    "Noise divisor",
-    "Empirical noise correction (↑ wiggly, ↓ smooth)"
+    "noise_scale",
+    "Noise scale",
+    "Assumed noise scale: empirical correction (↑ smooth, ↓ wiggly). "
     "Allows not quite fair to tweak uncertainties",
 )
 (
@@ -981,6 +1051,24 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
 
 
 GP_CHECKLIST_SWITCH_ON = 1
+
+
+def gp_mark_mode_checklist_options(*, disabled: bool = False) -> list[dict]:
+    """Builds ``dbc.Checklist`` options for the prep-plot Mark bands switch.
+
+    Args:
+        disabled (bool): When ``True``, the switch cannot be turned on (folded LC).
+
+    Returns:
+        list[dict]: Single-option checklist payload for ``gp-interval-mark-mode``.
+    """
+    return [
+        {
+            "label": "Mark bands",
+            "value": GP_CHECKLIST_SWITCH_ON,
+            "disabled": disabled,
+        }
+    ]
 
 
 def gp_trend_mode_checklist_options(*, disabled: bool = False) -> list[dict]:
@@ -1293,9 +1381,7 @@ prep_plot_toolbar = html.Div(
         html.Div(
             [
                 dbc.Checklist(
-                    options=[  # type: ignore
-                        {"label": "Mark bands", "value": GP_CHECKLIST_SWITCH_ON},
-                    ],
+                    options=gp_mark_mode_checklist_options(disabled=False),  # type: ignore
                     value=[],
                     id="gp-interval-mark-mode",
                     switch=True,
@@ -1508,18 +1594,18 @@ sidebar_gp = html.Div([
                 [
                     html.Div(
                         [
-                            html.Label("Noise divisor", className="gp-section-label mb-0"),
+                            html.Label("Noise scale", className="gp-section-label mb-0"),
                             html.Div(
-                                _noise_divisor_help_btn,
+                                _noise_scale_help_btn,
                                 className="lc-discovery-field-help",
                             ),
                         ],
                         className="gp-sidebar-heading-row",
                     ),
                     dbc.Input(
-                        id={"type": "float-input", "index": "noise_scale_divisor"},
+                        id={"type": "float-input", "index": "noise_scale"},
                         type="number", size="sm", step="any",
-                        value=params_float["noise_scale_divisor"],
+                        value=params_float["noise_scale"],
                     ),
                 ],
                 width=6,
@@ -1646,7 +1732,7 @@ sidebar_gp = html.Div([
     ),
 
     _guess_sigma_help_pop,
-    _noise_divisor_help_pop,
+    _noise_scale_help_pop,
     _kernel_type_help_pop,
     _length_scale_help_pop,
     _amplitude_help_pop,
@@ -2450,7 +2536,11 @@ def layout():
         dcc.Store(id='store-intervals-data'),
         dcc.Store(id='store-gp-interval-pick-bands'),
         dcc.Store(id='store-gp-intervals-marked', data=[]),
-        dcc.Store(id='store-gp-prep-dblclick-pending'),
+        dcc.Store(id='store-gp-prep-mark-selection'),
+        # Short token bumped on every prep replot. Clientside binders listen to
+        # this instead of 'prep-graph.figure' so they are not handed the whole
+        # figure (about 0.9 MB folded) on every redraw.
+        dcc.Store(id='store-gp-prep-render-token', data=''),
         dcc.Store(id='store-gp-trend-click'),
         dcc.Store(id='store-gp-trend-line'),
         dcc.Store(id='store-active-intervals-name'),
@@ -2478,9 +2568,9 @@ def layout():
         dbc.Accordion(
             [
                 dbc.AccordionItem(
-                    item_id="accordion-lc",
+                    item_id=ACCORDION_LC_ITEM_ID,
                     title=_accordion_title_with_help(
-                        "Lightcurve and intervals", "lc"
+                        _ACCORDION_HELP_BY_INDEX["lc"]
                     ),
                     children=[
                         dbc.Row([
@@ -2514,7 +2604,9 @@ def layout():
                 # --- STEP 2: ANALYSIS (The "Monster") ---
                 dbc.AccordionItem(
                     item_id="accordion-gp",
-                    title=_accordion_title_with_help("Gaussian Process", "gp"),
+                    title=_accordion_title_with_help(
+                        _ACCORDION_HELP_BY_INDEX["gp"]
+                    ),
                     children=[
                         dbc.Row([
                             dbc.Col(sidebar_gp, width=3),
@@ -2525,7 +2617,9 @@ def layout():
                 ),
                 dbc.AccordionItem(
                     item_id="accordion-mavka",
-                    title=_accordion_title_with_help("MAVKA", "mavka"),
+                    title=_accordion_title_with_help(
+                        _ACCORDION_HELP_BY_INDEX["mavka"]
+                    ),
                     children=[
                         dbc.Row([
                             dbc.Col(sidebar_mavka, width=3),
@@ -2535,7 +2629,9 @@ def layout():
                 ),
                 dbc.AccordionItem(
                     item_id="accordion-oc",
-                    title=_accordion_title_with_help("O-C", "oc"),
+                    title=_accordion_title_with_help(
+                        _ACCORDION_HELP_BY_INDEX["oc"]
+                    ),
                     children=[
                         dbc.Row([
                             dbc.Col(sidebar_oc, width=3),
@@ -2546,7 +2642,7 @@ def layout():
             ],
             id="main-workflow-accordion",
             always_open=True,  # Allows multiple items to stay open simultaneously
-            active_item=["accordion-lc"],
+            active_item=[ACCORDION_LC_ITEM_ID],
         ),
 
     ], fluid=True, className="gp-page")
@@ -2654,6 +2750,7 @@ def toggle_mavka_legend(n_clicks, is_open):
     Output('prep-graph', 'figure'),
     Output('store-gp-interval-pick-bands', 'data'),
     Output('store-gp-intervals-marked', 'data'),
+    Output('store-gp-prep-render-token', 'data'),
     Input('store-lc-data', 'data'),
     Input('store-intervals-data', 'data'),
     Input('folding-switch', 'value'),
@@ -2661,7 +2758,9 @@ def toggle_mavka_legend(n_clicks, is_open):
     Input('gp_time_axis_switch', 'value'),
     Input('gp-prep-show-errorbars', 'value'),
     Input('store-gp-prep-working-window', 'data'),
-    Input('store-gp-intervals-marked', 'data'),
+    # Marking is applied clientside by recolouring the band shapes in place, so
+    # a mark must never trigger a replot. State, not Input.
+    State('store-gp-intervals-marked', 'data'),
     Input('gp-fold-ephemeris-mode', 'value'),
     State('input-period', 'value'),
     State('input-epoch', 'value'),
@@ -2688,11 +2787,16 @@ def update_prep_graph(
     oc_c,
     prep_relayout_data,
 ):
+    # Bumped on every replot so the clientside binders can rebind their Plotly
+    # listeners without being handed the figure itself.
+    render_token = uuid.uuid4().hex[:8]
+
     if not lc_json_string:
         return (
             go.Figure().update_layout(title="Upload data to see plot"),
             {"enabled": False, "axis": TIME_AXIS_MJD, "bands": []},
             [],
+            render_token,
         )
 
     axis_mode = time_axis_mode or TIME_AXIS_MJD
@@ -2712,6 +2816,7 @@ def update_prep_graph(
             fig,
             {"enabled": False, "axis": axis_mode, "bands": []},
             [],
+            render_token,
         )
 
     x_jd = np.asarray(lc['x'], dtype=float)
@@ -2739,6 +2844,7 @@ def update_prep_graph(
                 fig,
                 {"enabled": False, "axis": axis_mode, "bands": []},
                 [],
+                render_token,
             )
 
     # Error bars logic (off by default; large LC + triple phase copies is slow)
@@ -2806,6 +2912,7 @@ def update_prep_graph(
                 fig,
                 {"enabled": False, "axis": axis_mode, "bands": []},
                 [],
+                render_token,
             )
         if err_plot is not None and show_prep_errorbars:
             error_y_logic = dict(
@@ -2864,13 +2971,13 @@ def update_prep_graph(
         # dragmode='pan',
         dragmode='select',
         selectdirection='h',
-        # Using lc_json_string means zoom only resets when a NEW file is uploaded.
-        # Adding an interval won't trigger a reset.
-        # uirevision=[lc_json_string, view_mode],  # when we should update layout
+        # A digest of the light curve means zoom only resets when a NEW file is
+        # uploaded; adding an interval won't trigger a reset. The digest keeps the
+        # transport string itself out of the figure payload.
         uirevision=(
-            f"{lc_json_string}_{view_mode}_{folding_on}_{axis_mode}_"
-            f"{show_prep_errorbars}_{working_window_store}_{fold_ephemeris_mode}_"
-            f"{oc_a}_{oc_b}_{oc_c}"
+            f"{transport_revision_token(lc_json_string)}_{view_mode}_{folding_on}_"
+            f"{axis_mode}_{show_prep_errorbars}_{working_window_store}_"
+            f"{fold_ephemeris_mode}_{oc_a}_{oc_b}_{oc_c}"
         ),
         # ------------------------------
         newshape=dict(line_color='red', line_width=3, opacity=0.5),
@@ -2883,6 +2990,9 @@ def update_prep_graph(
     # Mark selected intervals (stored as absolute JD; display only in current axis)
     pick_bands = {"enabled": False, "axis": axis_mode, "bands": []}
     if intervals_data:
+        # Bands are collected and assigned in one go: fig.add_shape/add_vrect
+        # re-validate the whole shapes tuple per call, which is quadratic.
+        band_shapes: list[dict] = []
         jd_window = None
         if working_window is not None:
             jd_window = (
@@ -2890,6 +3000,12 @@ def update_prep_graph(
                 working_window["jd_max"],
             )
         if phase_view:
+            # Folded bands carry no name and no marked styling: one interval maps
+            # to several phase rectangles, so a mark cannot be shown. All mark
+            # work is skipped here and 'pick_bands' stays disabled. Overlapping
+            # phase copies are merged so stacked minima become a handful of SVG
+            # rectangles, not one per interval. The marked set itself is left
+            # untouched in its store and reappears on unfolding.
             t0_abs = absolute_jd_from_display_epoch(epoch, jd0)
             if t0_abs is None:
                 t0_abs = float(np.nanmin(x_jd))
@@ -2897,6 +3013,7 @@ def update_prep_graph(
             oc_a_val = gp_parse_oc_coefficient(oc_a)
             oc_b_val = gp_parse_oc_coefficient(oc_b)
             oc_c_val = gp_parse_oc_coefficient(oc_c)
+            phase_segments: list[tuple[float, float]] = []
             for interval in intervals_data:
                 if jd_window is not None and not interval_overlaps_jd_window(
                     interval, jd_window[0], jd_window[1]
@@ -2916,16 +3033,9 @@ def update_prep_graph(
                     vrect_bounds = phase_vrect_bounds_extended(
                         interval[0], interval[1], t0_abs, float(period)
                     )
-                for x0, x1 in vrect_bounds:
-                    fig.add_vrect(
-                        x0=x0,
-                        x1=x1,
-                        fillcolor="green",
-                        opacity=0.15,
-                        layer="below",
-                        line_width=1,
-                        line_color="green",
-                    )
+                phase_segments.extend(vrect_bounds)
+            for x0, x1 in merge_overlapping_phase_segments(phase_segments):
+                band_shapes.append(prep_interval_band_shape(x0, x1))
         else:
             ts = lc.get("timescale")
             pick_bands = build_unfolded_interval_pick_payload(
@@ -2948,25 +3058,20 @@ def update_prep_graph(
                 x0, x1 = absolute_jd_to_plot_x(
                     [interval[0], interval[1]], axis_mode, jd0, timescale=ts
                 )
-                band_style = prep_interval_band_shape_style(
-                    marked=index in marked_set,
+                band_shapes.append(
+                    prep_interval_band_shape(
+                        x0,
+                        x1,
+                        name=interval_shape_name(index),
+                        marked=index in marked_set,
+                    )
                 )
-                fig.add_shape(
-                    type="rect",
-                    x0=x0,
-                    x1=x1,
-                    y0=0,
-                    y1=1,
-                    yref="paper",
-                    layer="below",
-                    name=interval_shape_name(index),
-                    **band_style,
-                )
+        fig.update_layout(shapes=band_shapes)
 
     triggered = callback_context.triggered
     if triggered:
         trigger_id = triggered[0]['prop_id'].split('.')[0]
-        if trigger_id in ('store-intervals-data', 'store-gp-intervals-marked'):
+        if trigger_id == 'store-intervals-data':
             if working_window is None:
                 apply_plot_relayout_ranges_to_figure(
                     fig,
@@ -2984,14 +3089,13 @@ def update_prep_graph(
         )
         fig.update_xaxes(range=[wx0, wx1], autorange=False)
 
-    return fig, pick_bands, no_update
+    return fig, pick_bands, no_update, render_token
 
 
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="applyIntervalMarkMode"),
     Output("prep-graph", "figure", allow_duplicate=True),
     Input("gp-interval-mark-mode", "value"),
-    State("prep-graph", "figure"),
     prevent_initial_call=True,
 )
 
@@ -3191,29 +3295,31 @@ def restore_full_lightcurve_working_window(n_clicks):
 
 
 clientside_callback(
-    ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphIntervalMarkClick"),
-    Output("store-gp-prep-dblclick-pending", "data", allow_duplicate=True),
-    Input("prep-graph", "figure"),
+    ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphMarkSelect"),
+    Output("store-gp-prep-mark-selection", "data", allow_duplicate=True),
+    Input("store-gp-prep-render-token", "data"),
     prevent_initial_call="initial_duplicate",
 )
 
+# Click or drag on the green rectangles themselves. Recolour is clientside;
+# no replot occurs until Remove marked.
 clientside_callback(
-    ClientsideFunction(namespace="gpOc", function_name="toggleIntervalMarkFromDblClick"),
+    ClientsideFunction(
+        namespace="gpOc", function_name="toggleIntervalMarksFromSelection"
+    ),
     Output("store-gp-intervals-marked", "data", allow_duplicate=True),
-    Output("prep-graph", "figure", allow_duplicate=True),
-    Input("store-gp-prep-dblclick-pending", "data"),
+    Input("store-gp-prep-mark-selection", "data"),
     State("store-gp-interval-pick-bands", "data"),
     State("store-gp-intervals-marked", "data"),
-    State("prep-graph", "figure"),
     prevent_initial_call=True,
 )
 
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="clearIntervalMarks"),
     Output("store-gp-intervals-marked", "data", allow_duplicate=True),
-    Output("prep-graph", "figure", allow_duplicate=True),
     Input("btn-clear-interval-marks", "n_clicks"),
-    State("prep-graph", "figure"),
+    State("store-gp-interval-pick-bands", "data"),
+    State("store-gp-intervals-marked", "data"),
     prevent_initial_call=True,
 )
 
@@ -3222,14 +3328,13 @@ clientside_callback(
     Output("prep-graph", "figure", allow_duplicate=True),
     Input("gp-prep-trend-mode", "value"),
     Input("folding-switch", "value"),
-    State("prep-graph", "figure"),
     prevent_initial_call="initial_duplicate",
 )
 
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="bindPrepGraphTrend"),
     Output("store-gp-trend-click", "data", allow_duplicate=True),
-    Input("prep-graph", "figure"),
+    Input("store-gp-prep-render-token", "data"),
     prevent_initial_call="initial_duplicate",
 )
 
@@ -3253,7 +3358,7 @@ clientside_callback(
 clientside_callback(
     ClientsideFunction(namespace="gpOc", function_name="restoreTrendPreviewFromStore"),
     Output("prep-graph", "figure", allow_duplicate=True),
-    Input("prep-graph", "figure"),
+    Input("store-gp-prep-render-token", "data"),
     State("store-gp-trend-line", "data"),
     State("gp-prep-trend-mode", "value"),
     prevent_initial_call="initial_duplicate",
@@ -3313,15 +3418,26 @@ def toggle_quadratic_oc_fields(fold_ephemeris_mode):
 
 @callback(
     Output("gp-interval-mark-mode", "value"),
+    Output("gp-interval-mark-mode", "options"),
     Output("gp-prep-trend-mode", "value"),
     Output("gp-prep-trend-mode", "options"),
     Input("folding-switch", "value"),
 )
 def disable_prep_interaction_modes_when_folded(folding_on):
-    """Clear mark/trend modes when folded; trend removal is unfolded-only."""
+    """Clear mark/trend modes when folded; both switches are unfolded-only."""
     if gp_checklist_switch_is_on(folding_on):
-        return [], [], gp_trend_mode_checklist_options(disabled=True)
-    return no_update, no_update, gp_trend_mode_checklist_options(disabled=False)
+        return (
+            [],
+            gp_mark_mode_checklist_options(disabled=True),
+            [],
+            gp_trend_mode_checklist_options(disabled=True),
+        )
+    return (
+        no_update,
+        gp_mark_mode_checklist_options(disabled=False),
+        no_update,
+        gp_trend_mode_checklist_options(disabled=False),
+    )
 
 
 @callback(
@@ -3429,15 +3545,28 @@ def commit_prep_linear_detrend(
     Output('store-gp-prep-working-window', 'data', allow_duplicate=True),
     Output("gp-trend-feedback", "children", allow_duplicate=True),
     Output("gp-prep-working-window-feedback", "children", allow_duplicate=True),
+    Output("main-workflow-accordion", "active_item", allow_duplicate=True),
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),
+    State("main-workflow-accordion", "active_item"),
     prevent_initial_call=True
     # endregion
 )
-def upload_lc(contents, filename):
+def upload_lc(contents, filename, accordion_active):
+    """Ingests a light-curve file and opens Lightcurve and intervals on success.
+
+    Args:
+        contents: ``dcc.Upload`` file payload.
+        filename: Original upload filename.
+        accordion_active: Current workflow accordion ``active_item``.
+
+    Returns:
+        tuple: Store, upload chip, folding fields, working-window reset, and
+        accordion open set. Failures leave the accordion unchanged.
+    """
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 9
+        return (dash.no_update,) * 10
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -3458,6 +3587,7 @@ def upload_lc(contents, filename):
             WORKING_WINDOW_DISABLED,
             None,
             None,
+            _active_items_opening_lc(accordion_active),
         )
 
     except Exception as e:
@@ -3471,6 +3601,7 @@ def upload_lc(contents, filename):
                 "Lightcurve upload failed",
                 format_user_upload_error(e),
             ),
+            dash.no_update,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -3553,14 +3684,27 @@ def update_global_intervals_label(stored_status):
     Output('store-intervals-data', 'data'),
     Output('store-active-intervals-name', 'data'),
     Output({"type": "gp-upload-detail", "index": "intervals"}, 'children'),
+    Output("main-workflow-accordion", "active_item", allow_duplicate=True),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
+    State("main-workflow-accordion", "active_item"),
     prevent_initial_call=True
     # endregion
 )
-def upload_intervals(contents, filename):
+def upload_intervals(contents, filename, accordion_active):
+    """Ingests an intervals file and opens Lightcurve and intervals on success.
+
+    Args:
+        contents: ``dcc.Upload`` file payload.
+        filename: Original upload filename.
+        accordion_active: Current workflow accordion ``active_item``.
+
+    Returns:
+        tuple: Intervals store, file-name chip, detail slot, and accordion open
+        set. Failures leave the accordion unchanged.
+    """
     if contents is None:
-        return dash.no_update, dash.no_update, dash.no_update
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
@@ -3568,7 +3712,12 @@ def upload_intervals(contents, filename):
         text = decoded.decode('utf-8', errors='ignore')  # "ignore"  to prevent the whole app
         # from crashing over a single non-ASCII character.
         intervals_list = load_intervals(io.StringIO(text))
-        return intervals_list, {"name": filename, "tone": "ok"}, None
+        return (
+            intervals_list,
+            {"name": filename, "tone": "ok"},
+            None,
+            _active_items_opening_lc(accordion_active),
+        )
         # --- Success UI ---
         # return intervals_list, filename
         # return intervals_list, html.Div([
@@ -3587,6 +3736,7 @@ def upload_intervals(contents, filename):
                 "Intervals upload failed",
                 format_user_upload_error(e),
             ),
+            dash.no_update,
         )
         # return dash.no_update, html.Div([
         #     html.I(className="bi bi-exclamation-octagon-fill me-2", style={"color": "#dc3545"}),
@@ -3675,9 +3825,10 @@ def update_GP_scale(trigger_clicks, intervals, lc_json_string):
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     # Search for the first interval that actually contains enough data points
+    lc_arrays = decode_gp_flux_arrays(lc_json_string)
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
-        frag = get_gp_flux_fragment(lc_json_string, jd_min, jd_max)
+        frag = slice_gp_flux_arrays(lc_arrays, jd_min, jd_max)
 
         if len(frag) >= LEN_MIN:
             scale = guess_length_scale(frag)
@@ -3877,15 +4028,15 @@ def render_registry(intervals, time_axis_mode, working_window_store, lc_json_str
             timescale = None
 
     working_window = normalize_working_window(working_window_store)
+    labels = format_interval_display_pairs(
+        intervals,
+        time_axis_mode=axis_mode,
+        display_epoch=jd0,
+        timescale=timescale,
+    )
     cards = []
     for i, interval in enumerate(intervals):
-        start_label, end_label = format_interval_display_pair(
-            interval[0],
-            interval[1],
-            time_axis_mode=axis_mode,
-            display_epoch=jd0,
-            timescale=timescale,
-        )
+        start_label, end_label = labels[i]
         outside = working_window is not None and not interval_overlaps_jd_window(
             interval,
             working_window["jd_min"],
@@ -4125,10 +4276,13 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     # di = json.loads(lc_json_string)
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
+    # Decode the light curve once, then slice per interval: decoding is the
+    # expensive half and does not depend on the interval.
+    lc_arrays = decode_gp_flux_arrays(lc_json_string)
     work_items = []
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
-        frag = get_gp_flux_fragment(lc_json_string, jd_min, jd_max)
+        frag = slice_gp_flux_arrays(lc_arrays, jd_min, jd_max)
         if len(frag) >= LEN_MIN:
             work_items.append((jd_min, jd_max, frag))
 
@@ -4187,6 +4341,11 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
                 'kernel_type': kernel_type,
                 'length_scale': float(opt_l),
                 'amplitude': float(opt_ampl),
+                'scale_limit_flag': scale_limit_flag(
+                    float(opt_l),
+                    float(p["length_scale_min"]),
+                    float(p["length_scale_max"]),
+                ),
             })
 
         except Exception as e:

@@ -20,6 +20,36 @@ _RESULTS_HEADER = (
     "status\tkernel\tlength_scale\tamplitude\tplot_file\terror\n"
 )
 
+# Compact .dat third column (xmgrace numeric). Same 1% slack as review badges.
+SCALE_LIMIT_OK = 0
+SCALE_LIMIT_HIT_MIN = 1
+SCALE_LIMIT_HIT_MAX = 2
+_SCALE_LIMIT_SLACK = 0.01
+
+
+def scale_limit_flag(
+    length_scale: float,
+    length_scale_min: float,
+    length_scale_max: float,
+) -> int:
+    """Returns an xmgrace-safe integer when length-scale bounds are hit.
+
+    Uses the same 1% slack as the review Scale badge. Does not inspect amplitude.
+
+    Args:
+        length_scale (float): Fitted length scale.
+        length_scale_min (float): Sidebar minimum bound used for the fit.
+        length_scale_max (float): Sidebar maximum bound used for the fit.
+
+    Returns:
+        int: ``0`` ok, ``1`` hit minimum, ``2`` hit maximum.
+    """
+    if length_scale <= length_scale_min * (1.0 + _SCALE_LIMIT_SLACK):
+        return SCALE_LIMIT_HIT_MIN
+    if length_scale >= length_scale_max * (1.0 - _SCALE_LIMIT_SLACK):
+        return SCALE_LIMIT_HIT_MAX
+    return SCALE_LIMIT_OK
+
 
 def jd_to_display_mjd(jd: float, display_epoch: float = DEFAULT_EPOCH_JD) -> float:
     """Maps absolute JD to the prep-plot MJD axis (``jd - display_epoch``).
@@ -214,17 +244,24 @@ def format_compact_extrema_dat(
         extrema_mode (str): ``min`` or ``max`` from the GP sidebar.
 
     Returns:
-        str: ``.dat`` file body.
+        str: ``.dat`` file body (JD, σ, integer ``scale_limit``). All comment
+        lines start with ``#`` so xmgrace ignores them.
     """
     mode_label = "Minimum" if extrema_mode == "min" else "Maximum"
     lines = [
         f"# GP {mode_label} Results\n",
-        f"# JD_{mode_label}\tJD_Std\n",
+        "# scale_limit: 0=ok 1=length_scale_min 2=length_scale_max\n",
+        f"# JD_{mode_label}\tJD_Std\tscale_limit\n",
     ]
     for is_selected, row in zip(include_flags, rows, strict=True):
         if is_selected and not row.get("is_fail"):
+            flag = row.get("scale_limit_flag")
+            if flag is None:
+                raise ValueError(
+                    "A kept GP result is missing scale_limit. Re-run Gaussian Process."
+                )
             lines.append(
-                f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\n"
+                f"{row['jd_peak']:.6f}\t{row['jd_peak_std']:.6f}\t{int(flag)}\n"
             )
     return "".join(lines)
 
