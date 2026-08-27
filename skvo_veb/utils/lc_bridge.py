@@ -412,8 +412,10 @@ def ingest_volightcurve_file(
 def ingest_lightcurve_file(file_source, filename: str):
     """Ingests an uploaded lightcurve file into a ``CurveDash`` instance.
 
-    VOTable files retain PhotCal metadata;     tabular formats (ECSV, CSV, DAT) restore
-    only the basic metadata stored in the file header (ECSV) or column data alone.
+    Always goes through ``ingest_volightcurve_file`` then ``volc_to_curvedash``.
+    PhotCal on the ``CurveDash`` is whatever the ``VOLightCurve`` already holds
+    after promotion (VOTable photcal GROUP, or ``# MAG0=`` / ``# FILTER=`` on
+    ``.dat``). File extension is not used as a photcal gate.
 
     ``.dat`` files use strict row validation in ``_read_dat_upload_table`` (fixed column
     count per row; no padding). Failures raise ``PipeException`` with line numbers.
@@ -425,10 +427,8 @@ def ingest_lightcurve_file(file_source, filename: str):
     Returns:
         CurveDash: Parsed application lightcurve state.
     """
-    ext = Path(filename).suffix.lower().lstrip(".")
-    preserve_photcal = ext in ("vot", "xml")
     volc = ingest_volightcurve_file(file_source, filename)
-    return volc_to_curvedash(volc, filename, preserve_photcal=preserve_photcal)
+    return volc_to_curvedash(volc, filename)
 
 
 def tabular_table_to_curvedash(table: Table, filename: str):
@@ -1493,7 +1493,10 @@ def _resolve_photometry_error_column(volc: VOLightCurve, phot_col: str) -> str |
 
 
 def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
-    """Maps ECSV header metadata onto ``CurveDash`` without PhotCal fields.
+    """Maps ECSV header metadata onto ``CurveDash`` without inventing PhotCal.
+
+    Filter *name* may be copied from the header. An IVOA ``filter_identifier``
+    and photometric zero points are left as they came from the ``VOLightCurve``.
 
     Args:
         lcd (CurveDash): Target instance to mutate in place.
@@ -1505,9 +1508,7 @@ def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
         lcd.metadata["flux_origins"] = _parse_list_meta(meta["method"])
     if meta.get("filter"):
         lcd.metadata.setdefault("photcal", {})
-        filter_label = str(meta["filter"])
-        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] = filter_label
-        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_IDENTIFIER] = filter_label
+        lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] = str(meta["filter"])
     for key in ("ra", "dec", "period", "name"):
         if meta.get(key) is not None:
             lcd.metadata[key] = meta[key]
@@ -1518,18 +1519,23 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
 
     Resolves columns, reconstructs absolute Julian dates from ``obs_time`` and
     ``TIMESYS/@timeorigin`` (MJD + offset), and stores photometry in its native
-    domain (magnitude or flux) without conversion.
+    domain (magnitude or flux) without conversion. PhotCal is copied from the
+    ``VOLightCurve`` photometry column (including MAG0-promoted ``.dat``
+    calibration). ECSV header fields are merged afterwards; they do not wipe
+    zero points. Stitched products still drop zero points.
 
     Args:
         volc (VOLightCurve): The parsed Virtual Observatory lightcurve.
         filename (str): The name of the uploaded file.
-        preserve_photcal (bool): When false, skip PhotCal restoration (tabular uploads).
+        preserve_photcal (bool): Unused; kept for call-site compatibility.
+            PhotCal is always taken from ``volc``.
 
     Returns:
         CurveDash: The populated CurveDash instance.
     """
     from skvo_veb.utils.curve_dash import CurveDash
 
+    _ = preserve_photcal
     time_cols = get_time_colnames(volc)
     if not time_cols:
         for name in ['obs_time', 'time', 'jd', 'mjd']:
@@ -1556,7 +1562,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         or (phot_col == "phot" and is_magnitude_phot_column(volc.table, phot_col))
         or is_mag_column(volc.table, phot_col)
     )
-    photcal_meta = _extract_photcal_meta(volc, phot_col) if preserve_photcal else {}
+    photcal_meta = _extract_photcal_meta(volc, phot_col)
 
     err_col = _resolve_photometry_error_column(volc, phot_col)
 
@@ -1640,9 +1646,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     for key in ('authors', 'sectors', 'flux_origins'):
         if key in meta:
             lcd.metadata[key] = _parse_list_meta(meta[key])
-    if not preserve_photcal:
-        lcd.metadata['photcal'] = {}
-        _apply_tabular_meta_to_curvedash(lcd, meta)
+    _apply_tabular_meta_to_curvedash(lcd, meta)
     if absolute_epoch is not None:
         lcd.epoch = absolute_epoch
     if meta.get('stitched') in (True, 'true', 'True', '1', 1):
