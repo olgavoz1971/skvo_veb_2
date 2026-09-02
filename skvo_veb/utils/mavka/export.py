@@ -9,6 +9,7 @@ from typing import Any
 import plotly.graph_objects as go
 
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
+from skvo_veb.utils.mavka.config import DEFAULT_METHOD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
 EXTENDED_RESULTS_FILENAME = "results.tsv"
@@ -16,6 +17,7 @@ EXTENDED_PLOTS_DIR = "plots"
 EXTENDED_README_FILENAME = "README.txt"
 MAVKA_EXTREMA_COMPACT_EXTENSION = "dat"
 MAVKA_EXTREMA_EXTENDED_SUFFIX = "_mavka_extrema"
+MAVKA_TIMING_FALLBACK_PREFIX = "results"
 
 _RESULTS_HEADER = (
     "jd_peak\tjd_peak_std\tjd_interval_start\tjd_interval_stop\t"
@@ -38,6 +40,33 @@ def mavka_extrema_export_stem(stem: str | None) -> str:
         if safe.lower().endswith(suffix):
             safe = safe[: -len(suffix)]
     return safe or "results_mavka"
+
+
+def mavka_suggested_timing_stem(
+    lc_filename: str | None,
+    method: str | None,
+) -> str:
+    """Builds the suggested MAVKA timing export stem from LC name and method.
+
+    Args:
+        lc_filename (str | None): Uploaded light-curve filename.
+        method (str | None): Approximation id (``WSAP``, ``WSL``, ``AP``, ``A``).
+
+    Returns:
+        str: ``{lc_stem}_{method}``, or ``results_{method}`` when no LC name
+        is available.
+    """
+    tag = str(method or "").strip() or DEFAULT_METHOD
+    safe_tag = sanitize_filename(tag) or DEFAULT_METHOD
+    if not lc_filename:
+        return f"{MAVKA_TIMING_FALLBACK_PREFIX}_{safe_tag}"
+    base = lc_filename.rsplit(".", 1)[0].strip()
+    if not base:
+        return f"{MAVKA_TIMING_FALLBACK_PREFIX}_{safe_tag}"
+    suffix = f"_{safe_tag}"
+    if base.lower().endswith(suffix.lower()):
+        return base
+    return f"{base}{suffix}"
 
 
 def mavka_compact_extrema_download_name(stem: str | None) -> str:
@@ -279,6 +308,7 @@ def format_compact_extrema_dat(
     extrema_mode: str,
     period: str | None = None,
     epoch: str | None = None,
+    method: str | None = None,
 ) -> str:
     """Formats the compact extrema timing file (selected successes only).
 
@@ -288,6 +318,7 @@ def format_compact_extrema_dat(
         extrema_mode (str): ``min`` or ``max`` from the MAVKA sidebar.
         period (str | None): Folding period from accordion 1 (comment only).
         epoch (str | None): Display epoch from accordion 1 (comment only).
+        method (str | None): Approximation id written next to the MAVKA header.
 
     Returns:
         str: ``.dat`` file body.
@@ -299,6 +330,9 @@ def format_compact_extrema_dat(
     lines = [
         f"# MAVKA {mode_label} Results\n",
     ]
+    method_tag = str(method or "").strip()
+    if method_tag:
+        lines.append(f"# method: {method_tag}\n")
     if period:
         lines.append(f"# PERIOD = {period}\n")
     if epoch:

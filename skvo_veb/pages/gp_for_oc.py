@@ -412,6 +412,7 @@ from skvo_veb.utils.gp.export import (
     gp_extrema_export_stem,
     gp_intervals_export_download_name,
     gp_lc_export_download_name,
+    gp_suggested_timing_stem,
 )
 from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
@@ -458,6 +459,7 @@ from skvo_veb.utils.mavka.export import (
     mavka_compact_extrema_download_name,
     mavka_extended_extrema_download_name,
     mavka_extrema_export_stem,
+    mavka_suggested_timing_stem,
 )
 from skvo_veb.utils.mavka.live_page import (
     build_live_page_slot_children as build_mavka_live_page_slot_children,
@@ -481,15 +483,20 @@ from skvo_veb.utils.mavka.run_control import (
     mavka_batch_stop_requested,
     request_mavka_batch_stop,
 )
-from skvo_veb.utils.oc.compute import compute_step1_oc, cycle_shifts_from_store
+from skvo_veb.utils.oc.compute import (
+    absolute_jd_to_display_mjd,
+    at_mjd_from_oc_click,
+    compute_step1_oc,
+    cycle_shifts_from_store,
+)
 from skvo_veb.utils.oc.export import (
     format_oc_dat,
     oc_default_export_stem,
+    oc_default_export_stem_for_source,
     oc_export_download_name,
-    oc_source_filename,
 )
 from skvo_veb.utils.oc.tom_io import (
-    parse_compact_tom_dat,
+    parse_compact_tom_contents,
     toms_from_review_store,
     uploaded_toms_from_store,
 )
@@ -1027,7 +1034,7 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "ToM source",
     "Gaussian Process and MAVKA use Keep-marked successes from those "
     "accordions. Upload reads a compact ToM .dat exported from GP or MAVKA "
-    "(JD and σ in days, # comments skipped).",
+    "(JD and σ in days). Hash comments from that file are copied into the O-C export.",
 )
 (
     _oc_ephemeris_help_btn,
@@ -1854,7 +1861,7 @@ graph_gp = html.Div([
                                         [
                                             dbc.Input(
                                                 id="export-filename",
-                                                placeholder="results_extrema",
+                                                placeholder="results_gp",
                                                 type="text",
                                                 size="sm",
                                             ),
@@ -2103,7 +2110,7 @@ graph_mavka = html.Div(
                                                     [
                                                         dbc.Input(
                                                             id="mavka-export-filename",
-                                                            placeholder="results_mavka",
+                                                            placeholder="results_WSAP",
                                                             type="text",
                                                             size="sm",
                                                         ),
@@ -2144,17 +2151,38 @@ def _oc_empty_figure() -> go.Figure:
     fig = go.Figure()
     fig.update_layout(
         template="plotly_white",
+        title=None,
         xaxis_title="Cycle number E",
         yaxis_title="O-C (days)",
         xaxis2=dict(
             overlaying="x",
             side="top",
-            title="Calculated JD (T0 + E × P0)",
+            matches="x",
+            title="Calculated MJD",
+            showgrid=False,
         ),
         margin=dict(l=50, r=20, t=60, b=50),
         showlegend=False,
+        clickmode="event",
+        hovermode="closest",
     )
     return fig
+
+
+def _oc_source_title(source: str | None) -> str:
+    """Returns the O-C card title for a ToM source.
+
+    Args:
+        source (str | None): ``gp``, ``mavka``, or ``upload``.
+
+    Returns:
+        str: ``O-C (GP)``, ``O-C (MAVKA)``, or ``O-C (upload)``.
+    """
+    labels = {"gp": "GP", "mavka": "MAVKA", "upload": "upload"}
+    key = str(source or "")
+    if key in labels:
+        return f"O-C ({labels[key]})"
+    return "O-C"
 
 
 def _build_oc_figure(payload: dict) -> go.Figure:
@@ -2164,18 +2192,18 @@ def _build_oc_figure(payload: dict) -> go.Figure:
         payload (dict): Arrays and ephemeris metadata from the utils layer.
 
     Returns:
-        plotly.graph_objects.Figure: O-C vs E with calculated-JD top axis.
+        plotly.graph_objects.Figure: O-C vs E with a calculated-MJD top axis.
     """
     cycle_e = np.asarray(payload["E"], dtype=float)
     oc_days = np.asarray(payload["OC"], dtype=float)
-    jd_obs = np.asarray(payload["jd_ext"], dtype=float)
-    jd_calc = np.asarray(payload["jd_calc"], dtype=float)
+    mjd_obs = np.asarray(payload["jd_ext"], dtype=float) - jd0
+    mjd_calc = np.asarray(payload["jd_calc"], dtype=float) - jd0
     sigma_jd = np.asarray(payload["sigma_jd"], dtype=float)
     custom = np.column_stack(
         [
             oc_days * 86400.0,
-            jd_obs,
-            jd_calc,
+            mjd_obs,
+            mjd_calc,
             sigma_jd,
             sigma_jd * 86400.0,
         ]
@@ -2183,8 +2211,8 @@ def _build_oc_figure(payload: dict) -> go.Figure:
     hover = (
         "E: %{x:.0f}<br>"
         "O-C: %{y:.6f} d (%{customdata[0]:.1f} s)<br>"
-        "jd_obs: %{customdata[1]:.6f}<br>"
-        "jd_calc: %{customdata[2]:.6f}<br>"
+        "MJD obs: %{customdata[1]:.6f}<br>"
+        "MJD calc: %{customdata[2]:.6f}<br>"
         "σ: %{customdata[3]:.8f} d (%{customdata[4]:.1f} s)"
         "<extra></extra>"
     )
@@ -2205,7 +2233,7 @@ def _build_oc_figure(payload: dict) -> go.Figure:
                     width=3,
                     color="grey",
                 ),
-                customdata=custom[finite],
+                customdata=custom[finite].tolist(),
                 hovertemplate=hover,
                 name="O-C",
             )
@@ -2217,21 +2245,11 @@ def _build_oc_figure(payload: dict) -> go.Figure:
                 y=oc_days[~finite],
                 mode="markers",
                 marker=dict(size=8, color="#fd7e14"),
-                customdata=custom[~finite],
+                customdata=custom[~finite].tolist(),
                 hovertemplate=hover,
                 name="O-C (no σ)",
             )
         )
-    fig.add_trace(
-        go.Scatter(
-            x=cycle_e,
-            y=oc_days,
-            xaxis="x2",
-            visible=False,
-            showlegend=False,
-            hoverinfo="skip",
-        )
-    )
     fig.add_hline(y=0.0, line_dash="dash", line_color="grey", line_width=1)
     e_min = float(np.min(cycle_e))
     e_max = float(np.max(cycle_e))
@@ -2242,46 +2260,28 @@ def _build_oc_figure(payload: dict) -> go.Figure:
     )
     t0_jd = float(payload["t0_jd"])
     p0 = float(payload["p0"])
-    tick_jd = t0_jd + tick_e * p0
-    source_label = {"gp": "GP", "mavka": "MAVKA", "upload": "Upload"}.get(
-        str(payload.get("source")), str(payload.get("source"))
-    )
+    tick_mjd = [
+        absolute_jd_to_display_mjd(t0_jd + float(e) * p0, jd0) for e in tick_e
+    ]
     fig.update_layout(
-        title=dict(
-            text=(
-                f"O-C [{source_label}] "
-                f"(T0={t0_jd:.5f} JD, P0={p0:.8f} d)"
-            ),
-            font=dict(size=14),
-        ),
+        title=None,
         xaxis=dict(title="Cycle number E"),
         xaxis2=dict(
             overlaying="x",
             side="top",
-            title="Calculated JD (T0 + E × P0)",
+            matches="x",
+            title="Calculated MJD",
             tickmode="array",
             tickvals=tick_e.tolist(),
-            ticktext=[f"{value:.2f}" for value in tick_jd],
+            ticktext=[f"{value:.2f}" for value in tick_mjd],
+            showgrid=False,
         ),
         yaxis_title="O-C (days)",
         template="plotly_white",
         showlegend=False,
-        margin=dict(l=50, r=20, t=70, b=50),
-        annotations=[
-            dict(
-                text=(
-                    f"N={payload['n']}  RMS={payload['rms_d']:.5f} d "
-                    f"({payload['rms_s']:.1f} s)"
-                ),
-                xref="paper",
-                yref="paper",
-                x=0.98,
-                y=0.02,
-                showarrow=False,
-                xanchor="right",
-                yanchor="bottom",
-            )
-        ],
+        margin=dict(l=50, r=20, t=60, b=50),
+        clickmode="event",
+        hovermode="closest",
     )
     return fig
 
@@ -2471,7 +2471,11 @@ graph_oc = html.Div(
     [
         html.Div(
             [
-                html.H6("O-C view", className="gp-card-title"),
+                html.H6(
+                    _oc_source_title("gp"),
+                    id="oc-view-title",
+                    className="gp-card-title",
+                ),
             ],
             className="mb-1",
         ),
@@ -4399,7 +4403,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
     oc_name = no_update
     if (oc_source or "gp") == "gp":
-        oc_name = oc_default_export_stem(lc_filename)
+        oc_name = oc_default_export_stem_for_source("gp", gp_store=store_payload)
     return page_children, finish_signal, store_payload, page_label, oc_name
 
 
@@ -4530,10 +4534,8 @@ def download_gp_prep_lightcurve(
     prevent_initial_call=True
 )
 def update_default_filename(filename):
-    if filename:
-        base = filename.rsplit('.', 1)[0]
-        return f"{base}_extrema"
-    return "results_extrema"
+    """Default GP timing export stem: ``{lightcurve}_gp``."""
+    return gp_suggested_timing_stem(filename)
 
 
 @callback(
@@ -4978,6 +4980,7 @@ def run_mavka(
         stored_entries,
         stopped_early=stopped_early,
         source_filename=lc_filename,
+        method=method,
     )
     page_children = render_mavka_review_page(
         stored_entries, 0, store_payload["include"]
@@ -4986,21 +4989,21 @@ def run_mavka(
     finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
     oc_name = no_update
     if oc_source == "mavka":
-        oc_name = oc_default_export_stem(lc_filename)
+        oc_name = oc_default_export_stem_for_source(
+            "mavka", mavka_store=store_payload
+        )
     return page_children, finish_signal, store_payload, page_label, oc_name
 
 
 @callback(
     Output("mavka-export-filename", "value"),
     Input("upload-lc", "filename"),
+    Input("mavka-method", "value"),
     prevent_initial_call=True,
 )
-def update_mavka_default_filename(filename):
-    """Default MAVKA export stem from the uploaded light curve name."""
-    if filename:
-        base = filename.rsplit(".", 1)[0]
-        return f"{base}_mavka"
-    return "results_mavka"
+def update_mavka_default_filename(filename, method):
+    """Default MAVKA export stem: ``{lightcurve}_{method}`` (WSAP, WSL, …)."""
+    return mavka_suggested_timing_stem(filename, method)
 
 
 @callback(
@@ -5012,6 +5015,7 @@ def update_mavka_default_filename(filename):
     State("mavka-extended-export", "value"),
     State("input-period", "value"),
     State("input-epoch", "value"),
+    State("mavka-method", "value"),
     prevent_initial_call=True,
 )
 def trigger_mavka_download(
@@ -5022,6 +5026,7 @@ def trigger_mavka_download(
     extended_export,
     period,
     epoch,
+    method,
 ):
     """Downloads compact selected TOMs or an extended ZIP of the MAVKA run."""
     logger.debug(
@@ -5066,6 +5071,7 @@ def trigger_mavka_download(
         extrema_mode=extrema_mode or "min",
         period=None if period in (None, "") else str(period),
         epoch=None if epoch in (None, "") else str(epoch),
+        method=store.get("method") or method,
     )
     outfile = mavka_compact_extrema_download_name(filename_input)
     return dcc.send_string(body, outfile)
@@ -5228,15 +5234,13 @@ def update_oc_export_filename(source, gp_store, mavka_store, uploaded):
         uploaded: Compact ToM upload payload.
 
     Returns:
-        str: Default ``{stem}_oc`` (or ``results_oc``).
+        str: Timing-export stem plus ``_oc`` (or ``results_oc``).
     """
-    return oc_default_export_stem(
-        oc_source_filename(
-            source or "gp",
-            gp_store=gp_store,
-            mavka_store=mavka_store,
-            uploaded=uploaded,
-        )
+    return oc_default_export_stem_for_source(
+        source or "gp",
+        gp_store=gp_store,
+        mavka_store=mavka_store,
+        uploaded=uploaded,
     )
 
 
@@ -5258,10 +5262,14 @@ def upload_oc_toms(contents, filename):
         _content_type, content_string = contents.split(",", 1)
         decoded = base64.b64decode(content_string)
         text = decoded.decode("utf-8")
-        records = parse_compact_tom_dat(text)
+        records, metadata_lines = parse_compact_tom_contents(text)
         logger.info("O-C timings upload: %s (%s ToMs)", filename, len(records))
         return (
-            {"filename": filename, "records": records},
+            {
+                "filename": filename,
+                "records": records,
+                "metadata_lines": metadata_lines,
+            },
             _gp_upload_status(filename or "timings.dat", tone="ok"),
             None,
             "upload",
@@ -5280,6 +5288,51 @@ def upload_oc_toms(contents, filename):
             no_update,
             no_update,
         )
+
+
+@callback(
+    Output("oc-view-title", "children"),
+    Input("oc-tom-source", "value"),
+)
+def oc_sync_view_title(source):
+    """Sets the O-C card title from the selected ToM source.
+
+    Args:
+        source (str | None): ``gp``, ``mavka``, or ``upload``.
+
+    Returns:
+        str: ``O-C (GP)``, ``O-C (MAVKA)``, or ``O-C (upload)``.
+    """
+    return _oc_source_title(source)
+
+
+@callback(
+    Output("oc-shift-at-time", "value"),
+    Input("oc-graph", "clickData"),
+    State("store-oc-plot-data", "data"),
+    prevent_initial_call=True,
+)
+def oc_fill_at_time_from_point(click_data, payload):
+    """Copies observed MJD of the clicked O-C point into At ≥.
+
+    Args:
+        click_data: Dash ``oc-graph.clickData`` payload.
+        payload (dict | None): Last plotted O-C store.
+
+    Returns:
+        float: Observed display MJD.
+
+    Raises:
+        PreventUpdate: If the click has no usable O-C point.
+    """
+    try:
+        at_mjd = at_mjd_from_oc_click(
+            click_data, payload, display_epoch=jd0
+        )
+    except ValueError:
+        raise PreventUpdate
+    logger.info("O-C click set At ≥ to MJD %.6f", at_mjd)
+    return at_mjd
 
 
 @callback(
@@ -5390,6 +5443,10 @@ def oc_plot(
             cycle_shifts=shifts or None,
             source=source_key,
         )
+        if source_key == "upload" and isinstance(uploaded, dict):
+            payload["source_metadata_lines"] = list(
+                uploaded.get("metadata_lines") or []
+            )
         figure = _build_oc_figure(payload)
         return figure, payload, None
     except Exception as exc:

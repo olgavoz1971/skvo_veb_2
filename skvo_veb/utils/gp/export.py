@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 GP_INTERVALS_EXPORT_EXTENSION = "dat"
 GP_EXTREMA_COMPACT_EXTENSION = "dat"
 GP_EXTREMA_EXTENDED_SUFFIX = "_gp_extrema"
+GP_TIMING_SUFFIX = "_gp"
+GP_TIMING_FALLBACK_STEM = "results_gp"
 
 
 def export_stem_from_upload_filename(filename: str | None) -> str:
@@ -27,6 +29,23 @@ def export_stem_from_upload_filename(filename: str | None) -> str:
     if not filename:
         return ""
     return filename.rsplit(".", 1)[0]
+
+
+def gp_suggested_timing_stem(lc_filename: str | None) -> str:
+    """Builds the suggested GP timing export stem from a light-curve file name.
+
+    Args:
+        lc_filename (str | None): Uploaded light-curve filename.
+
+    Returns:
+        str: ``{lc_stem}_gp``, or ``results_gp`` when no name is available.
+    """
+    base = export_stem_from_upload_filename(lc_filename).strip()
+    if not base:
+        return GP_TIMING_FALLBACK_STEM
+    if base.lower().endswith(GP_TIMING_SUFFIX):
+        return base
+    return f"{base}{GP_TIMING_SUFFIX}"
 
 
 def gp_intervals_export_download_name(stem: str | None) -> str:
@@ -54,12 +73,12 @@ def gp_extrema_export_stem(stem: str | None) -> str:
     Returns:
         str: Sanitised basename without ``.dat`` / ``.zip`` suffixes.
     """
-    raw = (stem or "results_extrema").strip() or "results_extrema"
-    safe = sanitize_filename(raw) or "results_extrema"
+    raw = (stem or GP_TIMING_FALLBACK_STEM).strip() or GP_TIMING_FALLBACK_STEM
+    safe = sanitize_filename(raw) or GP_TIMING_FALLBACK_STEM
     for suffix in (".dat", ".zip"):
         if safe.lower().endswith(suffix):
             safe = safe[: -len(suffix)]
-    return safe or "results_extrema"
+    return safe or GP_TIMING_FALLBACK_STEM
 
 
 def gp_compact_extrema_download_name(stem: str | None) -> str:
@@ -81,9 +100,12 @@ def gp_extended_extrema_download_name(stem: str | None) -> str:
         stem (str | None): User-entered export stem.
 
     Returns:
-        str: Sanitised ``*_gp_extrema.zip`` filename.
+        str: Sanitised ``*_gp_extrema.zip``, or ``{stem}_extrema.zip`` when
+        ``stem`` already ends with ``_gp``.
     """
     base = gp_extrema_export_stem(stem)
+    if base.lower().endswith(GP_TIMING_SUFFIX):
+        return f"{base}_extrema.zip"
     return f"{base}{GP_EXTREMA_EXTENDED_SUFFIX}.zip"
 
 

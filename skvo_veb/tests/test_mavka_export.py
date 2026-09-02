@@ -17,6 +17,7 @@ from skvo_veb.utils.mavka.export import (
     mavka_compact_extrema_download_name,
     mavka_extended_extrema_download_name,
     mavka_extrema_export_stem,
+    mavka_suggested_timing_stem,
 )
 from skvo_veb.utils.my_tools import PipeException
 
@@ -56,7 +57,10 @@ def test_fit_export_status_labels():
 
 
 def test_mavka_extrema_download_names():
-    """Export stems normalise legacy extensions for dat and zip outputs."""
+    """Export stems use the approximation method, not a MAVKA suffix."""
+    assert mavka_suggested_timing_stem("NSV807.vot", "WSL") == "NSV807_WSL"
+    assert mavka_suggested_timing_stem("NSV807_WSAP.dat", "WSAP") == "NSV807_WSAP"
+    assert mavka_suggested_timing_stem(None, "AP") == "results_AP"
     assert mavka_extrema_export_stem("target_extrema.dat") == "target_extrema"
     assert mavka_compact_extrema_download_name("target_extrema") == "target_extrema.dat"
     assert (
@@ -79,11 +83,18 @@ def test_format_compact_extrema_dat_keeps_selected_successes_only():
 
 
 def test_format_compact_extrema_dat_stamps_period_epoch_comments():
-    """Compact file records accordion 1 P/Epoch as comments when supplied."""
+    """Compact file records method beside the MAVKA header, then P/Epoch."""
     rows = [{"is_fail": False, "jd_peak": 2451000.0, "jd_peak_std": 0.01}]
     body = format_compact_extrema_dat(
-        rows, [True], extrema_mode="min", period="2.5", epoch="58000.1"
+        rows,
+        [True],
+        extrema_mode="min",
+        period="2.5",
+        epoch="58000.1",
+        method="WSL",
     )
+    assert body.startswith("# MAVKA Minimum Results")
+    assert "# method: WSL" in body
     assert "# PERIOD = 2.5" in body
     assert "# EPOCH = 58000.1" in body
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from skvo_veb.utils.gp.export import gp_suggested_timing_stem
+from skvo_veb.utils.mavka.export import mavka_suggested_timing_stem
 from skvo_veb.utils.my_tools import sanitize_filename
 
 OC_DAT_EXTENSION = "dat"
@@ -37,6 +39,45 @@ def oc_source_filename(
     if source == "upload" and isinstance(uploaded, dict):
         return uploaded.get("filename")
     return None
+
+
+def oc_default_export_stem_for_source(
+    source: str,
+    *,
+    gp_store: dict | None = None,
+    mavka_store: dict | None = None,
+    uploaded: dict | list | None = None,
+) -> str:
+    """Builds the O-C export stem from the ToM source that produced this diagram.
+
+    GP and MAVKA use the same basename as their timing ``.dat`` suggestion,
+    then ``_oc``. Upload uses the uploaded ToM filename.
+
+    Args:
+        source (str): ``gp``, ``mavka``, or ``upload``.
+        gp_store (dict | None): ``store-results-data``.
+        mavka_store (dict | None): ``store-mavka-results-data``.
+        uploaded (dict | list | None): ``store-oc-uploaded-toms``.
+
+    Returns:
+        str: ``{timing_stem}_oc``, or ``results_oc`` when no name is available.
+    """
+    key = str(source or "")
+    if key == "gp":
+        return oc_default_export_stem(
+            gp_suggested_timing_stem((gp_store or {}).get("source_filename"))
+        )
+    if key == "mavka":
+        store = mavka_store or {}
+        return oc_default_export_stem(
+            mavka_suggested_timing_stem(
+                store.get("source_filename"),
+                store.get("method"),
+            )
+        )
+    if key == "upload" and isinstance(uploaded, dict):
+        return oc_default_export_stem(uploaded.get("filename"))
+    return OC_FALLBACK_STEM
 
 
 def oc_default_export_stem(source_filename: str | None) -> str:
@@ -90,11 +131,15 @@ def oc_export_download_name(stem: str | None) -> str:
 def format_oc_dat(payload: dict[str, Any]) -> str:
     """Formats an xmgrace O-C table from a Plot payload.
 
-    Metadata and the column-name line start with ``#``. Data columns (double
-    space): ``cycle_number``, ``OC``, ``sigma_jd_ext``, ``jd_ext``.
+    Metadata and the column-name line start with ``#``. When the ToMs came from
+    an uploaded file, every original ``#`` comment is copied after ``# source``.
+    Data columns (double space): ``cycle_number``, ``OC``, ``sigma_jd_ext``,
+    ``jd_ext``.
 
     Args:
-        payload (dict): Output of ``compute_step1_oc``.
+        payload (dict): Output of ``compute_step1_oc``. May include
+            ``source_metadata_lines`` (``#`` comments copied from an uploaded
+            ToM file).
 
     Returns:
         str: File body.
@@ -112,12 +157,23 @@ def format_oc_dat(payload: dict[str, Any]) -> str:
     lines = [
         "# oc_tool: skvo_veb O-C\n",
         f"# source: {source}\n",
-        "# algorithm: O-C = jd_ext - (T0 + E*P0); "
-        "E = round((jd_ext-T0)/P0) after cycle_shifts\n",
-        f"# ephemeris_T0_JD: {t0_jd:.8f}\n",
-        f"# ephemeris_P0_d: {p0:.10f}\n",
-        f"# cycle_shifts_applied: {len(shifts)}\n",
     ]
+    for raw in payload.get("source_metadata_lines") or []:
+        text = str(raw).rstrip("\r\n")
+        if not text:
+            continue
+        if not text.startswith("#"):
+            text = f"# {text}"
+        lines.append(f"{text}\n")
+    lines.extend(
+        [
+            "# algorithm: O-C = jd_ext - (T0 + E*P0); "
+            "E = round((jd_ext-T0)/P0) after cycle_shifts\n",
+            f"# ephemeris_T0_JD: {t0_jd:.8f}\n",
+            f"# ephemeris_P0_d: {p0:.10f}\n",
+            f"# cycle_shifts_applied: {len(shifts)}\n",
+        ]
+    )
     for row in shifts:
         lines.append(
             f"# cycle_shift: at_jd={float(row['at_jd']):.8f} "

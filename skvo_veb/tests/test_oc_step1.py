@@ -5,14 +5,21 @@ from __future__ import annotations
 import pytest
 
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
-from skvo_veb.utils.oc.compute import compute_step1_oc, cycle_shifts_from_store
+from skvo_veb.utils.oc.compute import (
+    absolute_jd_to_display_mjd,
+    at_mjd_from_oc_click,
+    compute_step1_oc,
+    cycle_shifts_from_store,
+)
 from skvo_veb.utils.oc.export import (
     format_oc_dat,
     oc_default_export_stem,
+    oc_default_export_stem_for_source,
     oc_export_download_name,
     oc_source_filename,
 )
 from skvo_veb.utils.oc.tom_io import (
+    parse_compact_tom_contents,
     parse_compact_tom_dat,
     toms_from_review_store,
     uploaded_toms_from_store,
@@ -43,6 +50,10 @@ def test_parse_compact_tom_dat_gp_and_mavka():
     assert gp_rows[0]["sigma_jd"] == pytest.approx(0.000150)
     assert mavka_rows[0]["jd_ext"] == pytest.approx(2458749.729)
     assert [r["jd_ext"] for r in mavka_rows] == [r["jd_ext"] for r in gp_rows]
+    _, gp_meta = parse_compact_tom_contents(gp_text)
+    _, mavka_meta = parse_compact_tom_contents(mavka_text)
+    assert gp_meta[0] == "# GP Minimum Results"
+    assert "# PERIOD = 0.3389614" in mavka_meta
 
 
 def test_parse_compact_tom_dat_rejects_empty_and_bad_line():
@@ -137,6 +148,28 @@ def test_format_oc_dat_xmgrace_comments():
     assert oc_export_download_name("results_oc.dat") == "results_oc.dat"
 
 
+def test_format_oc_dat_copies_uploaded_tom_comments():
+    """O-C export keeps every ``#`` line from the uploaded ToM file."""
+    payload = compute_step1_oc(
+        [{"jd_ext": 2458749.01, "sigma_jd": 1.5e-4}],
+        t0_jd=2458749.0,
+        p0=1.0,
+        source="upload",
+    )
+    payload["source_metadata_lines"] = [
+        "# MAVKA Minimum Results",
+        "# method: WSL",
+        "# PERIOD = 0.33",
+        "# JD_Minimum\tJD_Std",
+    ]
+    body = format_oc_dat(payload)
+    assert "# source: upload" in body
+    assert "# MAVKA Minimum Results" in body
+    assert "# method: WSL" in body
+    assert "# PERIOD = 0.33" in body
+    assert "# JD_Minimum\tJD_Std" in body
+
+
 def test_oc_default_export_stem_from_source_filename():
     """O-C stem follows the ToM-source file, not a later light-curve upload."""
     assert oc_default_export_stem("NSV_807_sector_97.vot") == "NSV_807_sector_97_oc"
@@ -150,6 +183,27 @@ def test_oc_default_export_stem_from_source_filename():
         )
         == "old.vot"
     )
+    assert (
+        oc_default_export_stem_for_source(
+            "gp",
+            gp_store={"source_filename": "NSV807.vot"},
+        )
+        == "NSV807_gp_oc"
+    )
+    assert (
+        oc_default_export_stem_for_source(
+            "mavka",
+            mavka_store={"source_filename": "NSV807.vot", "method": "WSL"},
+        )
+        == "NSV807_WSL_oc"
+    )
+    assert (
+        oc_default_export_stem_for_source(
+            "upload",
+            uploaded={"filename": "R_TESS_min_all.dat"},
+        )
+        == "R_TESS_min_all_oc"
+    )
 
 
 def test_uploaded_toms_from_store_requires_filename_payload():
@@ -158,6 +212,68 @@ def test_uploaded_toms_from_store_requires_filename_payload():
     assert uploaded_toms_from_store({"filename": "a.dat", "records": rows}) == rows
     with pytest.raises(ValueError, match="source filename"):
         uploaded_toms_from_store(rows)
+
+
+def test_oc_figure_title_hover_and_top_axis_use_mjd():
+    """Card title names the source; the figure itself has no title or annotation."""
+    from skvo_veb.pages.gp_for_oc import _build_oc_figure, _oc_source_title
+    from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
+
+    assert _oc_source_title("gp") == "O-C (GP)"
+    assert _oc_source_title("mavka") == "O-C (MAVKA)"
+    assert _oc_source_title("upload") == "O-C (upload)"
+    payload = compute_step1_oc(
+        [{"jd_ext": 2458749.729, "sigma_jd": 1.5e-4}],
+        t0_jd=2458749.0,
+        p0=1.0,
+        source="gp",
+    )
+    fig = _build_oc_figure(payload)
+    title_text = fig.layout.title.text if fig.layout.title else None
+    assert title_text in (None, "")
+    assert fig.layout.annotations in ((), None) or len(fig.layout.annotations) == 0
+    assert fig.layout.xaxis2.title.text == "Calculated MJD"
+    assert fig.layout.xaxis2.matches == "x"
+    hover = fig.data[0].hovertemplate
+    assert "MJD obs" in hover
+    assert "jd_obs" not in hover
+    mjd_obs = fig.data[0].customdata[0][1]
+    assert mjd_obs == pytest.approx(2458749.729 - jd0)
+    dummy_on_x2 = [tr for tr in fig.data if getattr(tr, "xaxis", None) == "x2"]
+    assert dummy_on_x2 == []
+
+
+def test_absolute_jd_to_display_mjd():
+    """Display MJD is absolute JD minus the page epoch offset."""
+    assert absolute_jd_to_display_mjd(2458749.729, DEFAULT_EPOCH_JD) == pytest.approx(
+        2458749.729 - DEFAULT_EPOCH_JD
+    )
+
+
+def test_at_mjd_from_oc_click_reads_observed_mjd():
+    """Click customdata column 1 is observed MJD for the At ≥ field."""
+    click = {"points": [{"customdata": [12.0, 58749.729, 58749.0, 1e-4, 8.6]}]}
+    assert at_mjd_from_oc_click(click) == pytest.approx(58749.729)
+
+
+def test_at_mjd_from_oc_click_from_e_and_residual():
+    """Without customdata, observed MJD is T0 + E×P0 + (O-C), then offset."""
+    payload = {
+        "t0_jd": 2458749.0,
+        "p0": 1.0,
+    }
+    click = {"points": [{"x": 2.0, "y": 0.003}]}
+    assert at_mjd_from_oc_click(
+        click, payload, display_epoch=DEFAULT_EPOCH_JD
+    ) == pytest.approx(2458749.0 + 2.0 + 0.003 - DEFAULT_EPOCH_JD)
+
+
+def test_at_mjd_from_oc_click_rejects_empty():
+    """A click without a point fails fast."""
+    with pytest.raises(ValueError, match="No O-C point"):
+        at_mjd_from_oc_click(None)
+    with pytest.raises(ValueError, match="missing observed MJD"):
+        at_mjd_from_oc_click({"points": [{"customdata": [1.0]}]})
 
 
 def test_compute_step1_oc_rejects_bad_period():

@@ -28,11 +28,12 @@ def test_build_review_store_payload_include_defaults():
         {"is_fail": True},
     ]
     payload = build_review_store_payload(
-        "run1", entries, source_filename="NSV807.vot"
+        "run1", entries, source_filename="NSV807.vot", method="WSL"
     )
     assert payload["include"] == [True, False]
     assert payload["rows"][0]["jd_peak"] == 1.0
     assert payload["source_filename"] == "NSV807.vot"
+    assert payload["method"] == "WSL"
 
 
 def test_review_page_label():

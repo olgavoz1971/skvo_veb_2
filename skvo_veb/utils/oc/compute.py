@@ -112,3 +112,62 @@ def compute_step1_oc(
         len(shifts),
     )
     return payload
+
+
+def absolute_jd_to_display_mjd(jd_abs: float, display_epoch: float) -> float:
+    """Converts an absolute Julian Date to the page display MJD offset.
+
+    Args:
+        jd_abs (float): Absolute Julian Date.
+        display_epoch (float): Offset subtracted on the page (``jd0``).
+
+    Returns:
+        float: ``jd_abs - display_epoch``.
+    """
+    return float(jd_abs) - float(display_epoch)
+
+
+def at_mjd_from_oc_click(
+    click_data: dict | None,
+    payload: dict | None = None,
+    *,
+    display_epoch: float | None = None,
+) -> float:
+    """Reads observed display MJD from an O-C graph ``clickData`` payload.
+
+    Prefers ``customdata[1]`` (observed MJD on the figure). If that is missing,
+    reconstructs ``jd_ext`` from the clicked ``E``, ``O-C``, and the last plot
+    payload: ``T0 + E × P0 + (O-C)``.
+
+    Args:
+        click_data (dict | None): Dash ``dcc.Graph.clickData``.
+        payload (dict | None): Last ``compute_step1_oc`` store, used as fallback.
+        display_epoch (float | None): Page MJD offset (``jd0``) for the fallback.
+
+    Returns:
+        float: Observed MJD of the clicked point.
+
+    Raises:
+        ValueError: If the click has no point or no observed MJD.
+    """
+    if not click_data or not click_data.get("points"):
+        raise ValueError("No O-C point selected.")
+    point = click_data["points"][0]
+    custom = point.get("customdata")
+    if isinstance(custom, (list, tuple)) and len(custom) >= 2:
+        value = float(custom[1])
+        if math.isfinite(value):
+            return value
+    if payload is None or display_epoch is None:
+        raise ValueError("Clicked point is missing observed MJD.")
+    if "x" not in point or "y" not in point:
+        raise ValueError("Clicked point is missing observed MJD.")
+    cycle_e = float(point["x"])
+    oc_days = float(point["y"])
+    t0_jd = float(payload["t0_jd"])
+    p0 = float(payload["p0"])
+    jd_ext = t0_jd + cycle_e * p0 + oc_days
+    value = absolute_jd_to_display_mjd(jd_ext, display_epoch)
+    if not math.isfinite(value):
+        raise ValueError("Observed MJD is not finite.")
+    return value

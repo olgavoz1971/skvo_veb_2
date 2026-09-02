@@ -9,17 +9,16 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def parse_compact_tom_dat(text: str) -> list[dict]:
-    """Parses a compact GP or MAVKA extrema ``.dat`` body.
-
-    Comment lines (``#``) are skipped. Each data line is two whitespace-separated
-    numbers: observed JD and σ(JD) in days.
+def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
+    """Parses a compact GP or MAVKA extrema ``.dat`` body plus ``#`` comments.
 
     Args:
         text (str): File contents.
 
     Returns:
-        list[dict]: ``jd_ext`` and ``sigma_jd`` records, sorted by ``jd_ext``.
+        tuple: ``(records, metadata_lines)``. Records are ``jd_ext`` / ``sigma_jd``
+        dicts sorted by ``jd_ext``. ``metadata_lines`` are original ``#`` lines
+        (without trailing newlines), in file order.
 
     Raises:
         ValueError: If there are no usable rows or a data line is malformed.
@@ -27,9 +26,13 @@ def parse_compact_tom_dat(text: str) -> list[dict]:
     if text is None:
         raise ValueError("Timing file is empty.")
     records: list[dict] = []
+    metadata_lines: list[str] = []
     for line_no, raw in enumerate(text.splitlines(), start=1):
         stripped = raw.strip()
-        if not stripped or stripped.startswith("#"):
+        if stripped.startswith("#"):
+            metadata_lines.append(raw.rstrip("\r\n"))
+            continue
+        if not stripped:
             continue
         parts = stripped.split()
         if len(parts) < 2:
@@ -52,6 +55,25 @@ def parse_compact_tom_dat(text: str) -> list[dict]:
         raise ValueError("Timing file has no ToM data rows.")
     records.sort(key=lambda row: row["jd_ext"])
     logger.info("Parsed %s ToM(s) from compact timing file", len(records))
+    return records, metadata_lines
+
+
+def parse_compact_tom_dat(text: str) -> list[dict]:
+    """Parses a compact GP or MAVKA extrema ``.dat`` body.
+
+    Comment lines (``#``) are metadata only. Each data line is two
+    whitespace-separated numbers: observed JD and σ(JD) in days.
+
+    Args:
+        text (str): File contents.
+
+    Returns:
+        list[dict]: ``jd_ext`` and ``sigma_jd`` records, sorted by ``jd_ext``.
+
+    Raises:
+        ValueError: If there are no usable rows or a data line is malformed.
+    """
+    records, _metadata = parse_compact_tom_contents(text)
     return records
 
 

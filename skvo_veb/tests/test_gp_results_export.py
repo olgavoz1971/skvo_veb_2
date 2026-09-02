@@ -10,6 +10,7 @@ from skvo_veb.utils.gp.export import (
     gp_compact_extrema_download_name,
     gp_extended_extrema_download_name,
     gp_extrema_export_stem,
+    gp_suggested_timing_stem,
 )
 from skvo_veb.utils.gp.results_export import (
     assign_plot_filenames,
@@ -109,9 +110,13 @@ def test_scale_limit_flag_matches_badge_slack():
 
 def test_gp_extrema_download_names():
     """Export stems normalise legacy extensions for dat and zip outputs."""
+    assert gp_suggested_timing_stem("NSV807.vot") == "NSV807_gp"
+    assert gp_suggested_timing_stem("NSV807_gp.dat") == "NSV807_gp"
+    assert gp_suggested_timing_stem(None) == "results_gp"
     assert gp_extrema_export_stem("target_extrema.dat") == "target_extrema"
     assert gp_compact_extrema_download_name("target_extrema") == "target_extrema.dat"
     assert gp_extended_extrema_download_name("target_extrema") == "target_extrema_gp_extrema.zip"
+    assert gp_extended_extrema_download_name("NSV807_gp") == "NSV807_gp_extrema.zip"
 
 
 @patch("plotly.graph_objects.Figure.to_image", return_value=b"PNG")
