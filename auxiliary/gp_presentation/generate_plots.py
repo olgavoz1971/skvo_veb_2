@@ -237,7 +237,7 @@ def plot_gp_regression(x_true, y_true, x_obs, y_obs, y_err, x_grid, y_mean, y_st
     # 1. Plot the true underlying physical lightcurve (bright and noticeable)
     # plt.plot(
     #     x_true, y_true,
-    #     color="#E74C3C", linestyle="-", linewidth=2.0,
+    #     color="#E74C3C", linestyle="-", linewidth=config.TRUE_LINEWIDTH,
     #     label="True Physical Lightcurve"
     # )
     
@@ -257,22 +257,27 @@ def plot_gp_regression(x_true, y_true, x_obs, y_obs, y_err, x_grid, y_mean, y_st
     for i in range(n_plot):
         plt.plot(
             x_grid, y_samples[:, i],
-            linestyle="-", linewidth=0.8, alpha=0.5,
+            linestyle="-", linewidth=config.POSTERIOR_LINEWIDTH, alpha=0.5,
             label="Posterior Function Sample" if i == 0 else ""
         )
         
     # 4. Plot the GP mean prediction
     plt.plot(
         x_grid, y_mean,
-        color="#1F77B4", linestyle="-", linewidth=2.5,
+        color="#1F77B4", linestyle="-", linewidth=config.GP_MEAN_LINEWIDTH,
         label="GP Mean Prediction"
     )
     
-    # 5. Plot the noisy observed data points with errorbars (semi-transparent)
+    # 5. Plot the noisy observed data points with errorbars
     plt.errorbar(
         x_obs, y_obs, yerr=y_err,
-        fmt="o", color="#2C3E50", markersize=5, elinewidth=1.2, capsize=2,
-        alpha=0.4, label="Observed Data (with Noise)"
+        fmt="o",
+        color=config.DATA_COLOR,
+        markersize=config.DATA_MARKERSIZE,
+        elinewidth=config.ERRORBAR_LINEWIDTH,
+        capsize=config.ERRORBAR_CAPSIZE,
+        alpha=config.DATA_ALPHA,
+        label="Observed Data (with Noise)",
     )
     
     # Styling and Labels (UK English spelling)
@@ -294,8 +299,8 @@ def plot_gp_regression(x_true, y_true, x_obs, y_obs, y_err, x_grid, y_mean, y_st
     # Add a subtle grid
     plt.grid(True, linestyle=":", alpha=0.5, color="#BDC3C7")
     
-    # Legend placement outside or inside nicely
-    plt.legend(loc="lower left", frameon=True, facecolor="white", edgecolor="none", shadow=False, fontsize=9.5)
+    # Legend is hidden for the presentation slide
+    # plt.legend(loc="lower left", frameon=True, facecolor="white", edgecolor="none", shadow=False, fontsize=9.5)
     
     plt.tight_layout()
     output_path = "auxiliary/gp_presentation/gp_regression_only.png"

@@ -66,3 +66,16 @@ PLOT_SAMPLES_PERCENT = 5
 # Roughness penalty for the P-spline (larger -> smoother trend, ignoring noise)
 SPLINE_PENALTY_LAMBDA = 0.01
 
+# --- GP slide style (tune these for the presentation figure) ---
+# Line widths
+TRUE_LINEWIDTH = 3.2
+GP_MEAN_LINEWIDTH = 4.0
+POSTERIOR_LINEWIDTH = 1.3
+
+# Observed points and error bars
+DATA_COLOR = "black"
+DATA_MARKERSIZE = 8.0
+DATA_ALPHA = 0.55
+ERRORBAR_LINEWIDTH = 2.0
+ERRORBAR_CAPSIZE = 3.0
+
