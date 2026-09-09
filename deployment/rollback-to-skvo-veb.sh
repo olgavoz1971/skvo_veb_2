@@ -20,7 +20,7 @@ LEGACY_ROOT="/var/www/flask/skvo_veb"
 CELERY_UNIT="celery-skvo-veb-2"
 LEGACY_CELERY_UNIT="celery"
 NEW_APACHE_SITE="astronomy_igebc-le-ssl.conf"
-LEGACY_APACHE_SITE="astronomy_igebc-old-le-ssl.conf"
+LEGACY_APACHE_SITE="astronomy_igebc-le-ssl_old.conf"
 
 if [[ "${EUID}" -ne 0 ]]; then
     echo "Run this script as root, e.g. sudo $0" >&2

@@ -212,7 +212,7 @@ Public URL is the same (`/igebc/`). Only one Apache vhost and only one Celery wo
 | Stack | Apache site (typical name) | Celery systemd unit |
 | :--- | :--- | :--- |
 | Current | `astronomy_igebc-le-ssl.conf` | `celery-skvo-veb-2` |
-| Legacy | `astronomy_igebc-old-le-ssl.conf` | `celery` |
+| Legacy | `astronomy_igebc-le-ssl_old.conf` | `celery` |
 
 Confirm real site filenames with `ls /etc/apache2/sites-available/` and edit the variables at the top of the helper scripts if needed.
 
