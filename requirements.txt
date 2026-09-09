@@ -77,7 +77,6 @@ scikit-learn==1.5.2
 scipy==1.14.1
 SecretStorage==3.3.3
 six==1.16.0
-skypatrol @ file:///home/voz/projects/UPJS/VO/skvo_veb_project/third_party/skypatrol
 https://soft.g-vo.org/dist/gavoutils-latest.tar.gz
 https://soft.g-vo.org/dist/gavostc-latest.tar.gz
 https://soft.g-vo.org/dist/gavovot-latest.tar.gz
@@ -100,6 +99,8 @@ yarl==1.13.1
 ztfquery>=1.0
 
 aladin_lite_react_component~=0.0.3
+aladin_lite_react_component @ git+https://github.com/olgavoz1971/aladin_lite_react_component.git@main
+skypatrol @ git+https://github.com/olgavoz1971/skypatrol.git@master
 setuptools~=70.1.1
 dill~=0.3.9
 celery~=5.4.0

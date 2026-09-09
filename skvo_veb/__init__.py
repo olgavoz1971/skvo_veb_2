@@ -5,7 +5,7 @@ configure_logging()
 import logging
 import dash
 import dash_bootstrap_components as dbc
-from skvo_veb.app import app, server
+from skvo_veb.app import server, app, background_callback_manager
 from skvo_veb.config import Config
 from skvo_veb.components import footer
 
@@ -32,4 +32,4 @@ app.layout = dbc.Container([
 # Expose celery_app for Celery worker (go_celery.sh)
 celery_app = None
 if Config.USE_REDIS:
-    celery_app = getattr(app.background_callback_manager, 'handle', None)
+    celery_app = getattr(background_callback_manager, 'handle', None)

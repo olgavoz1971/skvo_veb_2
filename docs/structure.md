@@ -21,4 +21,5 @@ skvo_veb/
 - `docs/lc_discovery_messages.md` — Search / Plot tab alerts and status lifetimes on Lightcurve Discovery
 - `docs/lc_discovery_css.md` — CSS tuning for the Discovery page layout
 - `docs/asassn_skypatrol_lookup_cone_zero_coords.md` — Hawaii `lookup_cone` HTTP 500 at RA/Dec = 0 and client workaround
+- `docs/production_apache_celery.md` — Apache, Redis, Celery, and production reload/restart
 - `docs/tess_background_lightkurve.md` — Lightkurve background columns vs cutout extraction; archive vs cutout pages
