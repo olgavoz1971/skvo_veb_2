@@ -1,4 +1,4 @@
-"""Sandbox: detrended light curve -> local folding prep (read CSV, plot)."""
+"""Sandbox: detrended light curve -> local folding demonstartion (read CSV, plot)."""
 
 from pathlib import Path
 
@@ -11,7 +11,7 @@ import pandas as pd
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_lk.csv"
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "detrended_spline.csv"
 # DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "shug.dat"
-DETRENDED_CSV = Path(__file__).resolve().parent / "data" / "R_detrended_sorted.dat"
+DETRENDED_CSV = Path(__file__).resolve().parent / "trend" / "data" / "R_detrended_sorted.dat"
 
 TIME_COLUMN = "obs_time"
 DETRENDED_COLUMN = "detrended"

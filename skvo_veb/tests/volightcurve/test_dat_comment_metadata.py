@@ -77,6 +77,41 @@ def test_dat_upload_tess_votable_export_includes_filter_identifier():
     assert b"filterIdentifier" in payload
 
 
+def test_dat_votable_export_without_table_description():
+    """ASCII ``.dat`` VOTable export proceeds when DESCRIPTION metadata is absent."""
+    from skvo_veb.utils.lc_bridge import export_curvedash
+    from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
+
+    dat = b"""# filter=V
+# JD0=2400000
+# jd mag mag_err label
+# mag0=20.0
+60821.47960 12.980 0.050 AA
+60822.38899 10.757 0.004 IN
+"""
+    lcd = ingest_lightcurve_file(io.BytesIO(dat), "V_sorted.dat")
+    payload = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    assert b"filterIdentifier" in payload
+    assert b"V" in payload
+
+
+def test_votable_export_names_missing_filter_identifier():
+    """VOTable export failure names the missing photcal field, not an archive reload."""
+    from skvo_veb.utils.lc_bridge import export_curvedash
+    from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
+    from skvo_veb.utils.my_tools import PipeException
+
+    dat = b"""# JD0=2400000
+# jd mag mag_err
+60821.47960 12.980 0.050
+"""
+    lcd = ingest_lightcurve_file(io.BytesIO(dat), "no_filter.dat")
+    with pytest.raises(PipeException, match="photcal.filter_identifier is missing") as exc_info:
+        export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    assert "archive" not in str(exc_info.value).lower()
+    assert "re-load" not in str(exc_info.value).lower()
+
+
 def test_dat_mag0_reaches_curvedash_photcal():
     """``# MAG0=`` on a ``.dat`` file must survive ``ingest_lightcurve_file``."""
     from skvo_veb.utils.lc_bridge import photcal_from_metadata

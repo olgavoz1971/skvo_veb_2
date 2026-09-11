@@ -82,6 +82,30 @@ def test_apply_plot_point_selection_uses_point_index():
     assert lcd.lightcurve['selected'].tolist() == [0, 1, 0, 1]
 
 
+def test_apply_plot_point_selection_prefers_customdata_over_point_index():
+    """Label-coloured traces must not treat trace-local pointIndex as a row."""
+    lcd = _sample_lcd()
+    event = {'points': [{'pointIndex': 0, 'customdata': [3]}]}
+    apply_plot_point_selection(lcd, event)
+    assert lcd.lightcurve['selected'].tolist() == [0, 0, 0, 1]
+
+
+def test_apply_plot_point_selection_uses_trace_id():
+    """WebGL events often send ``id`` instead of ``customdata``."""
+    lcd = _sample_lcd()
+    event = {'points': [{'pointIndex': 0, 'id': '2'}]}
+    apply_plot_point_selection(lcd, event)
+    assert lcd.lightcurve['selected'].tolist() == [0, 0, 1, 0]
+
+
+def test_apply_plot_point_selection_skips_point_index_without_fallback():
+    """Overlay traces without perm_index must not mark dataframe rows."""
+    lcd = _sample_lcd()
+    event = {'points': [{'pointIndex': 1}, {'pointNumber': 3}]}
+    apply_plot_point_selection(lcd, event, allow_point_index_fallback=False)
+    assert lcd.lightcurve['selected'].tolist() == [0, 0, 0, 0]
+
+
 def test_trace_selected_indices_from_column():
     """Selected column maps directly to Plotly selectedpoints indices."""
     lcd = _sample_lcd()

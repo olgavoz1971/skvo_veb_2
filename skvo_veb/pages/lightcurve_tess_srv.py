@@ -177,9 +177,9 @@ def layout():
                                 html.Div([
                                     html.H3("Search results", id="table_tess_lc_srv_header"),
                                     dbc.Stack([
-                                        dbc.Button('Download curves', id='download_tess_lc_srv_button', size="sm",
+                                        dbc.Button('Retrieve curves', id='download_tess_lc_srv_button', size="sm",
                                                    className="me-2"),
-                                        dbc.Button('reDownload', id='purge_redownload_tess_lc_srv_button',
+                                        dbc.Button('Reretrieve', id='purge_redownload_tess_lc_srv_button',
                                                    size="sm", outline=True, color='warning', className="me-2"),
                                         dbc.Button('Cancel', id='cancel_download_tess_lc_srv_button', size="sm",
                                                    disabled=True),
@@ -846,12 +846,12 @@ def _compose_user_key(user_tab_id):
 
 def extract_data_from_user_cache(user_tab_id):
     if user_tab_id is None:
-        raise PipeException('Please, download light curve first')
+        raise PipeException('Please, retrieve light curve first')
     user_key = _compose_user_key(user_tab_id)
     user_data = user_cache.get(user_key, default=None)
     if user_data is None:  # m.b user's cache has been expired and deleted
         logger.warning(f'lightcurve_tess: extract_data_from_user_cache time={time.time()} {user_tab_id=}')
-        raise PipeException('Please, download light curve. User\'s cache is empty')
+        raise PipeException('Please, retrieve light curve. User\'s cache is empty')
     # Implement sliding expiration:
     user_cache.set(user_key, user_data, expire=86400)  # Refresh the expiration time on read
     return user_data
@@ -954,7 +954,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         if lcd.lightcurve is None:
-            raise PipeException('shift_to_minimum: Please, download curves first')
+            raise PipeException('shift_to_minimum: Please, retrieve curves first')
         lcd.period = period
         epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
         if epoch_abs is not None:
@@ -1060,7 +1060,7 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
         js_lightcurve = extract_data_from_user_cache(user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         if lcd.lightcurve is None:
-            raise PipeException('recalculate_phase: Please, download curves first')
+            raise PipeException('recalculate_phase: Please, retrieve curves first')
         if period:
             lcd.period = period
             period_unit = 'd'
@@ -1204,7 +1204,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
     try:
         lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
         if lcd.lightcurve is None:
-            raise PipeException('periodogram: Please, download curves first')
+            raise PipeException('periodogram: Please, retrieve curves first')
         if lcd.active_domain != 'flux' or lcd.flux is None:
             raise PipeException(
                 'Periodogram requires flux-domain data. Convert the lightcurve to flux first.'
@@ -1429,7 +1429,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
     if not selected_rows:
         return {
             'message_results': '',
-            'alert_message': message.warning_alert('Select at least one table row to purge and redownload.'),
+            'alert_message': message.warning_alert('Select at least one table row to purge and re-retrieve.'),
             'alert_style': {'display': 'block'},
         }
 
@@ -1440,11 +1440,11 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
             row_idx = row['#']
             was_purged, lc = lightkurve_cache.purge_and_redownload_row(search_result, row_idx)
             label = getattr(lc, 'LABEL', None) or f'sector {getattr(lc, "SECTOR", "?")}'
-            action = 'purged and redownloaded' if was_purged else 'redownloaded (no local cache file found)'
+            action = 'purged and re-retrieved' if was_purged else 're-retrieved (no local cache file found)'
             summaries.append(f'Row {row_idx}: {action} - {label}')
             logger.info(f"purge_redownload_selected_rows: Completed row {row_idx}: {action}")
 
-        msg = 'Fresh MAST download completed:\n' + '\n'.join(summaries)
+        msg = 'Fresh MAST retrieve completed:\n' + '\n'.join(summaries)
         logger.info(f'purge_redownload_selected_rows: {msg}')
         return {
             'message_results': msg,
@@ -1490,7 +1490,7 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
                                search_store, phase_view):
     """
     This method checks for the presence of light curves in the local cache.
-    If any are missing, it downloads the absent light curves from the remote database.
+    If any are missing, it retrieves the absent light curves from the remote database.
     Note: unlike other methods handling TESS lightcurves, this one is specifically designed to accommodate long
     waiting times. It includes user feedback mechanisms, such as a spinner, and robust error handling for server
     connectivity issues.

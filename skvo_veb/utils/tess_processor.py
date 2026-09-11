@@ -48,7 +48,7 @@ def get_ffi(target):
 
 def download_selected_pixel(pixel_args, search_result_di, size):
     """
-    Downloads selected pixel data based on SearchResult and target size.
+    Retrieves selected pixel data based on SearchResult and target size.
     With AgGrid, pixel_args is directly the selected row dict.
     Logs explicitly if cache is used or if remote MAST is queried.
     """
@@ -68,7 +68,7 @@ def download_selected_pixel(pixel_args, search_result_di, size):
         }
         pixel_data = cache.load_ffi_fits(**kwargs)
         if pixel_data is not None:
-            logger.info(f"download_selected_pixel: Cache HIT for FFI cutout. 'Download Sector' (FFI FITS) found in local cache for target_name={kwargs['target_name']!r}, size={size}")
+            logger.info(f"download_selected_pixel: Cache HIT for FFI cutout. 'Retrieve sector' (FFI FITS) found in local cache for target_name={kwargs['target_name']!r}, size={size}")
         else:
             logger.info(f"download_selected_pixel: Cache MISS for FFI cutout. Querying remote MAST cutout service for target_name={kwargs['target_name']!r}, size={size}...")
             pixel_data = pixel[row_idx].download(cutout_size=size)
@@ -87,9 +87,9 @@ def download_selected_pixel(pixel_args, search_result_di, size):
             table["productFilename"][0],
         )
         if os.path.exists(path):
-            logger.info(f"download_selected_pixel: SPOC TPF cache HIT. 'Download Sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
+            logger.info(f"download_selected_pixel: SPOC TPF cache HIT. 'Retrieve sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
         else:
-            logger.info(f"download_selected_pixel: SPOC TPF cache MISS. Downloading from MAST... 'Download Sector' (SPOC TPF) NOT found in local cache.")
+            logger.info(f"download_selected_pixel: SPOC TPF cache MISS. Retrieving from MAST... 'Retrieve sector' (SPOC TPF) NOT found in local cache.")
 
         try:
             pixel_data = pixel[row_idx].download()

@@ -1985,7 +1985,9 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         dict: Keyword arguments for ``write_vo_lightcurve``.
 
     Raises:
-        PipeException: When mandatory photometric metadata is missing.
+        PipeException: When ``photcal.filter_identifier`` is missing
+            (required by ``write_vo_lightcurve``). Table/VOTable descriptions
+            are optional and omitted when absent.
     """
     meta = lcd.metadata or {}
     envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
@@ -1994,8 +1996,7 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
     filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER)
     if not filter_identifier:
         raise PipeException(
-            "Cannot export VOTable: missing filter_identifier in CurveDash photcal metadata. "
-            "Re-load the lightcurve from the archive provider."
+            "Cannot export VOTable: photcal.filter_identifier is missing."
         )
 
     is_stitched = _is_stitched_lightcurve(lcd)
@@ -2013,15 +2014,16 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
     if not table_name:
         table_name = sanitize_filename(lcd.title or lcd.name or "lightcurve")
 
-    description = (
-        envelope.get(VO_ENVELOPE_KEY_TABLE_DESCRIPTION)
-        or envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION)
-    )
-    if not description or not str(description).strip():
-        raise PipeException(
-            "Cannot export VOTable: missing lightcurve table description in metadata. "
-            "Re-load the lightcurve from the archive provider."
-        )
+    table_description = envelope.get(VO_ENVELOPE_KEY_TABLE_DESCRIPTION)
+    if table_description is not None:
+        table_description = str(table_description).strip() or None
+    votable_description = envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION)
+    if votable_description is not None:
+        votable_description = str(votable_description).strip() or None
+    if table_description is None:
+        table_description = votable_description
+    if votable_description is None:
+        votable_description = table_description
 
     kwargs = {
         "table_name": str(table_name),
@@ -2029,10 +2031,8 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         "refposition": envelope.get("refposition") or "BARYCENTER",
         "timescale": envelope.get("timescale") or str(meta.get("timescale") or "TCB").upper(),
         "timeorigin": JD_TO_MJD,
-        "table_description": str(description).strip(),
-        "votable_description": str(
-            envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION) or description
-        ).strip(),
+        "table_description": table_description,
+        "votable_description": votable_description,
         "ra": meta.get("ra"),
         "dec": meta.get("dec"),
         "period": meta.get("period"),

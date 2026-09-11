@@ -68,14 +68,15 @@ from skvo_veb.utils.my_tools import (
 from skvo_veb.utils.page_session import SESSION_STORE
 from skvo_veb.utils.request_asassn import load_asassn_lightcurve
 
-register_page(
-    __name__,
-    name='ASAS-SN',
-    order=2,
-    path='/asassn',
-    title='IGEBC: ASAS-SN Lightcurve',
-    in_navbar=True,
-)
+# This page is obsolete
+# register_page(
+#     __name__,
+#     name='ASAS-SN',
+#     order=2,
+#     path='/asassn',
+#     title='IGEBC: ASAS-SN Lightcurve',
+#     in_navbar=True,
+# )
 
 ASASSN_PAGE_NAMESPACE = 'asassn'
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
@@ -594,7 +595,7 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
         js_lightcurve = read_serialized_lc(ASASSN_PAGE_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         if lcd.lightcurve is None:
-            raise PipeException('recalculate_phase: Please, download the lightcurve first')
+            raise PipeException('recalculate_phase: Please, retrieve the lightcurve first')
 
         if period_value:
             lcd.period = period_value

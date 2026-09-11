@@ -7,9 +7,11 @@ selection state.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
+from typing import Any
 
 import diskcache
 
@@ -77,7 +79,7 @@ def read_serialized_lc(page_namespace: str, user_tab_id: str | None) -> str:
         PipeException: When the tab id is missing or cache entry expired.
     """
     if user_tab_id is None:
-        raise PipeException('Please, download the lightcurve first')
+        raise PipeException('Please, retrieve the lightcurve first')
     user_key = compose_lc_cache_key(page_namespace, user_tab_id)
     user_data = get_lc_user_cache().get(user_key, default=None)
     if user_data is None:
@@ -86,7 +88,7 @@ def read_serialized_lc(page_namespace: str, user_tab_id: str | None) -> str:
             page_namespace,
             user_tab_id,
         )
-        raise PipeException('Please, download the lightcurve. Session cache is empty')
+        raise PipeException('Please, retrieve the lightcurve. Session cache is empty')
     get_lc_user_cache().set(user_key, user_data, expire=_CACHE_EXPIRE_SECONDS)
     return user_data
 
@@ -106,6 +108,91 @@ def write_serialized_lc(page_namespace: str, user_tab_id: str, serialized: str) 
         page_namespace,
         user_tab_id,
     )
+
+
+def compose_page_blob_key(page_namespace: str, user_tab_id: str, blob_name: str) -> str:
+    """Builds a cache key for a named JSON blob on a page tab.
+
+    Args:
+        page_namespace (str): Short page identifier.
+        user_tab_id (str): Browser session tab id.
+        blob_name (str): Blob suffix (e.g. ``smooth``).
+
+    Returns:
+        str: Cache key string.
+    """
+    return f"{page_namespace}_{user_tab_id}_{blob_name}"
+
+
+def write_page_blob(
+    page_namespace: str,
+    user_tab_id: str,
+    blob_name: str,
+    payload: dict[str, Any],
+) -> None:
+    """Writes a JSON-serialisable dict to the session cache.
+
+    Args:
+        page_namespace (str): Page namespace prefix.
+        user_tab_id (str): Browser session tab id.
+        blob_name (str): Blob suffix.
+        payload (dict): JSON-safe mapping.
+    """
+    user_key = compose_page_blob_key(page_namespace, user_tab_id, blob_name)
+    get_lc_user_cache().set(
+        user_key, json.dumps(payload), expire=_CACHE_EXPIRE_SECONDS
+    )
+    logger.info(
+        "lc_session_cache.write_page_blob: namespace=%s tab=%s blob=%s",
+        page_namespace,
+        user_tab_id,
+        blob_name,
+    )
+
+
+def read_page_blob(
+    page_namespace: str,
+    user_tab_id: str | None,
+    blob_name: str,
+) -> dict[str, Any] | None:
+    """Reads a named JSON blob, or ``None`` when missing.
+
+    Args:
+        page_namespace (str): Page namespace prefix.
+        user_tab_id (str | None): Browser session tab id.
+        blob_name (str): Blob suffix.
+
+    Returns:
+        dict | None: Payload, or ``None``.
+    """
+    if not user_tab_id:
+        return None
+    user_key = compose_page_blob_key(page_namespace, user_tab_id, blob_name)
+    raw = get_lc_user_cache().get(user_key, default=None)
+    if raw is None:
+        return None
+    get_lc_user_cache().set(user_key, raw, expire=_CACHE_EXPIRE_SECONDS)
+    if isinstance(raw, dict):
+        return raw
+    return json.loads(raw)
+
+
+def clear_page_blob(
+    page_namespace: str,
+    user_tab_id: str | None,
+    blob_name: str,
+) -> None:
+    """Deletes a named JSON blob if it exists.
+
+    Args:
+        page_namespace (str): Page namespace prefix.
+        user_tab_id (str | None): Browser session tab id.
+        blob_name (str): Blob suffix.
+    """
+    if not user_tab_id:
+        return
+    user_key = compose_page_blob_key(page_namespace, user_tab_id, blob_name)
+    get_lc_user_cache().delete(user_key)
 
 
 def generate_user_tab_id() -> str:

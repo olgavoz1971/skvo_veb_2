@@ -37,7 +37,6 @@ def test_default_max_discovery_search_radius_deg():
 def test_registered_provider_search_radius_caps():
     """Each mission exposes the agreed discovery cone radius upper bound."""
     expected = {
-        "gaia": 1.0,
         "gaia_dr3_aip": 1.0,
         "gaia_dr3_ari": 1.0,
         "asassn": 10.0,

@@ -514,9 +514,12 @@ def normalize_selected_perm_store(store_data) -> list[int]:
 def perm_index_from_plot_point(point: dict, perm_index_by_row: list | None = None) -> int | None:
     """Extracts ``perm_index`` from a Plotly ``clickData`` / ``selectedData`` point.
 
-    WebGL scatter traces often omit ``customdata`` in server callbacks; in that
-    case the trace-local ``pointIndex`` / ``pointNumber`` is mapped through
-    ``perm_index_by_row``.
+    Prefers ``customdata`` and trace ``ids`` (reliable on multi-trace and WebGL
+    figures). WebGL scatter traces often omit ``customdata`` in server
+    callbacks; ``ids`` still arrives as ``id``. As a last resort the
+    trace-local ``pointIndex`` / ``pointNumber`` is mapped through
+    ``perm_index_by_row`` (valid only for a single photometry trace in
+    dataframe order).
 
     Args:
         point (dict): Single point entry from a Plotly interaction event.
@@ -528,7 +531,17 @@ def perm_index_from_plot_point(point: dict, perm_index_by_row: list | None = Non
     custom = point.get('customdata')
     if custom is not None:
         raw = custom[0] if isinstance(custom, (list, tuple)) else custom
-        return int(np.asarray(raw).item())
+        try:
+            return int(np.asarray(raw).item())
+        except (TypeError, ValueError):
+            pass
+
+    point_id = point.get('id')
+    if point_id is not None and point_id != '':
+        try:
+            return int(np.asarray(point_id).item())
+        except (TypeError, ValueError):
+            pass
 
     point_index = point.get('pointIndex')
     if point_index is None:
@@ -729,12 +742,25 @@ def delete_rows_by_perm_indices(lcd, perm_indices) -> None:
     lcd.lightcurve = lcd.lightcurve.loc[mask].reset_index(drop=True)
 
 
-def apply_plot_point_selection(lcd, event_data: dict | None):
+def apply_plot_point_selection(
+    lcd,
+    event_data: dict | None,
+    *,
+    allow_point_index_fallback: bool = True,
+):
     """Marks lightcurve rows selected using Plotly click or lasso/box events.
+
+    ``customdata`` / trace ``id`` (permanent index) win over ``pointIndex``.
+    ``pointIndex`` is only a fallback for single-trace figures in dataframe
+    order; it is wrong when photometry is split across label traces, and it
+    also mis-maps overlay traces (trend line) that have no ``perm_index``.
 
     Args:
         lcd (CurveDash): Lightcurve to mutate in place.
         event_data (dict): Plotly ``selectedData`` or ``clickData`` payload.
+        allow_point_index_fallback (bool): When true (Discovery single-trace),
+            ``pointIndex`` maps to a dataframe row if ``customdata`` / ``id``
+            are missing. Multi-trace labelled plots must pass ``False``.
 
     Returns:
         CurveDash: The same instance with matching rows marked ``selected=1``.
@@ -750,16 +776,17 @@ def apply_plot_point_selection(lcd, event_data: dict | None):
     perm_to_row = {int(value): idx for idx, value in enumerate(perm_by_row)}
 
     for point in event_data['points']:
+        perm_index = perm_index_from_plot_point(point)
+        if perm_index is not None:
+            mapped_row = perm_to_row.get(int(perm_index))
+            if mapped_row is not None:
+                df.loc[mapped_row, 'selected'] = 1
+            continue
+
+        if not allow_point_index_fallback:
+            continue
         row_idx = row_index_from_plot_point(point)
         if row_idx is not None and 0 <= row_idx < len(df):
             df.loc[row_idx, 'selected'] = 1
-            continue
-
-        perm_index = perm_index_from_plot_point(point, perm_by_row)
-        if perm_index is None:
-            continue
-        mapped_row = perm_to_row.get(int(perm_index))
-        if mapped_row is not None:
-            df.loc[mapped_row, 'selected'] = 1
 
     return lcd

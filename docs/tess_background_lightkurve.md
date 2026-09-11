@@ -161,8 +161,8 @@ Callbacks **`update_flux_radio_options`** and **`reset_flux_on_new_search`** kee
 
 #### Build path (scientific)
 
-1. User selects sector row(s) and clicks replot / download.
-2. **`create_lc_from_selected_rows`** in `tess_lc_builder.py` downloads each row via Lightkurve (with cache helpers).
+1. User selects sector row(s) and clicks **Retrieve curves**.
+2. **`create_lc_from_selected_rows`** in `tess_lc_builder.py` retrieves each row via Lightkurve (with cache helpers).
 3. For each sector, **`apply_flux_column_selection(lc, author, sector, flux_method)`** mutates `lc.flux` / `lc.flux_err` according to the radio value.
 4. Arrays are copied into **`CurveDash`** (`jd`, `flux`, `flux_err`, sector labels in `label`).
 5. Metadata recorded on `lcd.metadata`:
@@ -203,7 +203,7 @@ There is **no** flux-column radio and **no** `tess_flux_column_registry` integra
 
 #### Build path (scientific)
 
-1. User downloads a sector (`download_sector` → **`tess_processor.download_selected_pixel`**).
+1. User retrieves a sector (`download_sector` → **`tess_processor.download_selected_pixel`**).
    - **SPOC:** TPF FITS, `pixel_metadata['pixel_type'] == 'TPF'`.
    - **TESScut:** FFI cutout, `pixel_type == 'FFI'`.
 2. User defines **`mask_store`** on the pixel graph and clicks **rePlot curve**.

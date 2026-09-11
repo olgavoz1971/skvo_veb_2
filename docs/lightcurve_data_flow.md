@@ -146,10 +146,10 @@ VOTable products take a **single byte read**, then two complementary parsers —
 | `scripts/trace_ogle_lightcurve_flow.py` | OGLE accref download; PARAMref / photcal inspection |
 | `scripts/spike_gavo_metadata_parse.py` | Compare `readRaw` vs metadata-only GAVO parse |
 
-### 3.2 TESS archive download (Lightkurve → cache)
+### 3.2 TESS archive retrieve (Lightkurve → cache)
 
 ```text
-  Lightkurve search / download
+  Lightkurve search / retrieve
                  |
                  v
   tess_lc_builder.create_lc_from_selected_rows()   ← flux domain, no conversion
@@ -310,11 +310,11 @@ Application state: Pandas DataFrame, `active_domain`, UI columns (`selected`, `p
 
 ### D. `skvo_veb/utils/tess_lc_builder.py`
 
-Lightkurve ingestion for TESS archive download. Always produces flux-domain `CurveDash`.
+Lightkurve ingestion for TESS archive retrieve. Always produces flux-domain `CurveDash`.
 
 ### E. `skvo_veb/pages/lightcurve_tess_srv.py`
 
-Thin UI controller: upload → bridge, download → `export_curvedash`, plot → `lcd.phot`.
+Thin UI controller: upload → bridge, retrieve → cache, export download → `export_curvedash`, plot → `lcd.phot`.
 
 ---
 

@@ -6,6 +6,7 @@ import pytest
 
 from skvo_veb.lc_providers.catalog_schema import catalog_table_to_row_dicts
 from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
+from skvo_veb.lc_providers.registry import get_provider as registry_get_provider
 from skvo_veb.utils.lc_bridge import export_curvedash
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, DOMAIN_MAG, JD_TO_MJD, VOTABLE_FORMAT_BINARY, display_epoch_offset
 from skvo_veb.utils.lc_discovery_load import (
@@ -18,6 +19,29 @@ from skvo_veb.utils.lc_discovery_load import (
 from skvo_veb.utils.lc_discovery_search import run_catalog_search
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.volightcurve import VOLightCurve
+
+
+def _register_gaia_debug_for_load_tests(monkeypatch) -> GaiaDr3Provider:
+    """Wires the unregistered Gaia debug provider into load helpers for tests.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+
+    Returns:
+        GaiaDr3Provider: Shared debug provider instance.
+    """
+    provider = GaiaDr3Provider()
+
+    def _get_provider(mission_id: str):
+        if mission_id == provider.mission_id:
+            return provider
+        return registry_get_provider(mission_id)
+
+    monkeypatch.setattr(
+        "skvo_veb.utils.lc_discovery_load.get_provider",
+        _get_provider,
+    )
+    return provider
 
 
 def _first_catalog_row():
@@ -44,14 +68,16 @@ def test_mission_id_from_lc_key_reads_embedded_slug():
     assert mission_id_from_lc_key(row["lc_key"]) == "gaia"
 
 
-def test_fetch_discovery_volightcurve_returns_volightcurve():
+def test_fetch_discovery_volightcurve_returns_volightcurve(monkeypatch):
+    _register_gaia_debug_for_load_tests(monkeypatch)
     row = _first_catalog_row()
     volc = fetch_discovery_volightcurve(row["lc_key"])
     assert isinstance(volc, VOLightCurve)
     assert len(volc) > 0
 
 
-def test_curvedash_from_catalog_row_returns_points():
+def test_curvedash_from_catalog_row_returns_points(monkeypatch):
+    _register_gaia_debug_for_load_tests(monkeypatch)
     row = _first_catalog_row()
     lcd = curvedash_from_catalog_row(row)
     assert lcd.lightcurve is not None
@@ -59,8 +85,9 @@ def test_curvedash_from_catalog_row_returns_points():
     assert lcd.period is not None or row.get("period") is None
 
 
-def test_gaia_debug_catalog_epoch_displays_as_mjd_offset():
+def test_gaia_debug_catalog_epoch_displays_as_mjd_offset(monkeypatch):
     """Catalogue epoch must become absolute JD, not double-subtract JD_TO_MJD."""
+    _register_gaia_debug_for_load_tests(monkeypatch)
     row = _first_catalog_row()
     expected_mjd = AA_AND.band_models["G"].epoch_mjd
     assert row["epoch"] == pytest.approx(expected_mjd + JD_TO_MJD)

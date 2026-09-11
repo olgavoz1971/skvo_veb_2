@@ -200,6 +200,8 @@ def export_rough_tom_intervals_ascii(
     *,
     delta_time_d: float,
     source_lc: str,
+    min_gap_d: float | None = None,
+    n_segments: int = 1,
 ) -> None:
     """Write rough-extremum interval windows in GP interval ``.dat`` layout.
 
@@ -211,6 +213,9 @@ def export_rough_tom_intervals_ascii(
         extrema (SmoothExtremaResult): Rough extrema from the smoothed curve.
         delta_time_d (float): Half-width applied symmetrically about each ToM (days).
         source_lc (str): Input light-curve label for provenance comments.
+        min_gap_d (float | None): Gap threshold used for independent segments,
+            or ``None`` if the series was not split.
+        n_segments (int): Number of independent segments processed.
 
     Returns:
         None.
@@ -223,12 +228,15 @@ def export_rough_tom_intervals_ascii(
     pairs = rough_tom_interval_pairs(extrema, delta_time_d=delta_time_d)
     out_path = Path(path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    gap_txt = "none" if min_gap_d is None else f"{float(min_gap_d)}"
     with out_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write("# tool: running_parabola_spike\n")
         handle.write("# step: rough_tom_intervals\n")
         handle.write(f"# source_lc: {source_lc}\n")
         handle.write(f"# extremum: {extrema.extremum_kind}\n")
         handle.write(f"# delta_time_d: {delta_time_d}\n")
+        handle.write(f"# min_gap_d: {gap_txt}\n")
+        handle.write(f"# n_segments: {int(n_segments)}\n")
         handle.write(f"# n_intervals: {len(pairs)}\n")
         handle.write("# Interval_Start  Interval_End\n")
         for start, end in pairs:

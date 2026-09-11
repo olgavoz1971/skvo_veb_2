@@ -562,13 +562,13 @@ def _search_results_panel():
                                     dbc.Stack(
                                         [
                                             dbc.Button(
-                                                'Download',
+                                                'Retrieve',
                                                 id='lc_discovery_fetch_button',
                                                 size='sm',
                                                 className='me-2',
                                             ),
                                             dbc.Button(
-                                                'reDownload',
+                                                'Reretrieve',
                                                 id='lc_discovery_refetch_button',
                                                 size='sm',
                                                 outline=True,
@@ -1378,7 +1378,7 @@ def toggle_lc_discovery_fetch_buttons(lc_key):
         lc_key (str, optional): Serialised fetch handle for the selected row.
 
     Returns:
-        tuple: ``(download_disabled, redownload_disabled)`` flags.
+        tuple: ``(retrieve_disabled, reretrieve_disabled)`` flags.
     """
     disabled = not lc_key
     return disabled, disabled
@@ -1459,8 +1459,8 @@ def fetch_lc_discovery_lightcurve(
     existing per-session plot store for interactive tools.
 
     Args:
-        download_clicks (int): Download button click count.
-        redownload_clicks (int): reDownload button click count.
+        download_clicks (int): Retrieve button click count.
+        redownload_clicks (int): Reretrieve button click count.
         mission_id (str): Selected mission slug from the UI.
         lc_key (str): Serialised fetch handle for the selected row.
         row_data (list[dict]): Current AgGrid catalogue rows.
@@ -1549,7 +1549,7 @@ def fetch_lc_discovery_lightcurve(
         if filter_label:
             status_line = f'{status_line} ({filter_label})'
         if force_refresh:
-            status_line = f'reDownload complete - {status_line}'
+            status_line = f'Re-retrieve complete - {status_line}'
         logger.info("Discovery lightcurve fetch succeeded: %s", status_line)
 
         return dict(

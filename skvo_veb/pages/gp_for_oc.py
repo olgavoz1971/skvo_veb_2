@@ -406,13 +406,14 @@ from skvo_veb.utils.gp import (
 )
 from skvo_veb.utils.gp.export import (
     apply_prep_fold_ephemeris,
-    export_stem_from_upload_filename,
     gp_compact_extrema_download_name,
     gp_extended_extrema_download_name,
     gp_extrema_export_stem,
     gp_intervals_export_download_name,
     gp_lc_export_download_name,
+    gp_suggested_intervals_stem,
     gp_suggested_timing_stem,
+    suggested_lc_export_stem,
 )
 from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
@@ -494,6 +495,14 @@ from skvo_veb.utils.oc.export import (
     oc_default_export_stem,
     oc_default_export_stem_for_source,
     oc_export_download_name,
+)
+from skvo_veb.utils.oc.period_correct import (
+    FIT_RANGE_DISABLED,
+    build_fit_range_store,
+    correct_period_from_oc_payload,
+    cycle_range_from_relayout,
+    mask_by_cycle_range,
+    normalize_fit_range,
 )
 from skvo_veb.utils.oc.tom_io import (
     parse_compact_tom_contents,
@@ -1055,6 +1064,20 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "Epoch), add integer ΔE to the rounded cycle. Several rows accumulate. "
     "Use +1 or −1 to fix a cycle slip.",
 )
+(
+    _oc_period_correct_help_btn,
+    _oc_period_correct_help_pop,
+) = _gp_click_help(
+    "oc_period_correct",
+    "Period correction",
+    "Zoom the diagram and press Use visible range to choose which points "
+    "enter the fit; the whole O-C stays visible. Restore full O-C uses every "
+    "point. Correct period fits a straight line to O-C versus time in that "
+    "window (cycle numbers stay fixed after cycle corrections) and overlays "
+    "it. It proposes a new P and Epoch but does not change the trial fields "
+    "or replot. Adopt ephemeris writes those values into P and Epoch; press "
+    "Plot yourself to rebuild the O-C.",
+)
 
 
 GP_CHECKLIST_SWITCH_ON = 1
@@ -1315,7 +1338,7 @@ sidebar_lc = html.Div([
                         [
                             dbc.Input(
                                 id="export-intervals-filename",
-                                placeholder="intervals_export",
+                                placeholder="intervals_int",
                                 type="text",
                                 value="",
                             ),
@@ -2185,11 +2208,18 @@ def _oc_source_title(source: str | None) -> str:
     return "O-C"
 
 
-def _build_oc_figure(payload: dict) -> go.Figure:
+def _build_oc_figure(
+    payload: dict,
+    *,
+    fit_range: dict | None = None,
+    period_correct: dict | None = None,
+) -> go.Figure:
     """Builds the O-C Plotly figure from a ``compute_step1_oc`` payload.
 
     Args:
         payload (dict): Arrays and ephemeris metadata from the utils layer.
+        fit_range (dict | None): Optional cycle-window store (vertical band).
+        period_correct (dict | None): Optional linear-fit overlay samples.
 
     Returns:
         plotly.graph_objects.Figure: O-C vs E with a calculated-MJD top axis.
@@ -2251,6 +2281,32 @@ def _build_oc_figure(payload: dict) -> go.Figure:
             )
         )
     fig.add_hline(y=0.0, line_dash="dash", line_color="grey", line_width=1)
+    window = normalize_fit_range(fit_range)
+    if window is not None:
+        fig.add_vrect(
+            x0=window[0],
+            x1=window[1],
+            fillcolor="rgba(13, 110, 253, 0.10)",
+            line_width=0,
+            layer="below",
+        )
+    if period_correct:
+        line_e = period_correct.get("line_e") or []
+        line_oc = period_correct.get("line_oc") or []
+        if len(line_e) >= 2 and len(line_oc) >= 2:
+            fig.add_trace(
+                go.Scatter(
+                    x=line_e,
+                    y=line_oc,
+                    mode="lines",
+                    line=dict(color="#c0392b", width=2),
+                    name="Linear fit",
+                    hovertemplate=(
+                        "Linear fit<br>E: %{x:.1f}<br>O-C: %{y:.6f} d"
+                        "<extra></extra>"
+                    ),
+                )
+            )
     e_min = float(np.min(cycle_e))
     e_max = float(np.max(cycle_e))
     tick_e = (
@@ -2282,8 +2338,62 @@ def _build_oc_figure(payload: dict) -> go.Figure:
         margin=dict(l=50, r=20, t=60, b=50),
         clickmode="event",
         hovermode="closest",
+        uirevision=payload.get("figure_revision") or "oc",
     )
     return fig
+
+
+def _oc_fit_range_status_text(payload: dict | None, fit_range: dict | None) -> str:
+    """Builds the fit-range caption from plotted O-C points.
+
+    Args:
+        payload (dict | None): Last plotted O-C store.
+        fit_range (dict | None): Cycle-window store.
+
+    Returns:
+        str: Status line, or empty before the first Plot.
+    """
+    if not payload:
+        return ""
+    cycle_e = np.asarray(payload["E"], dtype=float)
+    jd_ext = np.asarray(payload["jd_ext"], dtype=float)
+    window = normalize_fit_range(fit_range)
+    if window is None:
+        return "Fit range: full O-C"
+    mask = mask_by_cycle_range(cycle_e, window[0], window[1])
+    if not np.any(mask):
+        return (
+            f"Fit range: E {window[0]:.1f}–{window[1]:.1f} "
+            "(no points in this window)"
+        )
+    mjd_obs = jd_ext[mask] - jd0
+    return (
+        f"Fit range: E {window[0]:.1f}–{window[1]:.1f} "
+        f"(MJD obs {float(np.min(mjd_obs)):.2f}–{float(np.max(mjd_obs)):.2f})"
+    )
+
+
+def _oc_period_correct_status_text(result: dict | None) -> str:
+    """Builds the proposed-ephemeris caption after Correct period.
+
+    Args:
+        result (dict | None): ``correct_period_from_oc_payload`` store.
+
+    Returns:
+        str: Status line, or empty when there is no proposal.
+    """
+    if not result:
+        return ""
+    epoch_mjd = display_epoch_offset(result["t0_corrected_jd"], jd0)
+    return (
+        f"N = {int(result['n_points'])}; "
+        f"slope S = {float(result['slope_oc_vs_jd']):.3e}; "
+        f"proposed P = {float(result['p_corrected']):.10f} d "
+        f"(ΔP = {float(result['delta_p']):+.3e} d); "
+        f"proposed Epoch = {epoch_mjd:.6f}; "
+        f"RMS = {float(result['rms_d']):.6f} d; "
+        f"{int(result['n_iter'])} iterations."
+    )
 
 
 def _render_oc_shift_list(rows: list | None) -> list:
@@ -2385,6 +2495,46 @@ sidebar_oc = html.Div(
         ),
         html.Div(
             [
+                html.Label("Period correction", className="gp-section-label mb-0"),
+                html.Div(
+                    _oc_period_correct_help_btn,
+                    className="lc-discovery-field-help",
+                ),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        html.Div(
+            id="oc-period-correct-status",
+            className="small text-muted",
+        ),
+        html.Div(
+            [
+                dbc.Button(
+                    "Correct period",
+                    id="oc-correct-period-btn",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+                dbc.Button(
+                    "Adopt ephemeris",
+                    id="oc-adopt-ephemeris-btn",
+                    color="secondary",
+                    outline=True,
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+            ],
+            className="gp-sidebar-btn-stack gp-sidebar-group",
+        ),
+        html.Div(
+            id="oc-period-correct-feedback",
+            className="gp-export-feedback",
+        ),
+        html.Div(
+            [
                 html.Label("Cycle corrections", className="gp-section-label mb-0"),
                 html.Div(_oc_shift_help_btn, className="lc-discovery-field-help"),
             ],
@@ -2458,10 +2608,13 @@ sidebar_oc = html.Div(
         _oc_source_help_pop,
         _oc_ephemeris_help_pop,
         _oc_shift_help_pop,
+        _oc_period_correct_help_pop,
         dcc.Download(id="oc-download-results"),
         dcc.Store(id="store-oc-uploaded-toms"),
         dcc.Store(id="store-oc-cycle-shifts", data=[]),
         dcc.Store(id="store-oc-plot-data"),
+        dcc.Store(id="store-oc-fit-range", data=FIT_RANGE_DISABLED),
+        dcc.Store(id="store-oc-period-correct"),
     ],
     className="gp-sidebar bg-light border rounded shadow-sm",
 )
@@ -2478,6 +2631,39 @@ graph_oc = html.Div(
                 ),
             ],
             className="mb-1",
+        ),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Use visible range",
+                            id="oc-use-visible-range-btn",
+                            color="primary",
+                            size="sm",
+                            disabled=True,
+                        ),
+                        dbc.Button(
+                            "Restore full O-C",
+                            id="oc-restore-full-btn",
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ],
+                    className="gp-plot-toolbar-cluster",
+                ),
+                html.Div(
+                    id="oc-fit-range-status",
+                    className="small text-muted",
+                ),
+                html.Div(
+                    id="oc-fit-range-feedback",
+                    className="gp-plot-toolbar-feedback",
+                ),
+            ],
+            className="gp-plot-toolbar",
         ),
         html.Div(id="oc-plot-feedback", className="gp-export-feedback"),
         dcc.Graph(
@@ -4437,11 +4623,17 @@ def guess_gp_parameters(n_clicks, ids, current_trigger):
     prevent_initial_call=True,
 )
 def update_intervals_output_filename(intervals_filename, lc_filename):
-    """Default interval export stem from intervals upload, else light curve basename."""
-    intervals_stem = export_stem_from_upload_filename(intervals_filename)
-    if intervals_stem:
-        return intervals_stem
-    return export_stem_from_upload_filename(lc_filename)
+    """Default interval export stem: ``{name}_int`` from intervals or light curve.
+
+    Args:
+        intervals_filename: Uploaded intervals filename, if any.
+        lc_filename: Uploaded light-curve filename, if any.
+
+    Returns:
+        str: Stem that always ends with ``_int`` before the download adds ``.dat``.
+    """
+    source = intervals_filename or lc_filename
+    return gp_suggested_intervals_stem(source)
 
 
 @callback(
@@ -4452,8 +4644,7 @@ def update_intervals_output_filename(intervals_filename, lc_filename):
 def update_lc_export_default_filename(filename):
     """Default light curve export stem from the uploaded file name."""
     if filename:
-        base = filename.rsplit(".", 1)[0]
-        return f"{base}_lc"
+        return suggested_lc_export_stem(filename)
     return "gp_lightcurve"
 
 
@@ -5393,8 +5584,8 @@ def oc_render_cycle_shift_list(rows):
 
 
 @callback(
-    Output("oc-graph", "figure"),
     Output("store-oc-plot-data", "data"),
+    Output("store-oc-period-correct", "data", allow_duplicate=True),
     Output("oc-plot-feedback", "children"),
     Input("oc-plot-btn", "n_clicks"),
     State("oc-tom-source", "value"),
@@ -5416,7 +5607,24 @@ def oc_plot(
     mavka_store,
     uploaded,
 ):
-    """Computes Step 1 O-C for the selected ToM source and draws the figure."""
+    """Computes Step 1 O-C for the selected ToM source.
+
+    The figure is drawn by ``oc_redraw_figure``. Overlay from a previous
+    Correct period is cleared; trial P/Epoch are not written here.
+
+    Args:
+        n_clicks: Plot button click count.
+        source: ToM radio value ``gp``, ``mavka``, or ``upload``.
+        period: Trial period in days.
+        epoch: Trial epoch as display MJD offset.
+        shift_rows: Stored cycle-correction rows.
+        gp_store: GP review store.
+        mavka_store: MAVKA review store.
+        uploaded: Compact ToM upload payload.
+
+    Returns:
+        tuple: Plot payload, cleared period-correct store, and optional alert.
+    """
     if not n_clicks:
         raise PreventUpdate
     try:
@@ -5447,8 +5655,8 @@ def oc_plot(
             payload["source_metadata_lines"] = list(
                 uploaded.get("metadata_lines") or []
             )
-        figure = _build_oc_figure(payload)
-        return figure, payload, None
+        payload["figure_revision"] = uuid.uuid4().hex
+        return payload, None, None
     except Exception as exc:
         logger.error("O-C plot failed: %s", exc)
         return (
@@ -5456,6 +5664,239 @@ def oc_plot(
             no_update,
             dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
         )
+
+
+@callback(
+    Output("oc-graph", "figure"),
+    Input("store-oc-plot-data", "data"),
+    Input("store-oc-fit-range", "data"),
+    Input("store-oc-period-correct", "data"),
+)
+def oc_redraw_figure(payload, fit_range, period_correct):
+    """Redraws the O-C graph from the plot store, fit window, and overlay.
+
+    Args:
+        payload (dict | None): Last plotted O-C store.
+        fit_range (dict | None): Cycle-window store.
+        period_correct (dict | None): Proposed linear-fit overlay.
+
+    Returns:
+        plotly.graph_objects.Figure: O-C figure, or a blank axes if unplotted.
+    """
+    if not payload:
+        return _oc_empty_figure()
+    return _build_oc_figure(
+        payload,
+        fit_range=fit_range,
+        period_correct=period_correct,
+    )
+
+
+@callback(
+    Output("oc-fit-range-status", "children"),
+    Input("store-oc-plot-data", "data"),
+    Input("store-oc-fit-range", "data"),
+)
+def oc_fit_range_status(payload, fit_range):
+    """Shows the cycle window used for period correction.
+
+    Args:
+        payload (dict | None): Last plotted O-C store.
+        fit_range (dict | None): Cycle-window store.
+
+    Returns:
+        str: Fit-range caption.
+    """
+    return _oc_fit_range_status_text(payload, fit_range)
+
+
+@callback(
+    Output("oc-period-correct-status", "children"),
+    Input("store-oc-period-correct", "data"),
+)
+def oc_period_correct_status(result):
+    """Shows N, slope, proposed P/Epoch, and RMS after Correct period.
+
+    Args:
+        result (dict | None): Period-correction store.
+
+    Returns:
+        str: Proposed-ephemeris caption.
+    """
+    return _oc_period_correct_status_text(result)
+
+
+@callback(
+    Output("oc-use-visible-range-btn", "disabled"),
+    Output("oc-restore-full-btn", "disabled"),
+    Output("oc-correct-period-btn", "disabled"),
+    Output("oc-adopt-ephemeris-btn", "disabled"),
+    Input("store-oc-plot-data", "data"),
+    Input("store-oc-fit-range", "data"),
+    Input("store-oc-period-correct", "data"),
+)
+def oc_period_correct_button_state(payload, fit_range, period_correct):
+    """Enables plot-strip and sidebar actions only when they can apply.
+
+    Args:
+        payload (dict | None): Last plotted O-C store.
+        fit_range (dict | None): Cycle-window store.
+        period_correct (dict | None): Proposed ephemeris store.
+
+    Returns:
+        tuple: Disabled flags for visible-range, restore, correct, and adopt.
+    """
+    has_plot = bool(payload)
+    has_window = normalize_fit_range(fit_range) is not None
+    has_proposal = bool(period_correct)
+    return (
+        not has_plot,
+        (not has_plot) or (not has_window),
+        not has_plot,
+        not has_proposal,
+    )
+
+
+@callback(
+    Output("store-oc-fit-range", "data"),
+    Output("store-oc-period-correct", "data", allow_duplicate=True),
+    Output("oc-fit-range-feedback", "children"),
+    Input("oc-use-visible-range-btn", "n_clicks"),
+    State("oc-graph", "relayoutData"),
+    State("store-oc-plot-data", "data"),
+    prevent_initial_call=True,
+)
+def oc_use_visible_range(n_clicks, relayout_data, payload):
+    """Stores the visible cycle window as the period-correction fit mask.
+
+    Args:
+        n_clicks: Button click count.
+        relayout_data: Latest ``oc-graph`` relayout payload.
+        payload (dict | None): Last plotted O-C store.
+
+    Returns:
+        tuple: Fit-range store, cleared overlay, and optional alert.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    try:
+        if not payload:
+            raise ValueError("Plot the O-C first.")
+        e_lo, e_hi = cycle_range_from_relayout(relayout_data)
+        cycle_e = np.asarray(payload["E"], dtype=float)
+        n_in = int(np.count_nonzero(mask_by_cycle_range(cycle_e, e_lo, e_hi)))
+        if n_in < 2:
+            raise ValueError(
+                f"Visible range contains fewer than 2 O-C points (got {n_in})."
+            )
+        return build_fit_range_store(e_lo, e_hi), None, None
+    except Exception as exc:
+        logger.error("O-C visible range failed: %s", exc)
+        return (
+            no_update,
+            no_update,
+            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+        )
+
+
+@callback(
+    Output("store-oc-fit-range", "data", allow_duplicate=True),
+    Output("store-oc-period-correct", "data", allow_duplicate=True),
+    Output("oc-fit-range-feedback", "children", allow_duplicate=True),
+    Input("oc-restore-full-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def oc_restore_full_range(n_clicks):
+    """Clears the cycle fit mask so Correct period uses every plotted point.
+
+    Args:
+        n_clicks: Button click count.
+
+    Returns:
+        tuple: Disabled fit-range store, cleared overlay, and cleared feedback.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    return FIT_RANGE_DISABLED.copy(), None, None
+
+
+@callback(
+    Output("store-oc-period-correct", "data"),
+    Output("oc-period-correct-feedback", "children"),
+    Input("oc-correct-period-btn", "n_clicks"),
+    State("store-oc-plot-data", "data"),
+    State("store-oc-fit-range", "data"),
+    prevent_initial_call=True,
+)
+def oc_correct_period(n_clicks, payload, fit_range):
+    """Fits the linear O-C segment and stores a proposed P and Epoch.
+
+    Trial input fields and the plotted O-C are left unchanged until Adopt
+    and Plot.
+
+    Args:
+        n_clicks: Button click count.
+        payload (dict | None): Last plotted O-C store.
+        fit_range (dict | None): Cycle-window store.
+
+    Returns:
+        tuple: Period-correction store and optional alert.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    try:
+        window = normalize_fit_range(fit_range)
+        if window is None:
+            result = correct_period_from_oc_payload(payload)
+        else:
+            result = correct_period_from_oc_payload(
+                payload, e_min=window[0], e_max=window[1]
+            )
+        return result, None
+    except Exception as exc:
+        logger.error("O-C period correction failed: %s", exc)
+        return no_update, dbc.Alert(
+            str(exc), color="warning", className="py-2 small mb-0"
+        )
+
+
+@callback(
+    Output("oc-input-period", "value", allow_duplicate=True),
+    Output("oc-input-epoch", "value", allow_duplicate=True),
+    Output("oc-period-correct-feedback", "children", allow_duplicate=True),
+    Input("oc-adopt-ephemeris-btn", "n_clicks"),
+    State("store-oc-period-correct", "data"),
+    prevent_initial_call=True,
+)
+def oc_adopt_ephemeris(n_clicks, result):
+    """Writes the proposed P and Epoch into the trial fields without replotting.
+
+    Args:
+        n_clicks: Button click count.
+        result (dict | None): Period-correction store.
+
+    Returns:
+        tuple: Trial P, trial Epoch (display MJD), and a short status alert.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not result:
+        return no_update, no_update, dbc.Alert(
+            "Correct period first.",
+            color="warning",
+            className="py-2 small mb-0",
+        )
+    period = float(result["p_corrected"])
+    epoch = display_epoch_offset(result["t0_corrected_jd"], jd0)
+    return (
+        period,
+        epoch,
+        dbc.Alert(
+            "Adopted into P and Epoch. Press Plot to rebuild the O-C.",
+            color="success",
+            className="py-2 small mb-0",
+        ),
+    )
 
 
 @callback(

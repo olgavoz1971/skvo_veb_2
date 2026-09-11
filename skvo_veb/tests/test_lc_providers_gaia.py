@@ -19,11 +19,11 @@ from skvo_veb.volightcurve import VOLightCurve
 
 
 def test_registry_lists_gaia_providers():
-    """Gaia debug, VEB, and OGLE providers are registered for UI discovery."""
+    """Gaia debug is test-only; VEB and OGLE providers are registered for Discovery."""
     missions = list_missions()
     mission_ids = {item.mission_id for item in missions}
+    assert "gaia" not in mission_ids
     assert {
-        "gaia",
         "gaia_dr3_veb",
         "ogle_ocvs",
         "personal_ts",
@@ -31,9 +31,11 @@ def test_registry_lists_gaia_providers():
         "ztf_dr24",
     } <= mission_ids
 
+    debug = GaiaDr3Provider()
+    assert debug.is_mock is True
+    assert debug.display_name == "Gaia DR3 (debug)"
+
     by_id = {item.mission_id: item for item in missions}
-    assert by_id["gaia"].is_mock is True
-    assert by_id["gaia"].display_name == "Gaia DR3 (debug)"
     assert by_id["gaia_dr3_veb"].is_mock is False
     assert by_id["gaia_dr3_veb"].display_name == "Gaia DR3 VEB"
     assert by_id["ogle_ocvs"].is_mock is False

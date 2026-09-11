@@ -74,7 +74,7 @@ Subclass `MissionLightcurveProvider` from `lc_providers/base.py`.
 | `display_name` | Label in the mission dropdown |
 | `export_profile` | Usually same as `mission_id` for Discovery (legacy pages may use `mission_config` profiles) |
 | `capabilities` | Flags: cone search, id lookup, force refresh, etc. |
-| `is_mock` | `True` only for synthetic/debug catalogues |
+| `is_mock` | Optional metadata (`True` for synthetic catalogues); does **not** hide a registered provider |
 
 **Methods you must implement:**
 
@@ -125,6 +125,9 @@ Build it with `encode_lc_key(mission_id, payload)`. Only your provider reads `pa
 
 ### 4. Register in `lc_providers/registry.py`
 
+Registration is the **only** switch that exposes a provider on Lightcurve Discovery.
+There is no separate “enabled” flag or page-level filter.
+
 ```python
 from skvo_veb.lc_providers.my_survey_dr1 import MySurveyDr1Provider
 
@@ -135,6 +138,29 @@ PROVIDERS = {
 ```
 
 After this, the new mission appears in the Discovery dropdown automatically.
+
+### 4.1 Unregistering a provider
+
+To remove a mission from the Discovery UI (and from `get_provider` / `list_missions`):
+
+1. Delete its import and entry from `PROVIDERS` in `lc_providers/registry.py`.
+2. Update tests that assert the mission appears in `list_missions()` or call
+   `get_provider("<mission_id>")`.
+3. Update docs that list the mission as a live Discovery option.
+
+**What to do with the provider package:**
+
+| Situation | Action |
+|-----------|--------|
+| Development / test-only provider (e.g. synthetic catalogue, VOLightCurve format experiments) | **Keep** `lc_providers/<provider>/`. Tests import the class directly (`GaiaDr3Provider()`), not via the registry. |
+| Retired production provider, code still useful as reference | Move to `lc_providers/obsolete/<provider>/` (must not be imported by production code). |
+| Retired provider, no remaining imports | Delete `lc_providers/<provider>/`. |
+
+Example: `lc_providers/gaia_debug/` remains in the tree for unit tests but is **not**
+registered — it does not appear on `/lc_discovery`.
+
+If a mission is not in `PROVIDERS`, it is unavailable to Discovery and
+`get_provider(mission_id)` raises `PipeException`.
 
 ### 5. Tests under `skvo_veb/tests/`
 
@@ -176,7 +202,7 @@ Discuss with maintainers before changing shared orchestration or the base provid
 5. Optionally implement `pick_archive_id_from_simbad`.
 6. Register in `registry.py`.
 7. Add tests; run `pytest skvo_veb/tests/test_lc_providers_*.py`.
-8. Manual smoke test on `/lc_discovery`: search → select row → Download.
+8. Manual smoke test on `/lc_discovery`: search → select row → Retrieve.
 
 ---
 
@@ -365,6 +391,7 @@ Discovery orchestration uses these flags to choose Simbad fallbacks (see [§9 in
 | Cone search via “id → Simbad → coords” when direct id works | Use direct lookup first |
 | PostgreSQL in TAP queries | ADQL only; verify against [ADQL 2.0 / 2.1](https://www.ivoa.net/documents/ADQL/) |
 | Forgetting registry entry | Provider code exists but never appears in dropdown |
+| Leaving a removed provider in `PROVIDERS` | Delete the registry entry when retiring a mission from Discovery |
 | Skipping `validate_catalog_table` | AgGrid and downstream code expect fixed column names |
 
 ---

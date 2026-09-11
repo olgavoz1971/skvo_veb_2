@@ -43,6 +43,7 @@ def plot_overview(
     extrema: SmoothExtremaResult | None = None,
     tom: ParabolaTomResult | None = None,
     extremum_kind: str = "min",
+    segment_n_points: list[int] | None = None,
     save_path: Path | None = None,
     show: bool = False,
 ) -> None:
@@ -54,9 +55,11 @@ def plot_overview(
         points (list[SmoothedPoint]): Smoothed series.
         working_domain (str): ``mag`` or ``flux``.
         cfg (RunningParabolaConfig): Run settings for the title.
-        extrema (SmoothExtremaResult | None): Optional detected extrema to mark.
-        tom (ParabolaTomResult | None): Optional parabola-refined extrema to mark.
+        extrema (SmoothExtremaResult | None): Rough extrema to mark (blue).
+        tom (ParabolaTomResult | None): Parabola-refined extrema to mark (green).
         extremum_kind (str): ``min`` or ``max`` label for plot legend/title.
+        segment_n_points (list[int] | None): Length of each independent smooth
+            chunk so the line is not drawn across gaps. ``None`` plots one series.
         save_path (Path | None): Optional PNG path.
         show (bool): Call ``plt.show()``.
 
@@ -68,31 +71,51 @@ def plot_overview(
     kind = str(extremum_kind).strip().lower()
     ext_label = f"{kind}imum" if kind in ("min", "max") else extremum_kind
     ax.scatter(jd, phot, s=50, c="0.55", alpha=0.35, label="raw", zorder=1)
-    xs = np.array([p.jd for p in points], dtype=float)
-    ys = np.array([p.smooth for p in points], dtype=float)
-    ax.plot(xs, ys, color="tab:red", lw=1.4, label="running parabola", zorder=2)
+    lengths = segment_n_points if segment_n_points is not None else [len(points)]
+    if int(np.sum(lengths)) != len(points):
+        raise ValueError(
+            f"segment_n_points sum {int(np.sum(lengths))} != n_points {len(points)}"
+        )
+    i0 = 0
+    labelled = False
+    for n_seg in lengths:
+        chunk = points[i0 : i0 + int(n_seg)]
+        i0 += int(n_seg)
+        if not chunk:
+            continue
+        xs = np.array([p.jd for p in chunk], dtype=float)
+        ys = np.array([p.smooth for p in chunk], dtype=float)
+        ax.plot(
+            xs,
+            ys,
+            color="tab:red",
+            lw=1.4,
+            label="running parabola" if not labelled else None,
+            zorder=2,
+        )
+        labelled = True
+    if extrema is not None and extrema.n_extrema > 0:
+        ax.scatter(
+            extrema.jd,
+            extrema.smooth,
+            s=58,
+            c="tab:orange",
+            edgecolors="orange",
+            linewidths=0.6,
+            label=f"rough {ext_label}",
+            zorder=9,
+        )
     if tom is not None and tom.n_ok > 0:
         tom_jd = np.array([h.tom_jd for h in tom.hits], dtype=float)
         tom_y = np.array([h.y_ext for h in tom.hits], dtype=float)
         ax.scatter(
             tom_jd,
             tom_y,
-            s=280,
-            c="red",
-            edgecolors="darkred",
-            linewidths=1.2,
+            s=58,
+            c="tab:green",
+            edgecolors="darkgreen",
+            linewidths=0.6,
             label=f"parabola ToM ({ext_label})",
-            zorder=10,
-        )
-    elif extrema is not None and extrema.n_extrema > 0:
-        ax.scatter(
-            extrema.jd,
-            extrema.smooth,
-            s=280,
-            c="red",
-            edgecolors="darkred",
-            linewidths=1.2,
-            label=f"rough {ext_label}",
             zorder=10,
         )
     y_label = "mag" if working_domain == "mag" else "flux"

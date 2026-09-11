@@ -11,10 +11,14 @@ from skvo_veb.utils.my_tools import safe_float, sanitize_filename
 logger = logging.getLogger(__name__)
 
 GP_INTERVALS_EXPORT_EXTENSION = "dat"
+GP_INTERVALS_SUFFIX = "_int"
+GP_INTERVALS_FALLBACK_STEM = "intervals_int"
 GP_EXTREMA_COMPACT_EXTENSION = "dat"
 GP_EXTREMA_EXTENDED_SUFFIX = "_gp_extrema"
 GP_TIMING_SUFFIX = "_gp"
 GP_TIMING_FALLBACK_STEM = "results_gp"
+LC_EXPORT_SUFFIX = "_lc"
+LC_EXPORT_FALLBACK_STEM = "lightcurve_lc"
 
 
 def export_stem_from_upload_filename(filename: str | None) -> str:
@@ -29,6 +33,24 @@ def export_stem_from_upload_filename(filename: str | None) -> str:
     if not filename:
         return ""
     return filename.rsplit(".", 1)[0]
+
+
+def suggested_lc_export_stem(filename: str | None) -> str:
+    """Builds the shared light-curve export stem from an upload file name.
+
+    Args:
+        filename (str | None): Uploaded light-curve filename.
+
+    Returns:
+        str: ``{stem}_lc``, or ``lightcurve_lc`` when no name is available.
+        An existing ``_lc`` suffix is not duplicated.
+    """
+    base = export_stem_from_upload_filename(filename).strip()
+    if not base:
+        return LC_EXPORT_FALLBACK_STEM
+    if base.lower().endswith(LC_EXPORT_SUFFIX):
+        return base
+    return f"{base}{LC_EXPORT_SUFFIX}"
 
 
 def gp_suggested_timing_stem(lc_filename: str | None) -> str:
@@ -46,6 +68,24 @@ def gp_suggested_timing_stem(lc_filename: str | None) -> str:
     if base.lower().endswith(GP_TIMING_SUFFIX):
         return base
     return f"{base}{GP_TIMING_SUFFIX}"
+
+
+def gp_suggested_intervals_stem(filename: str | None) -> str:
+    """Builds the suggested intervals export stem from a source file name.
+
+    Args:
+        filename (str | None): Light-curve or intervals upload filename.
+
+    Returns:
+        str: ``{stem}_int``, or ``intervals_int`` when no name is available.
+        An existing ``_int`` suffix is not duplicated.
+    """
+    base = export_stem_from_upload_filename(filename).strip()
+    if not base:
+        return GP_INTERVALS_FALLBACK_STEM
+    if base.lower().endswith(GP_INTERVALS_SUFFIX):
+        return base
+    return f"{base}{GP_INTERVALS_SUFFIX}"
 
 
 def gp_intervals_export_download_name(stem: str | None) -> str:

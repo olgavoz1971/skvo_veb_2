@@ -4,7 +4,7 @@
 
 **Human-readable how-to:** [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md) — shorter checklist for plugging in a new provider (including TAP).
 
-**Status:** Implemented for Discovery (2026-07-30). `lc_providers/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Download on `/lc_discovery`. Legacy `/asassn` page remains until retired.
+**Status:** Implemented for Discovery (2026-07-30). `lc_providers/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Retrieve on `/lc_discovery`. Legacy `/asassn` page remains until retired.
 
 **Related docs:**
 - [lightcurve_data_flow.md](lightcurve_data_flow.md) — existing layer boundaries (`VOLightCurve` ↔ `CurveDash` ↔ export)
@@ -153,7 +153,7 @@ The generic layer **must not** parse `Gaia DR3 …`, `TIC …`, or other mission
 
 **ASAS-SN note:** No true cone search — lookup is by source name or Gaia ID. Returns a **degenerate catalog** (0–2 rows, one per filter band).
 
-**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside `lc_providers/gaia_debug/` or `lc_providers/gaia_dr3_veb/`).
+**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside the relevant registered `lc_providers/gaia_dr3_*` package). The unregistered `gaia_debug/` mock exists for tests only.
 
 #### `fetch_lightcurve(lc_key: str, *, force_refresh: bool = False) -> VOLightCurve`
 
@@ -549,11 +549,11 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 
 **Done:**
 1. `lc_providers/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
-2. `lc_providers/gaia_debug/` (mock: cone, direct source_id, Simbad id pick)
+2. `lc_providers/gaia_debug/` (test-only mock; not registered on Discovery)
 3. Gaia DR3 AIP, ARI, VEB TAP providers
 4. **`lc_providers/asassn/`** — Sky Patrol discovery + fetch → `VOLightCurve`
 5. `utils/simbad_resolver.py`, `utils/lc_discovery_search.py` (Discovery orchestration)
-6. Discovery UI + Submit/Download + truncation notices
+6. Discovery UI + Submit/Retrieve + truncation notices
 7. Tests: `test_lc_providers_*`, `test_lc_discovery_search.py`, `test_lc_providers_asassn.py`
 
 **Next:**

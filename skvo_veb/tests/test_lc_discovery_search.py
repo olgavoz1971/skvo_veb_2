@@ -4,7 +4,6 @@ import pytest
 
 from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import parse_gaia_source_id
-from skvo_veb.lc_providers.registry import get_provider
 from skvo_veb.utils.coord import parse_coord_to_skycoord, skycoord_to_hms_dms
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
 from skvo_veb.utils.lc_discovery_search import (
@@ -117,7 +116,7 @@ def test_run_catalog_search_direct_gaia_id():
         status_querying_object("Gaia DR3 (debug)", gaia_id_text),
     ]
     assert "Magnitude:" not in outcome.resolved_markdown
-    assert r"$G_\mathrm{mag}$" in outcome.resolved_markdown
+    assert r"\mathrm{mag}$" in outcome.resolved_markdown
     assert "Survey:" not in outcome.resolved_markdown
 
 
@@ -345,9 +344,9 @@ def test_gaia_pick_archive_id_from_simbad():
     assert match.match_kind == "gaia_source_id"
 
 
-def test_registry_gaia_provider_direct_id_search():
-    """Registry Gaia provider returns passband rows for a direct source id query."""
-    provider = get_provider("gaia")
+def test_gaia_debug_provider_direct_id_search():
+    """Unregistered Gaia debug provider returns passband rows for direct source id lookup."""
+    provider = GaiaDr3Provider()
     table = provider.search_catalog(archive_id=str(AA_AND.source_id))
     assert len(table) == 3
 

@@ -349,6 +349,8 @@ def export_parabola_tom_ascii(
     source_lc: str,
     working_domain: str,
     cfg: ParabolaTomConfig,
+    min_gap_d: float | None = None,
+    n_segments: int = 1,
 ) -> None:
     """Write refined ToM table as a ``#``-commented ASCII file.
 
@@ -360,12 +362,16 @@ def export_parabola_tom_ascii(
         source_lc (str): Input light-curve label.
         working_domain (str): ``mag`` or ``flux``.
         cfg (ParabolaTomConfig): Fit settings used.
+        min_gap_d (float | None): Gap threshold used for independent segments,
+            or ``None`` if the series was not split.
+        n_segments (int): Number of independent segments processed.
 
     Returns:
         None.
     """
     out_path = Path(path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    gap_txt = "none" if min_gap_d is None else f"{float(min_gap_d)}"
     with out_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write("# tool: running_parabola_spike\n")
         handle.write("# step: parabola_tom\n")
@@ -375,6 +381,8 @@ def export_parabola_tom_ascii(
         handle.write(f"# fit_half_width_d: {cfg.fit_half_width_d}\n")
         handle.write(f"# min_points: {cfg.min_points}\n")
         handle.write(f"# use_weights: {cfg.use_weights}\n")
+        handle.write(f"# min_gap_d: {gap_txt}\n")
+        handle.write(f"# n_segments: {int(n_segments)}\n")
         handle.write(f"# n_ok: {result.n_ok}\n")
         handle.write(f"# n_failed: {result.n_failed}\n")
         handle.write(

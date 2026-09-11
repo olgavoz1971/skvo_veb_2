@@ -1,0 +1,321 @@
+/* Lightcurve processor probe: one token block; Python carries class names only. */
+
+:root {
+    --detrend-text-sm: 0.75rem;
+    --detrend-text-md: 0.85rem;
+    --detrend-space-xs: 0.25rem;
+    --detrend-space-sm: 0.375rem;
+    --detrend-space-md: 0.5rem;
+    --detrend-space-lg: 0.75rem;
+    --detrend-page-header-gap: 1.25rem;
+    --detrend-page-top-gap: 1.25rem;
+    --detrend-radius: 0.3rem;
+    --detrend-caution: #c05621;
+    --detrend-caution-hover: #8f3d13;
+    --detrend-plot-height: clamp(20rem, 55vh, 40rem);
+    /* GP / main app: Spacelab #777 body colour is disabled (see style.css). */
+    --bs-body-color: #000;
+    --bs-heading-color: #000;
+}
+
+body {
+    color: #000;
+}
+
+.detrend-page {
+    /* Same as the main app: Spacelab's #777 body colour is commented out there. */
+    --bs-body-color: #000;
+    --bs-heading-color: #000;
+    font-size: var(--detrend-text-md);
+    font-family: "Open Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+        Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #000;
+    padding-top: var(--detrend-page-top-gap);
+}
+
+.detrend-page-title {
+    font-size: 1.5rem;
+    line-height: 1.25;
+    margin-bottom: 0;
+}
+
+.detrend-page-header {
+    margin-bottom: var(--detrend-page-header-gap);
+    padding-bottom: var(--detrend-space-lg);
+    border-bottom: 1px solid #dee2e6;
+}
+
+.detrend-section-label {
+    font-weight: 700;
+}
+
+.detrend-data-hub {
+    margin-bottom: var(--detrend-page-header-gap);
+}
+
+.detrend-data-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: var(--detrend-space-lg);
+    row-gap: var(--detrend-space-xs);
+}
+
+.detrend-data-slot {
+    display: flex;
+    align-items: center;
+    gap: var(--detrend-space-xs);
+    flex: 1 1 20rem;
+    min-width: 0;
+}
+
+.detrend-upload-target {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    padding: var(--detrend-space-xs);
+    border: 1px dashed transparent;
+    border-radius: var(--detrend-radius);
+}
+
+.detrend-upload-target-active {
+    border-color: #446e9b;
+    background-color: rgba(68, 110, 155, 0.08);
+}
+
+.detrend-upload-target-reject {
+    border-color: #dc3545;
+    background-color: rgba(220, 53, 69, 0.08);
+}
+
+.detrend-upload-target-inner {
+    display: flex;
+    align-items: center;
+    gap: var(--detrend-space-md);
+    width: 100%;
+    min-width: 0;
+}
+
+.detrend-upload-target .btn {
+    flex: 0 0 auto;
+}
+
+.detrend-upload-name,
+.detrend-upload-status {
+    display: flex;
+    align-items: center;
+    gap: var(--detrend-space-xs);
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.detrend-upload-name-text {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+}
+
+.detrend-upload-detail {
+    margin-top: var(--detrend-space-xs);
+    padding: var(--detrend-space-md);
+    border: 1px solid #f5c2c7;
+    border-radius: var(--detrend-radius);
+    background-color: #fdf2f3;
+}
+
+.detrend-upload-detail-body {
+    margin-bottom: 0;
+    font-size: var(--detrend-text-sm);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.detrend-sidebar-col {
+    padding-right: var(--detrend-space-lg);
+}
+
+.detrend-sidebar {
+    padding: 0;
+}
+
+.detrend-sidebar hr {
+    margin: var(--detrend-space-md) 0;
+}
+
+.detrend-sidebar .form-select {
+    width: 100%;
+}
+
+.detrend-page .detrend-workflow-accordion .accordion-button {
+    font-size: var(--detrend-text-md);
+    font-weight: 700;
+    padding: var(--detrend-space-md) var(--detrend-space-lg);
+    line-height: 1.25;
+    box-shadow: none;
+}
+
+.detrend-page .detrend-workflow-accordion .accordion-button:focus {
+    box-shadow: none;
+    border-color: var(--bs-primary-border-subtle);
+}
+
+.detrend-page .detrend-workflow-accordion .accordion-button:not(.collapsed) {
+    background-color: var(--bs-primary-bg-subtle);
+    color: var(--bs-primary-text-emphasis);
+    box-shadow: none;
+}
+
+.detrend-page .detrend-workflow-accordion .accordion-body {
+    padding: var(--detrend-space-lg);
+}
+
+.detrend-drawer-body > .detrend-sidebar-block:last-child {
+    margin-bottom: 0;
+}
+
+.detrend-sidebar-block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--detrend-space-xs);
+    margin-bottom: var(--detrend-space-lg);
+}
+
+.detrend-sidebar-heading-row {
+    display: flex;
+    align-items: center;
+    gap: var(--detrend-space-xs);
+    margin-bottom: var(--detrend-space-xs);
+}
+
+.detrend-field-help {
+    display: inline-flex;
+    align-items: center;
+    line-height: 1;
+}
+
+.detrend-help-btn {
+    display: inline;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    padding: 0 0.1em;
+    margin: 0;
+    color: #446e9b;
+    font-family: "Comic Sans MS", "Comic Sans", cursive;
+    font-size: 1.05em;
+    font-weight: 900;
+    line-height: 1;
+    cursor: pointer;
+    vertical-align: baseline;
+    user-select: none;
+}
+
+.detrend-help-btn:hover,
+.detrend-help-btn:focus-visible {
+    color: #2a4566;
+    background: transparent;
+    text-decoration: underline;
+    outline: none;
+    box-shadow: none;
+}
+
+.detrend-help-popover {
+    max-width: min(24rem, 92vw);
+}
+
+.detrend-help-popover .popover-body {
+    max-height: min(50vh, 20rem);
+    overflow-y: auto;
+    font-size: var(--detrend-text-sm);
+    line-height: 1.45;
+}
+
+.detrend-sidebar-btn-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--detrend-space-xs);
+}
+
+.detrend-export-sublabel {
+    font-weight: 600;
+    font-size: var(--detrend-text-sm);
+    margin-bottom: 0;
+}
+
+.detrend-export-feedback:empty {
+    display: none;
+}
+
+.detrend-export-feedback .alert {
+    margin-bottom: 0;
+}
+
+.detrend-param-block:empty {
+    display: none;
+}
+
+.detrend-graph {
+    height: var(--detrend-plot-height);
+}
+
+.detrend-delete-mode .js-plotly-plot,
+.detrend-delete-mode .js-plotly-plot .plotly,
+.detrend-delete-mode .js-plotly-plot .cursor-pointer,
+.detrend-delete-mode .js-plotly-plot .cursor-crosshair {
+    cursor: pointer !important;
+}
+
+.detrend-plot-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--detrend-space-md);
+    margin-bottom: var(--detrend-space-md);
+}
+
+.detrend-plot-alert:empty {
+    display: none;
+}
+
+.detrend-plot-alert .alert {
+    margin-bottom: 0;
+}
+
+.detrend-plot-toolbar-cluster {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--detrend-space-xs);
+}
+
+/* Outline caution: same Bootstrap outline contract as Unselect, orange tint. */
+.detrend-page .detrend-btn-caution-outline {
+    --bs-btn-color: var(--detrend-caution);
+    --bs-btn-border-color: var(--detrend-caution);
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: var(--detrend-caution);
+    --bs-btn-hover-border-color: var(--detrend-caution);
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: var(--detrend-caution-hover);
+    --bs-btn-active-border-color: var(--detrend-caution-hover);
+    --bs-btn-active-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.125);
+    --bs-btn-disabled-color: var(--detrend-caution);
+    --bs-btn-disabled-bg: transparent;
+    --bs-btn-disabled-border-color: var(--detrend-caution);
+}
+
+.detrend-plot-stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--detrend-space-lg);
+}
+
+.detrend-apply-feedback:empty {
+    display: none;
+}

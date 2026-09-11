@@ -6,12 +6,36 @@ import pytest
 
 from skvo_veb.lc_providers.catalog_schema import catalog_table_to_row_dicts
 from skvo_veb.lc_providers.gaia_debug import GaiaDr3Provider
+from skvo_veb.lc_providers.registry import get_provider as registry_get_provider
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import METADATA_KEY_VO_ENVELOPE, VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.lc_discovery_load import curvedash_from_catalog_row
 from skvo_veb.utils.lc_discovery_search import run_catalog_search
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.volightcurve import VOLightCurve
+
+
+def _register_gaia_debug_for_load_tests(monkeypatch) -> GaiaDr3Provider:
+    """Wires the unregistered Gaia debug provider into load helpers for tests.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+
+    Returns:
+        GaiaDr3Provider: Shared debug provider instance.
+    """
+    provider = GaiaDr3Provider()
+
+    def _get_provider(mission_id: str):
+        if mission_id == provider.mission_id:
+            return provider
+        return registry_get_provider(mission_id)
+
+    monkeypatch.setattr(
+        "skvo_veb.utils.lc_discovery_load.get_provider",
+        _get_provider,
+    )
+    return provider
 
 
 def _first_catalog_row():
@@ -25,8 +49,9 @@ def _first_catalog_row():
     return catalog_table_to_row_dicts(outcome.catalog)[0]
 
 
-def test_curvedash_preserves_vo_envelope_after_ingest():
+def test_curvedash_preserves_vo_envelope_after_ingest(monkeypatch):
     """Ingest stores TIMESYS envelope metadata for later export."""
+    _register_gaia_debug_for_load_tests(monkeypatch)
     row = _first_catalog_row()
     lcd = curvedash_from_catalog_row(row)
     envelope = lcd.metadata.get(METADATA_KEY_VO_ENVELOPE) or {}
@@ -39,8 +64,9 @@ def test_curvedash_preserves_vo_envelope_after_ingest():
     assert float(envelope.get("coosys_epoch")) == 2016.0
 
 
-def test_export_curvedash_without_profile_emits_valid_votable():
+def test_export_curvedash_without_profile_emits_valid_votable(monkeypatch):
     """Discovery export path uses metadata only — no mission profile."""
+    _register_gaia_debug_for_load_tests(monkeypatch)
     row = _first_catalog_row()
     lcd = curvedash_from_catalog_row(row)
     blob = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)

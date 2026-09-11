@@ -1,7 +1,7 @@
 # DISK_CACHE_LOCAL = True
 """TESS Cutout Tool — Dash page for FFI/TPF pixel cutouts and user photometry.
 
-Users download TESS pixel cutouts, define aperture masks (handmade, threshold, or
+Users retrieve TESS pixel cutouts, define aperture masks (handmade, threshold, or
 pipeline), build uncalibrated lightcurves, and export them via the shared
 ``lc_bridge.export_curvedash`` layer with the ``cutout`` VOTable profile.
 """
@@ -145,7 +145,7 @@ def layout():
                                                   style={'width': '7em', 'marginBottom': 0}),
                                         dcc.Input(id='size_ffi_input', type='number', min=1, value=11,
                                                   style={'width': '5em'}),
-                                        dbc.Button('Download sector', id='download_sector_button', size="sm",
+                                        dbc.Button('Retrieve sector', id='download_sector_button', size="sm",
                                                    style={'width': '100%'}),
                                         dbc.Button('Cancel', id='cancel_download_sector_button', size="sm",
                                                    style={'width': '100%'}),
@@ -648,7 +648,7 @@ def _cutout_ra_dec(pixel_data):
     """Extract cutout centre RA/Dec in degrees from a Lightkurve pixel file.
 
     Args:
-        pixel_data: Downloaded ``TargetPixelFile`` or FFI cutout object.
+        pixel_data: Retrieved ``TargetPixelFile`` or FFI cutout object.
 
     Returns:
         tuple[float, float]: ``(ra_deg, dec_deg)``.
@@ -725,7 +725,7 @@ def aladin_target_from_cutout(pixel_metadata, wcs_dict=None):
     prevent_initial_call=True
 )
 def download_sector(n_clicks, selected_rows, pixel_di, size):
-    """Downloads the selected FFI or TPF sector cutout and opens the plot tab.
+    """Retrieves the selected FFI or TPF sector cutout and opens the plot tab.
 
     Args:
         n_clicks: Button click count.
@@ -739,7 +739,7 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
     if n_clicks is None:
         raise PreventUpdate
 
-    logger.info(f"tess_cutout.download_sector: Starting download/load operation. Requested Cutout Size: {size}")
+    logger.info(f"tess_cutout.download_sector: Starting retrieve/load operation. Requested Cutout Size: {size}")
     if selected_rows:
         row = selected_rows[0]
         logger.info(f"tess_cutout.download_sector: Selected Record Detail: Mission={row.get('mission')}, Author={row.get('author')}, Target={row.get('target')}, Exptime={row.get('exptime')}")
@@ -790,7 +790,7 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
 
     except Exception as e:
         logger.error(f"tess_cutout.download_sector: Error during download: {e}", exc_info=True)
-        logger.error(f"tess_cutout.download_sector: Failed to download sector data: {e}", exc_info=True)
+        logger.error(f"tess_cutout.download_sector: Failed to retrieve sector data: {e}", exc_info=True)
         alert_message = message.warning_alert(e)
         output['sector_results'] = ''
         output['graph_tab_disabled'] = True
@@ -864,14 +864,14 @@ def plot_pixel(
     auto_mask,
     mask_store,
 ):
-    """Plots the downloaded TPF/FFI cutout and initialises the aperture mask store.
+    """Plots the retrieved TPF/FFI cutout and initialises the aperture mask store.
 
     A frame slider browses individual cadences when ``Sum`` is off and the cutout
     contains more than one frame.
 
     Args:
         replot_clicks: Replot button click count.
-        pixel_metadata (dict): Downloaded sector metadata including local file path.
+        pixel_metadata (dict): Retrieved sector metadata including local file path.
         frame_index (int): Selected cadence index from the frame slider.
         sum_it: When true, sum all cadences; otherwise show the selected frame.
         gamma (float): Log-scale gamma for pixel display.
@@ -1306,7 +1306,7 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
 
     Args:
         n_clicks: Plot button click count.
-        pixel_metadata (dict): Downloaded sector metadata including file path.
+        pixel_metadata (dict): Retrieved sector metadata including file path.
         mask_list (list): 2D boolean aperture mask from the pixel graph.
         star_number (str): Lightcurve slot selector (``'1'``, ``'2'``, or ``'3'``).
         sub_bkg: Background subtraction toggle.
@@ -1692,7 +1692,7 @@ def resolve_coordinates(n_clicks, obj_name):
     running=[(Output('search_tess_button', 'disabled'), True, False),
              (Output('cancel_search_tess_button', 'disabled'), False, True),
              (Output('download_sector_result', 'children'),
-              'I\'m working... Please wait', 'Press Download to get the lightcurve')],
+              'I\'m working... Please wait', 'Press Retrieve sector to load the cutout')],
     cancel=[Input('cancel_search_tess_button', 'n_clicks')],
     background=background_callback,
     prevent_initial_call=True
@@ -1841,7 +1841,7 @@ def restore_tess_cutout_tabs(pixel_metadata, lc1, wcs_dict):
     Also restores the Aladin sky field from persisted cutout coordinates.
 
     Args:
-        pixel_metadata (dict): Persisted sector download metadata.
+        pixel_metadata (dict): Persisted sector retrieve metadata.
         lc1 (str): Serialised primary lightcurve, if any.
         wcs_dict (dict): Persisted FITS WCS header for legacy session restore.
 

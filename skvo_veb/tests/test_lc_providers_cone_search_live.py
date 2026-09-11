@@ -20,7 +20,6 @@ CONE_RADIUS_ARCSEC = 10.0
 # Providers expected to return three band rows for the AA And test field.
 _PROVIDERS_WITH_KNOWN_HITS = frozenset(
     {
-        "gaia",
         "gaia_dr3_aip",
         "gaia_dr3_ari",
         "gaia_dr3_veb",

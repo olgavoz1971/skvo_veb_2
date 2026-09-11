@@ -132,7 +132,8 @@ class CurveDash:
             flux_err (array-like, optional): Flux uncertainties.
             mag (array-like, optional): Magnitude values when ``active_domain`` is ``'mag'``.
             mag_err (array-like, optional): Magnitude uncertainties.
-            label (array-like, optional): Group labels (e.g. TESS sectors).
+            label (array-like, optional): Group labels (e.g. TESS sectors). When
+                omitted, each row stores ``None`` rather than a dummy numeric id.
             active_domain (str, optional): ``'flux'`` or ``'mag'``. Inferred from
                 which photometry columns are provided when omitted.
             photcal (dict, optional): Photometric calibration metadata
@@ -188,7 +189,7 @@ class CurveDash:
             raise PipeException('Photometry and uncertainty arrays must have equal length.')
 
         if label is None:
-            label = np.zeros(np.shape(phot_vals), dtype=np.uint8)
+            label = np.full(np.shape(phot_vals), None, dtype=object)
         elif np.shape(label) != np.shape(phot_vals):
             raise PipeException('Label array length must match photometry length.')
 
@@ -233,6 +234,101 @@ class CurveDash:
             'mag_view': mag_view,
         }
         self.recalc_phase()
+
+    def replace_series(
+        self,
+        jd,
+        phot,
+        err=None,
+        *,
+        domain: str | None = None,
+    ) -> None:
+        """Replace time and photometry, keeping identity metadata.
+
+        Period, epoch, photcal, VO envelope, name, and other ``metadata`` keys
+        stay on this instance. Row labels are copied when Julian Dates match
+        the previous series. Call ``apply_prep_fold_ephemeris`` before or after
+        this method so export writes the ephemeris the user confirmed.
+
+        Args:
+            jd: New observation times (absolute JD).
+            phot: Photometry in ``domain`` (detrended residual or flux ratio).
+            err: Uncertainties aligned with ``phot``. ``None`` stores zeros.
+            domain (str | None): ``mag`` or ``flux``. Defaults to ``active_domain``.
+
+        Raises:
+            PipeException: If metadata is missing or array lengths disagree.
+        """
+        if self.metadata is None:
+            raise PipeException("Cannot replace photometry on an empty CurveDash.")
+        jd_arr = np.asarray(jd, dtype=float)
+        phot_arr = np.asarray(phot, dtype=float)
+        if jd_arr.shape != phot_arr.shape:
+            raise PipeException("Time and photometry arrays must have equal length.")
+        if err is None:
+            err_arr = np.zeros_like(phot_arr, dtype=float)
+        else:
+            err_arr = np.asarray(err, dtype=float)
+            if err_arr.shape != phot_arr.shape:
+                raise PipeException("Uncertainty array length must match photometry.")
+
+        resolved = domain or self.active_domain
+        if resolved not in (DOMAIN_MAG, DOMAIN_FLUX):
+            raise PipeException(f"Unsupported photometric domain {resolved!r}.")
+
+        labels = self._labels_aligned_to_jd(jd_arr)
+        if resolved == DOMAIN_MAG:
+            table_dict = {
+                "jd": jd_arr,
+                "mag": phot_arr,
+                "mag_err": err_arr,
+                "label": labels,
+            }
+        else:
+            table_dict = {
+                "jd": jd_arr,
+                "flux": phot_arr,
+                "flux_err": err_arr,
+                "label": labels,
+            }
+        df = Table(table_dict).to_pandas()
+        if resolved == DOMAIN_FLUX:
+            df.loc[df["flux"] <= 0, "flux"] = np.nan
+            df.loc[df["flux_err"] <= 0, "flux_err"] = np.nan
+        df.loc[:, "selected"] = 0
+        df.loc[:, "perm_index"] = df.index
+        df.loc[:, "phase"] = 0.0
+        self.lightcurve = df
+        self.metadata["active_domain"] = resolved
+        if resolved == DOMAIN_MAG and not self.metadata.get("mag_unit"):
+            self.metadata["mag_unit"] = "mag"
+        if self.period is not None:
+            self.recalc_phase()
+
+    def _labels_aligned_to_jd(self, jd_new: np.ndarray):
+        """Copy previous row labels onto ``jd_new`` where times match.
+
+        Args:
+            jd_new (numpy.ndarray): Replacement Julian Dates.
+
+        Returns:
+            numpy.ndarray: Labels aligned with ``jd_new``.
+        """
+        n = int(jd_new.size)
+        if self.lightcurve is None or "label" not in self.lightcurve.columns:
+            return np.zeros(n, dtype=np.uint8)
+        src_jd = np.asarray(self.lightcurve["jd"], dtype=float)
+        src_lab = self.lightcurve["label"].to_numpy()
+        by_jd: dict = {}
+        for time_val, lab in zip(src_jd, src_lab):
+            key = float(time_val)
+            if key not in by_jd:
+                by_jd[key] = lab
+        if len(src_lab) and isinstance(src_lab[0], str):
+            default: object = ""
+        else:
+            default = 0
+        return np.array([by_jd.get(float(t), default) for t in jd_new])
 
     @classmethod
     def from_serialized(cls, serialized: str):

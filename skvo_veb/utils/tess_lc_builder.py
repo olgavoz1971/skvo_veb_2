@@ -133,7 +133,7 @@ def create_lc_from_selected_rows(
 ) -> str:
     """Builds a serialised CurveDash payload from selected TESS search rows.
 
-    Downloads Lightkurve lightcurves for the selected table rows, optionally
+    Retrieves Lightkurve lightcurves for the selected table rows, optionally
     stitches them, and stores the result in flux domain without domain conversion.
 
     Args:

@@ -148,7 +148,7 @@ sequenceDiagram
     participant Cache as user_cache (diskcache)
     participant MAST as TESS public cache / MAST
 
-    User->>Dash: Click "Download" (selected table rows)
+    User->>Dash: Click "Retrieve" (selected table rows)
     Dash->>MAST: Fetch / stitch sectors (may hit tess_cache)
     MAST-->>Dash: Lightkurve → CurveDash JSON
     Dash->>Cache: set("{user_tab_id}_data", json)
@@ -159,7 +159,7 @@ sequenceDiagram
     Dash-->>Browser: figure dict → dcc.Graph
 ```
 
-Heavy download and stitching stay on the server. The browser receives a **UUID change** and a **Plotly figure**, not the raw cache blob in a store.
+Heavy retrieve and stitching stay on the server. The browser receives a **UUID change** and a **Plotly figure**, not the raw cache blob in a store.
 
 #### B. Box select → trim (clientside distill + server mutate)
 
@@ -229,7 +229,7 @@ Both pages share the same **selection bounds** pattern: clientside extraction of
 
 ### 2.7 Operational Notes
 
-* **Session vs. cache lifetime:** `dcc.Store(storage_type='session')` survives page refreshes within the same browser tab but is cleared when the tab closes. `user_cache` entries expire after **24 hours of inactivity** (sliding window refreshed on every read). A user can therefore lose server cache while the tab UUID store still holds an ID — the plot callback then raises a friendly “please download again” error.
+* **Session vs. cache lifetime:** `dcc.Store(storage_type='session')` survives page refresches within the same browser tab but is cleared when the tab closes. `user_cache` entries expire after **24 hours of inactivity** (sliding window refreshed on every read). A user can therefore lose server cache while the tab UUID store still holds an ID — the plot callback then raises a friendly “please retrieve again” error.
 * **Concurrency:** Multiple Apache workers share one `USER_CACHE_DIR`; SQLite WAL makes concurrent reads/writes safe for different `user_tab_id` keys.
 * **Future direction:** If the experiment proves stable, the same `{user_tab_id}` + `user_cache` pattern could be extended to other high-volume pages; until then, treat `lightcurve_tess_srv.py` as the reference implementation documented here.
 
@@ -290,7 +290,7 @@ To prevent unnecessary duplicate downloads caused by minor coordinate adjustment
 - **Coordinate-Aware Filenames:** Filenames for public caches automatically encode parsed coordinates, e.g. `{prefix}_ra_{ra:.6f}_dec_{dec:.6f}_[non_coordinate_hash].{ext}`.
 - **Pole-Safe Angular Separation:** When fetching items from the cache, the directory is scanned and candidate cached coordinates are compared using `SkyCoord.separation()`. This calculates exact angular separation on a sphere, remaining perfectly robust even near celestial convergence zones (the celestial poles).
 - **Tolerances:** The lookup uses a configurable coordinate separation tolerance (`COORD_TOLERANCE_DEG = 0.02` degrees, approx 1.2 arcminutes) and cutout field size tolerance (`SIZE_TOLERANCE = 1` pixel) to resolve and reuse matching cached records.
-- **Explicit Cache/Remote State Logging:** Every "Search Sector" and "Download Sector" operation explicitly reports its cache status (`[CACHE HIT]` vs `[CACHE MISS]`) to standard output and log files, clearly outlining whether the operation retrieved local cached files or performed remote MAST / SkyPatrol downloads.
+- **Explicit Cache/Remote State Logging:** Every "Search Sector" and "Retrieve sector" operation explicitly reports its cache status (`[CACHE HIT]` vs `[CACHE MISS]`) to standard output and log files, clearly outlining whether the operation used local cached files or performed remote MAST / SkyPatrol retrieves.
 
 ### F. Cache Eviction / Clean Cache Action
 Because archives constantly acquire new observations (new TESS sectors) and disk files might occasionally suffer from corruption, a dedicated **Clean Cache** button is integrated into the user interface:

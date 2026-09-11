@@ -14,11 +14,13 @@ from skvo_veb.utils.gp.export import (
     export_stem_from_upload_filename,
     gp_intervals_export_download_name,
     gp_lc_export_download_name,
+    gp_suggested_intervals_stem,
 )
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.lc_bridge import (
     curvedash_from_transport_json,
     export_curvedash,
+    ingest_volightcurve_file,
     pack_volc_to_json,
     volc_to_curvedash,
 )
@@ -63,9 +65,16 @@ def test_gp_lc_export_download_name_appends_extension():
     assert name.endswith(".vot")
 
 
+def test_gp_suggested_intervals_stem_appends_int():
+    """Interval defaults are ``{lightcurve}_int`` and do not duplicate the suffix."""
+    assert gp_suggested_intervals_stem("V_sorted.dat") == "V_sorted_int"
+    assert gp_suggested_intervals_stem("V_sorted_int.dat") == "V_sorted_int"
+    assert gp_suggested_intervals_stem(None) == "intervals_int"
+
+
 def test_gp_intervals_export_download_name_appends_dat():
     """Interval export stems receive a .dat extension for text downloads."""
-    assert gp_intervals_export_download_name("target_intervals") == "target_intervals.dat"
+    assert gp_intervals_export_download_name("target_int") == "target_int.dat"
     assert gp_intervals_export_download_name("  ") == "intervals_export.dat"
 
 
@@ -110,6 +119,22 @@ def test_volc_pack_transport_export_roundtrip():
     lcd_transport = curvedash_from_transport_json(transport, source_name="gaia.vot")
     assert len(lcd_transport.lightcurve) == len(lcd_direct.lightcurve)
     assert export_curvedash(lcd_transport, VOTABLE_FORMAT_BINARY)
+
+
+def test_dat_transport_votable_export_without_description():
+    """GP upload path: ``.dat`` with FILTER/MAG0 exports VOTable with no DESCRIPTION."""
+    dat = b"""# filter=V
+# JD0=2400000
+# jd mag mag_err label
+# mag0=20.0
+60821.47960 12.980 0.050 AA
+60822.38899 10.757 0.004 IN
+"""
+    volc = ingest_volightcurve_file(io.BytesIO(dat), "V_sorted.dat")
+    transport = pack_volc_to_json(volc)
+    lcd = curvedash_from_transport_json(transport, source_name="V_sorted.dat")
+    blob = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    assert b"filterIdentifier" in blob
 
 
 def test_curvedash_from_transport_json_flux_domain_exports():
@@ -175,6 +200,35 @@ def test_apply_prep_fold_ephemeris_empty_widgets_leave_ingest_values():
     apply_prep_fold_ephemeris(lcd, None, None, display_epoch=DEFAULT_EPOCH_JD)
     assert lcd.period == 1.23
     assert lcd.epoch == 2451234.5
+
+
+def test_replace_series_keeps_period_epoch_and_envelope():
+    """Detrended photometry replaces rows without dropping fold metadata."""
+    payload = _minimal_flux_packet(
+        [1.0, 1.1, 1.2],
+        [2450000.0, 2450001.0, 2450002.0],
+        labels=["a", "b", "c"],
+    )
+    packed = json.loads(payload)
+    packed["meta"]["period"] = 0.5
+    packed["meta"]["epoch"] = 2450000.25
+    packed["meta"]["vo_envelope"] = {"title": "keep-me"}
+    lcd = curvedash_from_transport_json(json.dumps(packed), source_name="t.dat")
+    apply_prep_fold_ephemeris(lcd, 0.41, 59883.0, display_epoch=DEFAULT_EPOCH_JD)
+    lcd.replace_series(
+        np.array([2450000.0, 2450002.0]),
+        np.array([0.99, 1.01]),
+        np.array([0.01, 0.01]),
+        domain="flux",
+    )
+    assert lcd.period == 0.41
+    assert lcd.epoch == 59883.0 + DEFAULT_EPOCH_JD
+    assert lcd.metadata.get("vo_envelope", {}).get("title") == "keep-me"
+    assert len(lcd.lightcurve) == 2
+    assert list(lcd.phot) == [0.99, 1.01]
+    assert list(lcd.label) == ["a", "c"]
+    text = export_curvedash(lcd, "ascii.ecsv").decode("utf-8")
+    assert "period: 0.41" in text
 
 
 def test_ecsv_export_includes_sidebar_period_and_epoch():

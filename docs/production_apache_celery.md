@@ -16,7 +16,7 @@ Three independent processes must be running:
 | Redis | Queue and result store for background jobs. | `systemctl` (`redis-server` or `redis`) |
 | Celery worker | Executes long-running Dash background callbacks. | `systemctl` (`celery-skvo-veb-2`) |
 
-Apache never runs the long jobs itself. It only enqueues them. If Redis or Celery is down, pages still load, but TESS downloads, Discovery search, and similar buttons hang or fail.
+Apache never runs the long jobs itself. It only enqueues them. If Redis or Celery is down, pages still load, but TESS retrieves, Discovery search, and similar buttons hang or fail.
 
 ```text
 Browser
@@ -64,6 +64,12 @@ REDIS_BROKER=redis://localhost:6379/0
 REDIS_BACKEND=redis://localhost:6379/1
 ```
 
+Required so Dash URLs match Apache `WSGIScriptAlias /igebc` (omit on a local `main.py` run):
+
+```text
+BEHIND_WSGI_ALIAS=true
+```
+
 Also required (typical):
 
 ```text
@@ -85,7 +91,7 @@ Local development uses a project `.env` with `USE_REDIS=false` and `DiskcacheMan
 
 ## 4. Why Redis and Celery (background callbacks)
 
-Dash callbacks marked `background=True` (TESS archive download/stitch, Lightcurve Discovery search and fetch, long GP fits) would otherwise run inside the Apache WSGI process. That would block a worker thread for tens of seconds and often hit Apache timeouts.
+Dash callbacks marked `background=True` (TESS archive retrieve/stitch, Lightcurve Discovery search and fetch, long GP fits) would otherwise run inside the Apache WSGI process. That would block a worker thread for tens of seconds and often hit Apache timeouts.
 
 `skvo_veb/config.py` selects the manager:
 
@@ -129,7 +135,10 @@ Important directives:
 - `WSGIDaemonProcess` with `python-home=/var/www/flask/skvo_veb_2/.venv`
 - `WSGIApplicationGroup %{GLOBAL}` : required for some scientific C extensions
 
-Dash must tell the browser that URLs start with `/igebc/`, while Flask routes stay at `/` because `WSGIScriptAlias` already strips the prefix. Use `requests_pathname_prefix='/igebc/'`. Do not set `url_base_pathname='/igebc/'` behind this Apache alias (that also changes internal routes and yields HTTP 404 with no Python traceback).
+Dash URL prefixes are selected in `Config.dash_pathname_kwargs()` from `BEHIND_WSGI_ALIAS`:
+
+- Production (this flag `true`): `requests_pathname_prefix='/igebc/'` only. Flask routes stay at `/` because `WSGIScriptAlias` already strips `/igebc`. Setting `url_base_pathname='/igebc/'` here yields HTTP 404 with no Python traceback.
+- Local `python main.py` (flag unset): `url_base_pathname='/igebc/'`. Open `http://localhost:8051/igebc/`.
 
 ### Reload versus restart
 

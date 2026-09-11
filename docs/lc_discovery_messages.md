@@ -13,7 +13,7 @@ This document defines **lifetimes** so messages do not outlive the action or dat
 |----------|---------|------------|
 | **Job** | Shown only while a background task runs | Task finishes (success, error, or cancel) |
 | **Result set** | Describes the current catalogue search | New search **completes** (Submit) |
-| **Last fetch** | Describes the last Download / reDownload on the Search tab | New search starts, or a new fetch attempt |
+| **Last fetch** | Describes the last Retrieve / Re-retrieve on the Search tab | New search starts, or a new fetch attempt |
 
 ---
 
@@ -61,7 +61,7 @@ Changing the **Data provider** radio does **not** clear this alert.
 
 - **Type:** Bootstrap alert (warning on fetch failure; success is not duplicated here).
 - **Lifetime:** **Last fetch** (errors only under the table).
-- **Appears:** Download / reDownload failures (missing row, mission mismatch, provider errors).
+- **Appears:** Retrieve / Re-retrieve failures (missing row, mission mismatch, provider errors).
 - **Hidden:** At Submit start, on successful catalogue search, and after a **successful** fetch (the UI switches to the Light curve tab; no persistent “switch tab” banner).
 
 Changing the **Data provider** radio does **not** clear fetch alerts; the next Submit clears them at job start.
@@ -100,4 +100,4 @@ Related code:
 - Submit: `submit_catalog_search` (replaces catalogue, columns, card, Aladin store, messages)
 - Fetch: `fetch_lc_discovery_lightcurve` (background)
 
-**Data provider** (`lc_discovery_mission_switch`) only selects which adapter the **next** Submit or Download uses. It does not reset the results panel.
+**Data provider** (`lc_discovery_mission_switch`) only selects which adapter the **next** Submit or Retrieve uses. It does not reset the results panel.

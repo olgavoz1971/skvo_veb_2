@@ -103,7 +103,7 @@ def download_lightcurve_row(search_result: lk.SearchResult, row_idx: int):
         lc = search_result[row_idx].download()
     except LightkurveError as exc:
         logger.warning('download_lightcurve_row failed for row %s: %s', row_idx, exc)
-        raise PipeException(f'Download failed for row {row_idx}: {exc}') from exc
+        raise PipeException(f'Retrieve failed for row {row_idx}: {exc}') from exc
 
     logger.info('[DOWNLOAD FITS] Success for row %s', row_idx)
     return lc

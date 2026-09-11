@@ -241,6 +241,8 @@ def export_smoothed_ascii(
     source_lc: str,
     cfg: RunningParabolaConfig,
     working_domain: str,
+    min_gap_d: float | None = None,
+    n_segments: int = 1,
 ) -> None:
     """Write smoothed points as a simple ``#``-commented ASCII table.
 
@@ -252,6 +254,9 @@ def export_smoothed_ascii(
         source_lc (str): Provenance label for the input LC.
         cfg (RunningParabolaConfig): Settings used for the run.
         working_domain (str): ``mag`` or ``flux``.
+        min_gap_d (float | None): Gap threshold used for independent segments,
+            or ``None`` if the series was not split.
+        n_segments (int): Number of independent segments processed.
 
     Returns:
         None.
@@ -260,6 +265,7 @@ def export_smoothed_ascii(
 
     out_path = Path(path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    gap_txt = "none" if min_gap_d is None else f"{float(min_gap_d)}"
     with out_path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write("# tool: running_parabola_spike\n")
         handle.write(f"# source_lc: {source_lc}\n")
@@ -268,6 +274,8 @@ def export_smoothed_ascii(
         handle.write(f"# step_d: {cfg.step_d}\n")
         handle.write(f"# use_weights: {cfg.use_weights}\n")
         handle.write(f"# min_points: {cfg.min_points}\n")
+        handle.write(f"# min_gap_d: {gap_txt}\n")
+        handle.write(f"# n_segments: {int(n_segments)}\n")
         handle.write("# columns: jd smooth curvature rms\n")
         handle.write("# jd smooth curvature rms\n")
         for pt in points:

@@ -296,6 +296,7 @@ def build_curvedash_scatter_figure(
     phot_description: str | None = None,
     selected_perm_indices=None,
     dragmode: str = 'zoom',
+    show_error_bars: bool = False,
 ):
     """Builds an interactive scatter figure for a CurveDash lightcurve.
 
@@ -315,6 +316,8 @@ def build_curvedash_scatter_figure(
             (e.g. cutout ``flux_correction`` text).
         selected_perm_indices: Optional iterable of ``perm_index`` values to highlight.
         dragmode (str): Plotly drag mode (``zoom``, ``lasso``, ``select``, etc.).
+        show_error_bars (bool): Draw ``phot_err`` when the figure is a single
+            trace (no sector colouring).
 
     Returns:
         plotly.graph_objects.Figure: Scatter figure ready for ``dcc.Graph``.
@@ -359,6 +362,17 @@ def build_curvedash_scatter_figure(
         mode='markers',
         marker=dict(size=4, symbol='circle'),
     )
+    if show_error_bars and not color_by_label and lcd.phot_err is not None:
+        fig.update_traces(
+            error_y=dict(
+                type='data',
+                array=np.asarray(lcd.phot_err, dtype=float),
+                visible=True,
+                thickness=1,
+                width=0,
+                color='rgba(100, 100, 100, 0.3)',
+            )
+        )
     if color_by_label:
         fig.update_layout(coloraxis_showscale=False)
     y_parts = [y_label]
@@ -419,6 +433,7 @@ def figure_from_serialized(
     phot_description: str | None = None,
     lc_metadata: dict | None = None,
     dragmode: str = 'zoom',
+    show_error_bars: bool = False,
 ):
     """Builds a scatter figure from a serialised ``CurveDash`` payload.
 
@@ -432,6 +447,7 @@ def figure_from_serialized(
         phot_description (str, optional): Extra y-axis descriptor text.
         lc_metadata (dict, optional): Cached axis range overrides.
         dragmode (str): Plotly drag mode for the graph.
+        show_error_bars (bool): Draw ``phot_err`` on a single-trace figure.
 
     Returns:
         plotly.graph_objects.Figure: Scatter figure ready for ``dcc.Graph``.
@@ -451,4 +467,5 @@ def figure_from_serialized(
         phot_description=phot_description,
         selected_perm_indices=selected_perm_indices,
         dragmode=dragmode,
+        show_error_bars=show_error_bars,
     )
