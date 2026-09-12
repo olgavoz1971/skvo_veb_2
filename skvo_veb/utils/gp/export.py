@@ -19,6 +19,12 @@ GP_TIMING_SUFFIX = "_gp"
 GP_TIMING_FALLBACK_STEM = "results_gp"
 LC_EXPORT_SUFFIX = "_lc"
 LC_EXPORT_FALLBACK_STEM = "lightcurve_lc"
+DETRENDED_EXPORT_SUFFIX = "_detrended"
+DETRENDED_EXPORT_FALLBACK_STEM = "lightcurve_detrended"
+INTERVALS_EXPORT_SUFFIX = "_int"
+INTERVALS_EXPORT_FALLBACK_STEM = "lightcurve_int"
+ROUGH_TOMS_EXPORT_SUFFIX = "_rough_toms"
+ROUGH_TOMS_EXPORT_FALLBACK_STEM = "lightcurve_rough_toms"
 
 
 def export_stem_from_upload_filename(filename: str | None) -> str:
@@ -51,6 +57,85 @@ def suggested_lc_export_stem(filename: str | None) -> str:
     if base.lower().endswith(LC_EXPORT_SUFFIX):
         return base
     return f"{base}{LC_EXPORT_SUFFIX}"
+
+
+def _stem_from_lc_field(stem: str | None, suffix: str, fallback: str) -> str:
+    """Strips a trailing ``_lc`` and applies an export suffix.
+
+    Args:
+        stem (str | None): Working-curve stem, typically ending in ``_lc``.
+        suffix (str): Product suffix, including the leading underscore.
+        fallback (str): Stem used when the field is empty.
+
+    Returns:
+        str: ``{base}{suffix}``, without a duplicated suffix.
+    """
+    base = (stem or "").strip()
+    if base.lower().endswith(LC_EXPORT_SUFFIX):
+        base = base[: -len(LC_EXPORT_SUFFIX)]
+    if not base:
+        return fallback
+    if base.lower().endswith(suffix):
+        return base
+    return f"{base}{suffix}"
+
+
+def suggested_detrended_export_stem(stem: str | None) -> str:
+    """Builds the detrended export stem from the shared ``_lc`` field.
+
+    Args:
+        stem (str | None): Working-curve stem, typically ending in ``_lc``.
+
+    Returns:
+        str: ``{base}_detrended``, without a duplicated ``_lc`` or suffix.
+    """
+    return _stem_from_lc_field(
+        stem, DETRENDED_EXPORT_SUFFIX, DETRENDED_EXPORT_FALLBACK_STEM
+    )
+
+
+def suggested_intervals_export_stem(stem: str | None) -> str:
+    """Builds the intervals export stem from the shared ``_lc`` field.
+
+    Args:
+        stem (str | None): Working-curve stem, typically ending in ``_lc``.
+
+    Returns:
+        str: ``{base}_int``, without a duplicated ``_lc`` or suffix.
+    """
+    return _stem_from_lc_field(
+        stem, INTERVALS_EXPORT_SUFFIX, INTERVALS_EXPORT_FALLBACK_STEM
+    )
+
+
+def suggested_rough_toms_export_stem(stem: str | None) -> str:
+    """Builds the rough-timing export stem from the shared ``_lc`` field.
+
+    Args:
+        stem (str | None): Working-curve stem, typically ending in ``_lc``.
+
+    Returns:
+        str: ``{base}_rough_toms``, without a duplicated ``_lc`` or suffix.
+    """
+    return _stem_from_lc_field(
+        stem, ROUGH_TOMS_EXPORT_SUFFIX, ROUGH_TOMS_EXPORT_FALLBACK_STEM
+    )
+
+
+def rough_toms_export_download_name(stem: str | None) -> str:
+    """Resolves a browser download filename for a rough ToM export.
+
+    Args:
+        stem (str | None): User-entered basename (extension omitted in the UI).
+
+    Returns:
+        str: Sanitised filename ending in ``.dat`` when the stem has no extension.
+    """
+    raw = (stem or "").strip() or ROUGH_TOMS_EXPORT_FALLBACK_STEM
+    safe = sanitize_filename(raw) or ROUGH_TOMS_EXPORT_FALLBACK_STEM
+    if "." in safe:
+        return safe
+    return f"{safe}.{GP_INTERVALS_EXPORT_EXTENSION}"
 
 
 def gp_suggested_timing_stem(lc_filename: str | None) -> str:

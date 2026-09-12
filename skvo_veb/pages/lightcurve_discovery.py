@@ -83,7 +83,7 @@ register_page(
     name='Lightcurve Discovery',
     order=3,
     path='/lc_discovery',
-    title='IGEBC: Lightcurve Discovery',
+    title='Lightcurve Discovery',
     in_navbar=True,
 )
 
@@ -626,9 +626,10 @@ def _search_results_panel():
                                             'pagination': False,
                                             # 'paginationPageSize': 10,
                                             'domLayout': 'normal',
-                                            'suppressHorizontalScroll': False,
+                                            # 'suppressHorizontalScroll': False,
                                             # 'alwaysShowHorizontalScroll': True,
-                                            'enableCellTextSelection': True,
+                                            # 'enableCellTextSelection': True,
+                                            # "cellSelection": True,
                                             'ensureDomOrder': True,
                                             'getRowId': {
                                                 'function': 'params.data.lc_key'

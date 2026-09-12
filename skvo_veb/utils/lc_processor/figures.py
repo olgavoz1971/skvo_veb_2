@@ -12,8 +12,6 @@ import re
 
 import numpy as np
 import plotly.graph_objects as go
-from plotly.colors import qualitative
-
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, TIME_AXIS_MJD, normalize_time_axis_mode
 from skvo_veb.utils.lc_figure import (
     absolute_jd_to_plot_x,
@@ -21,17 +19,30 @@ from skvo_veb.utils.lc_figure import (
     time_axis_xaxis_title,
 )
 from skvo_veb.utils.lc_interaction import apply_selectedpoints_to_figure, plot_x_to_jd
+from skvo_veb.utils.lc_processor.view import point_label_name
 
 logger = logging.getLogger(__name__)
 
 PLOT_TOOL_OFF = "off"
 PLOT_TOOL_ADD = "add"
 PLOT_TOOL_DELETE = "delete"
+PLOT_TOOL_ADD_EXT = "add_ext"
+PLOT_TOOL_DELETE_EXT = "delete_ext"
 DELETE_KNOT_HIT_FRAC = 0.02
 _SHAPE_X0_RE = re.compile(r"^shapes\[(\d+)\]\.x0$")
 
 # Observed scatter: size 4, opacity 0.7 (same numbers as the GP prep plot).
 _PHOT_MARKER = dict(size=4, color="blue", opacity=0.7, line=dict(width=0.5, color="White"))
+# Rough-extrema marks on plot 1. Edit symbol / colour / size here.
+# No outline: a white hairline washes the fill out. Opacity stays 1 so
+# Plotly selection-dimming does not turn them grey.
+EXTREMA_MARKER = dict(
+    symbol="diamond",
+    size=9,
+    # color="#ff8c00",
+    color="lightgreen",
+    opacity=1.0,
+)
 _ERROR_STYLE = dict(
     type="data",
     visible=True,
@@ -39,8 +50,38 @@ _ERROR_STYLE = dict(
     width=0,
     color="rgba(100, 100, 100, 0.3)",
 )
-_LABEL_COLORS = qualitative.Plotly
-_UNMARKED_LABEL_NAMES = frozenset({"", "none", "nan", "null", "<na>", "nat"})
+# _LABEL_COLORS = qualitative.Plotly    # pale shades
+# _LABEL_COLORS = qualitative.D3        # stronger contrast
+# _LABEL_COLORS = qualitative.Dark24    # 24 distinct colours
+# _LABEL_COLORS = qualitative.Safe      # colour-blind safer
+# _LABEL_COLORS = qualitative.Bold
+# handmade schema:
+# Multi-label photometry. Plotly qualitative sets are either short (then they
+# wrap) or neighbouring hues look the same. Edit this list; order is the
+# assignment order. It wraps only after the last colour.
+_LABEL_COLORS = [
+    "#d62728",  # red
+    "#1f77b4",  # blue
+    "#2ca02c",  # green
+    "#ff7f0e",  # orange
+    "#9467bd",  # purple
+    "#17becf",  # cyan
+    "#8c564b",  # brown
+    "#e377c2",  # magenta
+    "#bcbd22",  # yellow-green
+    "#000000",  # black
+    "#7b3294",  # violet
+    "#008837",  # forest
+    "#e31a1c",  # scarlet
+    "#1a1a8c",  # navy
+    "#ffd92f",  # gold
+    "#a65628",  # rust
+    "#66c2a5",  # teal
+    "#fc8d62",  # coral
+    "#8da0cb",  # periwinkle
+    "#e78ac3",  # pink
+]
+
 _PLOT_FONT = dict(
     family=(
         'Open Sans, -apple-system, BlinkMacSystemFont, "Segoe UI", '
@@ -75,6 +116,29 @@ def graph_config(*, plot_tool: str = PLOT_TOOL_OFF, method: str | None = None) -
     return config
 
 
+def residual_graph_config(*, tilt_on: bool = False) -> dict:
+    """Returns the Plotly config for plot 2.
+
+    Matches the GP prep-plot trend config: shape handles only, no
+    whole-graph ``editable``.
+
+    Args:
+        tilt_on (bool): When ``True``, the local-tilt line can be dragged.
+
+    Returns:
+        dict: ``dcc.Graph`` config (logo off, scroll zoom on).
+    """
+    return {
+        "displaylogo": False,
+        "scrollZoom": True,
+        "doubleClick": False,
+        "edits": {"shapePosition": bool(tilt_on)},
+        "modeBarButtonsToRemove": (
+            ["zoomIn2d", "zoomOut2d", "lasso2d"] if tilt_on else ["lasso2d"]
+        ),
+    }
+
+
 def _jd_to_plot_x(jd_values, time_axis_mode: str, display_epoch: float):
     """Maps absolute Julian Dates onto the plot x-axis.
 
@@ -106,31 +170,6 @@ def _error_y(obs_err: np.ndarray | None, show_errors: bool) -> dict | None:
     if not np.any(np.isfinite(err_arr) & (err_arr > 0)):
         return None
     return {**_ERROR_STYLE, "array": err_arr}
-
-
-def _point_label_name(value) -> str | None:
-    """Returns a legend name for one label cell, or ``None`` if unmarked.
-
-    Args:
-        value: Raw label cell from the light-curve table.
-
-    Returns:
-        str | None: Display name, or ``None`` to leave the point unlabelled.
-    """
-    if value is None:
-        return None
-    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
-        return None
-    text = str(value).strip()
-    if not text or text.lower() in _UNMARKED_LABEL_NAMES:
-        return None
-    try:
-        as_float = float(text)
-    except (TypeError, ValueError):
-        return text
-    if np.isfinite(as_float) and as_float.is_integer():
-        return str(int(as_float))
-    return text
 
 
 def _legend_sort_key(name: str) -> tuple:
@@ -233,7 +272,7 @@ def _add_photometry_traces(
             raise ValueError(
                 f"label length {raw.size} does not match photometry length {n}"
             )
-        names = np.array([_point_label_name(v) for v in raw], dtype=object)
+        names = np.array([point_label_name(v) for v in raw], dtype=object)
     marked = sorted({name for name in names if name is not None}, key=_legend_sort_key)
 
     def _add_group(mask: np.ndarray, color: str, name: str, in_legend: bool) -> None:
@@ -491,6 +530,81 @@ def knot_layout_shapes(
     return shapes
 
 
+def trend_xy_with_gap_breaks(
+    times: np.ndarray,
+    trend: np.ndarray,
+    break_tolerance: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Inserts a ``NaN`` vertex wherever consecutive JD exceeds the gap.
+
+    Works only on absolute JD and \(T\). Display \(x\) is mapped afterwards
+    so a Date axis never enters this helper.
+
+    Args:
+        times (numpy.ndarray): Absolute JD.
+        trend (numpy.ndarray): ``T(t_i)`` aligned with ``times``.
+        break_tolerance (float | None): Gap length in days. ``None`` leaves
+            the series unchanged.
+
+    Returns:
+        tuple: Possibly longer ``(jd, T)`` arrays with ``NaN`` breaks.
+    """
+    jd = np.asarray(times, dtype=float)
+    y_line = np.asarray(trend, dtype=float)
+    if (
+        break_tolerance is None
+        or jd.size < 2
+        or y_line.size != jd.size
+    ):
+        return jd, y_line
+    xs: list[float] = [float(jd[0])]
+    ys: list[float] = [float(y_line[0])]
+    gap = float(break_tolerance)
+    for i in range(1, jd.size):
+        if float(jd[i] - jd[i - 1]) > gap:
+            xs.append(np.nan)
+            ys.append(np.nan)
+        xs.append(float(jd[i]))
+        ys.append(float(y_line[i]))
+    return np.asarray(xs, dtype=float), np.asarray(ys, dtype=float)
+
+
+def _plot_x_keeping_nans(times_jd, time_axis_mode: str, display_epoch: float):
+    """Maps a JD series with ``NaN`` breaks onto plot \(x\).
+
+    Finite samples are converted with ``_jd_to_plot_x``. ``NaN`` stays a
+    break (``None``) so Date-axis datetimes are never cast to float.
+
+    Args:
+        times_jd: Absolute JD, possibly with ``NaN`` gap vertices.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        display_epoch (float): MJD origin when the axis is MJD.
+
+    Returns:
+        Plot x values aligned with ``times_jd``.
+    """
+    jd = np.asarray(times_jd, dtype=float)
+    if jd.size == 0 or np.all(np.isfinite(jd)):
+        return _jd_to_plot_x(jd, time_axis_mode, display_epoch)
+    x: list = [None] * int(jd.size)
+    finite = np.isfinite(jd)
+    mapped = _jd_to_plot_x(jd[finite], time_axis_mode, display_epoch)
+    if mapped is None:
+        return x
+    if np.isscalar(mapped):
+        values = [mapped]
+    elif isinstance(mapped, np.ndarray) and mapped.shape == ():
+        values = [mapped.item()]
+    else:
+        values = list(mapped)
+    cursor = 0
+    for i, is_finite in enumerate(finite):
+        if is_finite:
+            x[i] = values[cursor]
+            cursor += 1
+    return x
+
+
 def figure_raw_with_trend(
     times: np.ndarray | None,
     observed: np.ndarray | None,
@@ -510,10 +624,14 @@ def figure_raw_with_trend(
     source_index: np.ndarray | None = None,
     selected_perm_indices=None,
     time_axis_mode: str = TIME_AXIS_MJD,
+    break_tolerance: float | None = None,
+    extrema_jd: np.ndarray | None = None,
+    extrema_y: np.ndarray | None = None,
 ) -> go.Figure:
     """Builds the observed (plus optional trend) figure.
 
-    ``times`` and ``knots`` remain absolute JD.
+    ``times`` and ``knots`` remain absolute JD. The trend line is broken
+    where consecutive times exceed ``break_tolerance``.
 
     Args:
         times (numpy.ndarray | None): Observation times (absolute JD).
@@ -533,6 +651,10 @@ def figure_raw_with_trend(
         source_index (numpy.ndarray | None): Permanent indices for clicks.
         selected_perm_indices: Permanent indices marked ``selected=1``.
         time_axis_mode (str): ``mjd`` or ``date``.
+        break_tolerance (float | None): Fit gap (days); ``None`` does not
+            insert extra line breaks.
+        extrema_jd (numpy.ndarray | None): Rough-extremum times (absolute JD).
+        extrema_y (numpy.ndarray | None): Overlay photometry at those times.
 
     Returns:
         plotly.graph_objects.Figure: Working photometry plot.
@@ -562,15 +684,41 @@ def figure_raw_with_trend(
         default_name="observed",
     )
     if trend is not None:
+        t_trend, y_trend = trend_xy_with_gap_breaks(times, trend, break_tolerance)
+        x_trend = _plot_x_keeping_nans(t_trend, axis, display_epoch)
         fig.add_trace(
             go.Scattergl(
-                x=x_plot,
-                y=np.asarray(trend, dtype=float),
+                x=x_trend,
+                y=y_trend,
                 mode="lines",
                 showlegend=False,
                 name="trend",
                 hoverinfo="skip",
                 line=dict(color="#c92a2a", width=2),
+            )
+        )
+    if (
+        extrema_jd is not None
+        and extrema_y is not None
+        and int(np.asarray(extrema_jd).size) > 0
+    ):
+        # Last Scattergl trace so the marks sit on top of photometry and
+        # the trend (SVG Scatter would render under WebGL observations).
+        ext_jd = np.asarray(extrema_jd, dtype=float)
+        ext_y = np.asarray(extrema_y, dtype=float)
+        fig.add_trace(
+            go.Scattergl(
+                x=_jd_to_plot_x(ext_jd, axis, display_epoch),
+                y=ext_y,
+                mode="markers",
+                showlegend=False,
+                name="rough extrema",
+                hovertemplate="MJD=%{customdata:.8f}<extra></extra>",
+                customdata=ext_jd - float(display_epoch),
+                marker=dict(EXTREMA_MARKER),
+                hoverlabel=dict(bgcolor="white", font=dict(color="#000")),
+                selected=dict(marker=dict(opacity=1.0)),
+                unselected=dict(marker=dict(opacity=1.0)),
             )
         )
     shapes = knot_layout_shapes(
@@ -595,4 +743,95 @@ def figure_raw_with_trend(
     apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=axis)
     _apply_y_axis_direction(fig, invert_y=invert_y)
     apply_selectedpoints_to_figure(fig, selected_perm_indices)
+    return fig
+
+
+def figure_detrended(
+    times: np.ndarray | None,
+    residual: np.ndarray | None,
+    residual_err: np.ndarray | None,
+    *,
+    y_label: str,
+    invert_y: bool,
+    show_errors: bool,
+    uirevision: str,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+    timescale: str | None = None,
+    refposition: str | None = None,
+    labels=None,
+    source_index: np.ndarray | None = None,
+    time_axis_mode: str = TIME_AXIS_MJD,
+    x_range_jd: tuple[float, float] | None = None,
+) -> go.Figure:
+    """Builds the residual figure after Apply detrend.
+
+    ``times`` remains absolute JD. A dashed null line sits at 0 in
+    magnitude and at 1 in flux.
+
+    Args:
+        times (numpy.ndarray | None): Observation times (absolute JD).
+        residual (numpy.ndarray | None): Detrended photometry.
+        residual_err (numpy.ndarray | None): Residual uncertainties.
+        y_label (str): Y-axis label.
+        invert_y (bool): Invert the y-axis for magnitudes only.
+        show_errors (bool): Draw error bars when uncertainties exist.
+        uirevision (str): Plotly ``uirevision``.
+        display_epoch (float): MJD display origin.
+        timescale (str | None): TIMESYS timescale for the axis suffix.
+        refposition (str | None): TIMESYS refposition for the axis suffix.
+        labels: Optional per-point group labels.
+        source_index (numpy.ndarray | None): Permanent indices for clicks.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        x_range_jd (tuple | None): Absolute-JD axis limits (Use visible
+            range). ``None`` leaves Plotly ``uirevision`` to keep zoom.
+
+    Returns:
+        plotly.graph_objects.Figure: Residual scatter, or an empty frame.
+    """
+    axis = normalize_time_axis_mode(time_axis_mode)
+    xaxis_title = time_axis_xaxis_title(axis, timescale, refposition)
+    if times is None or residual is None:
+        return empty_figure(
+            xaxis_title=xaxis_title,
+            yaxis_title=y_label,
+            invert_y=invert_y,
+            uirevision=uirevision,
+            time_axis_mode=axis,
+        )
+
+    fig = go.Figure()
+    show_legend = _add_photometry_traces(
+        fig,
+        _jd_to_plot_x(times, axis, display_epoch),
+        np.asarray(residual, dtype=float),
+        residual_err,
+        labels=labels,
+        source_index=source_index,
+        show_errors=show_errors,
+        default_name="detrended",
+    )
+    fig.update_layout(
+        xaxis_title=xaxis_title,
+        yaxis_title=y_label,
+        template="plotly_white",
+        font=_PLOT_FONT,
+        margin=_PLOT_MARGIN,
+        uirevision=uirevision,
+        dragmode="zoom",
+        hovermode="closest",
+    )
+    _apply_label_legend(fig, show=show_legend)
+    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=axis)
+    _apply_y_axis_direction(fig, invert_y=invert_y)
+    fig.add_hline(
+        y=0.0 if invert_y else 1.0,
+        line_dash="dash",
+        line_color="grey",
+        line_width=1,
+    )
+    if x_range_jd is not None:
+        x0, x1 = _jd_to_plot_x(
+            np.asarray(x_range_jd, dtype=float), axis, display_epoch
+        )
+        fig.update_xaxes(range=[x0, x1], autorange=False)
     return fig

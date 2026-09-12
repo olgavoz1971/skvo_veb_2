@@ -15,6 +15,12 @@ from astropy.stats import biweight_location
 from scipy.interpolate import BSpline, LSQUnivariateSpline, UnivariateSpline
 from scipy.signal import savgol_filter
 
+from skvo_veb.utils.lc_processor.running_parabola import (
+    RunningParabolaConfig,
+    evaluate_at_centre,
+    smooth_running_parabola,
+)
+
 logger = logging.getLogger(__name__)
 
 DetrendMode = Literal["mag", "flux"]
@@ -26,6 +32,7 @@ MethodId = Literal[
     "spline_smooth",
     "spline_lsq",
     "pspline",
+    "running_parabola",
 ]
 
 METHOD_LABELS: dict[str, str] = {
@@ -36,6 +43,7 @@ METHOD_LABELS: dict[str, str] = {
     "spline_smooth": "Smoothing spline",
     "spline_lsq": "Least-squares spline",
     "pspline": "P-spline",
+    "running_parabola": "Running parabola",
 }
 
 
@@ -62,7 +70,8 @@ def detrend_observed(
     if mode == "mag":
         return observed - trend
     if mode == "flux":
-        if np.any(trend <= 0):
+        finite = np.isfinite(trend)
+        if np.any(finite & (trend <= 0)):
             raise ValueError("flux trend must be strictly positive for division")
         return observed / trend
     raise ValueError(f"mode must be 'mag' or 'flux', got {mode!r}")
@@ -156,6 +165,100 @@ def resolve_break_tolerance(split_on_gaps: bool, break_tolerance: float) -> floa
     if break_tolerance <= 0.0:
         raise ValueError("break tolerance must be a positive number of days")
     return float(break_tolerance)
+
+
+def fill_detrend_trend(
+    times: np.ndarray,
+    values: np.ndarray,
+    trend: np.ndarray,
+    *,
+    break_tolerance: float | None,
+    max_interp_span: float | None = None,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Fills missing trend samples so every point can be detrended.
+
+    Work is per gap-split piece. A piece that already has finite ``T``
+    fills holes from the nearest finite ``T`` in that piece. An interior
+    hole with finite ``T`` on both sides uses a linear interpolant of
+    ``T`` when those two samples are at most ``max_interp_span`` days
+    apart. A piece with no finite ``T`` uses the piece photometry median.
+    Neighbouring nights are never used.
+
+    Args:
+        times (numpy.ndarray): Absolute JD.
+        values (numpy.ndarray): Photometry aligned with ``times``.
+        trend (numpy.ndarray): Overlay ``T``; holes are non-finite.
+        break_tolerance (float | None): Gap used for the last smooth.
+        max_interp_span (float | None): Maximum ``T`` interpolant span
+            (days). ``None`` means nearest only.
+
+    Returns:
+        tuple: Filled trend and counts ``nearest``, ``interp``, ``median``.
+
+    Raises:
+        ValueError: If a piece has no usable photometry median.
+    """
+    times = np.asarray(times, dtype=float)
+    values = np.asarray(values, dtype=float)
+    filled = np.asarray(trend, dtype=float).copy()
+    n = int(times.size)
+    if filled.size != n or values.size != n:
+        raise ValueError("Trend, photometry, and time arrays must have equal length.")
+    counts = {"nearest": 0, "interp": 0, "median": 0}
+    if n == 0:
+        return filled, counts
+    order = np.argsort(times)
+    t_sorted = times[order]
+    y_sorted = values[order]
+    trend_sorted = filled[order]
+    for lo, hi in contiguous_segment_bounds(t_sorted, break_tolerance):
+        piece = trend_sorted[lo:hi]
+        y_piece = y_sorted[lo:hi]
+        t_piece = t_sorted[lo:hi]
+        good = np.flatnonzero(np.isfinite(piece))
+        if good.size == 0:
+            median = float(np.nanmedian(y_piece))
+            if not np.isfinite(median):
+                raise ValueError(
+                    "Detrend cannot fill a piece with no finite photometry."
+                )
+            piece[:] = median
+            counts["median"] += int(hi - lo)
+            continue
+        holes = np.flatnonzero(~np.isfinite(piece))
+        t_good = t_piece[good]
+        y_good = piece[good]
+        for hole in holes:
+            t_i = float(t_piece[hole])
+            right = int(np.searchsorted(t_good, t_i, side="left"))
+            left = right - 1
+            has_left = left >= 0
+            has_right = right < t_good.size
+            if has_left and has_right:
+                span = float(t_good[right] - t_good[left])
+                if (
+                    max_interp_span is not None
+                    and span > 0.0
+                    and span <= float(max_interp_span)
+                ):
+                    weight = (t_i - float(t_good[left])) / span
+                    piece[hole] = float(y_good[left]) + weight * (
+                        float(y_good[right]) - float(y_good[left])
+                    )
+                    counts["interp"] += 1
+                    continue
+            if has_left and has_right:
+                use_left = (t_i - float(t_good[left])) <= (
+                    float(t_good[right]) - t_i
+                )
+                piece[hole] = float(y_good[left] if use_left else y_good[right])
+            elif has_left:
+                piece[hole] = float(y_good[left])
+            else:
+                piece[hole] = float(y_good[right])
+            counts["nearest"] += 1
+    filled[order] = trend_sorted
+    return filled, counts
 
 
 def _lightkurve_break_multiplier(
@@ -908,6 +1011,199 @@ def p_spline_trend(
     return trend
 
 
+def running_parabola_trend(
+    times: np.ndarray,
+    values: np.ndarray,
+    values_err: np.ndarray | None,
+    *,
+    window_width_d: float,
+    step_d: float,
+    min_points: int,
+    use_weights: bool,
+    break_tolerance: float | None,
+) -> np.ndarray:
+    """Returns the running-parabola trend at the observation times.
+
+    The native product is ``a`` at each two-sided window centre. ``T(t_i)``
+    is the linear interpolant of neighbouring centres only when they are
+    at most one window apart. Other observations are evaluated as a
+    parabola centred on that time, or left ``NaN`` if the local window is
+    sparse or one-sided. A night shorter than the window is not discarded:
+    those points still try a local evaluation. The user is told only when
+    no point can be fitted.
+
+    Args:
+        times (numpy.ndarray): Observation times (absolute JD).
+        values (numpy.ndarray): Photometry in the working domain.
+        values_err (numpy.ndarray | None): Uncertainties, or ``None``.
+        window_width_d (float): Full window width (days).
+        step_d (float): Centre-grid step (days).
+        min_points (int): Minimum in-window points for a fit.
+        use_weights (bool): Inverse-variance weights from errors.
+        break_tolerance (float | None): Gap split in days, or ``None``.
+
+    Returns:
+        numpy.ndarray: Trend ``T(t_i)`` aligned with ``times``.
+
+    Raises:
+        ValueError: If a required geometry parameter is invalid, or every
+            segment fails to produce a fit.
+    """
+    times = np.asarray(times, dtype=float)
+    values = np.asarray(values, dtype=float)
+    n = int(times.size)
+    if values_err is None:
+        err = np.full(n, np.nan, dtype=float)
+    else:
+        err = np.asarray(values_err, dtype=float)
+        if err.size != n:
+            raise ValueError(
+                f"error length {err.size} does not match photometry length {n}"
+            )
+    cfg = RunningParabolaConfig(
+        window_width_d=float(window_width_d),
+        step_d=float(step_d),
+        min_points=int(min_points),
+        use_weights=bool(use_weights),
+    )
+    order = np.argsort(times)
+    t_sorted = times[order]
+    y_sorted = values[order]
+    e_sorted = err[order]
+    trend_sorted = np.empty(n, dtype=float)
+    for lo, hi in contiguous_segment_bounds(t_sorted, break_tolerance):
+        t_seg = t_sorted[lo:hi]
+        y_seg = y_sorted[lo:hi]
+        e_seg = e_sorted[lo:hi]
+        trend_sorted[lo:hi] = _running_parabola_on_segment(t_seg, y_seg, e_seg, cfg)
+    n_ok = int(np.count_nonzero(np.isfinite(trend_sorted)))
+    n_skip = n - n_ok
+    if n_ok == 0:
+        raise ValueError(
+            "Running parabola produced no successful fits "
+            f"({n} point(s) skipped)."
+        )
+    if n_skip:
+        logger.warning(
+            "Running parabola skipped %s of %s observation(s) "
+            "(sparse window or short segment)",
+            n_skip,
+            n,
+        )
+    trend = np.empty(n, dtype=float)
+    trend[order] = trend_sorted
+    return trend
+
+
+def _interp_centres_within_window(
+    t_obs: np.ndarray,
+    t_c: np.ndarray,
+    y_c: np.ndarray,
+    window_width_d: float,
+) -> np.ndarray:
+    """Linearly interpolates ``T`` only between centres at most one window apart.
+
+    A single centre is not broadcast. A hole larger than the window stays
+    ``NaN``.
+
+    Args:
+        t_obs (numpy.ndarray): Observation times (absolute JD).
+        t_c (numpy.ndarray): Successful window centres, sorted.
+        y_c (numpy.ndarray): Parabola value ``a`` at each centre.
+        window_width_d (float): Full window width (days).
+
+    Returns:
+        numpy.ndarray: Trend at ``t_obs``; ``NaN`` where no close pair applies.
+    """
+    trend = np.full(t_obs.shape, np.nan, dtype=float)
+    if t_c.size < 2:
+        return trend
+    t_obs = np.asarray(t_obs, dtype=float)
+    for left, right in zip(range(t_c.size - 1), range(1, t_c.size)):
+        dt_c = float(t_c[right] - t_c[left])
+        if dt_c <= 0.0 or dt_c > float(window_width_d):
+            continue
+        mask = (t_obs >= t_c[left]) & (t_obs <= t_c[right])
+        if not np.any(mask):
+            continue
+        weight = (t_obs[mask] - t_c[left]) / dt_c
+        trend[mask] = y_c[left] + weight * (y_c[right] - y_c[left])
+    return trend
+
+
+def _running_parabola_on_segment(
+    t_seg: np.ndarray,
+    y_seg: np.ndarray,
+    e_seg: np.ndarray,
+    cfg: RunningParabolaConfig,
+) -> np.ndarray:
+    """Fits one contiguous segment and returns ``T(t)`` on its samples.
+
+    Window centres are optional. A night shorter than the window still
+    tries a local evaluation at each observation. ``a`` is never painted
+    onto the whole piece.
+
+    Args:
+        t_seg (numpy.ndarray): Sorted segment times (absolute JD).
+        y_seg (numpy.ndarray): Segment photometry.
+        e_seg (numpy.ndarray): Segment uncertainties.
+        cfg (RunningParabolaConfig): Window, step, and weight settings.
+
+    Returns:
+        numpy.ndarray: Segment trend.
+
+    Raises:
+        ValueError: Not raised for sparse or one-sided windows; those stay
+            ``NaN``.
+    """
+    n_seg = int(t_seg.size)
+    if n_seg == 0:
+        return np.asarray([], dtype=float)
+    trend_seg = np.full(n_seg, np.nan, dtype=float)
+    if n_seg < cfg.min_points:
+        logger.warning(
+            "Running parabola: skipping segment of %s point(s) "
+            "(need at least %s)",
+            n_seg,
+            cfg.min_points,
+        )
+        return trend_seg
+    t_c = np.asarray([], dtype=float)
+    y_c = np.asarray([], dtype=float)
+    try:
+        points = smooth_running_parabola(t_seg, y_seg, e_seg, cfg=cfg)
+    except ValueError as exc:
+        logger.warning(
+            "Running parabola: no centre-grid on %s point(s): %s",
+            n_seg,
+            exc,
+        )
+    else:
+        t_c = np.asarray([pt.jd for pt in points], dtype=float)
+        y_c = np.asarray([pt.smooth for pt in points], dtype=float)
+        order_c = np.argsort(t_c)
+        t_c = t_c[order_c]
+        y_c = y_c[order_c]
+        trend_seg = _interp_centres_within_window(
+            t_seg, t_c, y_c, cfg.window_width_d
+        )
+    missing = np.flatnonzero(~np.isfinite(trend_seg))
+    for idx in missing:
+        t_i = float(t_seg[idx])
+        try:
+            trend_seg[idx] = evaluate_at_centre(
+                t_seg, y_seg, e_seg, t_i, cfg=cfg
+            )
+        except ValueError as exc:
+            logger.debug(
+                "Running parabola: skipping JD %.8f: %s",
+                t_i,
+                exc,
+            )
+            trend_seg[idx] = np.nan
+    return trend_seg
+
+
 def p_spline_interior_knots(times: np.ndarray, n_segments: int) -> np.ndarray:
     """Return the equispaced interior knots implied by a P-spline segment count.
 
@@ -943,6 +1239,10 @@ def apply_smooth_method(
     knots: np.ndarray,
     penalty_lambda: float,
     n_segments: int,
+    rp_window_days: float = 0.05,
+    rp_step_days: float = 0.0125,
+    rp_min_points: int = 5,
+    rp_use_weights: bool = False,
 ) -> np.ndarray:
     """Fits one smoother and returns the trend at the observation times.
 
@@ -962,6 +1262,10 @@ def apply_smooth_method(
         knots (numpy.ndarray): Interior knots for the LSQ spline.
         penalty_lambda (float): P-spline roughness penalty.
         n_segments (int): P-spline segment count.
+        rp_window_days (float): Running-parabola window (days).
+        rp_step_days (float): Running-parabola centre step (days).
+        rp_min_points (int): Minimum in-window points.
+        rp_use_weights (bool): Inverse-variance weights.
 
     Returns:
         numpy.ndarray: Trend ``T(t_i)``.
@@ -990,6 +1294,17 @@ def apply_smooth_method(
         trend = lsq_spline_trend(times, values, knots, break_tolerance)
     elif method_id == "pspline":
         trend = p_spline_trend(times, values, penalty_lambda, n_segments)
+    elif method_id == "running_parabola":
+        trend = running_parabola_trend(
+            times,
+            values,
+            values_err,
+            window_width_d=rp_window_days,
+            step_d=rp_step_days,
+            min_points=rp_min_points,
+            use_weights=rp_use_weights,
+            break_tolerance=break_tolerance,
+        )
     else:
         raise ValueError(f"unknown smooth method {method!r}")
     logger.info("Fitted %s smooth on %s points", method_id, len(times))

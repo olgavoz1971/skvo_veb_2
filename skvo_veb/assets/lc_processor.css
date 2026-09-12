@@ -233,12 +233,11 @@
     gap: var(--lcp-space-xs);
 }
 
-.lcp-export-feedback:empty {
-    display: none;
-}
-
-.lcp-export-feedback .alert {
-    margin-bottom: 0;
+.lcp-sidebar-btn-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--lcp-space-xs);
 }
 
 .lcp-plot-toolbar {
@@ -256,12 +255,27 @@
     gap: var(--lcp-space-xs);
 }
 
-.lcp-plot-alert:empty {
+.lcp-plot-column {
+    position: relative;
+}
+
+.lcp-plot-alert:empty,
+.lcp-plot-alert:not(:has(.show)) {
     display: none;
 }
 
 .lcp-plot-alert {
-    flex: 1 1 100%;
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 5;
+    max-width: min(32rem, 72%);
+    pointer-events: none;
+}
+
+.lcp-plot-alert .alert {
+    margin-bottom: 0;
+    pointer-events: auto;
 }
 
 .lcp-export-sublabel {
@@ -274,14 +288,6 @@
     display: none;
 }
 
-.lcp-apply-feedback:empty {
-    display: none;
-}
-
-.lcp-apply-feedback .alert {
-    margin-bottom: 0;
-}
-
 .lcp-graph-shell {
     display: block;
 }
@@ -291,6 +297,22 @@
 .lcp-delete-mode .js-plotly-plot .cursor-pointer,
 .lcp-delete-mode .js-plotly-plot .cursor-crosshair {
     cursor: pointer !important;
+}
+
+.js-plotly-plot.lcp-extrema-pick,
+.js-plotly-plot.lcp-extrema-pick .plotly,
+.js-plotly-plot.lcp-extrema-pick .cursor-pointer,
+.js-plotly-plot.lcp-extrema-pick .cursor-crosshair,
+.js-plotly-plot.lcp-extrema-pick .nsewdrag {
+    cursor: crosshair !important;
+}
+
+.js-plotly-plot.lcp-tilt-mode,
+.js-plotly-plot.lcp-tilt-mode .plotly,
+.js-plotly-plot.lcp-tilt-mode .cursor-pointer,
+.js-plotly-plot.lcp-tilt-mode .cursor-crosshair,
+.js-plotly-plot.lcp-tilt-mode .nsewdrag {
+    cursor: crosshair !important;
 }
 
 .lcp-graph {

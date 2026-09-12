@@ -1,7 +1,7 @@
-"""Lightcurve processor — ingest, clean, smooth, and export a working curve.
+"""Lightcurve processor: ingest, clean, smooth, detrend, extrema, and export.
 
-Detrend arrives later. Maths stay in ``skvo_veb/utils/lc_processor/``.
-The working ``CurveDash`` and smooth overlay live in the session cache.
+Maths stay in ``skvo_veb/utils/lc_processor/``. The working ``CurveDash``,
+smooth overlay, residual, and rough extrema live in the session cache.
 """
 
 from __future__ import annotations
@@ -31,8 +31,13 @@ from dash.exceptions import PreventUpdate
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.gp.export import (
     apply_prep_fold_ephemeris,
+    gp_intervals_export_download_name,
     gp_lc_export_download_name,
+    rough_toms_export_download_name,
+    suggested_detrended_export_stem,
+    suggested_intervals_export_stem,
     suggested_lc_export_stem,
+    suggested_rough_toms_export_stem,
 )
 from skvo_veb.utils.lc_bridge import (
     apply_phot_domain_view,
@@ -59,27 +64,80 @@ from skvo_veb.utils.lc_interaction import (
     plot_x_to_jd,
 )
 from skvo_veb.utils.lc_processor.apply import (
+    DETREND_BLOB,
     SMOOTH_BLOB,
+    apply_detrend_from_smooth,
     cropped_series,
     fit_smooth_overlay,
+    overlay_residual,
     overlay_trend,
     place_knot_grid,
+    required_float,
+    required_int,
+)
+from skvo_veb.utils.lc_processor.extrema import (
+    EXTREMA_BLOB,
+    add_manual_extremum,
+    extrema_xy_from_payload,
+    find_extrema_from_smooth,
+    remove_extremum_near_time,
+    format_intervals_from_payload,
+    format_rough_toms_download,
+)
+from skvo_veb.utils.lc_processor.config import (
+    DEFAULT_BIWEIGHT_N_POINTS,
+    DEFAULT_BREAK_TOLERANCE_DAYS,
+    DEFAULT_INTERVAL_DELTA_DAYS,
+    DEFAULT_LSQ_KNOT_GRID,
+    DEFAULT_LSQ_N_KNOTS,
+    DEFAULT_MEDIAN_WINDOW_DAYS,
+    DEFAULT_MIN_EXTREMA_SEGMENT_POINTS,
+    DEFAULT_MIN_PEAK_DISTANCE_DAYS,
+    DEFAULT_PSPLINE_LAMBDA,
+    DEFAULT_PSPLINE_SEGMENTS,
+    DEFAULT_RP_MIN_POINTS,
+    DEFAULT_RP_STEP_DAYS,
+    DEFAULT_RP_WINDOW_DAYS,
+    DEFAULT_SAVGOL_N_POINTS,
+    DEFAULT_SAVGOL_POLYORDER,
+    DEFAULT_SPLINE_SMOOTH_REL,
+    MIN_EXTREMA_SEGMENT_POINTS_FLOOR,
+    resolve_widget_defaults,
 )
 from skvo_veb.utils.lc_processor.figures import (
     PLOT_TOOL_ADD,
+    PLOT_TOOL_ADD_EXT,
     PLOT_TOOL_DELETE,
+    PLOT_TOOL_DELETE_EXT,
     PLOT_TOOL_OFF,
     empty_figure,
     extract_xaxis_range_mjd,
+    figure_detrended,
     figure_raw_with_trend,
     graph_config,
     knot_click_edit,
     knot_layout_shapes,
     knot_hit_span_jd,
     merge_knot_drag,
+    residual_graph_config,
 )
 from skvo_veb.utils.lc_processor.smooth import METHOD_LABELS
+from skvo_veb.utils.lc_processor.tilt import (
+    apply_local_tilt,
+    copy_working_as_residual,
+    residual_axis_title,
+)
+from skvo_veb.utils.gp.intervals import format_interval_display_pair
+from skvo_veb.utils.gp.working_window import (
+    WORKING_WINDOW_DISABLED,
+    build_working_window_store_from_times,
+    filter_plot_arrays_by_jd_window,
+    jd_bounds_from_visible_plot,
+    normalize_working_window,
+    observation_jd_bounds_tuple,
+)
 from skvo_veb.utils.lc_processor.view import (
+    clear_sector_labels,
     crop_curvedash_copy,
     display_mjd_to_absolute_jd,
     plot_uirevision,
@@ -103,34 +161,66 @@ logger = logging.getLogger(__name__)
 
 register_page(
     __name__,
-    name="Lightcurve processor",
+    name="Lightcurve Processor",
     order=8,
     path="/lc_processor",
-    title="IGEBC: Lightcurve processor",
+    title="Lightcurve Processor",
     in_navbar=True,
 )
 
 PAGE_NAMESPACE = "lc_processor"
 ACCORDION_LC_ITEM_ID = "lc-processor-accordion-lc"
 ACCORDION_SMOOTH_ITEM_ID = "lc-processor-accordion-smooth"
+ACCORDION_DETREND_ITEM_ID = "lc-processor-accordion-detrend"
+ACCORDION_EXTREMA_ITEM_ID = "lc-processor-accordion-extrema"
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
-DEFAULT_BREAK_TOLERANCE = 5.0
-DEFAULT_MEDIAN_WINDOW_DAYS = 2.0
-DEFAULT_N_POINTS = 301
-DEFAULT_POLYORDER = 5
-DEFAULT_SMOOTH_REL = 0.05
-DEFAULT_N_KNOTS = 8
-DEFAULT_LSQ_KNOT_GRID = "occupancy"
-DEFAULT_PSPLINE_LAMBDA = 1.0e4
-DEFAULT_PSPLINE_SEGMENTS = 40
+EXTREMUM_MIN = "min"
+EXTREMUM_MAX = "max"
 
 PAGE_ABOUT_MARKDOWN = """
 Load a light curve, inspect it, delete bad points, and export the working
 series. Time crop affects the plot and Smooth only. Export lightcurve writes
 the whole working series (after deletes) as ``{name}_lc``.
 
-Apply smooth draws an overlay on plot 1. Residual detrend is a later drawer.
+Apply smooth draws an overlay on plot 1. Plot 2 is seeded by Apply
+detrend (the residual) or by Copy from plot 1. Local tilt then rewrites
+a stretch of plot 2. A new smooth, a domain change, or a delete clears
+plot 2 and the rough-extrema marks.
 """
+
+# dbc.Alert ``duration`` for info/success. Warning and danger stay until
+# dismiss, a newer message, or a new file. Tweak this one value only.
+STATUS_ALERT_DURATION_MS = 4000
+_STATUS_ALERT_TIMED_COLORS = frozenset({"info", "success"})
+
+
+def _status_alert(message: str, color: str) -> dbc.Alert:
+    """Builds the shared plot-column status alert.
+
+    Every message is dismissable. Info and success use
+    ``STATUS_ALERT_DURATION_MS`` via the ready-made ``dbc.Alert``
+    timer. Warning and danger omit ``duration`` and stay.
+
+    Args:
+        message (str): User-facing text.
+        color (str): Bootstrap alert colour.
+
+    Returns:
+        dash_bootstrap_components.Alert: Overlay alert.
+    """
+    duration = (
+        STATUS_ALERT_DURATION_MS if color in _STATUS_ALERT_TIMED_COLORS else None
+    )
+    return dbc.Alert(
+        message,
+        color=color,
+        className="py-2 mb-0",
+        dismissable=True,
+        duration=duration,
+        is_open=True,
+        key=str(uuid.uuid4()),
+    )
+
 
 def _bump_lc_revision() -> str:
     """Returns a new plot-revision token.
@@ -139,6 +229,17 @@ def _bump_lc_revision() -> str:
         str: UUID string.
     """
     return str(uuid.uuid4())
+
+
+def _clear_fit_blobs(user_tab_id: str) -> None:
+    """Clears the overlay, residual, and rough extrema (they are no longer valid).
+
+    Args:
+        user_tab_id (str): Session cache key.
+    """
+    clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+    clear_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+    clear_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
 
 
 def _click_help(help_id: str, title: str, body: str, *, placement: str = "right"):
@@ -302,7 +403,7 @@ def _blank_pair(*, time_axis_mode: str, domain: str, filename: str | None = None
         xaxis_title=x_title,
         yaxis_title="Residual",
         invert_y=invert_y,
-        uirevision=uirev,
+        uirevision=f"{uirev}|empty",
         time_axis_mode=axis,
     )
     return working, residual
@@ -356,6 +457,26 @@ def _lightcurve_drawer() -> list:
                     id="lc-processor-show-errors",
                     label="Show error bars",
                     value=False,
+                ),
+            ],
+            className="lcp-sidebar-block",
+        ),
+        html.Div(
+            [
+                _heading_with_help(
+                    "Sectors",
+                    "merge-sectors",
+                    "Sectors",
+                    "Each distinct label (TESS sector, camera, filter) is "
+                    "drawn in its own colour. Merge sectors clears those "
+                    "labels so the working series is one unlabelled set. "
+                    "Times and photometry are not changed.",
+                ),
+                dbc.Button(
+                    "Merge sectors",
+                    id="lc-processor-merge-sectors",
+                    color="primary",
+                    size="sm",
                 ),
             ],
             className="lcp-sidebar-block",
@@ -438,7 +559,6 @@ def _lightcurve_drawer() -> list:
                     className="w-100",
                     disabled=True,
                 ),
-                html.Div(id="lc-processor-export-feedback", className="lcp-export-feedback"),
             ],
             className="lcp-sidebar-block lcp-sidebar-btn-stack",
         ),
@@ -491,7 +611,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step=1,
                     min=3,
-                    value=DEFAULT_N_POINTS,
+                    value=DEFAULT_SAVGOL_N_POINTS,
                     size="sm",
                 ),
                 html.Label("Polynomial order", className="lcp-section-label"),
@@ -500,7 +620,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step=1,
                     min=1,
-                    value=DEFAULT_POLYORDER,
+                    value=DEFAULT_SAVGOL_POLYORDER,
                     size="sm",
                 ),
             ],
@@ -515,7 +635,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step=1,
                     min=1,
-                    value=DEFAULT_N_POINTS,
+                    value=DEFAULT_BIWEIGHT_N_POINTS,
                     size="sm",
                 ),
             ],
@@ -530,7 +650,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step="any",
                     min=0,
-                    value=DEFAULT_SMOOTH_REL,
+                    value=DEFAULT_SPLINE_SMOOTH_REL,
                     size="sm",
                 ),
                 html.Label("Explicit s (optional)", className="lcp-section-label"),
@@ -561,7 +681,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step=1,
                     min=1,
-                    value=DEFAULT_N_KNOTS,
+                    value=DEFAULT_LSQ_N_KNOTS,
                     size="sm",
                 ),
                 html.Label("Knot grid", className="lcp-section-label"),
@@ -602,6 +722,59 @@ def _smooth_drawer() -> list:
                     min=1,
                     value=DEFAULT_PSPLINE_SEGMENTS,
                     size="sm",
+                ),
+            ],
+            visible=False,
+        ),
+        _param_block(
+            "lc-processor-params-rp",
+            [
+                _heading_with_help(
+                    "Window (days)",
+                    "rp-window",
+                    "Window (days)",
+                    "Full width of each sliding parabola, in days. "
+                    "The fit uses points with |t − centre| ≤ window / 2. "
+                    "When a period is set this starts at period / 2; "
+                    "otherwise the no-period fallback is used.",
+                ),
+                dbc.Input(
+                    id="lc-processor-rp-window",
+                    type="number",
+                    step="any",
+                    min=1e-8,
+                    value=DEFAULT_RP_WINDOW_DAYS,
+                    size="sm",
+                ),
+                _heading_with_help(
+                    "Step (days)",
+                    "rp-step",
+                    "Step (days)",
+                    "Spacing of the native centre-grid. Apply interpolates "
+                    "that grid onto the observation times. This starts at "
+                    "one quarter of the window (window × 0.25).",
+                ),
+                dbc.Input(
+                    id="lc-processor-rp-step",
+                    type="number",
+                    step="any",
+                    min=1e-8,
+                    value=DEFAULT_RP_STEP_DAYS,
+                    size="sm",
+                ),
+                html.Label("Minimum points", className="lcp-section-label"),
+                dbc.Input(
+                    id="lc-processor-rp-min-points",
+                    type="number",
+                    step=1,
+                    min=3,
+                    value=DEFAULT_RP_MIN_POINTS,
+                    size="sm",
+                ),
+                dbc.Switch(
+                    id="lc-processor-rp-weights",
+                    label="Weight by errors",
+                    value=False,
                 ),
             ],
             visible=False,
@@ -654,7 +827,7 @@ def _smooth_drawer() -> list:
                     type="number",
                     step="any",
                     min=0,
-                    value=DEFAULT_BREAK_TOLERANCE,
+                    value=DEFAULT_BREAK_TOLERANCE_DAYS,
                     size="sm",
                 ),
             ],
@@ -668,10 +841,6 @@ def _smooth_drawer() -> list:
                     color="primary",
                     size="sm",
                     className="w-100",
-                ),
-                html.Div(
-                    id="lc-processor-apply-feedback",
-                    className="lcp-apply-feedback",
                 ),
             ],
             className="lcp-sidebar-block lcp-sidebar-btn-stack",
@@ -701,11 +870,316 @@ def _smooth_drawer() -> list:
     ]
 
 
+def _detrend_drawer() -> list:
+    """Builds the Detrend accordion body.
+
+    Returns:
+        list: Seed plot 2, local tilt, and residual export.
+    """
+    return [
+        html.Div(
+            [
+                _heading_with_help(
+                    "Seed data",
+                    "seed data",
+                    "Seed data",
+                    "Apply detrend writes the residual of the last overlay "
+                    "(magnitudes subtract; flux divides). Copy from plot 1 "
+                    "writes the cropped, cleaned series as it stands. Either "
+                    "button replaces whatever is already on plot 2. Holes in "
+                    "the overlay are filled inside the same night only.",
+                ),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Apply detrend",
+                            id="lc-processor-apply-detrend",
+                            color="primary",
+                            size="sm",
+                            disabled=True,
+                        ),
+                        dbc.Button(
+                            "Take",
+                            id="lc-processor-copy-plot-1",
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ],
+                    className="lcp-sidebar-btn-row",
+                ),
+            ],
+            className="lcp-sidebar-block",
+        ),
+        html.Div(
+            [
+                _heading_with_help(
+                    "Local tilt",
+                    "local-tilt",
+                    "Local tilt",
+                    "Same as Remove trend on the GP page. Zoom plot 2 and "
+                    "press Use visible range. Switch on Place tilt line, "
+                    "click once, drag the handles, then Apply local tilt. "
+                    "The line is the model; the working range is the "
+                    "locality. Magnitudes subtract the line; flux divides "
+                    "by it. Restore full plot 2 shows the whole seeded "
+                    "series. Reload the light curve to undo.",
+                ),
+                html.Div(
+                    id="lc-processor-plot2-window-status",
+                    className="small text-muted",
+                ),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Use visible range",
+                            id="lc-processor-use-visible-range",
+                            color="primary",
+                            size="sm",
+                            disabled=True,
+                        ),
+                        dbc.Button(
+                            "Restore",
+                            id="lc-processor-restore-plot-2",
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ],
+                    className="lcp-sidebar-btn-row",
+                ),
+                dbc.Switch(
+                    id="lc-processor-local-tilt",
+                    label="Place tilt line",
+                    value=False,
+                    disabled=True,
+                ),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Apply local tilt",
+                            id="lc-processor-apply-tilt",
+                            color="primary",
+                            size="sm",
+                        ),
+                        dbc.Button(
+                            "Clear tilt line",
+                            id="lc-processor-clear-tilt",
+                            color="secondary",
+                            outline=True,
+                            size="sm",
+                        ),
+                    ],
+                    id="lc-processor-tilt-actions",
+                    className="lcp-sidebar-btn-row d-none",
+                ),
+            ],
+            className="lcp-sidebar-block",
+        ),
+        html.Div(
+            [
+                _heading_with_help(
+                    "Export",
+                    "export-detrend",
+                    "Export",
+                    "Same formats as Export lightcurve. The stem starts "
+                    "from the input name and already ends in _detrended "
+                    "(not _lc_detrended). Writes the current plot 2, "
+                    "including any local tilts.",
+                ),
+                dbc.Select(
+                    options=EXPORT_FORMAT_OPTIONS,  # type: ignore[arg-type]
+                    value=DEFAULT_EXPORT_FORMAT,
+                    id="lc-processor-detrend-export-format",
+                    size="sm",
+                ),
+                dbc.Input(
+                    id="lc-processor-detrend-export-stem",
+                    placeholder="lightcurve_detrended",
+                    type="text",
+                    value="lightcurve_detrended",
+                    size="sm",
+                ),
+                dbc.Button(
+                    "Export detrended",
+                    id="lc-processor-download-detrended-btn",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+            ],
+            className="lcp-sidebar-block lcp-sidebar-btn-stack",
+        ),
+    ]
+
+
+def _extrema_drawer() -> list:
+    """Builds the Rough extrema accordion body.
+
+    Returns:
+        list: Find-extrema widgets and interval / timing exports.
+    """
+    return [
+        html.Div(
+            [
+                _heading_with_help(
+                    "Find extrema",
+                    "find-extrema",
+                    "Find extrema",
+                    "Marks minima or maxima on the last Apply-smooth "
+                    "overlay. Only finite trend samples are used; holes "
+                    "and gap splits are not joined. This is a rough "
+                    "finder, not a GP or MAVKA timing.",
+                ),
+                dbc.Button(
+                    "Find extrema",
+                    id="lc-processor-find-extrema",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+                html.Label("Extremum", className="lcp-section-label"),
+                dbc.RadioItems(
+                    id="lc-processor-extremum-kind",
+                    options=[
+                        {"label": "Minimum", "value": EXTREMUM_MIN},
+                        {"label": "Maximum", "value": EXTREMUM_MAX},
+                    ],
+                    value=EXTREMUM_MIN,
+                    inline=True,
+                ),
+                _heading_with_help(
+                    "Extremum tool",
+                    "extremum-tool",
+                    "Extremum tool",
+                    "Add extremum places a mark at the click. The click "
+                    "time is the ToM; photometry and the overlay are not "
+                    "used. Delete extremum removes the nearest mark. "
+                    "This turns the knot tool off.",
+                ),
+                dbc.RadioItems(
+                    id="lc-processor-extrema-tool",
+                    options=[
+                        {"label": "Off", "value": PLOT_TOOL_OFF},
+                        {"label": "Add extremum", "value": PLOT_TOOL_ADD_EXT},
+                        {"label": "Delete extremum", "value": PLOT_TOOL_DELETE_EXT},
+                    ],
+                    value=PLOT_TOOL_OFF,
+                ),
+                _heading_with_help(
+                    "Min. peak distance (days)",
+                    "min-peak-distance",
+                    "Min. peak distance (days)",
+                    "Minimum separation between neighbouring extrema. "
+                    "When a period is set this starts at 0.7 × period; "
+                    "otherwise the no-period fallback is used.",
+                ),
+                dbc.Input(
+                    id="lc-processor-min-peak-distance",
+                    type="number",
+                    step="any",
+                    min=1e-8,
+                    value=DEFAULT_MIN_PEAK_DISTANCE_DAYS,
+                    size="sm",
+                ),
+                _heading_with_help(
+                    "Min. points in segment",
+                    "min-segment-points",
+                    "Min. points in segment",
+                    "A finite overlay run shorter than this is skipped. "
+                    "A peak needs at least three samples; the default is "
+                    "five so a one- to three-point night is not treated "
+                    "as an extremum.",
+                ),
+                dbc.Input(
+                    id="lc-processor-min-segment-points",
+                    type="number",
+                    step=1,
+                    min=MIN_EXTREMA_SEGMENT_POINTS_FLOOR,
+                    value=DEFAULT_MIN_EXTREMA_SEGMENT_POINTS,
+                    size="sm",
+                ),
+            ],
+            className="lcp-sidebar-block lcp-sidebar-btn-stack",
+        ),
+        html.Div(
+            [
+                _heading_with_help(
+                    "Export",
+                    "export-extrema",
+                    "Export",
+                    "Intervals use the GP .dat layout and the stem "
+                    "_int. Times use the compact ToM layout (JD and "
+                    "empty σ) and the stem _rough_toms. Both start "
+                    "from the Light curve _lc field.",
+                ),
+                _heading_with_help(
+                    "Interval half-width (days)",
+                    "interval-delta",
+                    "Interval half-width (days)",
+                    "Each exported interval is [t − δ, t + δ]. When a "
+                    "period is set this starts at period / 3; otherwise "
+                    "the no-period fallback is used. You can change this "
+                    "before export without finding again.",
+                ),
+                dbc.Input(
+                    id="lc-processor-interval-delta",
+                    type="number",
+                    step="any",
+                    min=1e-8,
+                    value=DEFAULT_INTERVAL_DELTA_DAYS,
+                    size="sm",
+                ),
+                html.Label("Intervals", className="lcp-export-sublabel"),
+                dbc.Input(
+                    id="lc-processor-intervals-export-stem",
+                    placeholder="lightcurve_int",
+                    type="text",
+                    value="lightcurve_int",
+                    size="sm",
+                ),
+                html.Label("Times", className="lcp-export-sublabel"),
+                dbc.Input(
+                    id="lc-processor-toms-export-stem",
+                    placeholder="lightcurve_rough_toms",
+                    type="text",
+                    value="lightcurve_rough_toms",
+                    size="sm",
+                ),
+                html.Div(
+                    [
+                        dbc.Button(
+                            "Export intervals",
+                            id="lc-processor-download-intervals-btn",
+                            color="primary",
+                            size="sm",
+                            disabled=True,
+                        ),
+                        dbc.Button(
+                            "Export ToMs",
+                            id="lc-processor-download-toms-btn",
+                            color="primary",
+                            size="sm",
+                            disabled=True,
+                        ),
+                    ],
+                    className="lcp-sidebar-btn-row",
+                ),
+            ],
+            className="lcp-sidebar-block lcp-sidebar-btn-stack",
+        ),
+    ]
+
+
 def _sidebar() -> html.Div:
     """Builds the tools accordion. Plots stay outside this column.
 
     Returns:
-        dash.html.Div: Light curve and Smooth drawers.
+        dash.html.Div: Light curve, Smooth, Detrend, and Rough extrema drawers.
     """
     return html.Div(
         dbc.Accordion(
@@ -719,6 +1193,16 @@ def _sidebar() -> html.Div:
                     html.Div(_smooth_drawer(), className="lcp-drawer-body"),
                     title="Smooth",
                     item_id=ACCORDION_SMOOTH_ITEM_ID,
+                ),
+                dbc.AccordionItem(
+                    html.Div(_detrend_drawer(), className="lcp-drawer-body"),
+                    title="Detrend",
+                    item_id=ACCORDION_DETREND_ITEM_ID,
+                ),
+                dbc.AccordionItem(
+                    html.Div(_extrema_drawer(), className="lcp-drawer-body"),
+                    title="Rough extrema",
+                    item_id=ACCORDION_EXTREMA_ITEM_ID,
                 ),
             ],
             id="lc-processor-accordion",
@@ -767,7 +1251,6 @@ def _plot_toolbar() -> html.Div:
             ),
             html.Div(help_btn, className="lcp-field-help"),
             help_pop,
-            html.Div(id="lc-processor-plot-alert", className="lcp-plot-alert"),
         ],
         className="lcp-plot-toolbar",
     )
@@ -788,7 +1271,7 @@ def layout():
             dbc.Row(
                 [
                     dbc.Col(
-                        html.H1("Lightcurve processor", className="lcp-page-title"),
+                        html.H1("Lightcurve Processor", className="lcp-page-title"),
                         width="auto",
                     ),
                     dbc.Col(
@@ -831,8 +1314,18 @@ def layout():
             dcc.Store(id="store-lc-processor-knots", data=[]),
             dcc.Store(id="store-lc-processor-knot-shapes"),
             dcc.Store(id="store-lc-processor-knot-pick"),
+            dcc.Store(id="store-lc-processor-extrema-pick"),
+            dcc.Store(id="store-lc-processor-tilt-click"),
+            dcc.Store(id="store-lc-processor-tilt-line"),
+            dcc.Store(
+                id="store-lc-processor-plot2-window",
+                data=WORKING_WINDOW_DISABLED,
+            ),
             dcc.Store(id="store-lc-processor-clientside"),
             dcc.Download(id="lc-processor-download-lc"),
+            dcc.Download(id="lc-processor-download-detrended"),
+            dcc.Download(id="lc-processor-download-intervals"),
+            dcc.Download(id="lc-processor-download-toms"),
             html.Div(
                 [
                     html.Div(
@@ -870,6 +1363,10 @@ def layout():
                     dbc.Col(
                         html.Div(
                             [
+                                html.Div(
+                                    id="lc-processor-plot-alert",
+                                    className="lcp-plot-alert",
+                                ),
                                 _plot_toolbar(),
                                 html.Div(
                                     dcc.Graph(
@@ -881,14 +1378,18 @@ def layout():
                                     id="lc-processor-graph-working-shell",
                                     className="lcp-graph-shell",
                                 ),
-                                dcc.Graph(
-                                    id="lc-processor-graph-residual",
-                                    figure=_initial_residual,
-                                    className="lcp-graph",
-                                    config=graph_config(),
+                                html.Div(
+                                    dcc.Graph(
+                                        id="lc-processor-graph-residual",
+                                        figure=_initial_residual,
+                                        className="lcp-graph",
+                                        config=residual_graph_config(),
+                                    ),
+                                    id="lc-processor-graph-residual-shell",
+                                    className="lcp-graph-shell",
                                 ),
                             ],
-                            className="lcp-plot-stack",
+                            className="lcp-plot-stack lcp-plot-column",
                         ),
                         width=9,
                     ),
@@ -928,6 +1429,7 @@ def toggle_about(open_clicks, close_clicks, is_open):
     Output("store-lc-processor-lc-revision", "data"),
     Output("lc-processor-upload-text", "children"),
     Output("lc-processor-upload-detail", "children"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Output("lc-processor-export-stem", "value"),
     Output("lc-processor-domain", "value"),
     Output("lc-processor-input-period", "value"),
@@ -936,6 +1438,7 @@ def toggle_about(open_clicks, close_clicks, is_open):
     Output("lc-processor-t-max", "value"),
     Output("store-lc-processor-knots", "data"),
     Output("lc-processor-plot-tool", "value"),
+    Output("lc-processor-extrema-tool", "value"),
     Input("lc-processor-upload-lc", "contents"),
     State("lc-processor-upload-lc", "filename"),
     State("store-lc-processor-user-tab-id", "data"),
@@ -950,7 +1453,8 @@ def upload_lightcurve(contents, filename, user_tab_id):
         user_tab_id: Existing tab id, if any.
 
     Returns:
-        tuple: Tab id, revision, upload chip, stem, domain, ephemeris, crop reset.
+        tuple: Tab id, revision, upload chip, cleared overlay, stem, domain,
+        ephemeris, crop reset.
     """
     if contents is None:
         raise PreventUpdate
@@ -961,7 +1465,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
         if user_tab_id is None:
             user_tab_id = generate_user_tab_id()
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+        _clear_fit_blobs(user_tab_id)
         native = lcd.active_domain
         domain = native if native in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
         epoch_display = (
@@ -979,6 +1483,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             _bump_lc_revision(),
             _upload_status(filename or "uploaded file", tone="ok"),
             None,
+            None,
             suggested_lc_export_stem(filename),
             domain,
             lcd.period,
@@ -986,6 +1491,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             None,
             None,
             [],
+            PLOT_TOOL_OFF,
             PLOT_TOOL_OFF,
         )
     except Exception as exc:
@@ -996,6 +1502,8 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             _upload_status(filename or "upload", tone="error"),
             format_user_upload_error(exc),
+            no_update,
+            no_update,
             no_update,
             no_update,
             no_update,
@@ -1035,7 +1543,7 @@ def apply_working_domain(domain, user_tab_id):
             raise PreventUpdate
         apply_phot_domain_view(lcd, show_magnitude=(domain == DOMAIN_MAG))
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+        _clear_fit_blobs(user_tab_id)
         return _bump_lc_revision(), domain, None
     except PreventUpdate:
         raise
@@ -1045,7 +1553,7 @@ def apply_working_domain(domain, user_tab_id):
         return (
             no_update,
             cached.active_domain,
-            dbc.Alert(str(exc), color="warning", className="py-2 mb-0"),
+            _status_alert(str(exc), "warning"),
         )
 
 
@@ -1059,6 +1567,7 @@ def apply_working_domain(domain, user_tab_id):
     Input("lc-processor-t-min", "value"),
     Input("lc-processor-t-max", "value"),
     Input("lc-processor-method", "value"),
+    Input("store-lc-processor-plot2-window", "data"),
     State("store-lc-processor-knots", "data"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-upload-lc", "filename"),
@@ -1071,12 +1580,13 @@ def plot_working_and_residual(
     t_min,
     t_max,
     method,
+    plot2_window,
     knots,
     user_tab_id,
     filename,
     domain,
 ):
-    """Draws plot 1 from the cache (cropped) and keeps plot 2 empty.
+    """Draws plot 1 from the cache (cropped) and plot 2 when seeded.
 
     Knot-tool radio and knot-list edits do not trigger this callback.
     Green lines are patched onto the existing figure so zoom is left alone.
@@ -1088,13 +1598,15 @@ def plot_working_and_residual(
         t_min: Crop start (display MJD).
         t_max: Crop end (display MJD).
         method: Smooth method id.
+        plot2_window: Plot-2 working range (Use visible range).
         knots: Current knot list.
         user_tab_id: Session cache key.
         filename: Upload name for ``uirevision``.
         domain: Sidebar photometric domain.
 
     Returns:
-        tuple: Working figure, residual figure, optional alert.
+        tuple: Working figure, residual figure, and ``no_update`` for
+        the overlay unless plotting itself fails.
     """
     axis = normalize_time_axis_mode(time_axis_mode)
     domain_key = domain if domain in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
@@ -1102,7 +1614,7 @@ def plot_working_and_residual(
         time_axis_mode=axis, domain=domain_key, filename=filename
     )
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return blank_w, blank_r, None
+        return blank_w, blank_r, no_update
     try:
         lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
         view = crop_curvedash_copy(
@@ -1131,6 +1643,10 @@ def plot_working_and_residual(
             if method in ("spline_lsq", "pspline")
             else None
         )
+        extrema_xy = extrema_xy_from_payload(
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
+            domain=view.active_domain or domain_key,
+        )
         fig = figure_raw_with_trend(
             times,
             values,
@@ -1149,21 +1665,74 @@ def plot_working_and_residual(
             source_index=perm,
             selected_perm_indices=selected_perm_indices(lcd),
             time_axis_mode=axis,
+            break_tolerance=(
+                None if payload is None else payload.get("break_tolerance")
+            ),
+            extrema_jd=None if extrema_xy is None else extrema_xy[0],
+            extrema_y=None if extrema_xy is None else extrema_xy[1],
         )
         residual = empty_figure(
             xaxis_title=time_axis_xaxis_title(axis, timescale, refposition),
             yaxis_title="Residual",
             invert_y=invert_y,
-            uirevision=uirev,
+            uirevision=f"{uirev}|empty",
             time_axis_mode=axis,
         )
-        return fig, residual, None
+        detrend_payload = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+        matched = overlay_residual(
+            detrend_payload,
+            times,
+            domain=view.active_domain or domain_key,
+        )
+        if matched is not None:
+            det_y, det_err = matched
+            times_p2 = times
+            labels_p2 = labels
+            perm_p2 = perm
+            x_range_jd = None
+            window = normalize_working_window(plot2_window)
+            if window is not None:
+                times_p2, det_y, det_err = filter_plot_arrays_by_jd_window(
+                    times,
+                    det_y,
+                    det_err,
+                    window["jd_min"],
+                    window["jd_max"],
+                )
+                keep = (
+                    (times >= window["jd_min"])
+                    & (times <= window["jd_max"])
+                    & np.isfinite(times)
+                )
+                labels_p2 = labels[keep]
+                perm_p2 = perm[keep]
+                x_range_jd = (window["jd_min"], window["jd_max"])
+            residual = figure_detrended(
+                times_p2,
+                det_y,
+                det_err,
+                y_label=residual_axis_title(
+                    None if detrend_payload is None else detrend_payload.get("origin"),
+                    invert_y=invert_y,
+                ),
+                invert_y=invert_y,
+                show_errors=bool(show_errors),
+                uirevision=f"{uirev}|detrend|{plot2_window}",
+                display_epoch=DISPLAY_EPOCH_JD,
+                timescale=timescale,
+                refposition=refposition,
+                labels=labels_p2,
+                source_index=perm_p2,
+                time_axis_mode=axis,
+                x_range_jd=x_range_jd,
+            )
+        return fig, residual, no_update
     except Exception as exc:
         logger.warning("Lightcurve processor plot failed: %s", exc)
         return (
             no_update,
             blank_r,
-            dbc.Alert(str(exc), color="warning", className="py-2 mb-0"),
+            _status_alert(str(exc), "warning"),
         )
 
 
@@ -1202,9 +1771,12 @@ def publish_knot_shapes(knots, method, time_axis_mode):
     Input("lc-processor-graph-working", "clickData"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-plot-tool", "value"),
+    State("lc-processor-extrema-tool", "value"),
     prevent_initial_call=True,
 )
-def merge_working_selection(selected_data, click_data, user_tab_id, plot_tool):
+def merge_working_selection(
+    selected_data, click_data, user_tab_id, plot_tool, extrema_tool
+):
     """Marks clicked or lassoed points on the cached curve.
 
     Args:
@@ -1212,11 +1784,15 @@ def merge_working_selection(selected_data, click_data, user_tab_id, plot_tool):
         click_data: Plotly click payload.
         user_tab_id: Session cache key.
         plot_tool: Knot tool; add/delete consume clicks instead.
+        extrema_tool: Extremum tool; add/delete consume clicks instead.
 
     Returns:
         str: New revision token.
     """
-    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
+    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE) or extrema_tool in (
+        PLOT_TOOL_ADD_EXT,
+        PLOT_TOOL_DELETE_EXT,
+    ):
         raise PreventUpdate
     if not ctx.triggered or not user_tab_id or not has_cached_lc(
         PAGE_NAMESPACE, user_tab_id
@@ -1234,6 +1810,34 @@ def merge_working_selection(selected_data, click_data, user_tab_id, plot_tool):
     except Exception as exc:
         logger.warning("Lightcurve processor selection failed: %s", exc)
         raise PreventUpdate
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Input("lc-processor-merge-sectors", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def merge_working_sectors(n_clicks, user_tab_id):
+    """Clears sector labels on the cached working curve.
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+
+    Returns:
+        str: New revision token.
+    """
+    if not n_clicks or not user_tab_id or not has_cached_lc(
+        PAGE_NAMESPACE, user_tab_id
+    ):
+        raise PreventUpdate
+    lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
+    n_cleared = clear_sector_labels(lcd)
+    if n_cleared == 0:
+        raise PreventUpdate
+    write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+    return _bump_lc_revision()
 
 
 @callback(
@@ -1288,37 +1892,121 @@ def delete_working_selected_points(n_clicks, user_tab_id):
         if lcd.lightcurve is None or lcd.lightcurve.empty:
             raise PipeException("Cannot delete all points from the lightcurve")
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+        _clear_fit_blobs(user_tab_id)
         logger.info("Lightcurve processor deleted %s selected point(s)", len(marked))
         return _bump_lc_revision(), None
     except PreventUpdate:
         raise
     except Exception as exc:
         logger.warning("Lightcurve processor delete failed: %s", exc)
-        return no_update, dbc.Alert(str(exc), color="warning", className="py-2 mb-0")
+        return no_update, _status_alert(str(exc), "warning")
 
 
 @callback(
     Output("lc-processor-download-lc-btn", "disabled"),
+    Output("lc-processor-apply-detrend", "disabled"),
+    Output("lc-processor-copy-plot-1", "disabled"),
+    Output("lc-processor-download-detrended-btn", "disabled"),
+    Output("lc-processor-local-tilt", "disabled"),
+    Output("lc-processor-use-visible-range", "disabled"),
+    Output("lc-processor-restore-plot-2", "disabled"),
+    Output("lc-processor-find-extrema", "disabled"),
+    Output("lc-processor-download-intervals-btn", "disabled"),
+    Output("lc-processor-download-toms-btn", "disabled"),
     Input("store-lc-processor-lc-revision", "data"),
+    Input("store-lc-processor-plot2-window", "data"),
     State("store-lc-processor-user-tab-id", "data"),
 )
-def gate_lightcurve_export(_revision, user_tab_id):
-    """Enables export once a working curve is cached.
+def gate_lightcurve_actions(_revision, plot2_window, user_tab_id):
+    """Enables export, detrend, and extrema once the required cache blobs exist.
 
     Args:
         _revision: Plot revision token.
+        plot2_window: Plot-2 working range store.
         user_tab_id: Session cache key.
 
     Returns:
-        bool: ``True`` when the button must stay disabled.
+        tuple: Disabled flags for LC export, Apply detrend, Copy from
+        plot 1, Export detrended, Local tilt, Use visible range,
+        Restore full plot 2, Find extrema, Export intervals, and Export
+        times.
     """
-    return not (user_tab_id and has_cached_lc(PAGE_NAMESPACE, user_tab_id))
+    has_lc = bool(user_tab_id and has_cached_lc(PAGE_NAMESPACE, user_tab_id))
+    has_smooth = bool(
+        user_tab_id and read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+    )
+    has_detrend = bool(
+        user_tab_id and read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+    )
+    extrema_payload = (
+        read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
+        if user_tab_id
+        else None
+    )
+    has_extrema = bool(extrema_payload and extrema_payload.get("hits"))
+    has_window = normalize_working_window(plot2_window) is not None
+    return (
+        not has_lc,
+        not has_smooth,
+        not has_lc,
+        not has_detrend,
+        not has_detrend,
+        not has_detrend,
+        not has_window,
+        not has_smooth,
+        not has_extrema,
+        not has_extrema,
+    )
+
+
+@callback(
+    Output("lc-processor-detrend-export-stem", "value"),
+    Output("lc-processor-intervals-export-stem", "value"),
+    Output("lc-processor-toms-export-stem", "value"),
+    Input("lc-processor-export-stem", "value"),
+)
+def sync_product_export_stems(lc_stem):
+    """Derives product stems from the shared light-curve stem.
+
+    Args:
+        lc_stem: Working-curve stem, typically ending in ``_lc``.
+
+    Returns:
+        tuple: ``{base}_detrended``, ``{base}_int``, ``{base}_rough_toms``.
+    """
+    return (
+        suggested_detrended_export_stem(lc_stem),
+        suggested_intervals_export_stem(lc_stem),
+        suggested_rough_toms_export_stem(lc_stem),
+    )
+
+
+@callback(
+    Output("lc-processor-rp-window", "value"),
+    Output("lc-processor-rp-step", "value"),
+    Output("lc-processor-min-peak-distance", "value"),
+    Output("lc-processor-interval-delta", "value"),
+    Input("lc-processor-input-period", "value"),
+)
+def sync_period_derived_defaults(period):
+    """Fills RP window, RP step, peak distance, and interval δ from the period.
+
+    Empty or non-positive period uses the constant fallbacks. The
+    numbers and formulae live in ``lc_processor.config``. Step is a
+    fraction of the resolved window.
+
+    Args:
+        period: Sidebar period in days, or empty.
+
+    Returns:
+        tuple: Window, step, min. peak distance, and interval half-width (days).
+    """
+    return resolve_widget_defaults(period)
 
 
 @callback(
     Output("lc-processor-download-lc", "data"),
-    Output("lc-processor-export-feedback", "children"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input("lc-processor-download-lc-btn", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-export-format", "value"),
@@ -1360,10 +2048,10 @@ def download_working_lightcurve(
         blob = export_curvedash(lcd, fmt)
         return dcc.send_bytes(blob, outfile), None
     except PipeException as exc:
-        return no_update, dbc.Alert(str(exc), color="warning", className="py-2 mb-0")
+        return no_update, _status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("Lightcurve processor export failed")
-        return no_update, dbc.Alert(str(exc), color="danger", className="py-2 mb-0")
+        return no_update, _status_alert(str(exc), "danger")
 
 
 def _cached_lcd(user_tab_id) -> CurveDash:
@@ -1385,6 +2073,7 @@ def _cached_lcd(user_tab_id) -> CurveDash:
     Output("lc-processor-params-smooth", "style"),
     Output("lc-processor-params-lsq", "style"),
     Output("lc-processor-params-pspline", "style"),
+    Output("lc-processor-params-rp", "style"),
     Output("lc-processor-params-knot-tool", "style"),
     Output("lc-processor-params-place-knots", "style"),
     Input("lc-processor-method", "value"),
@@ -1407,6 +2096,7 @@ def toggle_method_params(method: str):
         shown if method == "spline_smooth" else hidden,
         shown if method == "spline_lsq" else hidden,
         shown if method == "pspline" else hidden,
+        shown if method == "running_parabola" else hidden,
         shown if method == "spline_lsq" else hidden,
         shown if method in ("spline_lsq", "pspline") else hidden,
     )
@@ -1431,9 +2121,54 @@ def update_working_graph_config(plot_tool, method):
 
 
 @callback(
+    Output("lc-processor-plot-tool", "value", allow_duplicate=True),
+    Input("lc-processor-extrema-tool", "value"),
+    Input("lc-processor-method", "value"),
+    prevent_initial_call=True,
+)
+def clear_knot_tool_when_exclusive(extrema_tool, method):
+    """Turns the knot radio off when it must not share the click.
+
+    Hidden LSQ tools must not stay on Add/Delete knot. An extremum
+    add/delete likewise forces the knot radio to Off.
+
+    Args:
+        extrema_tool: Extremum-tool radio value.
+        method: Active smooth method id.
+
+    Returns:
+        str: ``off``.
+    """
+    if method != "spline_lsq":
+        return PLOT_TOOL_OFF
+    if extrema_tool in (PLOT_TOOL_ADD_EXT, PLOT_TOOL_DELETE_EXT):
+        return PLOT_TOOL_OFF
+    raise PreventUpdate
+
+
+@callback(
+    Output("lc-processor-extrema-tool", "value", allow_duplicate=True),
+    Input("lc-processor-plot-tool", "value"),
+    prevent_initial_call=True,
+)
+def clear_extrema_tool_when_knot(plot_tool):
+    """Turns the extremum radio off when a knot tool is chosen.
+
+    Args:
+        plot_tool: Knot-tool radio value.
+
+    Returns:
+        str: ``off``.
+    """
+    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
+        return PLOT_TOOL_OFF
+    raise PreventUpdate
+
+
+@callback(
     Output("store-lc-processor-knots", "data", allow_duplicate=True),
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
-    Output("lc-processor-apply-feedback", "children"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input("lc-processor-place-knots", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-method", "value"),
@@ -1480,10 +2215,8 @@ def place_knots(
     if method not in ("spline_lsq", "pspline"):
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, no_update, dbc.Alert(
-            "Load a light curve first.",
-            color="warning",
-            className="py-2 mb-0",
+        return no_update, no_update, _status_alert(
+            "Load a light curve first.", "warning"
         )
     try:
         lcd = _cached_lcd(user_tab_id)
@@ -1499,25 +2232,27 @@ def place_knots(
         )
     except Exception as exc:
         logger.exception("Could not place knots")
-        return no_update, no_update, dbc.Alert(
-            str(exc), color="danger", className="py-2 mb-0"
-        )
+        return no_update, no_update, _status_alert(str(exc), "danger")
     had_overlay = read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB) is not None
-    clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
+    had_residual = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB) is not None
+    had_extrema = read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB) is not None
+    _clear_fit_blobs(user_tab_id)
     logger.info("Placed %s knots for method %s", len(placed), method)
-    revision = _bump_lc_revision() if had_overlay else no_update
+    revision = (
+        _bump_lc_revision()
+        if (had_overlay or had_residual or had_extrema)
+        else no_update
+    )
     if not placed:
-        return [], revision, dbc.Alert(
+        return [], revision, _status_alert(
             "No interior knots could be placed on the current segments.",
-            color="warning",
-            className="py-2 mb-0",
+            "warning",
         )
     note = None
     if method == "spline_lsq" and len(placed) < requested:
-        note = dbc.Alert(
+        note = _status_alert(
             f"Placed {len(placed)} of {requested} knots (limited by points per night).",
-            color="info",
-            className="py-2 mb-0",
+            "info",
         )
     return placed, revision, note
 
@@ -1525,7 +2260,7 @@ def place_knots(
 @callback(
     Output("store-lc-processor-knots", "data", allow_duplicate=True),
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
-    Output("lc-processor-apply-feedback", "children", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input("lc-processor-apply-smooth", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-method", "value"),
@@ -1545,6 +2280,10 @@ def place_knots(
     State("lc-processor-lsq-knot-grid", "value"),
     State("lc-processor-pspline-lambda", "value"),
     State("lc-processor-pspline-nseg", "value"),
+    State("lc-processor-rp-window", "value"),
+    State("lc-processor-rp-step", "value"),
+    State("lc-processor-rp-min-points", "value"),
+    State("lc-processor-rp-weights", "value"),
     prevent_initial_call=True,
 )
 def apply_smooth(
@@ -1567,8 +2306,15 @@ def apply_smooth(
     knot_grid_mode,
     penalty_lambda,
     n_segments,
+    rp_window,
+    rp_step,
+    rp_min_points,
+    rp_use_weights,
 ):
-    """Fits the selected smoother and stores an overlay (plot 2 stays empty).
+    """Fits the selected smoother and stores an overlay.
+
+    A new overlay clears any previous residual and rough extrema. Plot 2
+    stays empty until Apply detrend.
 
     Args:
         apply_clicks: Apply-button clicks.
@@ -1590,6 +2336,10 @@ def apply_smooth(
         knot_grid_mode: LSQ grid mode.
         penalty_lambda: P-spline lambda.
         n_segments: P-spline segments.
+        rp_window: Running-parabola window (days).
+        rp_step: Running-parabola centre step (days).
+        rp_min_points: Minimum in-window points.
+        rp_use_weights: Inverse-variance switch.
 
     Returns:
         tuple: Knots, revision, feedback.
@@ -1597,10 +2347,8 @@ def apply_smooth(
     if not apply_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, no_update, dbc.Alert(
-            "Load a light curve first.",
-            color="warning",
-            className="py-2 mb-0",
+        return no_update, no_update, _status_alert(
+            "Load a light curve first.", "warning"
         )
     try:
         lcd = _cached_lcd(user_tab_id)
@@ -1623,20 +2371,24 @@ def apply_smooth(
             knot_grid_mode=knot_grid_mode,
             penalty_lambda=penalty_lambda,
             n_segments=n_segments,
+            rp_window=rp_window,
+            rp_step=rp_step,
+            rp_min_points=rp_min_points,
+            rp_use_weights=rp_use_weights,
         )
         write_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB, payload)
+        clear_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+        clear_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
     except Exception as exc:
         logger.exception("Smooth fit failed")
-        return no_update, no_update, dbc.Alert(
-            str(exc), color="danger", className="py-2 mb-0"
-        )
+        return no_update, no_update, _status_alert(str(exc), "danger")
     return payload.get("knots") or list(knots or []), _bump_lc_revision(), None
 
 
 @callback(
     Output("store-lc-processor-knots", "data", allow_duplicate=True),
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
-    Output("lc-processor-apply-feedback", "children", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input("lc-processor-graph-working", "clickData"),
     Input("lc-processor-graph-working", "relayoutData"),
     Input("store-lc-processor-knot-pick", "data"),
@@ -1727,9 +2479,721 @@ def edit_knots_on_plot(
     if new_knots is None:
         raise PreventUpdate
     had_overlay = read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB) is not None
-    clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
-    revision = _bump_lc_revision() if had_overlay else no_update
-    return new_knots, revision, None
+    had_residual = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB) is not None
+    had_extrema = read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB) is not None
+    _clear_fit_blobs(user_tab_id)
+    revision = (
+        _bump_lc_revision()
+        if (had_overlay or had_residual or had_extrema)
+        else no_update
+    )
+    feedback = (
+        None if (had_overlay or had_residual or had_extrema) else no_update
+    )
+    return new_knots, revision, feedback
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("store-lc-processor-extrema-pick", "data"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-domain", "value"),
+    State("lc-processor-t-min", "value"),
+    State("lc-processor-t-max", "value"),
+    State("lc-processor-extrema-tool", "value"),
+    State("lc-processor-extremum-kind", "value"),
+    State("lc-processor-min-peak-distance", "value"),
+    State("lc-processor-interval-delta", "value"),
+    State("lc-processor-time-axis", "value"),
+    prevent_initial_call=True,
+)
+def edit_extrema_on_plot(
+    pick,
+    user_tab_id,
+    domain,
+    t_min,
+    t_max,
+    extrema_tool,
+    extremum_kind,
+    min_distance,
+    interval_delta,
+    time_axis_mode,
+):
+    """Adds or removes a rough extremum from a plot-area pointer pick.
+
+    Plotly ``clickData`` only fires on an existing trace. The clientside
+    pick uses Plotly ``p2d`` so a click anywhere in the axes works.
+
+    Args:
+        pick: Clientside ``{x, y, x0, x1, ts}`` in plot coordinates.
+        user_tab_id: Session cache key.
+        domain: Working photometric domain.
+        t_min: Crop start (display MJD).
+        t_max: Crop end (display MJD).
+        extrema_tool: Extremum-tool radio value.
+        extremum_kind: ``min`` or ``max``.
+        min_distance: Finder separation stored on a new blob (days).
+        interval_delta: Interval half-width stored on a new blob (days).
+        time_axis_mode: ``mjd`` or ``date``.
+
+    Returns:
+        tuple: Revision token and optional feedback.
+    """
+    if extrema_tool not in (PLOT_TOOL_ADD_EXT, PLOT_TOOL_DELETE_EXT):
+        raise PreventUpdate
+    if not pick or pick.get("x") is None or pick.get("y") is None:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        lcd = _cached_lcd(user_tab_id)
+        times, _y, _e, _perm, _labels = cropped_series(lcd, t_min, t_max)
+        axis = normalize_time_axis_mode(time_axis_mode)
+        click_jd = plot_x_to_jd(pick["x"], axis, DISPLAY_EPOCH_JD)
+        click_y = float(pick["y"])
+        current = read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
+        if extrema_tool == PLOT_TOOL_ADD_EXT:
+            updated = add_manual_extremum(
+                current,
+                jd=click_jd,
+                smooth=click_y,
+                kind=extremum_kind,
+                domain=lcd.active_domain or domain,
+                min_distance_d=required_float(min_distance, "Min. peak distance"),
+                delta_time_d=required_float(interval_delta, "Interval half-width"),
+            )
+        else:
+            vis = None
+            if pick.get("x0") is not None and pick.get("x1") is not None:
+                vis = [pick["x0"], pick["x1"]]
+            updated = remove_extremum_near_time(
+                current,
+                click_jd,
+                hit_span_d=knot_hit_span_jd(
+                    vis, float(np.min(times)), float(np.max(times)), time_axis_mode=axis
+                ),
+            )
+        if updated is current:
+            raise PreventUpdate
+        if updated is None:
+            raise PreventUpdate
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, updated)
+    except Exception as exc:
+        logger.exception("Manual rough-extrema edit failed")
+        return no_update, _status_alert(str(exc), "danger")
+    n_hit = int(updated.get("n_extrema") or 0)
+    return _bump_lc_revision(), _status_alert(
+        f"{n_hit} rough mark(s).", "info"
+    )
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output("store-lc-processor-tilt-line", "data", allow_duplicate=True),
+    Output("lc-processor-local-tilt", "value", allow_duplicate=True),
+    Output("store-lc-processor-plot2-window", "data", allow_duplicate=True),
+    Input("lc-processor-apply-detrend", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-method", "value"),
+    State("lc-processor-domain", "value"),
+    State("lc-processor-t-min", "value"),
+    State("lc-processor-t-max", "value"),
+    prevent_initial_call=True,
+)
+def apply_detrend(
+    n_clicks,
+    user_tab_id,
+    method,
+    domain,
+    t_min,
+    t_max,
+):
+    """Writes the residual from the last Apply-smooth overlay onto plot 2.
+
+    Magnitude subtracts the trend. Flux divides by the trend. Replaces
+    any previous plot-2 series and clears a pending tilt line.
+
+    Args:
+        n_clicks: Apply-detrend clicks.
+        user_tab_id: Session cache key.
+        method: Active smooth method id.
+        domain: Working photometric domain.
+        t_min: Crop start (display MJD).
+        t_max: Crop end (display MJD).
+
+    Returns:
+        tuple: Revision token, feedback, cleared tilt line, switch off.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return no_update, _status_alert(
+            "Load a light curve first.", "warning"
+        ), no_update, no_update, no_update
+    try:
+        lcd = _cached_lcd(user_tab_id)
+        payload = apply_detrend_from_smooth(
+            lcd,
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
+            method=method,
+            domain=domain,
+            t_min=t_min,
+            t_max=t_max,
+        )
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB, payload)
+    except Exception as exc:
+        logger.exception("Detrend failed")
+        return (
+            no_update,
+            _status_alert(str(exc), "danger"),
+            no_update,
+            no_update,
+            no_update,
+        )
+    n_finite = sum(1 for v in payload["residual"] if v is not None)
+    fill = payload.get("fill") or {}
+    n_fill = int(fill.get("nearest", 0) + fill.get("interp", 0) + fill.get("median", 0))
+    logger.info(
+        "Lightcurve processor detrended %s finite point(s) (filled %s)",
+        n_finite,
+        n_fill,
+    )
+    note = _status_alert(
+        f"Plot 2 seeded from Apply detrend ({n_finite} point(s)).", "info"
+    )
+    if n_fill:
+        parts = []
+        if fill.get("nearest"):
+            parts.append(f"{fill['nearest']} nearest trend")
+        if fill.get("interp"):
+            parts.append(f"{fill['interp']} local interpolant")
+        if fill.get("median"):
+            parts.append(f"{fill['median']} piece median")
+        note = _status_alert(
+            "Kept every point. Filled "
+            + f"{n_fill} doubtful sample(s): "
+            + ", ".join(parts)
+            + ".",
+            "info",
+        )
+    return _bump_lc_revision(), note, None, False, dict(WORKING_WINDOW_DISABLED)
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output("store-lc-processor-tilt-line", "data", allow_duplicate=True),
+    Output("lc-processor-local-tilt", "value", allow_duplicate=True),
+    Output("store-lc-processor-plot2-window", "data", allow_duplicate=True),
+    Input("lc-processor-copy-plot-1", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-domain", "value"),
+    State("lc-processor-t-min", "value"),
+    State("lc-processor-t-max", "value"),
+    prevent_initial_call=True,
+)
+def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
+    """Copies the cropped working series onto plot 2.
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+        domain: Working photometric domain.
+        t_min: Crop start (display MJD).
+        t_max: Crop end (display MJD).
+
+    Returns:
+        tuple: Revision token, feedback, cleared tilt line, switch off.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return no_update, _status_alert(
+            "Load a light curve first.", "warning"
+        ), no_update, no_update, no_update
+    try:
+        lcd = _cached_lcd(user_tab_id)
+        payload = copy_working_as_residual(
+            lcd, domain=domain, t_min=t_min, t_max=t_max
+        )
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB, payload)
+    except Exception as exc:
+        logger.exception("Copy from plot 1 failed")
+        return (
+            no_update,
+            _status_alert(str(exc), "danger"),
+            no_update,
+            no_update,
+            no_update,
+        )
+    n_finite = sum(1 for v in payload["residual"] if v is not None)
+    return (
+        _bump_lc_revision(),
+        _status_alert(f"Copied {n_finite} point(s) from plot 1.", "info"),
+        None,
+        False,
+        dict(WORKING_WINDOW_DISABLED),
+    )
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output("store-lc-processor-tilt-line", "data", allow_duplicate=True),
+    Output("lc-processor-local-tilt", "value", allow_duplicate=True),
+    Input("lc-processor-apply-tilt", "n_clicks"),
+    State("store-lc-processor-tilt-line", "data"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-time-axis", "value"),
+    State("store-lc-processor-plot2-window", "data"),
+    prevent_initial_call=True,
+)
+def apply_plot_2_local_tilt(
+    n_clicks, tilt_line, user_tab_id, time_axis_mode, plot2_window
+):
+    """Applies the dashed tilt line to the seeded plot-2 series.
+
+    Args:
+        n_clicks: Apply-local-tilt clicks.
+        tilt_line: Clientside line ``{x0, y0, x1, y1, ready}``.
+        user_tab_id: Session cache key.
+        time_axis_mode: ``mjd`` or ``date``.
+        plot2_window: Working range from Use visible range.
+
+    Returns:
+        tuple: Revision token, feedback, cleared line, switch off.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not tilt_line or not tilt_line.get("ready"):
+        return no_update, _status_alert(
+            "Click plot 2 once to place a tilt line, then Apply local tilt.",
+            "warning",
+        ), no_update, no_update
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        current = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+        updated = apply_local_tilt(
+            current,
+            anchor_a=(tilt_line["x0"], tilt_line["y0"]),
+            anchor_b=(tilt_line["x1"], tilt_line["y1"]),
+            time_axis_mode=normalize_time_axis_mode(time_axis_mode),
+            display_epoch=DISPLAY_EPOCH_JD,
+            jd_bounds=observation_jd_bounds_tuple(
+                normalize_working_window(plot2_window)
+            ),
+        )
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB, updated)
+    except Exception as exc:
+        logger.exception("Local tilt failed")
+        return (
+            no_update,
+            _status_alert(str(exc), "danger"),
+            no_update,
+            no_update,
+        )
+    n_hit = int((updated.get("tilts") or [{}])[-1].get("n_updated") or 0)
+    return (
+        _bump_lc_revision(),
+        _status_alert(f"Local tilt applied to {n_hit} point(s).", "info"),
+        None,
+        False,
+    )
+
+
+@callback(
+    Output("store-lc-processor-plot2-window", "data"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-use-visible-range", "n_clicks"),
+    State("lc-processor-graph-residual", "relayoutData"),
+    State("lc-processor-time-axis", "value"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def use_plot_2_visible_range(n_clicks, relayout_data, time_axis_mode, user_tab_id):
+    """Locks plot 2 to the current zoom, as on the GP prep plot.
+
+    Args:
+        n_clicks: Button clicks.
+        relayout_data: Plot-2 ``relayoutData``.
+        time_axis_mode: ``mjd`` or ``date``.
+        user_tab_id: Session cache key.
+
+    Returns:
+        tuple: Working-window store and feedback.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    payload = (
+        read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+        if user_tab_id
+        else None
+    )
+    if not payload:
+        return no_update, _status_alert(
+            "Seed plot 2 first: Apply detrend or Copy from plot 1.",
+            "warning",
+        )
+    try:
+        jd_min, jd_max = jd_bounds_from_visible_plot(
+            relayout_data,
+            time_axis_mode=normalize_time_axis_mode(time_axis_mode),
+            display_epoch=DISPLAY_EPOCH_JD,
+        )
+        store_payload = build_working_window_store_from_times(
+            jd_min, jd_max, np.asarray(payload["jd"], dtype=float)
+        )
+    except PipeException as exc:
+        return no_update, _status_alert(str(exc), "warning")
+    if store_payload.get("enabled"):
+        note = _status_alert("Plot 2 now uses this time range only.", "info")
+    else:
+        note = _status_alert(
+            "Visible range covers the full plot-2 series; working range cleared.",
+            "info",
+        )
+    return store_payload, note
+
+
+@callback(
+    Output("store-lc-processor-plot2-window", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-restore-plot-2", "n_clicks"),
+    prevent_initial_call=True,
+)
+def restore_full_plot_2(n_clicks):
+    """Clears the plot-2 working range.
+
+    Args:
+        n_clicks: Button clicks.
+
+    Returns:
+        tuple: Disabled working-window store and feedback.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    return (
+        dict(WORKING_WINDOW_DISABLED),
+        _status_alert("Full plot 2 restored.", "info"),
+    )
+
+
+@callback(
+    Output("lc-processor-plot2-window-status", "children"),
+    Input("store-lc-processor-plot2-window", "data"),
+    Input("lc-processor-time-axis", "value"),
+)
+def describe_plot_2_window(plot2_window, time_axis_mode):
+    """Shows whether plot 2 uses the full series or a working range.
+
+    Args:
+        plot2_window: Working-range store.
+        time_axis_mode: ``mjd`` or ``date``.
+
+    Returns:
+        str: Status sentence.
+    """
+    window = normalize_working_window(plot2_window)
+    if window is None:
+        return "Working range: full plot 2"
+    start_label, end_label = format_interval_display_pair(
+        window["jd_min"],
+        window["jd_max"],
+        time_axis_mode=normalize_time_axis_mode(time_axis_mode),
+        display_epoch=DISPLAY_EPOCH_JD,
+    )
+    return f"Working range: {start_label} – {end_label}"
+
+
+@callback(
+    Output("store-lc-processor-plot2-window", "data", allow_duplicate=True),
+    Input("store-lc-processor-lc-revision", "data"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def clear_plot2_window_when_empty(_revision, user_tab_id):
+    """Drops the working range when plot 2 has been cleared.
+
+    Args:
+        _revision: Plot revision token.
+        user_tab_id: Session cache key.
+
+    Returns:
+        dict: Disabled working-window store.
+    """
+    if user_tab_id and read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB):
+        raise PreventUpdate
+    return dict(WORKING_WINDOW_DISABLED)
+
+
+@callback(
+    Output("lc-processor-graph-residual", "config"),
+    Input("lc-processor-local-tilt", "value"),
+)
+def update_residual_graph_config(tilt_on):
+    """Enables shape dragging on plot 2 while Local tilt is on.
+
+    Args:
+        tilt_on: Place-tilt-line switch.
+
+    Returns:
+        dict: Plotly config dictionary.
+    """
+    return residual_graph_config(tilt_on=bool(tilt_on))
+
+
+@callback(
+    Output("lc-processor-local-tilt", "value", allow_duplicate=True),
+    Input("store-lc-processor-lc-revision", "data"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def clear_local_tilt_when_plot_2_empty(_revision, user_tab_id):
+    """Turns the tilt switch off when plot 2 has been cleared.
+
+    Args:
+        _revision: Plot revision token.
+        user_tab_id: Session cache key.
+
+    Returns:
+        bool: ``False`` when there is no residual blob.
+    """
+    if user_tab_id and read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB):
+        raise PreventUpdate
+    return False
+
+
+@callback(
+    Output("lc-processor-download-detrended", "data"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-download-detrended-btn", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-detrend-export-format", "value"),
+    State("lc-processor-detrend-export-stem", "value"),
+    State("lc-processor-input-period", "value"),
+    State("lc-processor-input-epoch", "value"),
+    prevent_initial_call=True,
+)
+def download_detrended_lightcurve(
+    n_clicks,
+    user_tab_id,
+    table_format,
+    stem,
+    period,
+    epoch,
+):
+    """Exports the current plot-2 series (detrend, copy, and local tilts).
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+        table_format: Export format id.
+        stem: Detrended stem (already ``_detrended`` by default).
+        period: Sidebar period, or empty.
+        epoch: Sidebar epoch as display MJD, or empty.
+
+    Returns:
+        tuple: Download payload and optional alert.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+    payload = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
+    if not payload:
+        raise PreventUpdate
+    try:
+        lcd = _cached_lcd(user_tab_id)
+        apply_prep_fold_ephemeris(
+            lcd, period, epoch, display_epoch=DISPLAY_EPOCH_JD
+        )
+        residual_err = payload.get("residual_err")
+        lcd.replace_series(
+            np.asarray(payload["jd"], dtype=float),
+            np.asarray(payload["residual"], dtype=float),
+            None if residual_err is None else np.asarray(residual_err, dtype=float),
+            domain=payload.get("domain") or lcd.active_domain,
+        )
+        fmt = table_format or DEFAULT_EXPORT_FORMAT
+        outfile = gp_lc_export_download_name(
+            suggested_detrended_export_stem(stem), fmt
+        )
+        blob = export_curvedash(lcd, fmt)
+        return dcc.send_bytes(blob, outfile), None
+    except PipeException as exc:
+        return no_update, _status_alert(str(exc), "warning")
+    except Exception as exc:
+        logger.exception("Lightcurve processor detrend export failed")
+        return no_update, _status_alert(str(exc), "danger")
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-find-extrema", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-method", "value"),
+    State("lc-processor-domain", "value"),
+    State("lc-processor-t-min", "value"),
+    State("lc-processor-t-max", "value"),
+    State("lc-processor-extremum-kind", "value"),
+    State("lc-processor-min-peak-distance", "value"),
+    State("lc-processor-min-segment-points", "value"),
+    State("lc-processor-interval-delta", "value"),
+    prevent_initial_call=True,
+)
+def find_rough_extrema(
+    n_clicks,
+    user_tab_id,
+    method,
+    domain,
+    t_min,
+    t_max,
+    extremum_kind,
+    min_distance,
+    min_segment_points,
+    interval_delta,
+):
+    """Marks rough extrema on the last matching Apply-smooth overlay.
+
+    Args:
+        n_clicks: Find-extrema clicks.
+        user_tab_id: Session cache key.
+        method: Active smooth method id.
+        domain: Working photometric domain.
+        t_min: Crop start (display MJD).
+        t_max: Crop end (display MJD).
+        extremum_kind: ``min`` or ``max``.
+        min_distance: Minimum peak separation (days).
+        min_segment_points: Finite overlay samples required in a run.
+        interval_delta: Interval half-width stored with the find (days).
+
+    Returns:
+        tuple: Revision token and optional feedback.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return no_update, _status_alert("Load a light curve first.", "warning")
+    try:
+        lcd = _cached_lcd(user_tab_id)
+        times, _y, _e, _perm, _labels = cropped_series(lcd, t_min, t_max)
+        payload = find_extrema_from_smooth(
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
+            times,
+            domain=lcd.active_domain or domain,
+            method=method,
+            extremum_kind=extremum_kind,
+            min_distance_d=required_float(min_distance, "Min. peak distance"),
+            min_segment_points=required_int(
+                min_segment_points, "Min. points in segment"
+            ),
+            delta_time_d=required_float(interval_delta, "Interval half-width"),
+        )
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, payload)
+    except Exception as exc:
+        logger.exception("Rough extrema find failed")
+        return no_update, _status_alert(str(exc), "danger")
+    n_hit = int(payload.get("n_extrema") or 0)
+    n_skipped = int(payload.get("n_skipped_short") or 0)
+    kind = payload.get("kind") or "min"
+    noun = "minimum" if kind == "min" else "maximum"
+    plural = "minima" if kind == "min" else "maxima"
+    skip_txt = (
+        f" Skipped {n_skipped} short segment(s)." if n_skipped else ""
+    )
+    if n_hit == 0:
+        return _bump_lc_revision(), _status_alert(
+            f"No rough {plural} found.{skip_txt}", "warning"
+        )
+    median_d = payload.get("median_interval_d")
+    median_txt = (
+        f" Median interval {median_d:.6f} d." if median_d is not None else ""
+    )
+    label = noun if n_hit == 1 else plural
+    return _bump_lc_revision(), _status_alert(
+        f"Found {n_hit} rough {label}.{median_txt}{skip_txt}", "info"
+    )
+
+
+@callback(
+    Output("lc-processor-download-intervals", "data"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-download-intervals-btn", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-intervals-export-stem", "value"),
+    State("lc-processor-interval-delta", "value"),
+    State("lc-processor-upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filename):
+    """Exports GP-layout intervals centred on the last rough extrema.
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+        stem: Intervals stem (already ``_int`` by default).
+        interval_delta: Half-width in days (current widget).
+        filename: Original upload name.
+
+    Returns:
+        tuple: Download payload and optional alert.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+    try:
+        content = format_intervals_from_payload(
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
+            delta_time_d=required_float(interval_delta, "Interval half-width"),
+            source_file=filename,
+            smooth_payload=read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
+        )
+        outfile = gp_intervals_export_download_name(
+            suggested_intervals_export_stem(stem)
+        )
+        return dcc.send_string(content, outfile), None
+    except Exception as exc:
+        logger.exception("Lightcurve processor intervals export failed")
+        return no_update, _status_alert(str(exc), "danger")
+
+
+@callback(
+    Output("lc-processor-download-toms", "data"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-download-toms-btn", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-toms-export-stem", "value"),
+    State("lc-processor-upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def download_rough_toms(n_clicks, user_tab_id, stem, filename):
+    """Exports compact ToM times from the last rough extrema (σ is empty).
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+        stem: Timing stem (already ``_rough_toms`` by default).
+        filename: Original upload name.
+
+    Returns:
+        tuple: Download payload and optional alert.
+    """
+    if not n_clicks or not user_tab_id:
+        raise PreventUpdate
+    try:
+        content = format_rough_toms_download(
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
+            source_file=filename,
+            smooth_payload=read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
+        )
+        outfile = rough_toms_export_download_name(
+            suggested_rough_toms_export_stem(stem)
+        )
+        return dcc.send_string(content, outfile), None
+    except Exception as exc:
+        logger.exception("Lightcurve processor rough ToM export failed")
+        return no_update, _status_alert(str(exc), "danger")
 
 
 clientside_callback(
@@ -1751,5 +3215,52 @@ clientside_callback(
     Output("store-lc-processor-clientside", "data", allow_duplicate=True),
     Input("store-lc-processor-knot-shapes", "data"),
     State("lc-processor-plot-tool", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpExtrema", function_name="bindGraph"),
+    Output("store-lc-processor-clientside", "data", allow_duplicate=True),
+    Input("lc-processor-graph-working", "figure"),
+    Input("lc-processor-extrema-tool", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpTilt", function_name="applyMode"),
+    Output("lc-processor-tilt-actions", "className"),
+    Input("lc-processor-local-tilt", "value"),
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpTilt", function_name="bindGraph"),
+    Output("store-lc-processor-clientside", "data", allow_duplicate=True),
+    Input("lc-processor-graph-residual", "figure"),
+    Input("lc-processor-local-tilt", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpTilt", function_name="processClick"),
+    Output("store-lc-processor-tilt-line", "data"),
+    Input("store-lc-processor-tilt-click", "data"),
+    State("lc-processor-local-tilt", "value"),
+    State("store-lc-processor-tilt-line", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpTilt", function_name="clearLine"),
+    Output("store-lc-processor-tilt-line", "data", allow_duplicate=True),
+    Input("lc-processor-clear-tilt", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpTilt", function_name="restoreLine"),
+    Output("store-lc-processor-clientside", "data", allow_duplicate=True),
+    Input("lc-processor-graph-residual", "figure"),
+    Input("store-lc-processor-tilt-line", "data"),
+    State("lc-processor-local-tilt", "value"),
     prevent_initial_call=True,
 )

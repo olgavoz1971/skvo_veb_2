@@ -16,6 +16,8 @@ skvo_veb/
     └── volightcurve/
 
 **Architecture docs:**
+- `docs/lightcurve_processor.md` — Lightcurve processor page (smoothing, running parabola, detrend, rough extrema)
+- Scientific knobs: `skvo_veb/utils/lc_processor/config.py`
 - `docs/adding_a_lightcurve_provider.md` — step-by-step guide to plug in a new provider (includes TAP section)
 - `docs/mission_lightcurve_providers.md` — full multi-mission LC architecture, search orchestration (§9), and provider API
 - `docs/lc_discovery_messages.md` — Search / Plot tab alerts and status lifetimes on Lightcurve Discovery

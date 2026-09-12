@@ -16,6 +16,8 @@ from skvo_veb.utils.lc_interaction import plot_x_to_jd
 
 logger = logging.getLogger(__name__)
 
+_UNMARKED_LABEL_NAMES = frozenset({"", "none", "nan", "null", "<na>", "nat"})
+
 
 def display_mjd_to_absolute_jd(value) -> float | None:
     """Converts a crop widget MJD offset to absolute Julian Date.
@@ -29,6 +31,31 @@ def display_mjd_to_absolute_jd(value) -> float | None:
     if value is None or value == "":
         return None
     return plot_x_to_jd(float(value), TIME_AXIS_MJD, DEFAULT_EPOCH_JD)
+
+
+def point_label_name(value) -> str | None:
+    """Returns a legend name for one label cell, or ``None`` if unmarked.
+
+    Args:
+        value: Raw label cell from the light-curve table.
+
+    Returns:
+        str | None: Display name, or ``None`` to leave the point unlabelled.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in _UNMARKED_LABEL_NAMES:
+        return None
+    try:
+        as_float = float(text)
+    except (TypeError, ValueError):
+        return text
+    if np.isfinite(as_float) and as_float.is_integer():
+        return str(int(as_float))
+    return text
 
 
 def raw_labels(lcd: CurveDash) -> np.ndarray:
@@ -88,6 +115,35 @@ def plot_uirevision(
         meta = lcd.metadata or {}
         name = meta.get("lookup_name") or meta.get("name") or ""
     return f"{filename or 'lc'}|{name}|{domain}|x={axis}|{data}"
+
+
+def clear_sector_labels(lcd: CurveDash) -> int:
+    """Clears every row label so the series is one unlabelled set.
+
+    Times, photometry, selection flags, and ``perm_index`` are unchanged.
+    The ``label`` column is kept and filled with ``None``.
+
+    Args:
+        lcd (CurveDash): Working light curve (mutated).
+
+    Returns:
+        int: Number of previously labelled rows.
+
+    Raises:
+        ValueError: If no light curve is loaded.
+    """
+    df = lcd.lightcurve
+    if df is None or df.empty:
+        raise ValueError("No light curve is loaded.")
+    if "label" not in df.columns:
+        return 0
+    raw = df["label"].to_numpy(dtype=object)
+    n_labelled = sum(1 for value in raw if point_label_name(value) is not None)
+    if n_labelled == 0:
+        return 0
+    lcd.lightcurve.loc[:, "label"] = np.full(len(df), None, dtype=object)
+    logger.info("Cleared labels from %s of %s points", n_labelled, len(df))
+    return n_labelled
 
 
 def selected_perm_indices(lcd: CurveDash) -> list[int]:

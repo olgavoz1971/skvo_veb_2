@@ -138,6 +138,45 @@ def count_observations_in_jd_window(
     return int(np.count_nonzero(finite & (times >= lo) & (times <= hi)))
 
 
+def build_working_window_store_from_times(
+    jd_min: float,
+    jd_max: float,
+    times_jd: np.ndarray,
+) -> dict[str, Any]:
+    """Validates a working window against an absolute-JD sample array.
+
+    Args:
+        jd_min (float): Window start (absolute JD).
+        jd_max (float): Window end (absolute JD).
+        times_jd (numpy.ndarray): Sample times (absolute JD).
+
+    Returns:
+        dict: ``{enabled, jd_min, jd_max}``, or disabled when the window
+        covers every finite sample.
+
+    Raises:
+        PipeException: If the window is empty or contains no samples.
+    """
+    lo, hi = sorted((float(jd_min), float(jd_max)))
+    if hi <= lo:
+        raise PipeException("The visible time range is empty.")
+    times = np.asarray(times_jd, dtype=float)
+    finite = times[np.isfinite(times)]
+    if finite.size == 0:
+        raise PipeException("The visible time range contains no light curve points.")
+    n = int(np.count_nonzero((finite >= lo) & (finite <= hi)))
+    if n == 0:
+        raise PipeException(
+            "The visible time range contains no light curve points."
+        )
+    full_lo = float(np.min(finite))
+    full_hi = float(np.max(finite))
+    if lo <= full_lo and hi >= full_hi:
+        logger.info("Visible range covers full light curve; keeping full-curve mode.")
+        return dict(WORKING_WINDOW_DISABLED)
+    return {"enabled": True, "jd_min": lo, "jd_max": hi}
+
+
 def build_working_window_store(
     jd_min: float,
     jd_max: float,
@@ -156,19 +195,11 @@ def build_working_window_store(
     Raises:
         PipeException: If the window is empty or contains no observations.
     """
-    lo, hi = sorted((float(jd_min), float(jd_max)))
-    if hi <= lo:
-        raise PipeException("The visible time range is empty.")
-    n = count_observations_in_jd_window(lc_json_string, lo, hi)
-    if n == 0:
-        raise PipeException(
-            "The visible time range contains no light curve points."
-        )
-    full_lo, full_hi = get_jd_limits(lc_json_string)
-    if lo <= full_lo and hi >= full_hi:
-        logger.info("Visible range covers full light curve; keeping full-curve mode.")
-        return dict(WORKING_WINDOW_DISABLED)
-    return {"enabled": True, "jd_min": lo, "jd_max": hi}
+    packet = json.loads(lc_json_string)
+    jd0 = float(packet.get("meta", {}).get("jd0") or 0.0)
+    rows = packet.get("data") or []
+    times = np.asarray([row[0] for row in rows], dtype=float) + jd0
+    return build_working_window_store_from_times(jd_min, jd_max, times)
 
 
 def filter_plot_arrays_by_jd_window(

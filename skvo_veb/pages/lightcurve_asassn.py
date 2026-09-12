@@ -74,7 +74,7 @@ from skvo_veb.utils.request_asassn import load_asassn_lightcurve
 #     name='ASAS-SN',
 #     order=2,
 #     path='/asassn',
-#     title='IGEBC: ASAS-SN Lightcurve',
+#     title='ASAS-SN Lightcurve',
 #     in_navbar=True,
 # )
 
