@@ -3,15 +3,24 @@
 import numpy as np
 import plotly.graph_objects as go
 
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, TIME_AXIS_MJD
-from skvo_veb.utils.lc_figure import absolute_jd_to_plot_x, apply_time_xaxis_format
+from skvo_veb.components.extrema_modeller_appearance import (
+    PAGE_DISPLAY_EPOCH_JD,
+    PAGE_TIME_AXIS_MODE,
+    REVIEW_CARD_PLOT_HEIGHT,
+    format_page_fit_title,
+)
+from skvo_veb.utils.lc_figure import (
+    absolute_jd_to_plot_x,
+    apply_time_xaxis_format,
+    maybe_interval_observations_figure,
+)
 
 
-def figure_from_gp_result(gp_res, jd_max_guess=None, display_epoch=DEFAULT_EPOCH_JD):
+def figure_from_gp_result(gp_res, jd_max_guess=None, display_epoch=PAGE_DISPLAY_EPOCH_JD):
     """Build a Plotly figure for one GP interval result.
 
-    Times are shown in **MJD** (``JD - display_epoch``), matching the prep
-    lightcurve interval plot. Pipeline outputs remain absolute JD.
+    Times use the Extrema modeller page display scale (see ``page_time_label``).
+    Pipeline outputs remain absolute JD.
 
     Args:
         gp_res (dict): Output of ``gp_peak_pipeline`` including fitted ``gp`` model.
@@ -23,7 +32,7 @@ def figure_from_gp_result(gp_res, jd_max_guess=None, display_epoch=DEFAULT_EPOCH
     """
     def _plot_x(jd_values):
         return absolute_jd_to_plot_x(
-            jd_values, TIME_AXIS_MJD, display_epoch
+            jd_values, PAGE_TIME_AXIS_MODE, display_epoch
         )
 
     gp = gp_res["gp"]
@@ -109,9 +118,15 @@ def figure_from_gp_result(gp_res, jd_max_guess=None, display_epoch=DEFAULT_EPOCH
     fig.update_layout(
         margin=dict(l=0, r=10, t=20, b=20),
         showlegend=False,
-        title=dict(text=f"   Peak: {peak_mjd:.2f}", font=dict(size=14), y=0.95),
+        title=dict(
+            text=format_page_fit_title(
+                jd_peak, kind="Peak", epoch=display_epoch
+            ),
+            font=dict(size=14),
+            y=0.95,
+        ),
         template="plotly_white",
-        height=400,
+        height=REVIEW_CARD_PLOT_HEIGHT,
         hovermode="x unified",
         hoverlabel=dict(
             bgcolor="rgba(255,255,255,0.9)",
@@ -119,6 +134,34 @@ def figure_from_gp_result(gp_res, jd_max_guess=None, display_epoch=DEFAULT_EPOCH
             font_family="Rockwell",
         ),
     )
-    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=TIME_AXIS_MJD)
+    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=PAGE_TIME_AXIS_MODE)
 
     return fig
+
+
+def figure_from_gp_observations(
+    t_obs,
+    y_obs,
+    *,
+    display_epoch=PAGE_DISPLAY_EPOCH_JD,
+):
+    """Build a points-only figure when a GP interval fit failed.
+
+    Args:
+        t_obs: Absolute JD of the interval points.
+        y_obs: Normalised flux at ``t_obs``.
+        display_epoch (float): Reference subtracted for the x-axis.
+
+    Returns:
+        plotly.graph_objects.Figure | None: Scatter of the interval, or ``None``
+        when no finite points remain.
+    """
+    return maybe_interval_observations_figure(
+        t_obs,
+        y_obs,
+        display_epoch=display_epoch,
+        invert_y=False,
+        y_label="Normalised flux",
+        title="Fit failed",
+        height=REVIEW_CARD_PLOT_HEIGHT,
+    )

@@ -5,13 +5,25 @@ from __future__ import annotations
 import math
 
 import dash_bootstrap_components as dbc
-import plotly.graph_objects as go
-from dash import dcc, html
+from dash import html
 
-from skvo_veb.utils.gp.config import GP_REVIEW_PAGE_SIZE
+from skvo_veb.components.fail_fit_badge import failed_fit_badge, review_card_graph
+from skvo_veb.components.extrema_modeller_appearance import CARD_COL_WIDTH, PAGE_SIZE
+
+_FAIL_TITLE = "GP fit failed"
+_FAIL_BADGE_TYPE = "gp-fail-badge"
 
 
-def success_badge_specs(kernel_type: str, opt_l: float, l_color: str, opt_ampl: float, amp_color: str, sigma_t: float) -> list[dict]:
+def success_badge_specs(
+    kernel_type: str,
+    opt_l: float,
+    l_color: str,
+    opt_ampl: float,
+    amp_color: str,
+    sigma_t: float,
+    *,
+    window_capped: bool = False,
+) -> list[dict]:
     """Builds serialisable badge metadata for a successful GP fit.
 
     Args:
@@ -21,16 +33,20 @@ def success_badge_specs(kernel_type: str, opt_l: float, l_color: str, opt_ampl: 
         opt_ampl (float): Optimised amplitude.
         amp_color (str): Bootstrap colour for amplitude badge.
         sigma_t (float): Peak time uncertainty (days).
+        window_capped (bool): True when a max half-width trimmed this interval.
 
     Returns:
         list[dict]: ``label`` and ``color`` keys for each badge.
     """
-    return [
+    specs = [
         {"label": f"Kernel: {kernel_type.upper()}", "color": "dark"},
         {"label": f"Scale: {opt_l:.4f}", "color": l_color},
         {"label": f"Amp: {opt_ampl:.3f}", "color": amp_color},
         {"label": f"σ_t: {sigma_t:.4f}", "color": "secondary"},
     ]
+    if window_capped:
+        specs.append({"label": "window capped", "color": "warning"})
+    return specs
 
 
 def badges_from_specs(specs: list[dict]) -> list:
@@ -53,7 +69,8 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
 
     Args:
         res_entry (dict): One element from ``results_for_storage``.
-        figure_json (dict, optional): Plotly JSON for successful fits.
+        figure_json (dict, optional): Plotly JSON for the card plot (success or
+            failed-interval observations).
 
     Returns:
         dict: Row suitable for ``save_gp_review_run``.
@@ -69,6 +86,8 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
     }
     if row["is_fail"]:
         row["error"] = res_entry.get("error", "")
+        if figure_json is not None:
+            row["figure_json"] = figure_json
         return row
     row["jd_peak"] = res_entry["jd_peak"]
     row["jd_peak_std"] = res_entry["jd_peak_std"]
@@ -83,6 +102,7 @@ def build_review_store_payload(
     *,
     stopped_early: bool = False,
     source_filename: str | None = None,
+    max_half_width_d: float | None = None,
 ) -> dict:
     """Builds ``store-results-data`` content for a finished GP run.
 
@@ -91,6 +111,7 @@ def build_review_store_payload(
         entries (list[dict]): Serialised review entries (same order as intervals).
         stopped_early (bool): True when the user stopped the batch before all intervals.
         source_filename (str | None): Light-curve filename at the time of this run.
+        max_half_width_d (float | None): Optional half-width cap used for this run.
 
     Returns:
         dict: Run id, page index, include flags, export rows, and source filename.
@@ -116,10 +137,11 @@ def build_review_store_payload(
         "rows": rows,
         "stopped_early": stopped_early,
         "source_filename": source_filename,
+        "max_half_width_d": max_half_width_d,
     }
 
 
-def review_page_label(page: int, total_count: int, page_size: int = GP_REVIEW_PAGE_SIZE) -> str:
+def review_page_label(page: int, total_count: int, page_size: int = PAGE_SIZE) -> str:
     """Formats the Review and Export page caption.
 
     Args:
@@ -141,40 +163,28 @@ def review_page_label(page: int, total_count: int, page_size: int = GP_REVIEW_PA
     )
 
 
-def _fail_card_content(entry: dict) -> html.Div:
-    """Builds the alert block for a failed interval.
+def badge_row_for_entry(entry: dict, *, view: str, index: int) -> html.Div:
+    """Builds the card badge row, with a hover/click FAILED popover on failures.
 
     Args:
-        entry (dict): Serialised review row with ``is_fail`` true.
+        entry (dict): Serialised review row.
+        view (str): ``review`` or ``live`` (keeps Dash ids unique).
+        index (int): Card index in the full batch.
 
     Returns:
-        html.Div: Failure alert and tooltip target.
+        html.Div: Badge row for the card header.
     """
-    jd_min = entry.get("jd_min")
-    jd_max = entry.get("jd_max")
-    err_id = f"err-gp-{str(jd_min).replace('.', '')}"
-    return html.Div(
-        [
-            dbc.Alert(
-                [
-                    html.B("GP fit failed"),
-                    html.Div(
-                        f"Range: {jd_min:.2f}-{jd_max:.2f}",
-                        className="gp-fail-range",
-                    ),
-                    html.Hr(),
-                    html.Div(
-                        "Hover for error",
-                        id=err_id,
-                        className="gp-fail-hint",
-                    ),
-                ],
-                color="danger",
-                className="m-0",
-            ),
-            dbc.Tooltip(entry.get("error", ""), target=err_id),
-        ]
-    )
+    if entry.get("is_fail"):
+        children = failed_fit_badge(
+            title=_FAIL_TITLE,
+            reason=entry.get("error") or "",
+            jd_min=entry.get("jd_min"),
+            jd_max=entry.get("jd_max"),
+            target_id={"type": _FAIL_BADGE_TYPE, "index": index, "view": view},
+        )
+    else:
+        children = badges_from_specs(entry.get("badge_specs", []))
+    return html.Div(children, className="gp-review-badges")
 
 
 def create_review_interval_card(
@@ -183,7 +193,7 @@ def create_review_interval_card(
     *,
     include_in_export: bool,
 ) -> dbc.Col:
-    """Wraps one review fit in a two-column grid card.
+    """Wraps one review fit in a grid card.
 
     Args:
         entry (dict): Serialised review row from the server cache.
@@ -191,11 +201,10 @@ def create_review_interval_card(
         include_in_export (bool): Current include flag from ``store-results-data``.
 
     Returns:
-        dbc.Col: Card with checkbox, badges, and graph or failure alert.
+        dbc.Col: Card with checkbox, badges, and graph.
     """
     is_fail = entry["is_fail"]
-    badges = badges_from_specs(entry.get("badge_specs", []))
-    badge_row = html.Div(badges, style={"textAlign": "center", "marginBottom": "2px"})
+    badge_row = badge_row_for_entry(entry, view="review", index=global_index)
 
     checkbox = dbc.Checkbox(
         id={"type": "fit-selector", "index": global_index},
@@ -205,11 +214,7 @@ def create_review_interval_card(
         className="mb-1 fw-bold",
     )
 
-    if is_fail:
-        content = _fail_card_content(entry)
-    else:
-        fig = go.Figure(entry["figure_json"])
-        content = dcc.Graph(figure=fig, config={"displaylogo": False})  # type: ignore[arg-type]
+    content = review_card_graph(entry)
 
     return dbc.Col(
         html.Div(
@@ -221,7 +226,7 @@ def create_review_interval_card(
                 "backgroundColor": "#fdfdfd" if is_fail else "white",
             },
         ),
-        width=6,
+        width=CARD_COL_WIDTH,
         className="px-1 mb-2",
     )
 
@@ -230,7 +235,7 @@ def render_review_page(
     entries: list[dict],
     page: int,
     include_flags: list[bool],
-    page_size: int = GP_REVIEW_PAGE_SIZE,
+    page_size: int = PAGE_SIZE,
 ) -> list:
     """Returns ``dbc.Col`` children for one page of the review grid.
 

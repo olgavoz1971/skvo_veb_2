@@ -13,7 +13,7 @@ from paths import ensure_import_paths
 ensure_import_paths()
 
 from lc_io import load_lc_fragment, load_lightcurve_frame  # noqa: E402
-from skvo_veb.utils.gp.intervals import load_intervals  # noqa: E402
+from skvo_veb.utils.lc_intervals import load_intervals  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

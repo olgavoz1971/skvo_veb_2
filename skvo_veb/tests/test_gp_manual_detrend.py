@@ -7,7 +7,8 @@ import json
 import numpy as np
 import pytest
 
-from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend, line_y_at_jd
+from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
+from skvo_veb.utils.lc_interaction import line_y_at_jd
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
 from skvo_veb.utils.my_tools import PipeException
 

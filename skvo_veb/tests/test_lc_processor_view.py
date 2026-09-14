@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.gp.export import (
+from skvo_veb.utils.lc_export import (
     suggested_detrended_export_stem,
     suggested_intervals_export_stem,
     suggested_lc_export_stem,

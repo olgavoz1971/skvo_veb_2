@@ -96,6 +96,36 @@ def plot_x_to_jd(
     return float(Time(numeric, format='unix').jd)
 
 
+def line_y_at_jd(
+    jd: np.ndarray,
+    jd_a: float,
+    y_a: float,
+    jd_b: float,
+    y_b: float,
+) -> np.ndarray:
+    """Evaluates the straight line through two anchors in Julian Date space.
+
+    Args:
+        jd (numpy.ndarray): Absolute Julian dates.
+        jd_a (float): First anchor JD.
+        y_a (float): First anchor y (mag or flux).
+        jd_b (float): Second anchor JD.
+        y_b (float): Second anchor y.
+
+    Returns:
+        numpy.ndarray: Line values at ``jd``.
+
+    Raises:
+        PipeException: If the anchor times are identical.
+    """
+    if jd_a == jd_b:
+        raise PipeException(
+            "Trend line anchors share the same time; pick two distinct points on the plot."
+        )
+    slope = (y_b - y_a) / (jd_b - jd_a)
+    return y_a + slope * (np.asarray(jd, dtype=float) - jd_a)
+
+
 def display_x_to_jd(display_x: float, display_epoch: float = DEFAULT_EPOCH_JD) -> float:
     """Converts an MJD plot-axis coordinate to absolute Julian Date.
 

@@ -526,7 +526,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 displaylogo: false,
                 doubleClick: false,
                 edits: { shapePosition: !!allowShapeEdit },
-                modeBarButtonsToRemove: ['zoomIn2d', 'zoomOut2d', 'lasso2d'],
+                modeBarButtonsToRemove: ['lasso2d'],
             };
         },
 
@@ -677,10 +677,10 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             if (!plotDiv || typeof Plotly === 'undefined') {
                 return;
             }
-            // Mark mode pans: a click is handled by our listener, a drag pans
-            // the plot and must not mark. Trend mode also pans. Otherwise
-            // box-select adds intervals.
-            let dragmode = 'select';
+            // Default drag is zoom. Mark mode pans: a click is handled by our
+            // listener, a drag pans the plot and must not mark. Trend mode
+            // also pans. Box Select stays on the toolbar for adding intervals.
+            let dragmode = 'zoom';
             if (window.dash_clientside.gpOc._markModeActive) {
                 dragmode = 'pan';
             } else if (window.dash_clientside.gpOc._trendModeActive) {

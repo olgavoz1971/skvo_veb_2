@@ -514,6 +514,20 @@
     background-color: #fdfdfd;
 }
 
+.gp-fail-badge {
+    cursor: help;
+}
+
+.gp-fail-badge-hint {
+    margin-left: 0.3em;
+    font-weight: 700;
+    opacity: 0.85;
+}
+
+.gp-fail-popover {
+    max-width: 22rem;
+}
+
 .gp-review-badges {
     text-align: center;
     margin-bottom: 0.125rem;
@@ -527,12 +541,13 @@
 }
 
 .gp-fail-range,
-.gp-fail-hint {
+.gp-fail-reason {
     font-size: var(--gp-text-sm);
 }
 
-.gp-fail-hint {
-    cursor: help;
+.gp-fail-reason {
+    margin-top: var(--gp-space-xs);
+    word-break: break-word;
 }
 
 /* Accordion header: title + ? just left of the Bootstrap chevron */

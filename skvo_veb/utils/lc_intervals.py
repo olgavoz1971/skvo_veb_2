@@ -1,4 +1,10 @@
-"""JD interval list parsing for the GP O-C page."""
+"""Two-column JD interval lists: load, display labels, and ``.dat`` export.
+
+Shared by the Lightcurve processor and the GP prep page. Intervals are
+always stored as absolute Julian Date.
+"""
+
+from __future__ import annotations
 
 import logging
 
@@ -18,7 +24,7 @@ def load_intervals(file_obj):
         file_obj: Text or binary stream opened for reading.
 
     Returns:
-        list: ``[[jd_start, jd_end], ...]`` sorted by start time is left to callers.
+        list: ``[[jd_start, jd_end], ...]``. Sorting is left to callers.
     """
     logger.info("Loading intervals from file_obj...")
     result = []
@@ -41,15 +47,12 @@ def format_interval_display_pair(
     display_epoch: float,
     timescale: str | None = None,
 ) -> tuple[str, str]:
-    """Formats one interval for the registry using the prep plot time axis.
-
-    Intervals are always stored as absolute Julian Date; only the UI label
-    follows ``gp_time_axis_switch`` (MJD offset or calendar date).
+    """Formats one interval using the plot time axis.
 
     Args:
         jd_start (float): Interval start in absolute JD.
         jd_end (float): Interval end in absolute JD.
-        time_axis_mode (str): ``mjd`` or ``date`` (same as prep plot).
+        time_axis_mode (str): ``mjd`` or ``date``.
         display_epoch (float): MJD reference subtracted on the MJD axis.
         timescale (str, optional): ``TIMESYS/@timescale`` for date mode.
 
@@ -75,12 +78,7 @@ def format_interval_display_pairs(
     display_epoch: float,
     timescale: str | None = None,
 ) -> list[tuple[str, str]]:
-    """Formats every registry row in one vectorised axis conversion.
-
-    ``format_interval_display_pair`` converts one bound at a time. On the date
-    axis that is two Astropy ``Time`` constructions per interval, which stalls
-    the registry rebuild (and therefore restore-full-light-curve) at a few
-    hundred rows. One conversion of all starts and all ends avoids that.
+    """Formats every interval in one axis conversion.
 
     Args:
         intervals (list): ``[[jd_start, jd_end], ...]`` in absolute JD.
@@ -114,7 +112,7 @@ def _format_plot_date_label(value) -> str:
         value: ``datetime.datetime`` or parseable date string.
 
     Returns:
-        str: ISO-like date label for the registry row.
+        str: ISO-like date label.
     """
     if hasattr(value, "strftime"):
         return value.strftime("%Y-%m-%d")
@@ -122,7 +120,7 @@ def _format_plot_date_label(value) -> str:
 
 
 def format_intervals_download(intervals):
-    """Format interval list for export (matches GP page download layout).
+    """Formats interval pairs for a two-column ``.dat`` download.
 
     Args:
         intervals (list): List of ``[start_jd, end_jd]`` pairs.

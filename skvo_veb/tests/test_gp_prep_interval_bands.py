@@ -135,7 +135,7 @@ def test_windowed_pick_payload_band_order_matches_shape_order():
         timescale=None,
         jd_window=window,
     )
-    from skvo_veb.utils.gp.working_window import interval_overlaps_jd_window
+    from skvo_veb.utils.lc_working_window import interval_overlaps_jd_window
 
     drawn = [
         interval_shape_name(i)

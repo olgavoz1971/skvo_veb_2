@@ -1,6 +1,6 @@
 """Tests for live MAVKA processing view pagination."""
 
-from skvo_veb.utils.mavka.config import MAVKA_LIVE_PAGE_SIZE
+from skvo_veb.components.extrema_modeller_appearance import PAGE_SIZE
 from skvo_veb.utils.mavka.live_page import (
     build_live_page_slot_children,
     live_progress_label,
@@ -10,20 +10,20 @@ from skvo_veb.utils.mavka.live_page import (
 
 def test_live_page_advances_after_full_page():
     """Visible page stays on a full grid until the next fit lands."""
-    assert live_visible_page_for_done_count(6) == 0
-    assert live_visible_page_for_done_count(7) == 1
-    assert live_visible_page_for_done_count(12) == 1
-    assert live_visible_page_for_done_count(13) == 2
+    assert live_visible_page_for_done_count(PAGE_SIZE) == 0
+    assert live_visible_page_for_done_count(PAGE_SIZE + 1) == 1
+    assert live_visible_page_for_done_count(2 * PAGE_SIZE) == 1
+    assert live_visible_page_for_done_count(2 * PAGE_SIZE + 1) == 2
 
 
-def test_live_grid_seventh_fit_first_slot_on_new_page():
-    """Seventh completed fit occupies slot 0 of page 1."""
+def test_live_grid_first_fit_on_new_page():
+    """The first fit after a full page occupies slot 0 of page 1."""
     entries = [
         {"is_fail": False, "figure_json": {"data": [], "layout": {}}, "badge_specs": []}
-        for _ in range(7)
+        for _ in range(PAGE_SIZE + 1)
     ]
     slots = build_live_page_slot_children(entries, visible_page=1)
-    assert len(slots) == MAVKA_LIVE_PAGE_SIZE
+    assert len(slots) == PAGE_SIZE
 
 
 def test_live_progress_label():

@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
-from skvo_veb.utils.mavka.config import MAVKA_PIECE_COLOURS
-from skvo_veb.utils.mavka.figure import figure_from_mavka_result
+from skvo_veb.components.extrema_modeller_appearance import MAVKA_PIECE_COLOURS
+from skvo_veb.utils.mavka.figure import figure_from_mavka_observations, figure_from_mavka_result
 from skvo_veb.utils.mavka.models import ApproxFitResult, model_curve
 from skvo_veb.utils.mavka.pipeline import fit_interval
 
@@ -22,7 +22,7 @@ def test_figure_from_mavka_result_mjd_axis_and_title():
         t, y, fit, display_epoch=DEFAULT_EPOCH_JD, invert_y=True
     )
     tom_mjd = fit.t_ext - DEFAULT_EPOCH_JD
-    assert f"TOM: {tom_mjd:.2f}" in fig.layout.title.text
+    assert f"ToM (MJD): {tom_mjd:.2f}" in fig.layout.title.text
     assert " s)" not in fig.layout.title.text
     assert not fig.layout.xaxis.title.text
     assert fig.layout.xaxis.tickformat == ".2f"
@@ -56,3 +56,14 @@ def test_figure_from_mavka_result_rejects_failed_fit():
     )
     with pytest.raises(ValueError, match="failed fit"):
         figure_from_mavka_result(np.array([1.0]), np.array([1.0]), fit)
+
+
+def test_figure_from_mavka_observations_shows_points():
+    """Failed MAVKA cards can still plot the interval photometry."""
+    t = np.array([DEFAULT_EPOCH_JD + 1.0, DEFAULT_EPOCH_JD + 1.1])
+    y = np.array([12.0, 12.1])
+    fig = figure_from_mavka_observations(t, y, display_epoch=DEFAULT_EPOCH_JD)
+    assert fig is not None
+    assert "Fit failed" in fig.layout.title.text
+    assert fig.data[0].mode == "markers"
+    assert len(fig.data) == 1

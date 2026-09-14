@@ -24,7 +24,9 @@ Zoom / knot-shape behaviour is a separate note:
 [lc_processor_zoom_shapes.md](lc_processor_zoom_shapes.md).
 
 Maths live in `skvo_veb/utils/lc_processor/`. The page must not invent
-photometry.
+photometry. Shared glue with GP prep (export stems, interval `.dat`,
+working range, two-point line) lives in `lc_export.py`,
+`lc_intervals.py`, `lc_working_window.py`, and `lc_interaction.line_y_at_jd`.
 
 Status text uses one overlay on the plot column
 (`lc-processor-plot-alert`). Drawers do not grow. A new message replaces

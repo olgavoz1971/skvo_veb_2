@@ -247,7 +247,7 @@ class CurveDash:
 
         Period, epoch, photcal, VO envelope, name, and other ``metadata`` keys
         stay on this instance. Row labels are copied when Julian Dates match
-        the previous series. Call ``apply_prep_fold_ephemeris`` before or after
+        the previous series. Call ``apply_export_ephemeris`` before or after
         this method so export writes the ephemeris the user confirmed.
 
         Args:

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import find_peaks
 
-from skvo_veb.utils.gp.intervals import format_intervals_download
+from skvo_veb.utils.lc_intervals import format_intervals_download
 from skvo_veb.utils.lc_processor.config import (
     DEFAULT_MIN_EXTREMA_SEGMENT_POINTS,
     MIN_EXTREMA_SEGMENT_POINTS_FLOOR,

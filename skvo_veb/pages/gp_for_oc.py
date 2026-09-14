@@ -120,6 +120,10 @@ Select what to detect:
 - `min` — minima (eclipses)  
 - `max` — maxima (peaks)
 
+**MAX HALF-WIDTH**
+
+Optional. If a marked interval is wider than twice this value (days), that interval is trimmed to ± the cap around its midpoint. Narrower intervals are left unchanged. Leave empty to use every marked interval as drawn.
+
 ---
 
 ## How the extremum and its uncertainty are computed
@@ -226,7 +230,7 @@ PAGE_ABOUT_MARKDOWN = """
 
 This page times minima (or maxima) on a light curve and plots O-C against a trial ephemeris.
 
-Work from the top: load the light curve and mark intervals; time each extremum with a Gaussian Process or with MAVKA and keep the measurements you trust; then plot O-C (observed minus calculated times) and apply cycle corrections if a cycle has slipped.
+Work from the top: load the light curve and mark intervals; time each extremum with a Gaussian Process, MAVKA, or a local parabola and keep the measurements you trust; then plot O-C (observed minus calculated times) and apply cycle corrections if a cycle has slipped.
 
 Use About for this overview. Each accordion has its own help for that step.
 
@@ -245,9 +249,9 @@ For **`.dat` files only**, you may include metadata in ``#`` comment lines (case
 | Pattern | Meaning |
 |---------|---------|
 | ``JD0 = <value>`` | Time origin added to the time column to obtain absolute Julian Date (default **0** if omitted). |
-| ``MAG0 = <value>`` | Reference magnitude for photometric calibration when converting to the normalised flux used internally by the GP (paired with a dimensionless instrumental zero point). |
+| ``MAG0 = <value>`` | Reference magnitude for photometric calibration of this lightcurve (paired with a dimensionless instrumental zero point). Shared by prep and all timers. |
 | ``PERIOD = <value>`` | Folding period in days (populates the **P** field after upload). |
-| ``EPOCH = <value>`` | Reference epoch in the same units and scale as the time column (populates **Epoch-2400000.5**; combined with ``JD0`` when forming absolute JD). |
+| ``EPOCH = <value>`` | Reference epoch in the same units and scale as the time column (populates **__PAGE_EPOCH_ADDON__**; combined with ``JD0`` when forming absolute JD). |
 | ``FILTER=`` / ``BAND=`` | Filter or band label stored in metadata. |
 
 You may also put a **header comment** whose words match the column count (e.g. ``# jd mag mag_err``). Otherwise columns default to time, magnitude, and magnitude error by position.
@@ -273,6 +277,8 @@ Four fitting methods are available:
 
 The tool reports the time of minimum with its formal uncertainty, the magnitude (depth) at minimum, and — where applicable — the eclipse duration, together with a plot of the fit for visual verification.
 
+**Max half-width** is optional. If a marked interval is wider than twice this value (days), that interval is trimmed to ± the cap around its midpoint. Narrower intervals are left unchanged. Leave empty to use every marked interval as drawn.
+
 ## Acknowledgements
 
 The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chinarova (and co-authors) for the statistically optimal determination of phenomenological parameters of light-curve extrema. This implementation builds on the open-source Python realisation of the method by Maxim Pyatnytskyy. We gratefully acknowledge the authors of both the original algorithm and its Python implementation.
@@ -287,6 +293,61 @@ The MAVKA method was developed by Kateryna Andrych, Ivan Andronov, and Lidia Chi
 4. Andronov, I. L., Tkachenko, M. G. 2013, *Odessa Astronomical Publications*, 26, 204.
 5. Andrych, K. D., Andronov, I. L., Chinarova, L. L. 2020, *MAVKA: Program of Statistically Optimal Determination of Phenomenological Parameters of Extrema. Parabolic Spline Algorithm and Analysis of Variability of the Semi-Regular Star Z UMa*, *Journal of Physical Studies*, 24, article 1902. DOI: [10.30970/jps.24.1902](https://doi.org/10.30970/jps.24.1902)
 6. Pyatnytskyy, M. *lc_approx*: Python implementation of MAVKA light-curve approximation methods. [github.com/mpyat2/lc_approx](https://github.com/mpyat2/lc_approx)
+"""
+
+PARABOLA_HELP_MARKDOWN = """
+## About the parabola ToM tool
+
+This accordion fits a **local quadratic** on each marked interval and takes the vertex as the time of extremum (ToM). The interval **is** the fit window: every finite point inside those Julian Dates enters the least-squares fit, unless a max half-width is set and that interval is wider than twice the cap, in which case only ± the cap around the midpoint is used. The time origin is the interval midpoint.
+
+Use it when the extremum is well described by a simple parabola on the raw points — typically a rounded, well-sampled eclipse or peak that does not need MAVKA's piecewise wings or a Gaussian Process.
+
+## What is fitted
+
+Astropy ``Polynomial1D`` (degree 2) with ``LinearLSQFitter`` and a required coefficient covariance. The vertex ``t = t_mid - c1 / (2 c2)`` is kept only when:
+
+- at least five finite points lie in the fit window;
+- the curvature sign matches the requested min/max in the current Magnitudes/Flux view (a magnitude minimum is an eclipse: ``c2 < 0``; a flux minimum has ``c2 > 0``);
+- the vertex lies inside the fit window;
+- a formal ``σ(t)`` can be propagated from the ``(c0, c1, c2)`` covariance (see below).
+
+Failed intervals become review cards with the reason; they do not stop the batch.
+
+## How σ(ToM) is calculated
+
+The quoted uncertainty is a **formal, linearised** error from the parabola coefficients. It is **not** a bootstrap, a GP posterior spread, or an invented default.
+
+Time is centred on the interval midpoint ``t_mid``, and the fit is
+
+``y = c0 + c1 Δt + c2 Δt²``  with  ``Δt = t − t_mid``.
+
+The ToM is the vertex ``t_ToM = t_mid − c1 / (2 c2)``. Astropy ``LinearLSQFitter`` (with ``calc_uncertainties=True``) returns the ``3×3`` covariance of ``(c0, c1, c2)``. That matrix is the inverse of ``AᵀA``, scaled by the residual sum of squares over ``N − 3`` (ordinary residual variance). ``σ(t)`` is then the first-order propagation
+
+``σ(t) = sqrt( J · Cov · Jᵀ )``,
+
+where ``J = ( 0,  −1/(2 c2),  c1 / (2 c2²) )`` is the gradient of ``−c1/(2 c2)`` with respect to ``(c0, c1, c2)``. Because ``t_mid`` is fixed, this is also ``σ(t_ToM)`` in days. Review cards show it in seconds; compact export and O-C keep days.
+
+**Inverse-variance weights off (default).** Photometric error bars are not used. The scale of ``σ(t)`` comes from how far the in-window points scatter about the fitted parabola.
+
+**Inverse-variance weights on.** Each in-window point is weighted by ``1/σ²`` in the least-squares fit, so points with smaller photometric errors pull harder. The same residual-scaled covariance is then propagated as above. If uncertainties are missing, or any in-window point lacks a finite positive error, that card fails rather than quoting an unweighted ``σ(t)``.
+
+If the fitter does not return a covariance, or the propagated variance is not a finite positive number, the interval fails. No ``σ(t)`` is invented. The magenta band on the fit plot is ``±σ(t)``.
+
+This formal error assumes the parabola is an adequate local model and that the linearisation around the vertex is fair. It does not include uncertainty from a poorly chosen window, from a max-half-width cap, or from the wrong extremum kind.
+
+## Controls
+
+**Search extrema** — troughs (min) or peaks (max) in the current Magnitudes/Flux view from accordion 1.
+
+**Inverse-variance weights** — when on, each in-window point is weighted by ``1/σ²``. If uncertainties are missing, or any in-window point lacks a finite positive error, that card fails rather than silently fitting unweighted.
+
+**Max half-width** — optional. If a marked interval's half-width is larger than this value (days), that interval is trimmed to ± the cap around its midpoint. Narrower intervals are left unchanged. Leave empty to use every marked interval as drawn.
+
+Mag/Flux is the prep toggle in accordion 1; this tool does not convert domains itself.
+
+## Export
+
+Compact ToM ``.dat`` (JD and σ in days) matches the GP and MAVKA files that O-C can read.
 """
 
 # One row per workflow accordion. The factory reads only these keys.
@@ -315,6 +376,15 @@ _ACCORDION_HELP_SPECS = (
         "title": "MAVKA",
         "modal_title": "MAVKA",
         "markdown": MAVKA_HELP_MARKDOWN,
+        "allow_html": False,
+        "close_label": "Close",
+        "size": "xl",
+    },
+    {
+        "index": "parabola",
+        "title": "Parabola",
+        "modal_title": "Parabola",
+        "markdown": PARABOLA_HELP_MARKDOWN,
         "allow_html": False,
         "close_label": "Close",
         "size": "xl",
@@ -355,11 +425,12 @@ import plotly.graph_objects as go
 import base64
 import io
 import json
-import numpy as np
-
-import traceback
 import logging
+import math
+import traceback
 import uuid
+
+import numpy as np
 
 from skvo_veb.utils.lc_bridge import (
     curvedash_from_transport_json,
@@ -394,44 +465,42 @@ from skvo_veb.utils.gp.prep_interval_bands import (
 
 from skvo_veb.utils.gp import (
     GUESS_SIGMA, LEN_MIN,
-    load_intervals, gp_peak_pipeline,
+    gp_peak_pipeline,
     KERNEL_TYPE, EXTREMA_MODE, guess_length_scale,
     AMPLITUDE_INIT, AMPLITUDE_MIN, AMPLITUDE_MAX,
     DEFAULT_FLOAT_PARAMS,
     pack_uploaded_lightcurve,
     decode_gp_flux_arrays,
     slice_gp_flux_arrays,
+    figure_from_gp_observations,
     figure_from_gp_result,
-    format_intervals_download,
 )
 from skvo_veb.utils.gp.export import (
-    apply_prep_fold_ephemeris,
     gp_compact_extrema_download_name,
-    gp_extended_extrema_download_name,
-    gp_extrema_export_stem,
-    gp_intervals_export_download_name,
-    gp_lc_export_download_name,
     gp_suggested_intervals_stem,
     gp_suggested_timing_stem,
+)
+from skvo_veb.utils.lc_export import (
+    apply_export_ephemeris,
+    intervals_export_download_name,
+    lc_export_download_name,
     suggested_lc_export_stem,
 )
 from skvo_veb.utils.gp.flux import empty_interval_indices
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.gp.results_export import (
-    build_extended_export_zip,
     format_compact_extrema_dat,
     scale_limit_flag,
 )
 from skvo_veb.utils.gp.review_cache import load_gp_review_run, save_gp_review_run
 from skvo_veb.utils.gp.review_page import (
-    badges_from_specs,
     build_review_store_payload,
     render_review_page,
     review_page_label,
     serialise_review_entry,
     success_badge_specs,
 )
-from skvo_veb.utils.gp.config import GP_LIVE_PAGE_SIZE, build_gp_float_params
+from skvo_veb.utils.gp.config import build_gp_float_params
 from skvo_veb.utils.gp.run_control import (
     clear_gp_batch_stop,
     gp_batch_stop_requested,
@@ -446,20 +515,16 @@ from skvo_veb.utils.gp.live_page import (
 from skvo_veb.utils.mavka import (
     DEFAULT_EXTREMA_MODE,
     DEFAULT_METHOD,
-    MAVKA_LIVE_PAGE_SIZE,
     MAXIMA_NOT_AVAILABLE,
     METHOD_OPTIONS,
+    figure_from_mavka_observations,
     figure_from_mavka_result,
     fit_interval as mavka_fit_interval,
     slice_interval_photometry,
 )
-from skvo_veb.utils.mavka.config import MAVKA_PIECE_COLOURS, MAVKA_REVIEW_PAGE_SIZE
 from skvo_veb.utils.mavka.export import (
-    build_extended_export_zip as build_mavka_extended_export_zip,
     format_compact_extrema_dat as format_mavka_compact_extrema_dat,
     mavka_compact_extrema_download_name,
-    mavka_extended_extrema_download_name,
-    mavka_extrema_export_stem,
     mavka_suggested_timing_stem,
 )
 from skvo_veb.utils.mavka.live_page import (
@@ -483,6 +548,40 @@ from skvo_veb.utils.mavka.run_control import (
     clear_mavka_batch_stop,
     mavka_batch_stop_requested,
     request_mavka_batch_stop,
+)
+from skvo_veb.utils.parabola_tom import (
+    DEFAULT_EXTREMA_MODE as PARABOLA_DEFAULT_EXTREMA_MODE,
+    DEFAULT_USE_WEIGHTS as PARABOLA_DEFAULT_USE_WEIGHTS,
+    figure_from_parabola_observations,
+    figure_from_parabola_result,
+    fit_interval as parabola_fit_interval,
+)
+from skvo_veb.utils.parabola_tom.export import (
+    format_compact_extrema_dat as format_parabola_compact_extrema_dat,
+    parabola_compact_extrema_download_name,
+    parabola_suggested_timing_stem,
+)
+from skvo_veb.utils.parabola_tom.live_page import (
+    build_live_page_slot_children as build_parabola_live_page_slot_children,
+    live_progress_label as parabola_live_progress_label,
+    live_slot_waiting as parabola_live_slot_waiting,
+    live_visible_page_for_done_count as parabola_live_visible_page_for_done_count,
+)
+from skvo_veb.utils.parabola_tom.review_cache import (
+    load_parabola_review_run,
+    save_parabola_review_run,
+)
+from skvo_veb.utils.parabola_tom.review_page import (
+    build_review_store_payload as build_parabola_review_store_payload,
+    render_review_page as render_parabola_review_page,
+    review_entry_from_fit as parabola_review_entry_from_fit,
+    review_page_label as parabola_review_page_label,
+    serialise_review_entry as serialise_parabola_review_entry,
+)
+from skvo_veb.utils.parabola_tom.run_control import (
+    clear_parabola_batch_stop,
+    parabola_batch_stop_requested,
+    request_parabola_batch_stop,
 )
 from skvo_veb.utils.oc.compute import (
     absolute_jd_to_display_mjd,
@@ -514,22 +613,27 @@ from skvo_veb.utils.gp.plot_data import (
     transport_revision_token,
     unpack_json_for_gp_plot,
 )
-from skvo_veb.utils.gp.intervals import (
+from skvo_veb.utils.lc_intervals import (
     format_interval_display_pair,
     format_interval_display_pairs,
+    format_intervals_download,
+    load_intervals,
 )
 from skvo_veb.utils.gp.working_window import (
-    WORKING_WINDOW_DISABLED,
     build_working_window_store,
+    transport_json_for_prep_export,
+)
+from skvo_veb.utils.lc_working_window import (
+    WORKING_WINDOW_DISABLED,
+    apply_half_width_cap,
     filter_plot_arrays_by_jd_window,
     interval_overlaps_jd_window,
     jd_bounds_from_visible_plot,
     normalize_working_window,
     observation_jd_bounds_tuple,
-    transport_json_for_prep_export,
+    resolve_max_half_width_d,
 )
 from skvo_veb.utils.lc_config import (
-    DEFAULT_EPOCH_JD,
     DEFAULT_EXPORT_FORMAT,
     EXPORT_FORMAT_OPTIONS,
     TIME_AXIS_DATE,
@@ -542,26 +646,44 @@ from skvo_veb.utils.lc_figure import (
     apply_time_xaxis_format,
     time_axis_xaxis_title,
 )
+from skvo_veb.components.extrema_modeller_appearance import (
+    CARD_COL_WIDTH,
+    MAVKA_PIECE_COLOURS,
+    PAGE_DISPLAY_EPOCH_JD,
+    PAGE_SIZE,
+    PARABOLA_LINE_COLOUR,
+    page_epoch_addon_label,
+    page_time_label,
+    to_page_time,
+)
 from skvo_veb.utils.lc_interaction import (
     apply_plot_relayout_ranges_to_figure,
     plot_x_to_jd,
 )
 
-jd0 = DEFAULT_EPOCH_JD
+jd0 = PAGE_DISPLAY_EPOCH_JD
+LC_INTERVALS_HELP_MARKDOWN = LC_INTERVALS_HELP_MARKDOWN.replace(
+    "__PAGE_EPOCH_ADDON__",
+    page_epoch_addon_label(),
+)
 
 logger = logging.getLogger(__name__)
 
 _LIVE_SLOT_PROGRESS_OUTPUTS = [
     Output({"type": "gp-live-slot", "index": i}, "children")
-    for i in range(GP_LIVE_PAGE_SIZE)
+    for i in range(PAGE_SIZE)
 ]
 _MAVKA_LIVE_SLOT_PROGRESS_OUTPUTS = [
     Output({"type": "mavka-live-slot", "index": i}, "children")
-    for i in range(MAVKA_LIVE_PAGE_SIZE)
+    for i in range(PAGE_SIZE)
+]
+_PARABOLA_LIVE_SLOT_PROGRESS_OUTPUTS = [
+    Output({"type": "parabola-live-slot", "index": i}, "children")
+    for i in range(PAGE_SIZE)
 ]
 # Gaia Eclipsing Binary Catalog - IGEBC
-dash.register_page(__name__, name='O-C',
-                   order=7,
+dash.register_page(__name__, name='Extrema Modeller',
+                   order=9,
                    title='Extrema modeller for O-C',
                    description='Determination of individual extrema timings in a light curve',
                    in_navbar=True,
@@ -874,9 +996,10 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
 ) = _gp_click_help(
     "add_interval",
     "Add interval",
-    "Unfolded: box-select a time range. Folded: box-select on the extended phase axis "
-    "(−0.5 to 1.5); width must not exceed 1 phase. Re-adding the same window is "
-    "rejected. See TIPS under the plot for the full workflow.",
+    "The plot starts in zoom. Switch the toolbar to Box Select, then drag a "
+    "time range (unfolded) or a phase window on the extended axis −0.5 to 1.5 "
+    "(folded; width ≤ 1). Re-adding the same window is rejected. See TIPS "
+    "under the plot for the full workflow.",
 )
 # Workflow guide under the plot: longer than a per-control ? and opened on demand
 (
@@ -887,15 +1010,16 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "Tips: selecting and removing intervals",
     [
         html.P(
-            "Unfolded curve: box-select a time range on the plot and press "
-            "Add interval.",
+            "Unfolded curve: the plot starts in zoom. Switch the toolbar to "
+            "Box Select, drag a time range, and press Add interval.",
             className="mb-2",
         ),
         html.P(
             "If the period is known, add every cycle at once: switch on Fold, "
-            "box-select on the extended phase axis (−0.5 to 1.5, box width ≤ 1) and "
-            "press Add interval. Matching intervals from all cycles are added "
-            "automatically, and you can unfold the curve afterwards.",
+            "switch the toolbar to Box Select, drag on the extended phase axis "
+            "(−0.5 to 1.5, box width ≤ 1) and press Add interval. Matching "
+            "intervals from all cycles are added automatically, and you can "
+            "unfold the curve afterwards.",
             className="mb-2",
         ),
         html.P(
@@ -1036,14 +1160,65 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     "in this version.",
 )
 (
+    _parabola_extrema_help_btn,
+    _parabola_extrema_help_pop,
+) = _gp_click_help(
+    "parabola_extrema",
+    "Search extrema",
+    "Times a trough or a peak in the current Magnitudes/Flux view from "
+    "accordion 1. The vertex of the local parabola must lie inside the fit "
+    "window, and its curvature must match this choice.",
+)
+(
+    _parabola_weights_help_btn,
+    _parabola_weights_help_pop,
+) = _gp_click_help(
+    "parabola_weights",
+    "Inverse-variance weights",
+    "When on, each in-window point is weighted by 1/σ². If photometric "
+    "uncertainties are missing, or any in-window point lacks a finite positive "
+    "error, that interval fails instead of fitting unweighted.",
+)
+_MAX_HALF_WIDTH_HELP = (
+    "Optional. If a marked interval is wider than twice this value, that "
+    "interval is trimmed to ± this many days around its midpoint. Narrower "
+    "intervals are left unchanged. Leave empty to use every point in the "
+    "marked interval."
+)
+(
+    _gp_half_width_help_btn,
+    _gp_half_width_help_pop,
+) = _gp_click_help(
+    "gp_max_half_width",
+    "Max half-width",
+    _MAX_HALF_WIDTH_HELP,
+)
+(
+    _mavka_half_width_help_btn,
+    _mavka_half_width_help_pop,
+) = _gp_click_help(
+    "mavka_max_half_width",
+    "Max half-width",
+    _MAX_HALF_WIDTH_HELP,
+)
+(
+    _parabola_half_width_help_btn,
+    _parabola_half_width_help_pop,
+) = _gp_click_help(
+    "parabola_max_half_width",
+    "Max half-width",
+    _MAX_HALF_WIDTH_HELP,
+)
+(
     _oc_source_help_btn,
     _oc_source_help_pop,
 ) = _gp_click_help(
     "oc_source",
     "ToM source",
-    "Gaussian Process and MAVKA use Keep-marked successes from those "
-    "accordions. Upload reads a compact ToM .dat exported from GP or MAVKA "
-    "(JD and σ in days). Hash comments from that file are copied into the O-C export.",
+    "Gaussian Process, MAVKA, and Parabola use Keep-marked successes from those "
+    "accordions. Upload reads a compact ToM .dat exported from GP, MAVKA, or "
+    "Parabola (JD and σ in days). Hash comments from that file are copied into "
+    "the O-C export.",
 )
 (
     _oc_ephemeris_help_btn,
@@ -1060,9 +1235,9 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
 ) = _gp_click_help(
     "oc_cycle_shift",
     "Cycle corrections",
-    "For every ToM at or after the given time (display MJD, same scale as "
-    "Epoch), add integer ΔE to the rounded cycle. Several rows accumulate. "
-    "Use +1 or −1 to fix a cycle slip.",
+    "For every ToM at or after the given time (same scale as Epoch: "
+    f"{page_time_label()}), add integer ΔE to the rounded cycle. Several "
+    "rows accumulate. Use +1 or −1 to fix a cycle slip.",
 )
 (
     _oc_period_correct_help_btn,
@@ -1081,6 +1256,152 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
 
 
 GP_CHECKLIST_SWITCH_ON = 1
+
+
+def _max_half_width_block(input_id: str, help_btn) -> html.Div:
+    """Builds the shared Max half-width sidebar control.
+
+    Args:
+        input_id (str): Dash id for the numeric input.
+        help_btn: Page ``?`` button for this field.
+
+    Returns:
+        dash.html.Div: Heading row and input group.
+    """
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.Label("Max half-width", className="gp-section-label mb-0"),
+                    html.Div(help_btn, className="lc-discovery-field-help"),
+                ],
+                className="gp-sidebar-heading-row",
+            ),
+            dbc.InputGroup(
+                [
+                    dbc.Input(
+                        id=input_id,
+                        type="number",
+                        placeholder="no limit",
+                    ),
+                    dbc.InputGroupText("d"),
+                ],
+                size="sm",
+                className="gp-sidebar-group",
+            ),
+        ]
+    )
+
+
+def _timing_review_toolbar(
+    *,
+    filename_id: str,
+    filename_placeholder: str,
+    download_btn_id: str,
+    select_all_id: str,
+    unselect_all_id: str,
+    prev_id: str,
+    page_label_id: str,
+    next_id: str,
+) -> html.Div:
+    """Download row above the review pager, shared by GP, MAVKA, and Parabola.
+
+    Args:
+        filename_id (str): Export filename input id.
+        filename_placeholder (str): Filename placeholder.
+        download_btn_id (str): Download button id.
+        select_all_id (str): Select-all button id.
+        unselect_all_id (str): Unselect-all button id.
+        prev_id (str): Previous-page button id.
+        page_label_id (str): Page caption id.
+        next_id (str): Next-page button id.
+
+    Returns:
+        dash.html.Div: Toolbar with download first, then Review controls.
+    """
+    return html.Div(
+        [
+            dbc.Row(
+                [
+                    dbc.Col(
+                        dbc.InputGroup(
+                            [
+                                dbc.Input(
+                                    id=filename_id,
+                                    placeholder=filename_placeholder,
+                                    type="text",
+                                    size="sm",
+                                ),
+                                dbc.Button(
+                                    "Download",
+                                    id=download_btn_id,
+                                    color="primary",
+                                    size="sm",
+                                ),
+                            ],
+                            className="gp-export-group",
+                        ),
+                        width="auto",
+                    ),
+                ],
+                className="align-items-center g-2 justify-content-end",
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.H6("Review", className="gp-card-title"),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        dbc.Button(
+                            "Select all",
+                            id=select_all_id,
+                            size="sm",
+                            color="secondary",
+                            outline=True,
+                        ),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        dbc.Button(
+                            "Unselect all",
+                            id=unselect_all_id,
+                            size="sm",
+                            color="secondary",
+                            outline=True,
+                        ),
+                        width="auto",
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Button(
+                                "Previous page",
+                                id=prev_id,
+                                size="sm",
+                                outline=True,
+                                color="secondary",
+                            ),
+                            html.Span(
+                                id=page_label_id,
+                                className="gp-review-page-caption",
+                            ),
+                            dbc.Button(
+                                "Next page",
+                                id=next_id,
+                                size="sm",
+                                outline=True,
+                                color="secondary",
+                            ),
+                        ],
+                        width="auto",
+                        className="gp-review-pager",
+                    ),
+                ],
+                className="align-items-center g-2",
+            ),
+        ],
+        className="gp-review-toolbar",
+    )
 
 
 def gp_mark_mode_checklist_options(*, disabled: bool = False) -> list[dict]:
@@ -1196,8 +1517,8 @@ sidebar_lc = html.Div([
                 dbc.Input(id="input-period", type="number", placeholder="Period (days)"),
             ], size="sm"),
             dbc.InputGroup([
-                dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
-                dbc.Input(id="input-epoch", type="number", placeholder="MJD offset"),
+                dbc.InputGroupText(page_epoch_addon_label()),
+                dbc.Input(id="input-epoch", type="number", placeholder=page_time_label()),
             ], size="sm"),
             dbc.RadioItems(
                 id="gp-fold-ephemeris-mode",
@@ -1268,7 +1589,7 @@ sidebar_lc = html.Div([
             dbc.RadioItems(
                 id="gp_time_axis_switch",
                 options=[
-                    {"label": " MJD", "value": TIME_AXIS_MJD},
+                    {"label": f" {page_time_label()}", "value": TIME_AXIS_MJD},
                     {"label": " Date", "value": TIME_AXIS_DATE},
                 ],
                 value=TIME_AXIS_MJD,
@@ -1489,9 +1810,9 @@ graph_lc = html.Div([
                 'doubleClick': False,
                 # Interval bands stay non-editable; trend line editing is toggled in JS
                 'edits': {'shapePosition': False},
-                # No shape-drawing tools: intervals come from box-select and the
-                # trend line is placed by clicking, so drawn shapes would only be junk.
-                'modeBarButtonsToRemove': ['zoomIn2d', 'zoomOut2d', 'lasso2d'],
+                # Lasso is unused: intervals come from Box Select, and the
+                # trend line is placed by clicking.
+                'modeBarButtonsToRemove': ['lasso2d'],
             },
             className="gp-prep-graph",
         ),
@@ -1597,6 +1918,8 @@ sidebar_gp = html.Div([
         ], width=12),
 
     ], className="g-2 gp-sidebar-group"),
+
+    _max_half_width_block("gp-max-half-width", _gp_half_width_help_btn),
 
     # Two noise settings share one row; labels sit above so the columns line up
     dbc.Row(
@@ -1766,12 +2089,13 @@ sidebar_gp = html.Div([
     _kernel_type_help_pop,
     _length_scale_help_pop,
     _amplitude_help_pop,
+    _gp_half_width_help_pop,
 
 ], className="gp-sidebar bg-light border rounded shadow-sm")
 
 
 def _live_processing_layout():
-    """Fixed-slot grid for GP Processing View (see ``GP_LIVE_PAGE_SIZE``)."""
+    """Fixed-slot grid for GP Processing View (see ``extrema_modeller_appearance``)."""
     return dbc.Row(
         [
             dbc.Col(
@@ -1779,10 +2103,10 @@ def _live_processing_layout():
                     id={"type": "gp-live-slot", "index": slot_idx},
                     children=live_slot_waiting(),
                 ),
-                width=6,
+                width=CARD_COL_WIDTH,
                 className="px-1 mb-2",
             )
-            for slot_idx in range(GP_LIVE_PAGE_SIZE)
+            for slot_idx in range(PAGE_SIZE)
         ],
         id="live-graphs-container",
         className="g-2",
@@ -1811,99 +2135,15 @@ graph_gp = html.Div([
         html.Hr(className="my-4"),
         dbc.Card([
             dbc.CardBody(
-                html.Div(
-                    [
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    html.H6(
-                                        "Review and export",
-                                        className="gp-card-title",
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    dbc.Button(
-                                        "Select all",
-                                        id="select-all-btn",
-                                        size="sm",
-                                        color="secondary",
-                                        outline=True,
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    dbc.Button(
-                                        "Unselect all",
-                                        id="unselect-all-btn",
-                                        size="sm",
-                                        color="secondary",
-                                        outline=True,
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    [
-                                        dbc.Button(
-                                            "Previous page",
-                                            id="gp-review-prev",
-                                            size="sm",
-                                            outline=True,
-                                            color="secondary",
-                                        ),
-                                        html.Span(
-                                            id="gp-review-page-label",
-                                            className="gp-review-page-caption",
-                                        ),
-                                        dbc.Button(
-                                            "Next page",
-                                            id="gp-review-next",
-                                            size="sm",
-                                            outline=True,
-                                            color="secondary",
-                                        ),
-                                    ],
-                                    width="auto",
-                                    className="gp-review-pager",
-                                ),
-                            ],
-                            className="align-items-center g-2",
-                        ),
-                        dbc.Row(
-                            [
-                                dbc.Col(
-                                    dbc.Switch(
-                                        id="gp-extended-export",
-                                        value=False,
-                                        label="Extended export",
-                                    ),
-                                    width="auto",
-                                ),
-                                dbc.Col(
-                                    dbc.InputGroup(
-                                        [
-                                            dbc.Input(
-                                                id="export-filename",
-                                                placeholder="results_gp",
-                                                type="text",
-                                                size="sm",
-                                            ),
-                                            dbc.Button(
-                                                "Download",
-                                                id="save-file-btn",
-                                                color="primary",
-                                                size="sm",
-                                            ),
-                                        ],
-                                        className="gp-export-group",
-                                    ),
-                                    width="auto",
-                                ),
-                            ],
-                            className="align-items-center g-2 justify-content-end",
-                        ),
-                    ],
-                    className="gp-review-toolbar",
+                _timing_review_toolbar(
+                    filename_id="export-filename",
+                    filename_placeholder="results_gp",
+                    download_btn_id="save-file-btn",
+                    select_all_id="select-all-btn",
+                    unselect_all_id="unselect-all-btn",
+                    prev_id="gp-review-prev",
+                    page_label_id="gp-review-page-label",
+                    next_id="gp-review-next",
                 ),
                 className="gp-review-toolbar-body",
             )
@@ -2005,6 +2245,8 @@ sidebar_mavka = html.Div(
         ),
         _mavka_method_help_pop,
         _mavka_extrema_help_pop,
+        _max_half_width_block("mavka-max-half-width", _mavka_half_width_help_btn),
+        _mavka_half_width_help_pop,
     ],
     className="gp-sidebar bg-light border rounded shadow-sm",
 )
@@ -2019,10 +2261,10 @@ def _mavka_live_processing_layout():
                     id={"type": "mavka-live-slot", "index": slot_idx},
                     children=mavka_live_slot_waiting(),
                 ),
-                width=6,
+                width=CARD_COL_WIDTH,
                 className="px-1 mb-2",
             )
-            for slot_idx in range(MAVKA_LIVE_PAGE_SIZE)
+            for slot_idx in range(PAGE_SIZE)
         ],
         id="mavka-live-graphs-container",
         className="g-2",
@@ -2060,99 +2302,15 @@ graph_mavka = html.Div(
                 dbc.Card(
                     [
                         dbc.CardBody(
-                            html.Div(
-                                [
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(
-                                                html.H6(
-                                                    "Review and export",
-                                                    className="gp-card-title",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.Button(
-                                                    "Select all",
-                                                    id="mavka-select-all-btn",
-                                                    size="sm",
-                                                    color="secondary",
-                                                    outline=True,
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.Button(
-                                                    "Unselect all",
-                                                    id="mavka-unselect-all-btn",
-                                                    size="sm",
-                                                    color="secondary",
-                                                    outline=True,
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                [
-                                                    dbc.Button(
-                                                        "Previous page",
-                                                        id="mavka-review-prev",
-                                                        size="sm",
-                                                        outline=True,
-                                                        color="secondary",
-                                                    ),
-                                                    html.Span(
-                                                        id="mavka-review-page-label",
-                                                        className="gp-review-page-caption",
-                                                    ),
-                                                    dbc.Button(
-                                                        "Next page",
-                                                        id="mavka-review-next",
-                                                        size="sm",
-                                                        outline=True,
-                                                        color="secondary",
-                                                    ),
-                                                ],
-                                                width="auto",
-                                                className="gp-review-pager",
-                                            ),
-                                        ],
-                                        className="align-items-center g-2",
-                                    ),
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(
-                                                dbc.Switch(
-                                                    id="mavka-extended-export",
-                                                    value=False,
-                                                    label="Extended export",
-                                                ),
-                                                width="auto",
-                                            ),
-                                            dbc.Col(
-                                                dbc.InputGroup(
-                                                    [
-                                                        dbc.Input(
-                                                            id="mavka-export-filename",
-                                                            placeholder="results_WSAP",
-                                                            type="text",
-                                                            size="sm",
-                                                        ),
-                                                        dbc.Button(
-                                                            "Download",
-                                                            id="mavka-save-file-btn",
-                                                            color="primary",
-                                                            size="sm",
-                                                        ),
-                                                    ],
-                                                    className="gp-export-group",
-                                                ),
-                                                width="auto",
-                                            ),
-                                        ],
-                                        className="align-items-center g-2 justify-content-end",
-                                    ),
-                                ],
-                                className="gp-review-toolbar",
+                            _timing_review_toolbar(
+                                filename_id="mavka-export-filename",
+                                filename_placeholder="results_WSAP",
+                                download_btn_id="mavka-save-file-btn",
+                                select_all_id="mavka-select-all-btn",
+                                unselect_all_id="mavka-unselect-all-btn",
+                                prev_id="mavka-review-prev",
+                                page_label_id="mavka-review-page-label",
+                                next_id="mavka-review-next",
                             ),
                             className="gp-review-toolbar-body",
                         )
@@ -2164,6 +2322,174 @@ graph_mavka = html.Div(
         ),
         dcc.Download(id="mavka-download-results"),
         dcc.Store(id="store-mavka-results-data"),
+    ],
+    className="p-2",
+)
+
+
+sidebar_parabola = html.Div(
+    [
+        dbc.Button(
+            "Show legend",
+            id="toggle-parabola-legend-btn",
+            color="link",
+            size="sm",
+            className="p-0 text-decoration-none",
+        ),
+        dbc.Collapse(
+            html.Div(
+                [
+                    LegendItem("black", "Data points", mode="circle"),
+                    LegendItem(PARABOLA_LINE_COLOUR, "Parabola", mode="line"),
+                    LegendItem("magenta", "ToM estimate", mode="dashed"),
+                ],
+                className="p-2 border rounded bg-white",
+            ),
+            id="parabola-legend-collapse",
+            is_open=False,
+            className="gp-sidebar-group",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    dbc.Button(
+                        "Run parabola",
+                        id="parabola-run-btn",
+                        color="primary",
+                        className="w-100",
+                        size="sm",
+                    ),
+                    width=7,
+                ),
+                dbc.Col(
+                    dbc.Button(
+                        "Stop",
+                        id="parabola-stop-btn",
+                        color="danger",
+                        outline=True,
+                        className="w-100",
+                        size="sm",
+                    ),
+                    width=5,
+                ),
+            ],
+            className="g-2 gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Search extrema", className="gp-section-label mb-0"),
+                html.Div(
+                    _parabola_extrema_help_btn, className="lc-discovery-field-help"
+                ),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.Select(
+            id="parabola-extrema-mode",
+            options=[  # type: ignore
+                {"label": "Search minima", "value": "min"},
+                {"label": "Search maxima", "value": "max"},
+            ],
+            value=PARABOLA_DEFAULT_EXTREMA_MODE,
+            size="sm",
+            className="gp-sidebar-group",
+        ),
+        html.Div(
+            [
+                html.Label("Inverse-variance weights", className="gp-section-label mb-0"),
+                html.Div(
+                    _parabola_weights_help_btn, className="lc-discovery-field-help"
+                ),
+            ],
+            className="gp-sidebar-heading-row",
+        ),
+        dbc.Switch(
+            id="parabola-use-weights",
+            value=PARABOLA_DEFAULT_USE_WEIGHTS,
+            label="Weight by 1/σ²",
+            className="gp-sidebar-group",
+        ),
+        _max_half_width_block(
+            "parabola-max-half-width", _parabola_half_width_help_btn
+        ),
+        _parabola_extrema_help_pop,
+        _parabola_weights_help_pop,
+        _parabola_half_width_help_pop,
+    ],
+    className="gp-sidebar bg-light border rounded shadow-sm",
+)
+
+
+def _parabola_live_processing_layout():
+    """Fixed-slot grid for parabola processing view."""
+    return dbc.Row(
+        [
+            dbc.Col(
+                html.Div(
+                    id={"type": "parabola-live-slot", "index": slot_idx},
+                    children=parabola_live_slot_waiting(),
+                ),
+                width=CARD_COL_WIDTH,
+                className="px-1 mb-2",
+            )
+            for slot_idx in range(PAGE_SIZE)
+        ],
+        id="parabola-live-graphs-container",
+        className="g-2",
+    )
+
+
+graph_parabola = html.Div(
+    [
+        html.Div(id="parabola-finished-signal", style={"display": "none"}),
+        html.Div(
+            id="parabola-header-area",
+            children=[
+                html.Div(
+                    [
+                        html.H6("Parabola processing view", className="gp-card-title"),
+                        dbc.Badge(
+                            "Waiting for run",
+                            color="secondary",
+                            id="parabola-view-badge",
+                            className="ms-2",
+                        ),
+                    ],
+                    className="d-flex align-items-center",
+                ),
+            ],
+            className="mb-1",
+        ),
+        html.Div(id="parabola-live-progress-label", className="small text-muted mb-3"),
+        _parabola_live_processing_layout(),
+        html.Div(
+            id="parabola-final-review-container",
+            style={"display": "none"},
+            children=[
+                html.Hr(className="my-4"),
+                dbc.Card(
+                    [
+                        dbc.CardBody(
+                            _timing_review_toolbar(
+                                filename_id="parabola-export-filename",
+                                filename_placeholder="results_parabola",
+                                download_btn_id="parabola-save-file-btn",
+                                select_all_id="parabola-select-all-btn",
+                                unselect_all_id="parabola-unselect-all-btn",
+                                prev_id="parabola-review-prev",
+                                page_label_id="parabola-review-page-label",
+                                next_id="parabola-review-next",
+                            ),
+                            className="gp-review-toolbar-body",
+                        )
+                    ],
+                    className="bg-light mb-3",
+                ),
+                dbc.Row(id="parabola-graphs-container", className="g-2"),
+            ],
+        ),
+        dcc.Download(id="parabola-download-results"),
+        dcc.Store(id="store-parabola-results-data"),
     ],
     className="p-2",
 )
@@ -2181,7 +2507,7 @@ def _oc_empty_figure() -> go.Figure:
             overlaying="x",
             side="top",
             matches="x",
-            title="Calculated MJD",
+            title=f"Calculated {page_time_label()}",
             showgrid=False,
         ),
         margin=dict(l=50, r=20, t=60, b=50),
@@ -2196,12 +2522,12 @@ def _oc_source_title(source: str | None) -> str:
     """Returns the O-C card title for a ToM source.
 
     Args:
-        source (str | None): ``gp``, ``mavka``, or ``upload``.
+        source (str | None): ``gp``, ``mavka``, ``parabola``, or ``upload``.
 
     Returns:
-        str: ``O-C (GP)``, ``O-C (MAVKA)``, or ``O-C (upload)``.
+        str: ``O-C (GP)``, ``O-C (MAVKA)``, ``O-C (parabola)``, or ``O-C (upload)``.
     """
-    labels = {"gp": "GP", "mavka": "MAVKA", "upload": "upload"}
+    labels = {"gp": "GP", "mavka": "MAVKA", "parabola": "parabola", "upload": "upload"}
     key = str(source or "")
     if key in labels:
         return f"O-C ({labels[key]})"
@@ -2222,12 +2548,12 @@ def _build_oc_figure(
         period_correct (dict | None): Optional linear-fit overlay samples.
 
     Returns:
-        plotly.graph_objects.Figure: O-C vs E with a calculated-MJD top axis.
+        plotly.graph_objects.Figure: O-C vs E with a calculated-time top axis.
     """
     cycle_e = np.asarray(payload["E"], dtype=float)
     oc_days = np.asarray(payload["OC"], dtype=float)
-    mjd_obs = np.asarray(payload["jd_ext"], dtype=float) - jd0
-    mjd_calc = np.asarray(payload["jd_calc"], dtype=float) - jd0
+    mjd_obs = to_page_time(np.asarray(payload["jd_ext"], dtype=float))
+    mjd_calc = to_page_time(np.asarray(payload["jd_calc"], dtype=float))
     sigma_jd = np.asarray(payload["sigma_jd"], dtype=float)
     custom = np.column_stack(
         [
@@ -2241,8 +2567,8 @@ def _build_oc_figure(
     hover = (
         "E: %{x:.0f}<br>"
         "O-C: %{y:.6f} d (%{customdata[0]:.1f} s)<br>"
-        "MJD obs: %{customdata[1]:.6f}<br>"
-        "MJD calc: %{customdata[2]:.6f}<br>"
+        f"{page_time_label()} obs: %{{customdata[1]:.6f}}<br>"
+        f"{page_time_label()} calc: %{{customdata[2]:.6f}}<br>"
         "σ: %{customdata[3]:.8f} d (%{customdata[4]:.1f} s)"
         "<extra></extra>"
     )
@@ -2326,7 +2652,7 @@ def _build_oc_figure(
             overlaying="x",
             side="top",
             matches="x",
-            title="Calculated MJD",
+            title=f"Calculated {page_time_label()}",
             tickmode="array",
             tickvals=tick_e.tolist(),
             ticktext=[f"{value:.2f}" for value in tick_mjd],
@@ -2366,10 +2692,10 @@ def _oc_fit_range_status_text(payload: dict | None, fit_range: dict | None) -> s
             f"Fit range: E {window[0]:.1f}–{window[1]:.1f} "
             "(no points in this window)"
         )
-    mjd_obs = jd_ext[mask] - jd0
+    mjd_obs = to_page_time(jd_ext[mask])
     return (
         f"Fit range: E {window[0]:.1f}–{window[1]:.1f} "
-        f"(MJD obs {float(np.min(mjd_obs)):.2f}–{float(np.max(mjd_obs)):.2f})"
+        f"({page_time_label()} obs {float(np.min(mjd_obs)):.2f}–{float(np.max(mjd_obs)):.2f})"
     )
 
 
@@ -2442,6 +2768,7 @@ sidebar_oc = html.Div(
             options=[
                 {"label": "Gaussian Process", "value": "gp"},
                 {"label": "MAVKA", "value": "mavka"},
+                {"label": "Parabola", "value": "parabola"},
                 {"label": "Upload", "value": "upload"},
             ],
             value="gp",
@@ -2475,11 +2802,11 @@ sidebar_oc = html.Div(
         ),
         dbc.InputGroup(
             [
-                dbc.InputGroupText(f"Epoch-{DEFAULT_EPOCH_JD}"),
+                dbc.InputGroupText(page_epoch_addon_label()),
                 dbc.Input(
                     id="oc-input-epoch",
                     type="number",
-                    placeholder="MJD offset",
+                    placeholder=page_time_label(),
                 ),
             ],
             size="sm",
@@ -2546,7 +2873,7 @@ sidebar_oc = html.Div(
                 dbc.Input(
                     id="oc-shift-at-time",
                     type="number",
-                    placeholder="MJD",
+                    placeholder=page_time_label(),
                 ),
             ],
             size="sm",
@@ -2818,6 +3145,18 @@ def layout():
                     ],
                 ),
                 dbc.AccordionItem(
+                    item_id="accordion-parabola",
+                    title=_accordion_title_with_help(
+                        _ACCORDION_HELP_BY_INDEX["parabola"]
+                    ),
+                    children=[
+                        dbc.Row([
+                            dbc.Col(sidebar_parabola, width=3),
+                            dbc.Col(graph_parabola, width=9),
+                        ]),
+                    ],
+                ),
+                dbc.AccordionItem(
                     item_id="accordion-oc",
                     title=_accordion_title_with_help(
                         _ACCORDION_HELP_BY_INDEX["oc"]
@@ -2929,6 +3268,20 @@ def toggle_gp_legend(n_clicks, is_open):
 )
 def toggle_mavka_legend(n_clicks, is_open):
     """Shows or hides the MAVKA fit legend in the sidebar."""
+    if is_open:
+        return False, "Show legend"
+    return True, "Hide legend"
+
+
+@callback(
+    Output("parabola-legend-collapse", "is_open"),
+    Output("toggle-parabola-legend-btn", "children"),
+    Input("toggle-parabola-legend-btn", "n_clicks"),
+    State("parabola-legend-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_parabola_legend(n_clicks, is_open):
+    """Shows or hides the parabola fit legend in the sidebar."""
     if is_open:
         return False, "Show legend"
     return True, "Hide legend"
@@ -3074,7 +3427,7 @@ def update_prep_graph(
                 )
                 t0_label = display_epoch_offset(t0_abs, jd0)
                 x_label = (
-                    f"Phase (quadratic O-C; P={period} d, Epoch-{jd0}={t0_label:.2f}; "
+                    f"Phase (quadratic O-C; P={period} d, {page_epoch_addon_label()}={t0_label:.2f}; "
                     f"a={oc_a_val:g}, b={oc_b_val:g}, c={oc_c_val:g}; "
                     f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
                 )
@@ -3088,7 +3441,7 @@ def update_prep_graph(
                 )
                 t0_label = display_epoch_offset(t0_abs, jd0)
                 x_label = (
-                    f"Phase (P={period} d, Epoch-{jd0}={t0_label:.2f}; "
+                    f"Phase (P={period} d, {page_epoch_addon_label()}={t0_label:.2f}; "
                     f"extended {EXTENDED_PHASE_XMIN}–{EXTENDED_PHASE_XMAX})"
                 )
         except PipeException as exc:
@@ -3123,7 +3476,9 @@ def update_prep_graph(
         x_data = absolute_jd_to_plot_x(
             x_jd, axis_mode, jd0, timescale=ts
         )
-        x_label = time_axis_xaxis_title(axis_mode, ts, ref)
+        x_label = time_axis_xaxis_title(
+            axis_mode, ts, ref, numeric_scale_label=page_time_label()
+        )
 
     fig = go.Figure()  # todo: use px.* stuff instead
 
@@ -3158,8 +3513,7 @@ def update_prep_graph(
         # yaxis_autorange='reversed' if view_mode == 'mag' else True,
         margin=dict(l=10, r=10, t=20, b=40),
         template="plotly_white",
-        # dragmode='pan',
-        dragmode='select',
+        dragmode='zoom',
         selectdirection='h',
         # A digest of the light curve means zoom only resets when a NEW file is
         # uploaded; adding an interval won't trigger a reset. The digest keeps the
@@ -3972,7 +4326,7 @@ def download_intervals(n_clicks, intervals, custom_name):
         return dash.no_update, dash.no_update, dash.no_update
 
     content = format_intervals_download(intervals)
-    export_name = gp_intervals_export_download_name(custom_name)
+    export_name = intervals_export_download_name(custom_name)
 
     return (
         dict(content=content, filename=export_name),
@@ -4397,7 +4751,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
             [checkbox, badge_row, content],
             className="gp-review-card gp-review-card-fail" if is_fail else "gp-review-card",
         ),
-        width=6, className="px-1 mb-2"
+        width=CARD_COL_WIDTH, className="px-1 mb-2"
     )
 
 
@@ -4416,6 +4770,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     State('kernel-type', 'value'),
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
+    State("gp-max-half-width", "value"),
     State("upload-lc", "filename"),
     State("oc-tom-source", "value"),
     background=True,
@@ -4433,7 +4788,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     # endregion
 )
 def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, kernel_type, ids,
-           float_values, lc_filename, oc_source):
+           float_values, max_half_width_raw, lc_filename, oc_source):
     def _push_live(stored_entries: list, total_work: int) -> None:
         done = len(stored_entries)
         visible_page = live_visible_page_for_done_count(done)
@@ -4447,6 +4802,13 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     logger.debug("run_gp started")
     try:
         p = build_gp_float_params(ids, float_values)
+    except ValueError as exc:
+        error_alert = dbc.Alert(
+            str(exc), color="warning", className="py-2 small mb-0"
+        )
+        return error_alert, "FINISHED", None, "", no_update
+    try:
+        max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
     except ValueError as exc:
         error_alert = dbc.Alert(
             str(exc), color="warning", className="py-2 small mb-0"
@@ -4472,9 +4834,9 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     work_items = []
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
-        frag = slice_gp_flux_arrays(lc_arrays, jd_min, jd_max)
-        if len(frag) >= LEN_MIN:
-            work_items.append((jd_min, jd_max, frag))
+        lo, hi, capped = apply_half_width_cap(jd_min, jd_max, max_half_width_d)
+        frag = slice_gp_flux_arrays(lc_arrays, lo, hi)
+        work_items.append((lo, hi, frag, capped))
 
     total_work = len(work_items)
     _push_live([], total_work)
@@ -4482,72 +4844,97 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     stored_entries: list[dict] = []
     stopped_early = False
 
-    for jd_min, jd_max, frag in work_items:
+    for jd_min, jd_max, frag, capped in work_items:
         if gp_batch_stop_requested():
             stopped_early = True
             logger.info("GP batch stopped before extremum (%s done)", len(stored_entries))
             break
 
-        logging.info(f'{len(frag)=}')
+        logger.debug("GP interval points: %s (capped=%s)", len(frag), capped)
 
         res_entry = {'jd_min': jd_min, 'jd_max': jd_max, 'is_fail': False}
+        fig = None
 
-        try:
-            gp_res = gp_peak_pipeline(frag, params=p)
-            fig = figure_from_gp_result(gp_res, display_epoch=jd0)
-
-            # Extract kernel params for badges
-            # optimized_params = gp_res['gp'].kernel_.get_params()
-            k_obj = gp_res['gp'].kernel_
-            # k1 is ConstantKernel, k2 is Matern/RBF
-            opt_ampl = k_obj.k1.constant_value
-            opt_l = k_obj.k2.length_scale
-
-            # opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
-            # opt_w = optimized_params.get('k2__noise_level', 0.0)
-
-            # Colour logic for Length Scale
-            if opt_l <= p['length_scale_min'] * 1.01:
-                l_color = "indigo"  # too short
-            elif opt_l >= p['length_scale_max'] * 0.99:
-                l_color = "danger"  # red, too long
-            else:
-                l_color = "success"
-
-            # Amplitude badge (Replaces White Noise)
-            # If amplitude hits the "Goldilocks" bounds,
-            # maybe colour it yellow to warn the user
-            amp_color = "info" if (0.01 < opt_ampl < 10.0) else "warning"
-
-            badge_specs = success_badge_specs(
-                kernel_type, opt_l, l_color, opt_ampl, amp_color, gp_res["jd_peak_std"]
-            )
-            badges = badges_from_specs(badge_specs)
-
-            res_entry.update({
-                'jd_peak': gp_res["jd_peak"],
-                'jd_peak_std': gp_res["jd_peak_std"],
-                'badge_specs': badge_specs,
-                'kernel_type': kernel_type,
-                'length_scale': float(opt_l),
-                'amplitude': float(opt_ampl),
-                'scale_limit_flag': scale_limit_flag(
-                    float(opt_l),
-                    float(p["length_scale_min"]),
-                    float(p["length_scale_max"]),
-                ),
-            })
-
-        except Exception as e:
+        if len(frag) < LEN_MIN:
             res_entry.update({
                 'is_fail': True,
-                'error': str(e),
+                'error': f"Need at least {LEN_MIN} points, got {len(frag)}",
                 'badge_specs': [{"label": "FAILED", "color": "danger"}],
             })
+            fig = figure_from_gp_observations(
+                frag["jd"].to_numpy(),
+                frag["flux"].to_numpy(),
+                display_epoch=jd0,
+            )
+        else:
+            try:
+                gp_res = gp_peak_pipeline(frag, params=p)
+                fig = figure_from_gp_result(gp_res, display_epoch=jd0)
 
-        figure_json = None
-        if not res_entry["is_fail"]:
-            figure_json = fig.to_plotly_json()
+                # Extract kernel params for badges
+                # optimized_params = gp_res['gp'].kernel_.get_params()
+                k_obj = gp_res['gp'].kernel_
+                # k1 is ConstantKernel, k2 is Matern/RBF
+                opt_ampl = k_obj.k1.constant_value
+                opt_l = k_obj.k2.length_scale
+
+                # opt_l = optimized_params.get('k1__k2__length_scale', 0.0)
+                # opt_w = optimized_params.get('k2__noise_level', 0.0)
+
+                # Colour logic for Length Scale
+                if opt_l <= p['length_scale_min'] * 1.01:
+                    l_color = "indigo"  # too short
+                elif opt_l >= p['length_scale_max'] * 0.99:
+                    l_color = "danger"  # red, too long
+                else:
+                    l_color = "success"
+
+                # Amplitude badge (Replaces White Noise)
+                # If amplitude hits the "Goldilocks" bounds,
+                # maybe colour it yellow to warn the user
+                amp_color = "info" if (0.01 < opt_ampl < 10.0) else "warning"
+
+                badge_specs = success_badge_specs(
+                    kernel_type,
+                    opt_l,
+                    l_color,
+                    opt_ampl,
+                    amp_color,
+                    gp_res["jd_peak_std"],
+                    window_capped=capped,
+                )
+
+                res_entry.update({
+                    'jd_peak': gp_res["jd_peak"],
+                    'jd_peak_std': gp_res["jd_peak_std"],
+                    'badge_specs': badge_specs,
+                    'kernel_type': kernel_type,
+                    'length_scale': float(opt_l),
+                    'amplitude': float(opt_ampl),
+                    'scale_limit_flag': scale_limit_flag(
+                        float(opt_l),
+                        float(p["length_scale_min"]),
+                        float(p["length_scale_max"]),
+                    ),
+                })
+
+            except Exception as e:
+                res_entry.update({
+                    'is_fail': True,
+                    'error': str(e),
+                    'badge_specs': [{"label": "FAILED", "color": "danger"}],
+                })
+                fig = figure_from_gp_observations(
+                    frag["jd"].to_numpy(),
+                    frag["flux"].to_numpy(),
+                    display_epoch=jd0,
+                )
+
+        figure_json = fig.to_plotly_json() if fig is not None else None
+        if figure_json is None and not res_entry["is_fail"]:
+            res_entry["is_fail"] = True
+            res_entry["error"] = "Missing plot for a successful GP fit"
+            res_entry["badge_specs"] = [{"label": "FAILED", "color": "danger"}]
         stored_entries.append(
             serialise_review_entry(res_entry, figure_json=figure_json)
         )
@@ -4580,6 +4967,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
         stored_entries,
         stopped_early=stopped_early,
         source_filename=lc_filename,
+        max_half_width_d=max_half_width_d,
     )
     page_children = render_review_page(
         stored_entries, 0, store_payload["include"]
@@ -4693,14 +5081,14 @@ def download_gp_prep_lightcurve(
             export_json,
             source_name=upload_filename,
         )
-        apply_prep_fold_ephemeris(
+        apply_export_ephemeris(
             lcd,
             period,
             epoch,
             display_epoch=jd0,
         )
         file_bytes = export_curvedash(lcd, fmt)
-        outfile = gp_lc_export_download_name(filename_stem, fmt)
+        outfile = lc_export_download_name(filename_stem, fmt)
         return dcc.send_bytes(file_bytes, outfile), None
     except PipeException as exc:
         logger.warning("GP light curve export failed: %s", exc)
@@ -4736,16 +5124,12 @@ def update_default_filename(filename):
     State("export-filename", "value"),
     State('store-results-data', 'data'),
     State('extrema-mode', 'value'),
-    State("gp-extended-export", "value"),
     prevent_initial_call=True
     # endregion
 )
-def trigger_download(n_clicks, filename_input, store, extrema_mode, extended_export):
-    logger.debug(
-        "GP download: filename=%s extended=%s",
-        filename_input,
-        extended_export,
-    )
+def trigger_download(n_clicks, filename_input, store, extrema_mode):
+    """Downloads compact selected ToMs from the GP review store."""
+    logger.debug("GP download: filename=%s", filename_input)
     if not n_clicks or not store:
         return no_update
 
@@ -4754,31 +5138,11 @@ def trigger_download(n_clicks, filename_input, store, extrema_mode, extended_exp
     if len(include) != len(rows):
         return no_update
 
-    if extended_export:
-        run_id = store.get("run_id")
-        if not run_id:
-            return no_update
-        try:
-            entries = load_gp_review_run(run_id)
-        except KeyError as exc:
-            raise PreventUpdate from exc
-        if len(entries) != len(include):
-            return no_update
-        bundle_folder = gp_extrema_export_stem(filename_input)
-        zip_bytes = build_extended_export_zip(
-            entries,
-            include,
-            bundle_folder=bundle_folder,
-            display_epoch=jd0,
-            extrema_mode=extrema_mode or "max",
-        )
-        outfile = gp_extended_extrema_download_name(filename_input)
-        return dcc.send_bytes(zip_bytes, outfile)
-
     body = format_compact_extrema_dat(
         rows,
         include,
         extrema_mode=extrema_mode or "max",
+        max_half_width_d=store.get("max_half_width_d"),
     )
     outfile = gp_compact_extrema_download_name(filename_input)
     return dcc.send_string(body, outfile)
@@ -4807,10 +5171,7 @@ def change_gp_review_page(prev_clicks, next_clicks, store):
     if total == 0:
         raise PreventUpdate
 
-    from skvo_veb.utils.gp.config import GP_REVIEW_PAGE_SIZE
-    import math
-
-    total_pages = max(1, math.ceil(total / GP_REVIEW_PAGE_SIZE))
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
     if triggered == "gp-review-prev":
         page = max(0, page - 1)
     else:
@@ -5005,6 +5366,7 @@ def update_mavka_status_ui(run_clicks, stop_clicks, signal_status):
     State("view-mode-radio", "value"),
     State("mavka-extrema-mode", "value"),
     State("mavka-method", "value"),
+    State("mavka-max-half-width", "value"),
     State("upload-lc", "filename"),
     State("oc-tom-source", "value"),
     background=True,
@@ -5027,6 +5389,7 @@ def run_mavka(
     view_mode,
     extrema_mode,
     method,
+    max_half_width_raw,
     lc_filename,
     oc_source,
 ):
@@ -5051,6 +5414,14 @@ def run_mavka(
     if not method:
         error_alert = dbc.Alert(
             "Select an approximation method.", color="warning", className="py-2 small mb-0"
+        )
+        return error_alert, "FINISHED", None, "", no_update
+
+    try:
+        max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
+    except ValueError as exc:
+        error_alert = dbc.Alert(
+            str(exc), color="warning", className="py-2 small mb-0"
         )
         return error_alert, "FINISHED", None, "", no_update
 
@@ -5088,19 +5459,23 @@ def run_mavka(
             break
 
         jd_min, jd_max = piece[0], piece[1]
-        t_obs, y_obs = slice_interval_photometry(times_jd, photometry, jd_min, jd_max)
+        lo, hi, capped = apply_half_width_cap(jd_min, jd_max, max_half_width_d)
+        t_obs, y_obs = slice_interval_photometry(times_jd, photometry, lo, hi)
 
         fig = None
+        fit = None
         try:
             fit = mavka_fit_interval(
                 method, t_obs, y_obs, extrema_mode=extrema_mode
             )
-            res_entry = mavka_review_entry_from_fit(fit, jd_min, jd_max)
+            res_entry = mavka_review_entry_from_fit(
+                fit, lo, hi, window_capped=capped
+            )
         except Exception as exc:
-            logger.warning("MAVKA interval %s–%s failed: %s", jd_min, jd_max, exc)
+            logger.warning("MAVKA interval %s–%s failed: %s", lo, hi, exc)
             res_entry = {
-                "jd_min": jd_min,
-                "jd_max": jd_max,
+                "jd_min": lo,
+                "jd_max": hi,
                 "is_fail": True,
                 "error": str(exc),
                 "badge_specs": [{"label": "FAILED", "color": "danger"}],
@@ -5120,8 +5495,8 @@ def run_mavka(
                 except Exception as exc:
                     logger.warning(
                         "MAVKA plot failed for interval %s–%s: %s",
-                        jd_min,
-                        jd_max,
+                        lo,
+                        hi,
                         exc,
                     )
                     res_entry["is_fail"] = True
@@ -5132,14 +5507,20 @@ def run_mavka(
                         {"label": "FAILED", "color": "danger"}
                     ]
 
-        figure_json = None
-        if not res_entry["is_fail"]:
-            if fig is None:
-                res_entry["is_fail"] = True
-                res_entry["error"] = "Missing plot for a successful MAVKA fit"
-                res_entry["badge_specs"] = [{"label": "FAILED", "color": "danger"}]
-            else:
-                figure_json = fig.to_plotly_json()
+        if fig is None:
+            fig = figure_from_mavka_observations(
+                t_obs,
+                y_obs,
+                display_epoch=jd0,
+                invert_y=invert_y,
+                y_label=y_label,
+            )
+
+        figure_json = fig.to_plotly_json() if fig is not None else None
+        if figure_json is None and not res_entry["is_fail"]:
+            res_entry["is_fail"] = True
+            res_entry["error"] = "Missing plot for a successful MAVKA fit"
+            res_entry["badge_specs"] = [{"label": "FAILED", "color": "danger"}]
         stored_entries.append(
             serialise_mavka_review_entry(res_entry, figure_json=figure_json)
         )
@@ -5172,6 +5553,7 @@ def run_mavka(
         stopped_early=stopped_early,
         source_filename=lc_filename,
         method=method,
+        max_half_width_d=max_half_width_d,
     )
     page_children = render_mavka_review_page(
         stored_entries, 0, store_payload["include"]
@@ -5203,7 +5585,6 @@ def update_mavka_default_filename(filename, method):
     State("mavka-export-filename", "value"),
     State("store-mavka-results-data", "data"),
     State("mavka-extrema-mode", "value"),
-    State("mavka-extended-export", "value"),
     State("input-period", "value"),
     State("input-epoch", "value"),
     State("mavka-method", "value"),
@@ -5214,17 +5595,12 @@ def trigger_mavka_download(
     filename_input,
     store,
     extrema_mode,
-    extended_export,
     period,
     epoch,
     method,
 ):
-    """Downloads compact selected TOMs or an extended ZIP of the MAVKA run."""
-    logger.debug(
-        "MAVKA download: filename=%s extended=%s",
-        filename_input,
-        extended_export,
-    )
+    """Downloads compact selected ToMs from the MAVKA review store."""
+    logger.debug("MAVKA download: filename=%s", filename_input)
     if not n_clicks or not store:
         return no_update
 
@@ -5233,29 +5609,6 @@ def trigger_mavka_download(
     if len(include) != len(rows):
         return no_update
 
-    if extended_export:
-        run_id = store.get("run_id")
-        if not run_id:
-            return no_update
-        try:
-            entries = load_mavka_review_run(run_id)
-        except KeyError as exc:
-            raise PreventUpdate from exc
-        if len(entries) != len(include):
-            return no_update
-        bundle_folder = mavka_extrema_export_stem(filename_input)
-        zip_bytes = build_mavka_extended_export_zip(
-            entries,
-            include,
-            bundle_folder=bundle_folder,
-            display_epoch=jd0,
-            extrema_mode=extrema_mode or "min",
-            period=None if period in (None, "") else str(period),
-            epoch=None if epoch in (None, "") else str(epoch),
-        )
-        outfile = mavka_extended_extrema_download_name(filename_input)
-        return dcc.send_bytes(zip_bytes, outfile)
-
     body = format_mavka_compact_extrema_dat(
         rows,
         include,
@@ -5263,6 +5616,7 @@ def trigger_mavka_download(
         period=None if period in (None, "") else str(period),
         epoch=None if epoch in (None, "") else str(epoch),
         method=store.get("method") or method,
+        max_half_width_d=store.get("max_half_width_d"),
     )
     outfile = mavka_compact_extrema_download_name(filename_input)
     return dcc.send_string(body, outfile)
@@ -5291,9 +5645,7 @@ def change_mavka_review_page(prev_clicks, next_clicks, store):
     if total == 0:
         raise PreventUpdate
 
-    import math
-
-    total_pages = max(1, math.ceil(total / MAVKA_REVIEW_PAGE_SIZE))
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
     if triggered == "mavka-review-prev":
         page = max(0, page - 1)
     else:
@@ -5371,6 +5723,488 @@ def switch_mavka_modes(signal):
     return {"display": "none"}, {"display": "flex"}, {"display": "block"}
 
 
+# ================= Parabola callbacks ===================
+
+@callback(
+    Input("parabola-stop-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def parabola_request_batch_stop(_n_clicks):
+    """Cooperative stop: finish the current fit, then exit the parabola batch loop."""
+    request_parabola_batch_stop()
+
+
+@callback(
+    Output("parabola-header-area", "children"),
+    Input("parabola-run-btn", "n_clicks"),
+    Input("parabola-stop-btn", "n_clicks"),
+    Input("parabola-finished-signal", "children"),
+    prevent_initial_call=True,
+)
+def update_parabola_status_ui(run_clicks, stop_clicks, signal_status):
+    """Updates the parabola working-area header badge for run, stop, and finish."""
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if trigger_id == "parabola-run-btn" and run_clicks > 0:
+        return html.Div(
+            [
+                html.H6("Parabola processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-hourglass-split me-2"),
+                        "RUNNING - Modelling...",
+                    ],
+                    color="warning",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "parabola-stop-btn" and stop_clicks > 0:
+        return html.Div(
+            [
+                html.H6("Parabola processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-pause-circle me-2"),
+                        "STOPPING - finishing current fit…",
+                    ],
+                    color="warning",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "parabola-finished-signal" and signal_status == "WAITING":
+        return html.Div(
+            [
+                html.H6("Parabola processing view", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-gear-wide-connected me-2"),
+                        "GENERATING PLOTS...",
+                    ],
+                    color="info",
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    if trigger_id == "parabola-finished-signal" and signal_status in (
+        "FINISHED",
+        "FINISHED_STOPPED",
+    ):
+        stopped = signal_status == "FINISHED_STOPPED"
+        badge_text = (
+            "STOPPED - review completed fits" if stopped else "FINISHED"
+        )
+        badge_color = "warning" if stopped else "success"
+        return html.Div(
+            [
+                html.H6("Results: photometry vs JD", className="gp-card-title"),
+                dbc.Badge(
+                    [
+                        html.I(className="bi bi-check-all me-2"),
+                        badge_text,
+                    ],
+                    color=badge_color,
+                    className="ms-2",
+                ),
+            ],
+            className="d-flex align-items-center mb-3",
+        )
+
+    return dash.no_update
+
+
+@callback(
+    Output("parabola-graphs-container", "children", allow_duplicate=True),
+    Output("parabola-finished-signal", "children", allow_duplicate=True),
+    Output("store-parabola-results-data", "data"),
+    Output("parabola-review-page-label", "children"),
+    Output("oc-export-filename", "value", allow_duplicate=True),
+    Input("parabola-run-btn", "n_clicks"),
+    State("store-lc-data", "data"),
+    State("store-intervals-data", "data"),
+    State("view-mode-radio", "value"),
+    State("parabola-extrema-mode", "value"),
+    State("parabola-use-weights", "value"),
+    State("parabola-max-half-width", "value"),
+    State("upload-lc", "filename"),
+    State("oc-tom-source", "value"),
+    background=True,
+    running=[
+        (Output("parabola-run-btn", "disabled"), True, False),
+        (Output("parabola-stop-btn", "disabled"), False, True),
+    ],
+    progress=[
+        Output("parabola-live-progress-label", "children"),
+        *_PARABOLA_LIVE_SLOT_PROGRESS_OUTPUTS,
+        Output("parabola-finished-signal", "children"),
+    ],
+    prevent_initial_call=True,
+)
+def run_parabola(
+    set_progress,
+    n_clicks,
+    lc_json_string,
+    intervals,
+    view_mode,
+    extrema_mode,
+    use_weights,
+    max_half_width_raw,
+    lc_filename,
+    oc_source,
+):
+    """Fits a local parabola on every interval; sparse and failed windows become cards."""
+
+    def _push_live(stored_entries: list, total_work: int) -> None:
+        done = len(stored_entries)
+        visible_page = parabola_live_visible_page_for_done_count(done)
+        slots = build_parabola_live_page_slot_children(stored_entries, visible_page)
+        label = parabola_live_progress_label(done, total_work)
+        set_progress((label, *slots, "WAITING"))
+
+    empty_slots = build_parabola_live_page_slot_children([], 0)
+    set_progress((parabola_live_progress_label(0, 0), *empty_slots, "WAITING"))
+    clear_parabola_batch_stop()
+    logger.debug("run_parabola started")
+
+    if extrema_mode not in ("min", "max"):
+        error_alert = dbc.Alert(
+            "Select Search minima or Search maxima.",
+            color="warning",
+            className="py-2 small mb-0",
+        )
+        return error_alert, "FINISHED", None, "", no_update
+
+    try:
+        max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
+    except ValueError as exc:
+        error_alert = dbc.Alert(
+            str(exc), color="warning", className="py-2 small mb-0"
+        )
+        return error_alert, "FINISHED", None, "", no_update
+
+    if not lc_json_string or not intervals:
+        error_alert = dbc.Alert(
+            "Please upload both lightcurve and intervals files.", color="warning"
+        )
+        return error_alert, "FINISHED", None, "", no_update
+
+    view_mode = view_mode or "mag"
+    try:
+        lc = unpack_json_for_gp_plot(lc_json_string, view_mode=view_mode)
+    except Exception as exc:
+        logger.exception("Parabola light curve unpack failed")
+        error_alert = dbc.Alert(str(exc), color="danger")
+        return error_alert, "FINISHED", None, "", no_update
+
+    invert_y = bool(lc.get("is_mag"))
+    y_label = lc.get("y_label") or ("Magnitude" if invert_y else "Flux")
+    times_jd = np.asarray(lc["x"], dtype=float)
+    photometry = np.asarray(lc["y"], dtype=float)
+    phot_err = lc.get("err")
+    if phot_err is not None:
+        phot_err = np.asarray(phot_err, dtype=float)
+
+    total_work = len(intervals)
+    _push_live([], total_work)
+
+    stored_entries: list[dict] = []
+    stopped_early = False
+
+    for piece in intervals:
+        if parabola_batch_stop_requested():
+            stopped_early = True
+            logger.info(
+                "Parabola batch stopped before interval (%s done)", len(stored_entries)
+            )
+            break
+
+        jd_min, jd_max = piece[0], piece[1]
+        fig = None
+        fit = None
+        win_lo, win_hi = float(jd_min), float(jd_max)
+        try:
+            fit = parabola_fit_interval(
+                times_jd,
+                photometry,
+                phot_err,
+                jd_min,
+                jd_max,
+                working_domain=view_mode,
+                extrema_mode=extrema_mode,
+                use_weights=bool(use_weights),
+                max_half_width_d=max_half_width_d,
+            )
+            res_entry = parabola_review_entry_from_fit(fit)
+            win_lo, win_hi = float(fit.jd_min), float(fit.jd_max)
+        except Exception as exc:
+            logger.warning("Parabola interval %s–%s failed: %s", jd_min, jd_max, exc)
+            res_entry = {
+                "jd_min": jd_min,
+                "jd_max": jd_max,
+                "is_fail": True,
+                "error": str(exc),
+                "badge_specs": [{"label": "FAILED", "color": "danger"}],
+            }
+
+        t_mask = (
+            (times_jd >= win_lo)
+            & (times_jd <= win_hi)
+            & np.isfinite(times_jd)
+            & np.isfinite(photometry)
+        )
+        t_plot = times_jd[t_mask]
+        y_plot = photometry[t_mask]
+
+        if not res_entry["is_fail"] and fit is not None:
+            try:
+                fig = figure_from_parabola_result(
+                    t_plot,
+                    y_plot,
+                    fit,
+                    display_epoch=jd0,
+                    invert_y=invert_y,
+                    y_label=y_label,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Parabola plot failed for interval %s–%s: %s",
+                    jd_min,
+                    jd_max,
+                    exc,
+                )
+                res_entry["is_fail"] = True
+                res_entry["error"] = (
+                    f"Fit succeeded (ToM={fit.t_ext}) but plot failed: {exc}"
+                )
+                res_entry["badge_specs"] = [
+                    {"label": "FAILED", "color": "danger"}
+                ]
+
+        if fig is None:
+            fig = figure_from_parabola_observations(
+                t_plot,
+                y_plot,
+                display_epoch=jd0,
+                invert_y=invert_y,
+                y_label=y_label,
+            )
+
+        figure_json = fig.to_plotly_json() if fig is not None else None
+        if figure_json is None and not res_entry["is_fail"]:
+            res_entry["is_fail"] = True
+            res_entry["error"] = "Missing plot for a successful parabola fit"
+            res_entry["badge_specs"] = [{"label": "FAILED", "color": "danger"}]
+        stored_entries.append(
+            serialise_parabola_review_entry(res_entry, figure_json=figure_json)
+        )
+        _push_live(stored_entries, total_work)
+
+        if parabola_batch_stop_requested():
+            stopped_early = True
+            logger.info("Parabola batch stopped after %s fits", len(stored_entries))
+            break
+
+    if not stored_entries:
+        msg = (
+            "No fits completed before stop."
+            if stopped_early
+            else "No fits to review."
+        )
+        return (
+            dbc.Alert(msg, color="warning"),
+            "FINISHED_STOPPED" if stopped_early else "FINISHED",
+            None,
+            "",
+            no_update,
+        )
+
+    run_id = uuid.uuid4().hex
+    save_parabola_review_run(run_id, stored_entries)
+    store_payload = build_parabola_review_store_payload(
+        run_id,
+        stored_entries,
+        stopped_early=stopped_early,
+        source_filename=lc_filename,
+        extrema_mode=extrema_mode,
+        use_weights=bool(use_weights),
+        max_half_width_d=max_half_width_d,
+    )
+    page_children = render_parabola_review_page(
+        stored_entries, 0, store_payload["include"]
+    )
+    page_label = parabola_review_page_label(0, len(stored_entries))
+    finish_signal = "FINISHED_STOPPED" if stopped_early else "FINISHED"
+    oc_name = no_update
+    if oc_source == "parabola":
+        oc_name = oc_default_export_stem_for_source(
+            "parabola", parabola_store=store_payload
+        )
+    return page_children, finish_signal, store_payload, page_label, oc_name
+
+
+@callback(
+    Output("parabola-export-filename", "value"),
+    Input("upload-lc", "filename"),
+    prevent_initial_call=True,
+)
+def update_parabola_default_filename(filename):
+    """Default parabola export stem: ``{lightcurve}_parabola``."""
+    return parabola_suggested_timing_stem(filename)
+
+
+@callback(
+    Output("parabola-download-results", "data"),
+    Input("parabola-save-file-btn", "n_clicks"),
+    State("parabola-export-filename", "value"),
+    State("store-parabola-results-data", "data"),
+    State("parabola-extrema-mode", "value"),
+    State("input-period", "value"),
+    State("input-epoch", "value"),
+    prevent_initial_call=True,
+)
+def trigger_parabola_download(
+    n_clicks,
+    filename_input,
+    store,
+    extrema_mode,
+    period,
+    epoch,
+):
+    """Downloads compact selected ToMs from the parabola review store."""
+    logger.debug("Parabola download: filename=%s", filename_input)
+    if not n_clicks or not store:
+        return no_update
+
+    rows = store.get("rows") or []
+    include = store.get("include") or []
+    if len(include) != len(rows):
+        return no_update
+
+    body = format_parabola_compact_extrema_dat(
+        rows,
+        include,
+        extrema_mode=extrema_mode or store.get("extrema_mode") or "min",
+        period=None if period in (None, "") else str(period),
+        epoch=None if epoch in (None, "") else str(epoch),
+        use_weights=store.get("use_weights"),
+        max_half_width_d=store.get("max_half_width_d"),
+    )
+    outfile = parabola_compact_extrema_download_name(filename_input)
+    return dcc.send_string(body, outfile)
+
+
+@callback(
+    Output("parabola-graphs-container", "children", allow_duplicate=True),
+    Output("store-parabola-results-data", "data", allow_duplicate=True),
+    Output("parabola-review-page-label", "children", allow_duplicate=True),
+    Input("parabola-review-prev", "n_clicks"),
+    Input("parabola-review-next", "n_clicks"),
+    State("store-parabola-results-data", "data"),
+    prevent_initial_call=True,
+)
+def change_parabola_review_page(prev_clicks, next_clicks, store):
+    """Shows the previous or next page of parabola fit cards in Review and Export."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    if triggered not in ("parabola-review-prev", "parabola-review-next"):
+        raise PreventUpdate
+
+    page = int(store.get("page", 0))
+    total = len(store.get("include") or [])
+    if total == 0:
+        raise PreventUpdate
+
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    if triggered == "parabola-review-prev":
+        page = max(0, page - 1)
+    else:
+        page = min(total_pages - 1, page + 1)
+
+    entries = load_parabola_review_run(store["run_id"])
+    children = render_parabola_review_page(entries, page, store["include"])
+    label = parabola_review_page_label(page, total)
+    new_store = {**store, "page": page}
+    return children, new_store, label
+
+
+@callback(
+    Output("store-parabola-results-data", "data", allow_duplicate=True),
+    Output("parabola-graphs-container", "children", allow_duplicate=True),
+    Input("parabola-select-all-btn", "n_clicks"),
+    Input("parabola-unselect-all-btn", "n_clicks"),
+    State("store-parabola-results-data", "data"),
+    prevent_initial_call=True,
+)
+def parabola_review_select_all(select_clicks, unselect_clicks, store):
+    """Toggles include-in-export flags for every parabola fit, then refreshes the page."""
+    if not store or not store.get("run_id"):
+        raise PreventUpdate
+
+    triggered = callback_context.triggered_id
+    rows = store.get("rows") or []
+    n = len(rows)
+    if n == 0:
+        raise PreventUpdate
+
+    if triggered == "parabola-unselect-all-btn":
+        include = [False] * n
+    else:
+        include = [not row.get("is_fail") for row in rows]
+
+    page = int(store.get("page", 0))
+    entries = load_parabola_review_run(store["run_id"])
+    children = render_parabola_review_page(entries, page, include)
+    return {**store, "include": include}, children
+
+
+@callback(
+    Output("store-parabola-results-data", "data", allow_duplicate=True),
+    Input({"type": "parabola-fit-selector", "index": ALL}, "value"),
+    State({"type": "parabola-fit-selector", "index": ALL}, "id"),
+    State("store-parabola-results-data", "data"),
+    prevent_initial_call=True,
+)
+def parabola_review_sync_include_checkbox(values, ids, store):
+    """Persists include-in-export toggles for parabola fits on the visible review page."""
+    if not store or not ids:
+        raise PreventUpdate
+
+    include = list(store.get("include") or [])
+    for val, comp_id in zip(values, ids):
+        idx = comp_id["index"]
+        if 0 <= idx < len(include):
+            include[idx] = bool(val)
+    return {**store, "include": include}
+
+
+@callback(
+    Output("parabola-final-review-container", "style"),
+    Output("parabola-live-graphs-container", "style"),
+    Output("parabola-live-progress-label", "style"),
+    Input("parabola-finished-signal", "children"),
+    prevent_initial_call=True,
+)
+def switch_parabola_modes(signal):
+    """Toggles parabola live grid versus review once the batch finishes or stops."""
+    logger.debug("switch_parabola_modes signal=%s", signal)
+    if signal in ("FINISHED", "FINISHED_STOPPED"):
+        return {"display": "block"}, {"display": "none"}, {"display": "none"}
+    return {"display": "none"}, {"display": "flex"}, {"display": "block"}
+
+
 def _oc_parse_delta_e(value) -> int:
     """Parses a cycle-shift ΔE from the sidebar number input.
 
@@ -5412,16 +6246,18 @@ def oc_take_from_lightcurve(n_clicks, period, epoch):
     Input("oc-tom-source", "value"),
     State("store-results-data", "data"),
     State("store-mavka-results-data", "data"),
+    State("store-parabola-results-data", "data"),
     State("store-oc-uploaded-toms", "data"),
     prevent_initial_call=True,
 )
-def update_oc_export_filename(source, gp_store, mavka_store, uploaded):
+def update_oc_export_filename(source, gp_store, mavka_store, parabola_store, uploaded):
     """Sets the O-C export stem from the ToM source that is currently selected.
 
     Args:
-        source: Radio value ``gp``, ``mavka``, or ``upload``.
+        source: Radio value ``gp``, ``mavka``, ``parabola``, or ``upload``.
         gp_store: GP review store (filename stamped at GP run time).
         mavka_store: MAVKA review store (filename stamped at MAVKA run time).
+        parabola_store: Parabola review store (filename stamped at parabola run time).
         uploaded: Compact ToM upload payload.
 
     Returns:
@@ -5431,6 +6267,7 @@ def update_oc_export_filename(source, gp_store, mavka_store, uploaded):
         source or "gp",
         gp_store=gp_store,
         mavka_store=mavka_store,
+        parabola_store=parabola_store,
         uploaded=uploaded,
     )
 
@@ -5446,7 +6283,7 @@ def update_oc_export_filename(source, gp_store, mavka_store, uploaded):
     prevent_initial_call=True,
 )
 def upload_oc_toms(contents, filename):
-    """Parses a compact GP/MAVKA ToM file and selects the Upload source."""
+    """Parses a compact GP/MAVKA/parabola ToM file and selects the Upload source."""
     if contents is None:
         raise PreventUpdate
     try:
@@ -5489,10 +6326,10 @@ def oc_sync_view_title(source):
     """Sets the O-C card title from the selected ToM source.
 
     Args:
-        source (str | None): ``gp``, ``mavka``, or ``upload``.
+        source (str | None): ``gp``, ``mavka``, ``parabola``, or ``upload``.
 
     Returns:
-        str: ``O-C (GP)``, ``O-C (MAVKA)``, or ``O-C (upload)``.
+        str: ``O-C (GP)``, ``O-C (MAVKA)``, ``O-C (parabola)``, or ``O-C (upload)``.
     """
     return _oc_source_title(source)
 
@@ -5522,7 +6359,7 @@ def oc_fill_at_time_from_point(click_data, payload):
         )
     except ValueError:
         raise PreventUpdate
-    logger.info("O-C click set At ≥ to MJD %.6f", at_mjd)
+    logger.info("O-C click set At ≥ to %s %.6f", page_time_label(), at_mjd)
     return at_mjd
 
 
@@ -5541,10 +6378,10 @@ def oc_add_cycle_shift(n_clicks, at_time, delta_e, rows):
         raise PreventUpdate
     try:
         if at_time is None or at_time == "":
-            raise ValueError("Set the at-time (display MJD).")
+            raise ValueError(f"Set the at-time ({page_time_label()}).")
         at_mjd = float(at_time)
         if not np.isfinite(at_mjd):
-            raise ValueError("At-time must be a finite MJD.")
+            raise ValueError(f"At-time must be a finite {page_time_label()}.")
         delta = _oc_parse_delta_e(delta_e)
     except (TypeError, ValueError) as exc:
         return no_update, dbc.Alert(str(exc), color="warning", className="py-2 small mb-0")
@@ -5594,6 +6431,7 @@ def oc_render_cycle_shift_list(rows):
     State("store-oc-cycle-shifts", "data"),
     State("store-results-data", "data"),
     State("store-mavka-results-data", "data"),
+    State("store-parabola-results-data", "data"),
     State("store-oc-uploaded-toms", "data"),
     prevent_initial_call=True,
 )
@@ -5605,6 +6443,7 @@ def oc_plot(
     shift_rows,
     gp_store,
     mavka_store,
+    parabola_store,
     uploaded,
 ):
     """Computes Step 1 O-C for the selected ToM source.
@@ -5614,12 +6453,13 @@ def oc_plot(
 
     Args:
         n_clicks: Plot button click count.
-        source: ToM radio value ``gp``, ``mavka``, or ``upload``.
+        source: ToM radio value ``gp``, ``mavka``, ``parabola``, or ``upload``.
         period: Trial period in days.
         epoch: Trial epoch as display MJD offset.
         shift_rows: Stored cycle-correction rows.
         gp_store: GP review store.
         mavka_store: MAVKA review store.
+        parabola_store: Parabola review store.
         uploaded: Compact ToM upload payload.
 
     Returns:
@@ -5630,7 +6470,7 @@ def oc_plot(
     try:
         t0_jd = absolute_jd_from_display_epoch(epoch, jd0)
         if t0_jd is None:
-            raise ValueError("Set the O-C epoch (display MJD).")
+            raise ValueError(f"Set the O-C epoch ({page_time_label()}).")
         if period is None or period == "":
             raise ValueError("Set the O-C period P (days).")
         p0 = float(period)
@@ -5639,6 +6479,8 @@ def oc_plot(
             records = toms_from_review_store(gp_store)
         elif source_key == "mavka":
             records = toms_from_review_store(mavka_store)
+        elif source_key == "parabola":
+            records = toms_from_review_store(parabola_store)
         elif source_key == "upload":
             records = uploaded_toms_from_store(uploaded)
         else:

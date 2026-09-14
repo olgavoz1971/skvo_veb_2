@@ -29,10 +29,10 @@ from dash import (
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.gp.export import (
-    apply_prep_fold_ephemeris,
-    gp_intervals_export_download_name,
-    gp_lc_export_download_name,
+from skvo_veb.utils.lc_export import (
+    apply_export_ephemeris,
+    intervals_export_download_name,
+    lc_export_download_name,
     rough_toms_export_download_name,
     suggested_detrended_export_stem,
     suggested_intervals_export_stem,
@@ -127,8 +127,8 @@ from skvo_veb.utils.lc_processor.tilt import (
     copy_working_as_residual,
     residual_axis_title,
 )
-from skvo_veb.utils.gp.intervals import format_interval_display_pair
-from skvo_veb.utils.gp.working_window import (
+from skvo_veb.utils.lc_intervals import format_interval_display_pair
+from skvo_veb.utils.lc_working_window import (
     WORKING_WINDOW_DISABLED,
     build_working_window_store_from_times,
     filter_plot_arrays_by_jd_window,
@@ -2040,11 +2040,11 @@ def download_working_lightcurve(
         raise PreventUpdate
     try:
         lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
-        apply_prep_fold_ephemeris(
+        apply_export_ephemeris(
             lcd, period, epoch, display_epoch=DISPLAY_EPOCH_JD
         )
         fmt = table_format or DEFAULT_EXPORT_FORMAT
-        outfile = gp_lc_export_download_name(stem, fmt)
+        outfile = lc_export_download_name(stem, fmt)
         blob = export_curvedash(lcd, fmt)
         return dcc.send_bytes(blob, outfile), None
     except PipeException as exc:
@@ -3005,7 +3005,7 @@ def download_detrended_lightcurve(
         raise PreventUpdate
     try:
         lcd = _cached_lcd(user_tab_id)
-        apply_prep_fold_ephemeris(
+        apply_export_ephemeris(
             lcd, period, epoch, display_epoch=DISPLAY_EPOCH_JD
         )
         residual_err = payload.get("residual_err")
@@ -3016,7 +3016,7 @@ def download_detrended_lightcurve(
             domain=payload.get("domain") or lcd.active_domain,
         )
         fmt = table_format or DEFAULT_EXPORT_FORMAT
-        outfile = gp_lc_export_download_name(
+        outfile = lc_export_download_name(
             suggested_detrended_export_stem(stem), fmt
         )
         blob = export_curvedash(lcd, fmt)
@@ -3149,7 +3149,7 @@ def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filena
             source_file=filename,
             smooth_payload=read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
         )
-        outfile = gp_intervals_export_download_name(
+        outfile = intervals_export_download_name(
             suggested_intervals_export_stem(stem)
         )
         return dcc.send_string(content, outfile), None

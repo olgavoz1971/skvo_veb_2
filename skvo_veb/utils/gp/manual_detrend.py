@@ -10,41 +10,11 @@ import numpy as np
 
 from skvo_veb.utils.lc_bridge import _jd0_from_packet_meta, photcal_from_metadata
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, DEFAULT_EPOCH_JD
-from skvo_veb.utils.lc_interaction import plot_x_to_jd
+from skvo_veb.utils.lc_interaction import line_y_at_jd, plot_x_to_jd
 from skvo_veb.utils.gp.flux import resolve_gp_photcal
 from skvo_veb.utils.my_tools import PipeException
 
 logger = logging.getLogger(__name__)
-
-
-def line_y_at_jd(
-    jd: np.ndarray,
-    jd_a: float,
-    y_a: float,
-    jd_b: float,
-    y_b: float,
-) -> np.ndarray:
-    """Evaluates the straight line through two anchor points in Julian Date space.
-
-    Args:
-        jd (numpy.ndarray): Absolute Julian dates.
-        jd_a (float): First anchor JD.
-        y_a (float): First anchor y (mag or flux).
-        jd_b (float): Second anchor JD.
-        y_b (float): Second anchor y.
-
-    Returns:
-        numpy.ndarray: Line values at ``jd``.
-
-    Raises:
-        PipeException: If anchor JDs are identical.
-    """
-    if jd_a == jd_b:
-        raise PipeException(
-            "Trend line anchors share the same time; pick two distinct points on the plot."
-        )
-    slope = (y_b - y_a) / (jd_b - jd_a)
-    return y_a + slope * (np.asarray(jd, dtype=float) - jd_a)
 
 
 def _resolve_photcal(meta: dict):

@@ -5,9 +5,19 @@ from __future__ import annotations
 import numpy as np
 import plotly.graph_objects as go
 
-from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, TIME_AXIS_MJD
-from skvo_veb.utils.lc_figure import absolute_jd_to_plot_x, apply_time_xaxis_format
-from skvo_veb.utils.mavka.config import MAVKA_METHOD_A_COLOUR, MAVKA_PIECE_COLOURS
+from skvo_veb.components.extrema_modeller_appearance import (
+    MAVKA_METHOD_A_COLOUR,
+    MAVKA_PIECE_COLOURS,
+    PAGE_DISPLAY_EPOCH_JD,
+    PAGE_TIME_AXIS_MODE,
+    REVIEW_CARD_PLOT_HEIGHT,
+    format_page_fit_title,
+)
+from skvo_veb.utils.lc_figure import (
+    absolute_jd_to_plot_x,
+    apply_time_xaxis_format,
+    maybe_interval_observations_figure,
+)
 from skvo_veb.utils.mavka.models import ApproxFitResult, model_curve
 
 _SEGMENT_POINTS = 200
@@ -86,13 +96,13 @@ def figure_from_mavka_result(
     y_obs: np.ndarray,
     fit: ApproxFitResult,
     *,
-    display_epoch: float = DEFAULT_EPOCH_JD,
+    display_epoch: float = PAGE_DISPLAY_EPOCH_JD,
     invert_y: bool = False,
     y_label: str = "Magnitude",
 ) -> go.Figure:
     """Build a Plotly figure for one successful MAVKA interval fit.
 
-    Times are shown in MJD (``JD - display_epoch``), matching the prep light curve.
+    Times use the Extrema modeller page display scale (see ``page_time_label``).
 
     Args:
         t_obs (numpy.ndarray): Absolute JD of the interval points.
@@ -116,7 +126,7 @@ def figure_from_mavka_result(
         raise ValueError("Cannot build a MAVKA figure from an empty interval")
 
     def _plot_x(jd_values):
-        return absolute_jd_to_plot_x(jd_values, TIME_AXIS_MJD, display_epoch)
+        return absolute_jd_to_plot_x(jd_values, PAGE_TIME_AXIS_MODE, display_epoch)
 
     x = np.asarray(_plot_x(t_obs), dtype=float)
     t_min = float(np.min(t_obs))
@@ -193,9 +203,15 @@ def figure_from_mavka_result(
     fig.update_layout(
         margin=dict(l=0, r=10, t=20, b=20),
         showlegend=False,
-        title=dict(text=f"   TOM: {tom_mjd:.2f}", font=dict(size=14), y=0.95),
+        title=dict(
+            text=format_page_fit_title(
+                fit.t_ext, kind="ToM", epoch=display_epoch
+            ),
+            font=dict(size=14),
+            y=0.95,
+        ),
         template="plotly_white",
-        height=400,
+        height=REVIEW_CARD_PLOT_HEIGHT,
         hovermode="x unified",
         hoverlabel=dict(
             bgcolor="rgba(255,255,255,0.9)",
@@ -206,5 +222,37 @@ def figure_from_mavka_result(
     )
     if invert_y:
         fig.update_yaxes(autorange="reversed")
-    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=TIME_AXIS_MJD)
+    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=PAGE_TIME_AXIS_MODE)
     return fig
+
+
+def figure_from_mavka_observations(
+    t_obs: np.ndarray,
+    y_obs: np.ndarray,
+    *,
+    display_epoch: float = PAGE_DISPLAY_EPOCH_JD,
+    invert_y: bool = False,
+    y_label: str = "Magnitude",
+) -> go.Figure | None:
+    """Build a points-only figure when a MAVKA interval fit failed.
+
+    Args:
+        t_obs (numpy.ndarray): Absolute JD of the interval points.
+        y_obs (numpy.ndarray): Photometry in the working Mag/Flux view.
+        display_epoch (float): Reference subtracted for the x-axis.
+        invert_y (bool): Reverse the y-axis (magnitude convention).
+        y_label (str): Y-axis title.
+
+    Returns:
+        plotly.graph_objects.Figure | None: Scatter of the interval, or ``None``
+        when no finite points remain.
+    """
+    return maybe_interval_observations_figure(
+        t_obs,
+        y_obs,
+        display_epoch=display_epoch,
+        invert_y=invert_y,
+        y_label=y_label,
+        title="Fit failed",
+        height=REVIEW_CARD_PLOT_HEIGHT,
+    )

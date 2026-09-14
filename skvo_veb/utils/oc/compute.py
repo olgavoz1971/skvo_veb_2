@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from skvo_veb.components.extrema_modeller_appearance import page_time_label, to_page_time
 from skvo_veb.utils.oc.tom_io import records_to_arrays
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ def cycle_shifts_from_store(
     *,
     display_epoch: float,
 ) -> list[tuple[float, int]]:
-    """Converts UI cycle-shift rows (display MJD) to ``(at_jd, delta_E)``.
+    """Converts UI cycle-shift rows (page display time) to ``(at_jd, delta_E)``.
 
     Args:
         shift_rows (list[dict] | None): Stored rows with ``at_mjd`` and ``delta_e``.
@@ -59,7 +60,7 @@ def compute_step1_oc(
         t0_jd (float): Trial epoch as absolute JD.
         p0 (float): Trial period in days.
         cycle_shifts (list[tuple[float, int]] | None): ``(at_jd, delta_E)`` pairs.
-        source (str): ``gp``, ``mavka``, or ``upload``.
+        source (str): ``gp``, ``mavka``, ``parabola``, or ``upload``.
 
     Returns:
         dict: JSON-safe arrays and ephemeris metadata for plot and export.
@@ -115,16 +116,16 @@ def compute_step1_oc(
 
 
 def absolute_jd_to_display_mjd(jd_abs: float, display_epoch: float) -> float:
-    """Converts an absolute Julian Date to the page display MJD offset.
+    """Converts an absolute Julian Date to the Extrema modeller page display time.
 
     Args:
         jd_abs (float): Absolute Julian Date.
         display_epoch (float): Offset subtracted on the page (``jd0``).
 
     Returns:
-        float: ``jd_abs - display_epoch``.
+        float: Page display time (MJD when the page origin is 2400000.5).
     """
-    return float(jd_abs) - float(display_epoch)
+    return float(to_page_time(jd_abs, epoch=display_epoch))
 
 
 def at_mjd_from_oc_click(
@@ -133,23 +134,24 @@ def at_mjd_from_oc_click(
     *,
     display_epoch: float | None = None,
 ) -> float:
-    """Reads observed display MJD from an O-C graph ``clickData`` payload.
+    """Reads observed page display time from an O-C graph ``clickData`` payload.
 
-    Prefers ``customdata[1]`` (observed MJD on the figure). If that is missing,
+    Prefers ``customdata[1]`` (observed time on the figure). If that is missing,
     reconstructs ``jd_ext`` from the clicked ``E``, ``O-C``, and the last plot
     payload: ``T0 + E × P0 + (O-C)``.
 
     Args:
         click_data (dict | None): Dash ``dcc.Graph.clickData``.
         payload (dict | None): Last ``compute_step1_oc`` store, used as fallback.
-        display_epoch (float | None): Page MJD offset (``jd0``) for the fallback.
+        display_epoch (float | None): Page origin (``jd0``) for the fallback.
 
     Returns:
-        float: Observed MJD of the clicked point.
+        float: Observed page display time of the clicked point.
 
     Raises:
-        ValueError: If the click has no point or no observed MJD.
+        ValueError: If the click has no point or no observed time.
     """
+    scale = page_time_label()
     if not click_data or not click_data.get("points"):
         raise ValueError("No O-C point selected.")
     point = click_data["points"][0]
@@ -159,9 +161,9 @@ def at_mjd_from_oc_click(
         if math.isfinite(value):
             return value
     if payload is None or display_epoch is None:
-        raise ValueError("Clicked point is missing observed MJD.")
+        raise ValueError(f"Clicked point is missing observed {scale}.")
     if "x" not in point or "y" not in point:
-        raise ValueError("Clicked point is missing observed MJD.")
+        raise ValueError(f"Clicked point is missing observed {scale}.")
     cycle_e = float(point["x"])
     oc_days = float(point["y"])
     t0_jd = float(payload["t0_jd"])
@@ -169,5 +171,5 @@ def at_mjd_from_oc_click(
     jd_ext = t0_jd + cycle_e * p0 + oc_days
     value = absolute_jd_to_display_mjd(jd_ext, display_epoch)
     if not math.isfinite(value):
-        raise ValueError("Observed MJD is not finite.")
+        raise ValueError(f"Observed {scale} is not finite.")
     return value

@@ -16,7 +16,7 @@ All matching is case-insensitive on the comment text.
 | ``JD0 = <float>`` | Sets the time-system origin (`timesys.timeorigin`) added when resolving absolute Julian Date. Default **0** if no line matches. |
 | ``MAG0 = <float>`` | Sets a reference magnitude on the heuristic ``PhotCal`` attached to mag/flux columns (paired with dimensionless instrumental zero-point flux **1.0**). |
 | ``PERIOD = <float>`` | Folding period in **days** (`table.meta['period']`; shown in UI period field after upload). |
-| ``EPOCH = <float>`` | Reference epoch in the **same units and time scale as the time column** (same ``JD0`` as ``jd``); converted to absolute JD on ingest. UI fold fields on MJD pages show ``Epoch-2400000.5`` offsets. |
+| ``EPOCH = <float>`` | Reference epoch in the **same units and time scale as the time column** (same ``JD0`` as ``jd``); converted to absolute JD on ingest. TESS and discovery fold fields show ``Epoch-2400000.5`` offsets. The Extrema modeller (``/gp``) shows ``Epoch (MJD)`` (or ``Epoch (JD)`` / ``Epoch (JD-<origin>)`` from ``PAGE_DISPLAY_EPOCH_JD``). |
 | ``FILTER=<id>`` or ``BAND=<id>`` | Stores a filter or band identifier on photometry metadata. |
 
 ## Column naming
@@ -51,4 +51,4 @@ Every non-comment data line must contain the same number of whitespace-separated
 
 The GP extremum fit uses **normalised instrumental flux** internally; timing (JD) and timing
 uncertainties are the scientific outputs. Default magnitude zero point for uploads without
-complete calibration is configured in ``skvo_veb/utils/gp/config.py`` (`DEFAULT_REFERENCE_MAG`).
+complete calibration is configured in ``skvo_veb/utils/lc_config.py`` (`DEFAULT_REFERENCE_MAG`).

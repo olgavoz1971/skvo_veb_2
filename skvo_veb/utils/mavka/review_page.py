@@ -6,11 +6,14 @@ import math
 from typing import Any
 
 import dash_bootstrap_components as dbc
-import plotly.graph_objects as go
-from dash import dcc, html
+from dash import html
 
-from skvo_veb.utils.mavka.config import MAVKA_REVIEW_PAGE_SIZE
+from skvo_veb.components.fail_fit_badge import failed_fit_badge, review_card_graph
+from skvo_veb.components.extrema_modeller_appearance import CARD_COL_WIDTH, PAGE_SIZE
 from skvo_veb.utils.mavka.models import ApproxFitResult
+
+_FAIL_TITLE = "MAVKA fit failed"
+_FAIL_BADGE_TYPE = "mavka-fail-badge"
 
 
 def _json_number(value: Any) -> float | None:
@@ -48,11 +51,14 @@ def format_sigma_t_seconds_label(sigma_t_days: float) -> str:
     return f"σ_t: {seconds:.1f} s"
 
 
-def success_badge_specs(fit: ApproxFitResult) -> list[dict]:
+def success_badge_specs(
+    fit: ApproxFitResult, *, window_capped: bool = False
+) -> list[dict]:
     """Builds serialisable badge metadata for a successful MAVKA fit.
 
     Args:
         fit (ApproxFitResult): Successful interval fit.
+        window_capped (bool): True when a max half-width trimmed this interval.
 
     Returns:
         list[dict]: ``label`` and ``color`` keys for each badge.
@@ -64,6 +70,8 @@ def success_badge_specs(fit: ApproxFitResult) -> list[dict]:
     ]
     if fit.warning:
         specs.append({"label": "Warning", "color": "warning"})
+    if window_capped:
+        specs.append({"label": "window capped", "color": "warning"})
     return specs
 
 
@@ -83,14 +91,19 @@ def badges_from_specs(specs: list[dict]) -> list:
 
 
 def review_entry_from_fit(
-    fit: ApproxFitResult, jd_min: float, jd_max: float
+    fit: ApproxFitResult,
+    jd_min: float,
+    jd_max: float,
+    *,
+    window_capped: bool = False,
 ) -> dict:
     """Builds one in-memory review row from a MAVKA fit result.
 
     Args:
         fit (ApproxFitResult): Interval fit (success or failure).
-        jd_min (float): Interval start (absolute JD).
-        jd_max (float): Interval stop (absolute JD).
+        jd_min (float): Fit-window start (absolute JD).
+        jd_max (float): Fit-window stop (absolute JD).
+        window_capped (bool): True when a max half-width trimmed this interval.
 
     Returns:
         dict: Row ready for ``serialise_review_entry``.
@@ -120,7 +133,7 @@ def review_entry_from_fit(
             "is_fail": False,
             "jd_peak": _json_number(fit.t_ext),
             "jd_peak_std": _json_number(fit.sigma_t_ext),
-            "badge_specs": success_badge_specs(fit),
+            "badge_specs": success_badge_specs(fit, window_capped=window_capped),
         }
     )
     return base
@@ -131,7 +144,8 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
 
     Args:
         res_entry (dict): One element from the batch result list.
-        figure_json (dict, optional): Plotly JSON for successful fits.
+        figure_json (dict, optional): Plotly JSON for the card plot (success or
+            failed-interval observations).
 
     Returns:
         dict: Row suitable for ``save_mavka_review_run``.
@@ -151,6 +165,8 @@ def serialise_review_entry(res_entry: dict, *, figure_json: dict | None = None) 
     }
     if row["is_fail"]:
         row["error"] = res_entry.get("error", "")
+        if figure_json is not None:
+            row["figure_json"] = figure_json
         return row
     row["jd_peak"] = res_entry["jd_peak"]
     row["jd_peak_std"] = res_entry["jd_peak_std"]
@@ -165,6 +181,7 @@ def build_review_store_payload(
     stopped_early: bool = False,
     source_filename: str | None = None,
     method: str | None = None,
+    max_half_width_d: float | None = None,
 ) -> dict:
     """Builds ``store-mavka-results-data`` content for a finished MAVKA run.
 
@@ -174,6 +191,7 @@ def build_review_store_payload(
         stopped_early (bool): True when the user stopped the batch before all intervals.
         source_filename (str | None): Light-curve filename at the time of this run.
         method (str | None): Approximation id used for this run (``WSAP``, …).
+        max_half_width_d (float | None): Optional half-width cap used for this run.
 
     Returns:
         dict: Run id, page index, include flags, export rows, source filename,
@@ -200,11 +218,12 @@ def build_review_store_payload(
         "stopped_early": stopped_early,
         "source_filename": source_filename,
         "method": method,
+        "max_half_width_d": max_half_width_d,
     }
 
 
 def review_page_label(
-    page: int, total_count: int, page_size: int = MAVKA_REVIEW_PAGE_SIZE
+    page: int, total_count: int, page_size: int = PAGE_SIZE
 ) -> str:
     """Formats the Review and Export page caption.
 
@@ -227,40 +246,28 @@ def review_page_label(
     )
 
 
-def fail_card_content(entry: dict) -> html.Div:
-    """Builds the alert block for a failed interval.
+def badge_row_for_entry(entry: dict, *, view: str, index: int) -> html.Div:
+    """Builds the card badge row, with a hover/click FAILED popover on failures.
 
     Args:
-        entry (dict): Serialised review row with ``is_fail`` true.
+        entry (dict): Serialised review row.
+        view (str): ``review`` or ``live`` (keeps Dash ids unique).
+        index (int): Card index in the full batch.
 
     Returns:
-        html.Div: Failure alert and tooltip target.
+        html.Div: Badge row for the card header.
     """
-    jd_min = entry.get("jd_min")
-    jd_max = entry.get("jd_max")
-    err_id = f"err-mavka-{str(jd_min).replace('.', '')}"
-    return html.Div(
-        [
-            dbc.Alert(
-                [
-                    html.B("MAVKA fit failed"),
-                    html.Div(
-                        f"Range: {jd_min:.2f}-{jd_max:.2f}",
-                        className="gp-fail-range",
-                    ),
-                    html.Hr(),
-                    html.Div(
-                        "Hover for error",
-                        id=err_id,
-                        className="gp-fail-hint",
-                    ),
-                ],
-                color="danger",
-                className="m-0",
-            ),
-            dbc.Tooltip(entry.get("error", ""), target=err_id),
-        ]
-    )
+    if entry.get("is_fail"):
+        children = failed_fit_badge(
+            title=_FAIL_TITLE,
+            reason=entry.get("error") or "",
+            jd_min=entry.get("jd_min"),
+            jd_max=entry.get("jd_max"),
+            target_id={"type": _FAIL_BADGE_TYPE, "index": index, "view": view},
+        )
+    else:
+        children = badges_from_specs(entry.get("badge_specs", []))
+    return html.Div(children, className="gp-review-badges")
 
 
 def create_review_interval_card(
@@ -269,7 +276,7 @@ def create_review_interval_card(
     *,
     include_in_export: bool,
 ) -> dbc.Col:
-    """Wraps one review fit in a two-column grid card.
+    """Wraps one review fit in a grid card.
 
     Args:
         entry (dict): Serialised review row from the server cache.
@@ -277,11 +284,10 @@ def create_review_interval_card(
         include_in_export (bool): Current include flag from ``store-mavka-results-data``.
 
     Returns:
-        dbc.Col: Card with checkbox, badges, and graph or failure alert.
+        dbc.Col: Card with checkbox, badges, and graph.
     """
     is_fail = entry["is_fail"]
-    badges = badges_from_specs(entry.get("badge_specs", []))
-    badge_row = html.Div(badges, className="gp-review-badges")
+    badge_row = badge_row_for_entry(entry, view="review", index=global_index)
 
     checkbox = dbc.Checkbox(
         id={"type": "mavka-fit-selector", "index": global_index},
@@ -291,11 +297,7 @@ def create_review_interval_card(
         className="mb-1 fw-bold",
     )
 
-    if is_fail:
-        content = fail_card_content(entry)
-    else:
-        fig = go.Figure(entry["figure_json"])
-        content = dcc.Graph(figure=fig, config={"displaylogo": False})  # type: ignore[arg-type]
+    content = review_card_graph(entry)
 
     card_class = "gp-review-card gp-review-card-fail" if is_fail else "gp-review-card"
     return dbc.Col(
@@ -303,7 +305,7 @@ def create_review_interval_card(
             [checkbox, badge_row, content],
             className=card_class,
         ),
-        width=6,
+        width=CARD_COL_WIDTH,
         className="px-1 mb-2",
     )
 
@@ -312,7 +314,7 @@ def render_review_page(
     entries: list[dict],
     page: int,
     include_flags: list[bool],
-    page_size: int = MAVKA_REVIEW_PAGE_SIZE,
+    page_size: int = PAGE_SIZE,
 ) -> list:
     """Returns ``dbc.Col`` children for one page of the review grid.
 

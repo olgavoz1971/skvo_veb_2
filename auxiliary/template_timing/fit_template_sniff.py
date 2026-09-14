@@ -15,7 +15,7 @@ if str(_ROOT) not in sys.path:
 import matplotlib.pyplot as plt
 import numpy as np
 
-from skvo_veb.utils.gp.intervals import load_intervals
+from skvo_veb.utils.lc_intervals import load_intervals
 
 from lc_flux import load_lc_window, photometry_to_normalised_flux
 from plot_style import FIGSIZE_INTERVAL, FONT_SIZE, apply_interval_plot_style

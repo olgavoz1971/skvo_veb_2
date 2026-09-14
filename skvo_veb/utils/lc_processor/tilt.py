@@ -7,8 +7,7 @@ import logging
 import numpy as np
 
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.gp.manual_detrend import line_y_at_jd
-from skvo_veb.utils.lc_interaction import plot_x_to_jd
+from skvo_veb.utils.lc_interaction import line_y_at_jd, plot_x_to_jd
 from skvo_veb.utils.lc_processor.apply import (
     DETREND_ORIGIN_COPY,
     DETREND_ORIGIN_SMOOTH,

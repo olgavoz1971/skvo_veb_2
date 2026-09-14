@@ -18,7 +18,8 @@ def unpack_json_for_gp_plot(json_str: str, view_mode: str = "mag") -> dict:
 
     Uses ``unpack_json_for_plotly`` when bridge photcal is complete. When the user
     requests a domain conversion but upload metadata lacks zero points (typical for
-    exported CSV flux), applies ``resolve_gp_photcal`` from GP config.
+    exported CSV flux), applies ``resolve_gp_photcal`` (PhotCal from the curve,
+    else ``lc_config`` fallbacks).
 
     Args:
         json_str (str): Serialised lightcurve from ``pack_volc_to_json``.

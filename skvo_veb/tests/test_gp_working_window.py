@@ -6,13 +6,15 @@ import numpy as np
 import pytest
 
 from skvo_veb.utils.gp.working_window import (
-    WORKING_WINDOW_DISABLED,
     build_working_window_store,
     clip_transport_json_to_jd_window,
+    transport_json_for_prep_export,
+)
+from skvo_veb.utils.lc_working_window import (
+    WORKING_WINDOW_DISABLED,
     filter_plot_arrays_by_jd_window,
     interval_overlaps_jd_window,
     normalize_working_window,
-    transport_json_for_prep_export,
 )
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
 from skvo_veb.utils.lc_bridge import get_intervals_from_phase

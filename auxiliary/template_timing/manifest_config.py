@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-from skvo_veb.utils.gp.intervals import load_intervals
+from skvo_veb.utils.lc_intervals import load_intervals
 from skvo_veb.utils.lc_config import DOMAIN_MAG, JD_TO_MJD
 from fit_mask import validate_fit_mask_settings
 from lc_io import lightcurve_jd_extent

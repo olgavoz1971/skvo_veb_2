@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skvo_veb.utils.gp.working_window import interval_overlaps_jd_window
+from skvo_veb.utils.lc_working_window import interval_overlaps_jd_window
 
 GP_INTERVAL_SHAPE_NAME_PREFIX = "gp-int-"
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import plotly.graph_objects as go
-from dash import dcc, html
+from dash import html
 
-from skvo_veb.utils.mavka.config import MAVKA_LIVE_PAGE_SIZE
-from skvo_veb.utils.mavka.review_page import badges_from_specs, fail_card_content
+from skvo_veb.components.fail_fit_badge import review_card_graph
+from skvo_veb.components.extrema_modeller_appearance import PAGE_SIZE
+from skvo_veb.utils.mavka.review_page import badge_row_for_entry
 
 
 def live_slot_waiting() -> html.Div:
@@ -20,7 +20,7 @@ def live_slot_waiting() -> html.Div:
 
 def live_visible_page_for_done_count(
     done_count: int,
-    page_size: int = MAVKA_LIVE_PAGE_SIZE,
+    page_size: int = PAGE_SIZE,
 ) -> int:
     """Page index to show after ``done_count`` fits have completed.
 
@@ -51,24 +51,19 @@ def live_progress_label(done: int, total: int) -> str:
     return f"{done} extrema from {total} ready"
 
 
-def live_slot_card(entry: dict) -> html.Div:
-    """Builds one live grid cell (badges + graph or failure), without export checkbox.
+def live_slot_card(entry: dict, global_index: int) -> html.Div:
+    """Builds one live grid cell (badges + graph), without export checkbox.
 
     Args:
         entry (dict): Serialised review row.
+        global_index (int): Index in the full live batch (unique popover ids).
 
     Returns:
         html.Div: Bordered card body for the slot.
     """
     is_fail = entry["is_fail"]
-    badges = badges_from_specs(entry.get("badge_specs", []))
-    badge_row = html.Div(badges, className="gp-review-badges")
-
-    if is_fail:
-        content = fail_card_content(entry)
-    else:
-        fig = go.Figure(entry["figure_json"])
-        content = dcc.Graph(figure=fig, config={"displaylogo": False})  # type: ignore[arg-type]
+    badge_row = badge_row_for_entry(entry, view="live", index=global_index)
+    content = review_card_graph(entry)
 
     card_class = "gp-review-card gp-review-card-fail" if is_fail else "gp-review-card"
     return html.Div(
@@ -80,7 +75,7 @@ def live_slot_card(entry: dict) -> html.Div:
 def build_live_page_slot_children(
     stored_entries: list[dict],
     visible_page: int,
-    page_size: int = MAVKA_LIVE_PAGE_SIZE,
+    page_size: int = PAGE_SIZE,
 ) -> list:
     """Returns inner ``children`` for each fixed live slot on the visible page.
 
@@ -96,7 +91,7 @@ def build_live_page_slot_children(
     for slot in range(page_size):
         global_idx = visible_page * page_size + slot
         if global_idx < len(stored_entries):
-            slots.append(live_slot_card(stored_entries[global_idx]))
+            slots.append(live_slot_card(stored_entries[global_idx], global_idx))
         else:
             slots.append(live_slot_waiting())
     return slots

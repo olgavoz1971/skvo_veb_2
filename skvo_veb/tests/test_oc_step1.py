@@ -199,6 +199,13 @@ def test_oc_default_export_stem_from_source_filename():
     )
     assert (
         oc_default_export_stem_for_source(
+            "parabola",
+            parabola_store={"source_filename": "NSV807.vot"},
+        )
+        == "NSV807_parabola_oc"
+    )
+    assert (
+        oc_default_export_stem_for_source(
             "upload",
             uploaded={"filename": "R_TESS_min_all.dat"},
         )
@@ -217,10 +224,13 @@ def test_uploaded_toms_from_store_requires_filename_payload():
 def test_oc_figure_title_hover_and_top_axis_use_mjd():
     """Card title names the source; the figure itself has no title or annotation."""
     from skvo_veb.pages.gp_for_oc import _build_oc_figure, _oc_source_title
+    from skvo_veb.components.extrema_modeller_appearance import page_time_label
     from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD as jd0
 
+    scale = page_time_label()
     assert _oc_source_title("gp") == "O-C (GP)"
     assert _oc_source_title("mavka") == "O-C (MAVKA)"
+    assert _oc_source_title("parabola") == "O-C (parabola)"
     assert _oc_source_title("upload") == "O-C (upload)"
     payload = compute_step1_oc(
         [{"jd_ext": 2458749.729, "sigma_jd": 1.5e-4}],
@@ -232,10 +242,10 @@ def test_oc_figure_title_hover_and_top_axis_use_mjd():
     title_text = fig.layout.title.text if fig.layout.title else None
     assert title_text in (None, "")
     assert fig.layout.annotations in ((), None) or len(fig.layout.annotations) == 0
-    assert fig.layout.xaxis2.title.text == "Calculated MJD"
+    assert fig.layout.xaxis2.title.text == f"Calculated {scale}"
     assert fig.layout.xaxis2.matches == "x"
     hover = fig.data[0].hovertemplate
-    assert "MJD obs" in hover
+    assert f"{scale} obs" in hover
     assert "jd_obs" not in hover
     mjd_obs = fig.data[0].customdata[0][1]
     assert mjd_obs == pytest.approx(2458749.729 - jd0)
@@ -270,9 +280,11 @@ def test_at_mjd_from_oc_click_from_e_and_residual():
 
 def test_at_mjd_from_oc_click_rejects_empty():
     """A click without a point fails fast."""
+    from skvo_veb.components.extrema_modeller_appearance import page_time_label
+
     with pytest.raises(ValueError, match="No O-C point"):
         at_mjd_from_oc_click(None)
-    with pytest.raises(ValueError, match="missing observed MJD"):
+    with pytest.raises(ValueError, match=f"missing observed {page_time_label()}"):
         at_mjd_from_oc_click({"points": [{"customdata": [1.0]}]})
 
 

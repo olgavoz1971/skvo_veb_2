@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
-from skvo_veb.utils.gp.figure import figure_from_gp_result
+from skvo_veb.utils.gp.figure import figure_from_gp_observations, figure_from_gp_result
 
 
 def test_figure_from_gp_result_mjd_axis_and_title():
@@ -29,8 +29,19 @@ def test_figure_from_gp_result_mjd_axis_and_title():
 
     fig = figure_from_gp_result(gp_res, display_epoch=DEFAULT_EPOCH_JD)
 
-    assert f"Peak: {mjd_peak:.2f}" in fig.layout.title.text
+    assert f"Peak (MJD): {mjd_peak:.2f}" in fig.layout.title.text
     assert not fig.layout.xaxis.title.text
     assert fig.layout.xaxis.tickformat == ".2f"
     assert fig.layout.xaxis.exponentformat == "none"
     assert float(fig.data[0].x[0]) < 100_000
+
+
+def test_figure_from_gp_observations_shows_points():
+    """Failed GP cards can still plot the interval photometry."""
+    t = np.array([DEFAULT_EPOCH_JD + 1.0, DEFAULT_EPOCH_JD + 1.1])
+    y = np.array([1.0, 1.05])
+    fig = figure_from_gp_observations(t, y, display_epoch=DEFAULT_EPOCH_JD)
+    assert fig is not None
+    assert "Fit failed" in fig.layout.title.text
+    assert fig.data[0].mode == "markers"
+    assert len(fig.data) == 1

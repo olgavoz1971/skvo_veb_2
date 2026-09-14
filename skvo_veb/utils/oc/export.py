@@ -7,6 +7,7 @@ from typing import Any
 from skvo_veb.utils.gp.export import gp_suggested_timing_stem
 from skvo_veb.utils.mavka.export import mavka_suggested_timing_stem
 from skvo_veb.utils.my_tools import sanitize_filename
+from skvo_veb.utils.parabola_tom.export import parabola_suggested_timing_stem
 
 OC_DAT_EXTENSION = "dat"
 OC_STEM_SUFFIX = "_oc"
@@ -19,14 +20,16 @@ def oc_source_filename(
     *,
     gp_store: dict | None = None,
     mavka_store: dict | None = None,
+    parabola_store: dict | None = None,
     uploaded: dict | list | None = None,
 ) -> str | None:
     """Returns the file name captured when the selected ToMs were created.
 
     Args:
-        source (str): ``gp``, ``mavka``, or ``upload``.
+        source (str): ``gp``, ``mavka``, ``parabola``, or ``upload``.
         gp_store (dict | None): ``store-results-data``.
         mavka_store (dict | None): ``store-mavka-results-data``.
+        parabola_store (dict | None): ``store-parabola-results-data``.
         uploaded (dict | list | None): ``store-oc-uploaded-toms``.
 
     Returns:
@@ -36,6 +39,8 @@ def oc_source_filename(
         return (gp_store or {}).get("source_filename")
     if source == "mavka":
         return (mavka_store or {}).get("source_filename")
+    if source == "parabola":
+        return (parabola_store or {}).get("source_filename")
     if source == "upload" and isinstance(uploaded, dict):
         return uploaded.get("filename")
     return None
@@ -46,17 +51,19 @@ def oc_default_export_stem_for_source(
     *,
     gp_store: dict | None = None,
     mavka_store: dict | None = None,
+    parabola_store: dict | None = None,
     uploaded: dict | list | None = None,
 ) -> str:
     """Builds the O-C export stem from the ToM source that produced this diagram.
 
-    GP and MAVKA use the same basename as their timing ``.dat`` suggestion,
-    then ``_oc``. Upload uses the uploaded ToM filename.
+    GP, MAVKA, and parabola use the same basename as their timing ``.dat``
+    suggestion, then ``_oc``. Upload uses the uploaded ToM filename.
 
     Args:
-        source (str): ``gp``, ``mavka``, or ``upload``.
+        source (str): ``gp``, ``mavka``, ``parabola``, or ``upload``.
         gp_store (dict | None): ``store-results-data``.
         mavka_store (dict | None): ``store-mavka-results-data``.
+        parabola_store (dict | None): ``store-parabola-results-data``.
         uploaded (dict | list | None): ``store-oc-uploaded-toms``.
 
     Returns:
@@ -73,6 +80,12 @@ def oc_default_export_stem_for_source(
             mavka_suggested_timing_stem(
                 store.get("source_filename"),
                 store.get("method"),
+            )
+        )
+    if key == "parabola":
+        return oc_default_export_stem(
+            parabola_suggested_timing_stem(
+                (parabola_store or {}).get("source_filename")
             )
         )
     if key == "upload" and isinstance(uploaded, dict):

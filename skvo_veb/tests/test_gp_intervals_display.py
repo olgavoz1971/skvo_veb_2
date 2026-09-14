@@ -1,6 +1,6 @@
 """Interval registry labels vs export (JD storage, axis-aware display)."""
 
-from skvo_veb.utils.gp.intervals import (
+from skvo_veb.utils.lc_intervals import (
     format_interval_display_pair,
     format_interval_display_pairs,
     format_intervals_download,

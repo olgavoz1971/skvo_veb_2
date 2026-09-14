@@ -9,9 +9,13 @@ import astropy.units as u
 import numpy as np
 import pandas as pd
 
-from skvo_veb.utils.lc_config import PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
 from skvo_veb.utils.lc_bridge import unpack_json_for_plotly
-from skvo_veb.utils.gp.config import DEFAULT_REFERENCE_MAG, GP_ZP_FLUX_DIMENSIONLESS
+from skvo_veb.utils.lc_config import (
+    DEFAULT_REFERENCE_MAG,
+    DEFAULT_ZP_FLUX_DIMENSIONLESS,
+    PHOTCAL_KEY_ZP_FLUX,
+    PHOTCAL_KEY_ZP_MAG,
+)
 from skvo_veb.volightcurve.lightcurve import PhotCal
 
 logger = logging.getLogger(__name__)
@@ -21,7 +25,8 @@ def resolve_gp_photcal(meta: dict) -> PhotCal:
     """Build a ``PhotCal`` for mag-to-flux conversion on the GP page.
 
     Uses transport ``photcal`` when both zero points are present; otherwise applies
-    GP config defaults (dimensionless instrumental flux, configurable reference mag).
+    lightcurve fallbacks from ``lc_config`` (dimensionless instrumental flux,
+    configurable reference mag).
 
     Args:
         meta (dict): Transport packet ``meta`` block.
@@ -44,7 +49,7 @@ def resolve_gp_photcal(meta: dict) -> PhotCal:
     else:
         zp_mag = float(zp_mag)
     if zp_flux is None:
-        zp_flux = GP_ZP_FLUX_DIMENSIONLESS
+        zp_flux = DEFAULT_ZP_FLUX_DIMENSIONLESS
     else:
         zp_flux = float(zp_flux)
     return PhotCal(zp_flux=zp_flux, zp_flux_unit=None, zp_mag=zp_mag, zp_mag_unit="mag")
@@ -60,7 +65,7 @@ def decode_gp_flux_arrays(json_str: str) -> dict:
     :func:`get_gp_flux_fragment` in a loop.
 
     For magnitude-native uploads the conversion uses ``PhotCal`` from transport
-    metadata, falling back to GP config zero points via
+    metadata, falling back to ``lc_config`` zero points via
     :func:`resolve_gp_photcal`.
 
     Args:

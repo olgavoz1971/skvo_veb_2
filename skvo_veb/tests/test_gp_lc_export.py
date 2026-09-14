@@ -10,11 +10,13 @@ import numpy as np
 from skvo_veb.tests.test_gp_manual_detrend import _minimal_mag_packet
 from skvo_veb.tests.volightcurve.test_time_reference import _gaia_style_votable
 from skvo_veb.utils.gp.export import (
-    apply_prep_fold_ephemeris,
-    export_stem_from_upload_filename,
-    gp_intervals_export_download_name,
-    gp_lc_export_download_name,
     gp_suggested_intervals_stem,
+)
+from skvo_veb.utils.lc_export import (
+    apply_export_ephemeris,
+    export_stem_from_upload_filename,
+    intervals_export_download_name,
+    lc_export_download_name,
 )
 from skvo_veb.utils.gp.manual_detrend import apply_manual_linear_detrend
 from skvo_veb.utils.lc_bridge import (
@@ -59,9 +61,9 @@ def _minimal_flux_packet(
     return json.dumps(struct)
 
 
-def test_gp_lc_export_download_name_appends_extension():
+def test_lc_export_download_name_appends_extension():
     """Basename-only stems receive the format extension."""
-    name = gp_lc_export_download_name("my_curve_lc", VOTABLE_FORMAT_BINARY)
+    name = lc_export_download_name("my_curve_lc", VOTABLE_FORMAT_BINARY)
     assert name.endswith(".vot")
 
 
@@ -72,10 +74,10 @@ def test_gp_suggested_intervals_stem_appends_int():
     assert gp_suggested_intervals_stem(None) == "intervals_int"
 
 
-def test_gp_intervals_export_download_name_appends_dat():
+def test_intervals_export_download_name_appends_dat():
     """Interval export stems receive a .dat extension for text downloads."""
-    assert gp_intervals_export_download_name("target_int") == "target_int.dat"
-    assert gp_intervals_export_download_name("  ") == "intervals_export.dat"
+    assert intervals_export_download_name("target_int") == "target_int.dat"
+    assert intervals_export_download_name("  ") == "intervals_export.dat"
 
 
 def test_export_stem_from_upload_filename_strips_extension():
@@ -180,24 +182,24 @@ def test_export_after_flux_detrend_preserves_string_labels():
     assert export_curvedash(lcd, "ascii.ecsv")
 
 
-def test_apply_prep_fold_ephemeris_overrides_ingest_metadata():
+def test_apply_export_ephemeris_overrides_ingest_metadata():
     """Sidebar P / Epoch win over empty ingest transport meta."""
     payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
     lcd = curvedash_from_transport_json(payload, source_name="t.dat")
     assert lcd.period is None
-    apply_prep_fold_ephemeris(lcd, 2.5, 58000.0, display_epoch=DEFAULT_EPOCH_JD)
+    apply_export_ephemeris(lcd, 2.5, 58000.0, display_epoch=DEFAULT_EPOCH_JD)
     assert lcd.period == 2.5
     assert lcd.period_unit == "d"
     assert lcd.epoch == 58000.0 + DEFAULT_EPOCH_JD
 
 
-def test_apply_prep_fold_ephemeris_empty_widgets_leave_ingest_values():
+def test_apply_export_ephemeris_empty_widgets_leave_ingest_values():
     """Empty sidebar fields do not wipe period/epoch already on CurveDash."""
     payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
     lcd = curvedash_from_transport_json(payload, source_name="t.dat")
     lcd.period = 1.23
     lcd.epoch = 2451234.5
-    apply_prep_fold_ephemeris(lcd, None, None, display_epoch=DEFAULT_EPOCH_JD)
+    apply_export_ephemeris(lcd, None, None, display_epoch=DEFAULT_EPOCH_JD)
     assert lcd.period == 1.23
     assert lcd.epoch == 2451234.5
 
@@ -214,7 +216,7 @@ def test_replace_series_keeps_period_epoch_and_envelope():
     packed["meta"]["epoch"] = 2450000.25
     packed["meta"]["vo_envelope"] = {"title": "keep-me"}
     lcd = curvedash_from_transport_json(json.dumps(packed), source_name="t.dat")
-    apply_prep_fold_ephemeris(lcd, 0.41, 59883.0, display_epoch=DEFAULT_EPOCH_JD)
+    apply_export_ephemeris(lcd, 0.41, 59883.0, display_epoch=DEFAULT_EPOCH_JD)
     lcd.replace_series(
         np.array([2450000.0, 2450002.0]),
         np.array([0.99, 1.01]),
@@ -235,7 +237,7 @@ def test_ecsv_export_includes_sidebar_period_and_epoch():
     """ECSV header carries stamped fold ephemeris."""
     payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])
     lcd = curvedash_from_transport_json(payload, source_name="t.dat")
-    apply_prep_fold_ephemeris(lcd, 0.41, 59883.12, display_epoch=DEFAULT_EPOCH_JD)
+    apply_export_ephemeris(lcd, 0.41, 59883.12, display_epoch=DEFAULT_EPOCH_JD)
     text = export_curvedash(lcd, "ascii.ecsv").decode("utf-8")
     assert "period: 0.41" in text
     assert f"epoch: {59883.12 + DEFAULT_EPOCH_JD}" in text

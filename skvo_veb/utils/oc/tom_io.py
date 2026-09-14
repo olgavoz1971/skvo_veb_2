@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
-    """Parses a compact GP or MAVKA extrema ``.dat`` body plus ``#`` comments.
+    """Parses a compact GP, MAVKA, or parabola extrema ``.dat`` body plus ``#`` comments.
 
     Args:
         text (str): File contents.
@@ -59,7 +59,7 @@ def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
 
 
 def parse_compact_tom_dat(text: str) -> list[dict]:
-    """Parses a compact GP or MAVKA extrema ``.dat`` body.
+    """Parses a compact GP, MAVKA, or parabola extrema ``.dat`` body.
 
     Comment lines (``#``) are metadata only. Each data line is two
     whitespace-separated numbers: observed JD and σ(JD) in days.

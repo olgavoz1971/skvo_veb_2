@@ -7,6 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
@@ -75,6 +76,8 @@ def time_axis_xaxis_title(
     time_axis_mode: str,
     timescale: str | None = None,
     refposition: str | None = None,
+    *,
+    numeric_scale_label: str | None = None,
 ) -> str:
     """Returns the unfolded time-axis title for a lightcurve plot.
 
@@ -82,6 +85,8 @@ def time_axis_xaxis_title(
         time_axis_mode (str): ``mjd`` or ``date``.
         timescale (str, optional): Ingested ``TIMESYS/@timescale``; never invented.
         refposition (str, optional): Ingested ``TIMESYS/@refposition``.
+        numeric_scale_label (str, optional): Caption for the numeric axis
+            (``MJD``, ``JD``, ``JD-2450000``). Defaults to ``MJD``.
 
     Returns:
         str: Axis title matching ``_build_time_axis`` (no default timescale).
@@ -90,7 +95,8 @@ def time_axis_xaxis_title(
     mode = normalize_time_axis_mode(time_axis_mode)
     if mode == TIME_AXIS_DATE:
         return f"Date{suffix}" if suffix else "Date"
-    return f"MJD{suffix}" if suffix else "MJD"
+    scale = numeric_scale_label or "MJD"
+    return f"{scale}{suffix}" if suffix else scale
 
 
 def absolute_jd_to_plot_x(
@@ -131,6 +137,128 @@ def absolute_jd_to_plot_x(
     if scalar and out.size == 1:
         return float(out[0])
     return out
+
+
+def interval_observations_figure(
+    t_obs: np.ndarray,
+    y_obs: np.ndarray,
+    *,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+    invert_y: bool = False,
+    y_label: str | None = None,
+    title: str = "Fit failed",
+    height: int = 400,
+) -> go.Figure:
+    """Build a points-only MJD figure for an interval (no model or ToM).
+
+    Args:
+        t_obs (numpy.ndarray): Absolute Julian Dates (finite points only).
+        y_obs (numpy.ndarray): Photometry aligned with ``t_obs``.
+        display_epoch (float): Reference subtracted for the x-axis.
+        invert_y (bool): Reverse the y-axis (magnitude convention).
+        y_label (str | None): Y-axis title; omitted when empty.
+        title (str): Figure title (failure cards use ``Fit failed``).
+        height (int): Plotly layout height in pixels.
+
+    Returns:
+        plotly.graph_objects.Figure: Scatter of the interval photometry.
+
+    Raises:
+        ValueError: If ``t_obs`` is empty or lengths differ.
+    """
+    t_obs = np.asarray(t_obs, dtype=float)
+    y_obs = np.asarray(y_obs, dtype=float)
+    if t_obs.shape != y_obs.shape:
+        raise ValueError(
+            f"t_obs and y_obs length mismatch: {t_obs.size} vs {y_obs.size}"
+        )
+    if t_obs.size == 0:
+        raise ValueError("Cannot plot an empty interval")
+
+    x = np.asarray(
+        absolute_jd_to_plot_x(t_obs, TIME_AXIS_MJD, display_epoch),
+        dtype=float,
+    )
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x,
+            y=y_obs,
+            mode="markers",
+            marker=dict(color="black", size=6),
+            hovertemplate="Data: %{y:.4f}<extra></extra>",
+            name="Data",
+        )
+    )
+    layout = dict(
+        margin=dict(l=0, r=10, t=20, b=20),
+        showlegend=False,
+        title=dict(text=f"   {title}", font=dict(size=14), y=0.95),
+        template="plotly_white",
+        height=height,
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.9)",
+            font_size=12,
+            font_family="Rockwell",
+        ),
+    )
+    if y_label:
+        layout["yaxis_title"] = y_label
+    fig.update_layout(**layout)
+    if invert_y:
+        fig.update_yaxes(autorange="reversed")
+    apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=TIME_AXIS_MJD)
+    return fig
+
+
+def maybe_interval_observations_figure(
+    t_obs: np.ndarray,
+    y_obs: np.ndarray,
+    *,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+    invert_y: bool = False,
+    y_label: str | None = None,
+    title: str = "Fit failed",
+    height: int = 400,
+) -> go.Figure | None:
+    """Returns a points-only figure, or ``None`` when no finite samples remain.
+
+    Args:
+        t_obs (numpy.ndarray): Absolute Julian Dates.
+        y_obs (numpy.ndarray): Photometry aligned with ``t_obs``.
+        display_epoch (float): Reference subtracted for the x-axis.
+        invert_y (bool): Reverse the y-axis (magnitude convention).
+        y_label (str | None): Y-axis title; omitted when empty.
+        title (str): Figure title.
+        height (int): Plotly layout height in pixels.
+
+    Returns:
+        plotly.graph_objects.Figure | None: Scatter plot, or ``None`` if empty.
+
+    Raises:
+        ValueError: If the arrays have different lengths.
+    """
+    t_obs = np.asarray(t_obs, dtype=float)
+    y_obs = np.asarray(y_obs, dtype=float)
+    if t_obs.shape != y_obs.shape:
+        raise ValueError(
+            f"t_obs and y_obs length mismatch: {t_obs.size} vs {y_obs.size}"
+        )
+    finite = np.isfinite(t_obs) & np.isfinite(y_obs)
+    t_obs = t_obs[finite]
+    y_obs = y_obs[finite]
+    if t_obs.size == 0:
+        return None
+    return interval_observations_figure(
+        t_obs,
+        y_obs,
+        display_epoch=display_epoch,
+        invert_y=invert_y,
+        y_label=y_label,
+        title=title,
+        height=height,
+    )
 
 
 def apply_time_xaxis_format(fig, *, phase_view: bool, time_axis_mode: str) -> None:
