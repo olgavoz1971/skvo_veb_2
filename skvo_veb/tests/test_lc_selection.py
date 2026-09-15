@@ -224,3 +224,68 @@ def test_build_curvedash_scatter_figure_applies_selection():
         selected_perm_indices=[perm_values[0]],
     )
     assert list(fig.data[0].selectedpoints) == [0]
+
+
+def test_build_curvedash_scatter_figure_assigns_perm_ids():
+    """Photometry traces carry string ``ids`` matching perm_index."""
+    lcd = _sample_lcd()
+    fig = build_curvedash_scatter_figure(
+        lcd,
+        title='Test',
+        display_epoch=DEFAULT_EPOCH_JD,
+        color_by_label=False,
+    )
+    expected = [str(int(value)) for value in lcd.perm_index.tolist()]
+    assert list(fig.data[0].ids) == expected
+
+
+def test_build_curvedash_scatter_figure_skips_selected_column_when_flag_false():
+    """Discovery-style rebuilds must not restore marks from the selected column."""
+    lcd = _sample_lcd()
+    lcd.lightcurve.loc[1, 'selected'] = 1
+    fig = build_curvedash_scatter_figure(
+        lcd,
+        title='Test',
+        display_epoch=DEFAULT_EPOCH_JD,
+        color_by_label=False,
+        highlight_from_selected_column=False,
+    )
+    assert list(fig.data[0].selectedpoints or []) == []
+
+
+def test_apply_zoom_store_to_figure_extra_tags():
+    """Mismatched extra tags (for example fold) must not stamp axis ranges."""
+    import plotly.graph_objects as go
+
+    from skvo_veb.utils.lc_interaction import apply_zoom_store_to_figure
+
+    fig = go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 1])])
+    fig.update_xaxes(autorange=True)
+    zoom = {
+        'axis': 'mjd',
+        'domain': 'flux',
+        'phase': True,
+        'x_autorange': False,
+        'y_autorange': False,
+        'x0': 1.2,
+        'x1': 2.5,
+        'y0': 0.4,
+        'y1': 1.8,
+    }
+    apply_zoom_store_to_figure(
+        fig,
+        zoom,
+        time_axis_mode='mjd',
+        domain='flux',
+        extra_tags={'phase': False},
+    )
+    assert fig.layout.xaxis.range is None
+    apply_zoom_store_to_figure(
+        fig,
+        zoom,
+        time_axis_mode='mjd',
+        domain='flux',
+        extra_tags={'phase': True},
+    )
+    assert list(fig.layout.xaxis.range) == [1.2, 2.5]
+    assert fig.layout.xaxis.autorange is False

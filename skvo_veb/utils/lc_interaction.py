@@ -736,6 +736,46 @@ def apply_plot_relayout_ranges_to_figure(
             fig.update_yaxes(autorange=True)
 
 
+def apply_zoom_store_to_figure(
+    fig,
+    zoom: dict | None,
+    *,
+    time_axis_mode: str,
+    domain: str,
+    extra_tags: dict | None = None,
+) -> None:
+    """Stamps axis ranges from a client zoom snapshot onto a figure layout.
+
+    Used after a rebuild whose Plotly ``uirevision`` must change (delete).
+    A missing store, a coordinate mismatch, or an autorange snapshot leaves
+    the figure's own autorange untouched. No range is invented.
+
+    Args:
+        fig: Plotly figure to mutate.
+        zoom (dict | None): Client zoom snapshot.
+        time_axis_mode (str): Current ``mjd`` or ``date`` axis.
+        domain (str): Current ``mag`` or ``flux`` domain.
+        extra_tags (dict | None): Extra coordinate flags that must match
+            (for example ``phase`` on Discovery).
+    """
+    if not zoom:
+        return
+    axis = normalize_time_axis_mode(time_axis_mode)
+    if zoom.get('axis') != axis or zoom.get('domain') != domain:
+        return
+    for key, value in (extra_tags or {}).items():
+        if zoom.get(key) != value:
+            return
+    x_auto = bool(zoom.get('x_autorange'))
+    y_auto = bool(zoom.get('y_autorange'))
+    x0, x1 = zoom.get('x0'), zoom.get('x1')
+    y0, y1 = zoom.get('y0'), zoom.get('y1')
+    if not x_auto and x0 is not None and x1 is not None:
+        fig.update_xaxes(range=[x0, x1], autorange=False)
+    if not y_auto and y0 is not None and y1 is not None:
+        fig.update_yaxes(range=[y0, y1], autorange=False)
+
+
 def apply_selectedpoints_to_figure(fig, selected_perm_indices) -> None:
     """Highlights selected observations on every trace via ``selectedpoints``.
 

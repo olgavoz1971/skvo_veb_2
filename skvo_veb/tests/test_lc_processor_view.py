@@ -428,6 +428,69 @@ def test_display_mjd_and_selected_indices():
     assert selected_perm_indices(lcd) == [2]
 
 
+def test_apply_processor_zoom_store_stamps_matching_ranges():
+    """A matching zoom snapshot must set explicit axis ranges."""
+    import plotly.graph_objects as go
+
+    from skvo_veb.utils.lc_processor.figures import apply_processor_zoom_store
+
+    fig = go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 1])])
+    fig.update_xaxes(autorange=True)
+    fig.update_yaxes(autorange=True)
+    apply_processor_zoom_store(
+        fig,
+        {
+            "axis": "mjd",
+            "domain": "flux",
+            "x_autorange": False,
+            "y_autorange": False,
+            "x0": 1.2,
+            "x1": 2.5,
+            "y0": 0.4,
+            "y1": 1.8,
+        },
+        time_axis_mode="mjd",
+        domain="flux",
+    )
+    assert list(fig.layout.xaxis.range) == [1.2, 2.5]
+    assert fig.layout.xaxis.autorange is False
+    assert list(fig.layout.yaxis.range) == [0.4, 1.8]
+    assert fig.layout.yaxis.autorange is False
+
+
+def test_apply_processor_zoom_store_skips_stale_or_autorange():
+    """Mismatched coordinates or autorange snapshots must not invent limits."""
+    import plotly.graph_objects as go
+
+    from skvo_veb.utils.lc_processor.figures import apply_processor_zoom_store
+
+    fig = go.Figure(data=[go.Scatter(x=[1, 2, 3], y=[1, 2, 1])])
+    fig.update_xaxes(autorange=True)
+    apply_processor_zoom_store(
+        fig,
+        {
+            "axis": "mjd",
+            "domain": "flux",
+            "x_autorange": False,
+            "x0": 1.0,
+            "x1": 2.0,
+            "y_autorange": True,
+        },
+        time_axis_mode="date",
+        domain="flux",
+    )
+    assert fig.layout.xaxis.range is None
+    apply_processor_zoom_store(
+        fig,
+        {"axis": "mjd", "domain": "flux", "x_autorange": True, "y_autorange": True},
+        time_axis_mode="mjd",
+        domain="flux",
+    )
+    assert fig.layout.xaxis.autorange is True
+    apply_processor_zoom_store(fig, None, time_axis_mode="mjd", domain="flux")
+    assert fig.layout.xaxis.autorange is True
+
+
 def test_suggested_detrended_export_stem_strips_lc():
     """Detrended files are ``{base}_detrended``, not ``{base}_lc_detrended``."""
     assert suggested_detrended_export_stem("tcp_lc") == "tcp_detrended"

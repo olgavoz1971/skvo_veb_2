@@ -204,6 +204,9 @@ If this returns a match, orchestrator calls `search_catalog(archive_id=…)` (di
 |--------|---------|
 | `validate_lc_key(lc_key: str) -> bool` | Safe round-trip through `dcc.Store` |
 | `cache_key(lc_key: str) -> str` | Normalised key for `flask_caching` / disk cache |
+
+Shared Retrieve caching for Discovery is **not wired** yet. See
+[TODO.md](TODO.md) ticket 1.
 | `default_search_radius_arcsec() -> float` | Mission-specific default cone radius |
 
 ### 4.5 What providers must NOT do
@@ -471,6 +474,8 @@ Reuse patterns from `pages/lightcurve_asassn.py` and `lightcurve_tess_srv.py`:
 | `store_lc_discovery_selected_key` | Selected row's `lc_key` |
 | `store_lc_discovery_resolved_target` | Search outcome metadata + markdown source |
 | `store_lc_discovery_user_tab_id` | Session cache UUID (existing pattern) |
+| `store_lc_discovery_selected_perm` | Client list of marked `perm_index` values (not the lightcurve) |
+| `store_lc_discovery_zoom` | Client axis snapshot for restore after delete |
 
 ### 10.2 Callback responsibilities
 
@@ -480,6 +485,7 @@ Reuse patterns from `pages/lightcurve_asassn.py` and `lightcurve_tess_srv.py`:
 | **Submit query** | Background job: `run_catalog_search()` → AgGrid + markdown card |
 | **Cancel query** | Cancel background search (same pattern as TESS srv) |
 | **Load / row select** | `provider.fetch_lightcurve(lc_key)` → `volc_to_curvedash` → session cache |
+| **Plot mark / Unselect / Delete** | Client union of `perm_index`; Unselect clears the perm store; Delete mutates the session-cached `CurveDash` |
 | **Replot / trim / export** | Unchanged shared utils on `CurveDash` |
 
 ### 10.3 Background callbacks

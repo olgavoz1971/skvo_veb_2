@@ -413,6 +413,31 @@ def _uirevision_key(lcd, phase_view: bool, time_axis_mode: str = TIME_AXIS_MJD) 
     )
 
 
+def _assign_perm_ids_on_traces(fig) -> None:
+    """Sets Scattergl ``ids`` from perm_index ``customdata``.
+
+    WebGL events often drop ``customdata`` but keep ``id``. Traces without
+    customdata (overlays) are left unchanged.
+
+    Args:
+        fig: Plotly figure whose photometry traces carry perm_index customdata.
+
+    Raises:
+        ValueError: If a customdata row is missing a perm_index value.
+    """
+    for trace in fig.data:
+        custom = getattr(trace, 'customdata', None)
+        if custom is None:
+            continue
+        ids = []
+        for value in custom:
+            raw = value[0] if isinstance(value, (list, tuple, np.ndarray)) else value
+            if raw is None or (isinstance(raw, float) and np.isnan(raw)):
+                raise ValueError('Scatter trace customdata is missing perm_index')
+            ids.append(str(int(np.asarray(raw).item())))
+        trace.ids = ids
+
+
 def build_curvedash_scatter_figure(
     lcd,
     title: str,
@@ -425,12 +450,13 @@ def build_curvedash_scatter_figure(
     selected_perm_indices=None,
     dragmode: str = 'zoom',
     show_error_bars: bool = False,
+    highlight_from_selected_column: bool = True,
 ):
     """Builds an interactive scatter figure for a CurveDash lightcurve.
 
-    Uses ``perm_index`` as ``customdata`` so clientside or server-side selection
-    callbacks can mark individual points. The time view defaults to MJD
-    (``jd - display_epoch``) with full numeric tick labels.
+    Uses ``perm_index`` as ``customdata`` and ``ids`` so clientside or
+    server-side selection callbacks can mark individual points. The time view
+    defaults to MJD (``jd - display_epoch``) with full numeric tick labels.
 
     Args:
         lcd (CurveDash): Application lightcurve instance.
@@ -446,6 +472,9 @@ def build_curvedash_scatter_figure(
         dragmode (str): Plotly drag mode (``zoom``, ``lasso``, ``select``, etc.).
         show_error_bars (bool): Draw ``phot_err`` when the figure is a single
             trace (no sector colouring).
+        highlight_from_selected_column (bool): When true (default), restore
+            orange marks from ``CurveDash.selected``. Discovery client marks
+            leave this false so a rebuild does not re-paint the column.
 
     Returns:
         plotly.graph_objects.Figure: Scatter figure ready for ``dcc.Graph``.
@@ -490,6 +519,7 @@ def build_curvedash_scatter_figure(
         mode='markers',
         marker=dict(size=4, symbol='circle'),
     )
+    _assign_perm_ids_on_traces(fig)
     if show_error_bars and not color_by_label and lcd.phot_err is not None:
         fig.update_traces(
             error_y=dict(
@@ -510,7 +540,7 @@ def build_curvedash_scatter_figure(
         y_parts.append(str(phot_unit))
     yaxis_title = ', '.join(y_parts)
 
-    if not color_by_label:
+    if highlight_from_selected_column and not color_by_label:
         indices = trace_selected_indices_from_column(lcd)
         if not indices and selected_perm_indices:
             indices = trace_selected_indices(lcd, selected_perm_indices)
@@ -528,6 +558,8 @@ def build_curvedash_scatter_figure(
         dragmode=dragmode,
         uirevision=_uirevision_key(lcd, phase_view, axis_mode),
     )
+    if not highlight_from_selected_column:
+        fig.update_layout(clickmode='event+select')
 
     _apply_time_xaxis_format(fig, phase_view=phase_view, time_axis_mode=axis_mode)
 
@@ -562,6 +594,7 @@ def figure_from_serialized(
     lc_metadata: dict | None = None,
     dragmode: str = 'zoom',
     show_error_bars: bool = False,
+    highlight_from_selected_column: bool = True,
 ):
     """Builds a scatter figure from a serialised ``CurveDash`` payload.
 
@@ -576,6 +609,8 @@ def figure_from_serialized(
         lc_metadata (dict, optional): Cached axis range overrides.
         dragmode (str): Plotly drag mode for the graph.
         show_error_bars (bool): Draw ``phot_err`` on a single-trace figure.
+        highlight_from_selected_column (bool): Restore marks from
+            ``CurveDash.selected`` when true.
 
     Returns:
         plotly.graph_objects.Figure: Scatter figure ready for ``dcc.Graph``.
@@ -596,4 +631,5 @@ def figure_from_serialized(
         selected_perm_indices=selected_perm_indices,
         dragmode=dragmode,
         show_error_bars=show_error_bars,
+        highlight_from_selected_column=highlight_from_selected_column,
     )

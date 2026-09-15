@@ -58,9 +58,8 @@ from skvo_veb.utils.lc_config import (
 )
 from skvo_veb.utils.lc_figure import time_axis_xaxis_title
 from skvo_veb.utils.lc_interaction import (
-    apply_plot_point_selection,
-    clear_plot_point_selection,
-    delete_selected_rows,
+    delete_rows_by_perm_indices,
+    normalize_selected_perm_store,
     plot_x_to_jd,
 )
 from skvo_veb.utils.lc_processor.apply import (
@@ -110,6 +109,7 @@ from skvo_veb.utils.lc_processor.figures import (
     PLOT_TOOL_DELETE,
     PLOT_TOOL_DELETE_EXT,
     PLOT_TOOL_OFF,
+    apply_processor_zoom_store,
     empty_figure,
     extract_xaxis_range_mjd,
     figure_detrended,
@@ -142,7 +142,6 @@ from skvo_veb.utils.lc_processor.view import (
     display_mjd_to_absolute_jd,
     plot_uirevision,
     raw_labels,
-    selected_perm_indices,
     timescale_refposition,
 )
 from skvo_veb.utils.lc_session_cache import (
@@ -1223,8 +1222,8 @@ def _plot_toolbar() -> html.Div:
     help_btn, help_pop = _click_help(
         "plot-tools",
         "Delete selected",
-        "Click or lasso on the working plot, then Delete selected. "
-        "Unselect clears the orange marks.",
+        "Click or lasso on the working plot. Orange marks stay until "
+        "Unselect or Delete selected. Clicking empty space does not clear them.",
         placement="bottom",
     )
     return html.Div(
@@ -1311,6 +1310,8 @@ def layout():
             ),
             dcc.Store(id="store-lc-processor-user-tab-id", **SESSION_STORE),
             dcc.Store(id="store-lc-processor-lc-revision"),
+            dcc.Store(id="store-lc-processor-selected-perm", data=[]),
+            dcc.Store(id="store-lc-processor-zoom"),
             dcc.Store(id="store-lc-processor-knots", data=[]),
             dcc.Store(id="store-lc-processor-knot-shapes"),
             dcc.Store(id="store-lc-processor-knot-pick"),
@@ -1439,6 +1440,8 @@ def toggle_about(open_clicks, close_clicks, is_open):
     Output("store-lc-processor-knots", "data"),
     Output("lc-processor-plot-tool", "value"),
     Output("lc-processor-extrema-tool", "value"),
+    Output("store-lc-processor-selected-perm", "data"),
+    Output("store-lc-processor-zoom", "data"),
     Input("lc-processor-upload-lc", "contents"),
     State("lc-processor-upload-lc", "filename"),
     State("store-lc-processor-user-tab-id", "data"),
@@ -1454,7 +1457,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
 
     Returns:
         tuple: Tab id, revision, upload chip, cleared overlay, stem, domain,
-        ephemeris, crop reset.
+        ephemeris, crop reset, cleared selection and zoom stores.
     """
     if contents is None:
         raise PreventUpdate
@@ -1493,6 +1496,8 @@ def upload_lightcurve(contents, filename, user_tab_id):
             [],
             PLOT_TOOL_OFF,
             PLOT_TOOL_OFF,
+            [],
+            None,
         )
     except Exception as exc:
         logger.error("Lightcurve processor upload failed: %s", filename)
@@ -1502,6 +1507,8 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             _upload_status(filename or "upload", tone="error"),
             format_user_upload_error(exc),
+            no_update,
+            no_update,
             no_update,
             no_update,
             no_update,
@@ -1572,6 +1579,7 @@ def apply_working_domain(domain, user_tab_id):
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-upload-lc", "filename"),
     State("lc-processor-domain", "value"),
+    State("store-lc-processor-zoom", "data"),
 )
 def plot_working_and_residual(
     _revision,
@@ -1585,11 +1593,15 @@ def plot_working_and_residual(
     user_tab_id,
     filename,
     domain,
+    zoom,
 ):
     """Draws plot 1 from the cache (cropped) and plot 2 when seeded.
 
     Knot-tool radio and knot-list edits do not trigger this callback.
     Green lines are patched onto the existing figure so zoom is left alone.
+    Orange point marks live in the client perm store, not on ``CurveDash``.
+    After a rebuild that changes ``uirevision`` (delete), axis ranges are
+    stamped from the zoom store when it still matches this view.
 
     Args:
         _revision: Plot revision token.
@@ -1603,6 +1615,7 @@ def plot_working_and_residual(
         user_tab_id: Session cache key.
         filename: Upload name for ``uirevision``.
         domain: Sidebar photometric domain.
+        zoom: Client zoom snapshot for plot 1.
 
     Returns:
         tuple: Working figure, residual figure, and ``no_update`` for
@@ -1663,13 +1676,18 @@ def plot_working_and_residual(
             refposition=refposition,
             labels=labels,
             source_index=perm,
-            selected_perm_indices=selected_perm_indices(lcd),
             time_axis_mode=axis,
             break_tolerance=(
                 None if payload is None else payload.get("break_tolerance")
             ),
             extrema_jd=None if extrema_xy is None else extrema_xy[0],
             extrema_y=None if extrema_xy is None else extrema_xy[1],
+        )
+        apply_processor_zoom_store(
+            fig,
+            zoom,
+            time_axis_mode=axis,
+            domain=view.active_domain or domain_key,
         )
         residual = empty_figure(
             xaxis_title=time_axis_xaxis_title(axis, timescale, refposition),
@@ -1767,53 +1785,6 @@ def publish_knot_shapes(knots, method, time_axis_mode):
 
 @callback(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
-    Input("lc-processor-graph-working", "selectedData"),
-    Input("lc-processor-graph-working", "clickData"),
-    State("store-lc-processor-user-tab-id", "data"),
-    State("lc-processor-plot-tool", "value"),
-    State("lc-processor-extrema-tool", "value"),
-    prevent_initial_call=True,
-)
-def merge_working_selection(
-    selected_data, click_data, user_tab_id, plot_tool, extrema_tool
-):
-    """Marks clicked or lassoed points on the cached curve.
-
-    Args:
-        selected_data: Plotly box/lasso payload.
-        click_data: Plotly click payload.
-        user_tab_id: Session cache key.
-        plot_tool: Knot tool; add/delete consume clicks instead.
-        extrema_tool: Extremum tool; add/delete consume clicks instead.
-
-    Returns:
-        str: New revision token.
-    """
-    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE) or extrema_tool in (
-        PLOT_TOOL_ADD_EXT,
-        PLOT_TOOL_DELETE_EXT,
-    ):
-        raise PreventUpdate
-    if not ctx.triggered or not user_tab_id or not has_cached_lc(
-        PAGE_NAMESPACE, user_tab_id
-    ):
-        raise PreventUpdate
-    trigger_prop = ctx.triggered[0]["prop_id"].rsplit(".", 1)[-1]
-    event = selected_data if trigger_prop == "selectedData" else click_data
-    if not event or not event.get("points"):
-        raise PreventUpdate
-    try:
-        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
-        apply_plot_point_selection(lcd, event, allow_point_index_fallback=False)
-        write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        return _bump_lc_revision()
-    except Exception as exc:
-        logger.warning("Lightcurve processor selection failed: %s", exc)
-        raise PreventUpdate
-
-
-@callback(
-    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
     Input("lc-processor-merge-sectors", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     prevent_initial_call=True,
@@ -1842,64 +1813,53 @@ def merge_working_sectors(n_clicks, user_tab_id):
 
 @callback(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
-    Input("lc-processor-unselect", "n_clicks"),
-    State("store-lc-processor-user-tab-id", "data"),
-    prevent_initial_call=True,
-)
-def unselect_working_points(n_clicks, user_tab_id):
-    """Clears orange selection marks.
-
-    Args:
-        n_clicks: Button clicks.
-        user_tab_id: Session cache key.
-
-    Returns:
-        str: New revision token.
-    """
-    if not n_clicks or not user_tab_id:
-        raise PreventUpdate
-    lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
-    clear_plot_point_selection(lcd)
-    write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-    return _bump_lc_revision()
-
-
-@callback(
-    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output("store-lc-processor-selected-perm", "data", allow_duplicate=True),
     Input("lc-processor-delete-selected", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
+    State("store-lc-processor-selected-perm", "data"),
     prevent_initial_call=True,
 )
-def delete_working_selected_points(n_clicks, user_tab_id):
-    """Removes selected rows from the cached working curve.
+def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
+    """Removes client-marked rows from the cached working curve.
+
+    Orange marks live in ``store-lc-processor-selected-perm``. The figure is
+    rebuilt afterwards so the cache and Scattergl traces stay aligned.
 
     Args:
         n_clicks: Button clicks.
         user_tab_id: Session cache key.
+        selected_perm: Client list of ``perm_index`` values.
 
     Returns:
-        tuple: New revision token and optional alert.
+        tuple: New revision token, optional alert, and a cleared perm store.
     """
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
     try:
-        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
-        marked = selected_perm_indices(lcd)
+        marked = normalize_selected_perm_store(selected_perm)
         if not marked:
             raise PreventUpdate
-        delete_selected_rows(lcd)
+        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
+        n_before = 0 if lcd.lightcurve is None else len(lcd.lightcurve)
+        delete_rows_by_perm_indices(lcd, marked)
+        n_after = 0 if lcd.lightcurve is None else len(lcd.lightcurve)
+        if n_after == n_before:
+            raise PipeException("Marked points were not found in the lightcurve")
         if lcd.lightcurve is None or lcd.lightcurve.empty:
             raise PipeException("Cannot delete all points from the lightcurve")
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         _clear_fit_blobs(user_tab_id)
-        logger.info("Lightcurve processor deleted %s selected point(s)", len(marked))
-        return _bump_lc_revision(), None
+        logger.info(
+            "Lightcurve processor deleted %s selected point(s)",
+            n_before - n_after,
+        )
+        return _bump_lc_revision(), None, []
     except PreventUpdate:
         raise
     except Exception as exc:
         logger.warning("Lightcurve processor delete failed: %s", exc)
-        return no_update, _status_alert(str(exc), "warning")
+        return no_update, _status_alert(str(exc), "warning"), no_update
 
 
 @callback(
@@ -3207,6 +3167,52 @@ clientside_callback(
     Output("store-lc-processor-clientside", "data"),
     Input("lc-processor-graph-working", "figure"),
     State("lc-processor-plot-tool", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpSelect", function_name="bindGraph"),
+    Output("store-lc-processor-clientside", "data", allow_duplicate=True),
+    Input("lc-processor-graph-working", "figure"),
+    Input("store-lc-processor-selected-perm", "data"),
+    Input("lc-processor-plot-tool", "value"),
+    Input("lc-processor-extrema-tool", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpSelect", function_name="mergeSelection"),
+    Output("store-lc-processor-selected-perm", "data", allow_duplicate=True),
+    Input("lc-processor-graph-working", "selectedData"),
+    Input("lc-processor-graph-working", "clickData"),
+    State("store-lc-processor-selected-perm", "data"),
+    State("lc-processor-plot-tool", "value"),
+    State("lc-processor-extrema-tool", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpSelect", function_name="clearSelection"),
+    Output("store-lc-processor-selected-perm", "data", allow_duplicate=True),
+    Input("lc-processor-unselect", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpSelect", function_name="captureZoom"),
+    Output("store-lc-processor-zoom", "data", allow_duplicate=True),
+    Input("lc-processor-graph-working", "relayoutData"),
+    State("store-lc-processor-zoom", "data"),
+    State("lc-processor-time-axis", "value"),
+    State("lc-processor-domain", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpSelect", function_name="invalidateZoom"),
+    Output("store-lc-processor-zoom", "data", allow_duplicate=True),
+    Input("lc-processor-time-axis", "value"),
+    Input("lc-processor-domain", "value"),
     prevent_initial_call=True,
 )
 

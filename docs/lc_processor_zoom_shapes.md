@@ -1,6 +1,9 @@
 # Lightcurve processor: zoom reset when editing knots
 
-Status: diagnosis only. No code change is implied by this note.
+Status: diagnosis for knot-shape zoom jumps. Delete selected stamps
+plot 1 from `store-lc-processor-zoom`; knot edits still must not rebuild
+the Scattergl figure. The select / delete / zoom-store pattern for agents:
+[dash_plotly_select_delete_zoom.md](dash_plotly_select_delete_zoom.md).
 
 Symptom: after a zoom on plot 1, the first Add-knot or Delete-knot action
 jumps the viewport back to the full series. Later knot edits in the same
@@ -8,8 +11,11 @@ session often keep the view. Photometry looks unchanged, so it feels like a
 replot. It is almost always **axis autorange**, not a new scatter of the
 points.
 
-Locked product rule (from the processor plan): zoom is Plotly `uirevision`
-only. There is no dedicated zoom store.
+Product rule: view-only replots still use Plotly `uirevision` only (the
+token omits selection). Delete rebuilds photometry and **must** change
+that token (row count or JD span), so plot 1 then stamps axis ranges from
+`store-lc-processor-zoom`. Upload, time-axis, and domain changes clear
+that store. Knot edits still must not write `figure` to move a green line.
 
 ## Verdict
 
@@ -186,7 +192,9 @@ makes these tests lie.
 ## What not to do
 
 - Do not treat this as "Plotly is broken, wait for a library upgrade".
-- Do not add a dedicated zoom `dcc.Store` unless the product rule changes.
+- Do not use the zoom store for knot-only shape edits; those still must not
+  rebuild Scattergl. The store is for rebuilds that change `uirevision`
+  (delete points, and any later full redraw that cannot keep the window).
 - Do not rebuild photometry (`Scattergl`) to move a green line.
 - Do not send a shapes-only `Patch` or shapes-only `relayout` and expect
   `uirevision` to save the window.

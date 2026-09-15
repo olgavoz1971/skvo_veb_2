@@ -24,6 +24,8 @@ skvo_veb/
 - Graphic knobs for that page: `skvo_veb/components/extrema_modeller_appearance.py` (display time, card grid, card plot height, trace colours)
 - Incomplete-upload PhotCal fallbacks: `skvo_veb/utils/lc_config.py` (`DEFAULT_REFERENCE_MAG`, `DEFAULT_ZP_FLUX_DIMENSIONLESS`)
 - `docs/lightcurve_processor.md` — Lightcurve processor page (smoothing, running parabola, detrend, rough extrema)
+- `docs/dash_plotly_select_delete_zoom.md` — Client mark / server delete / zoom store (Scattergl; port to other pages)
+- `docs/TODO.md` — Project-wide backlog (tickets; do not start from chat history)
 - Scientific knobs: `skvo_veb/utils/lc_processor/config.py`
 - Local parabola ToM on the extrema modeller page: `skvo_veb/utils/parabola_tom/` (not the processor running-parabola smooth)
 - `docs/adding_a_lightcurve_provider.md` — step-by-step guide to plug in a new provider (includes TAP section)

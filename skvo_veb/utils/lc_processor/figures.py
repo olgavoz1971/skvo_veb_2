@@ -18,7 +18,11 @@ from skvo_veb.utils.lc_figure import (
     apply_time_xaxis_format,
     time_axis_xaxis_title,
 )
-from skvo_veb.utils.lc_interaction import apply_selectedpoints_to_figure, plot_x_to_jd
+from skvo_veb.utils.lc_interaction import (
+    apply_selectedpoints_to_figure,
+    apply_zoom_store_to_figure,
+    plot_x_to_jd,
+)
 from skvo_veb.utils.lc_processor.view import point_label_name
 
 logger = logging.getLogger(__name__)
@@ -318,6 +322,33 @@ def _apply_y_axis_direction(fig: go.Figure, *, invert_y: bool) -> None:
         invert_y (bool): ``True`` for magnitude, ``False`` for flux.
     """
     fig.update_yaxes(autorange="reversed" if invert_y else True)
+
+
+def apply_processor_zoom_store(
+    fig: go.Figure,
+    zoom: dict | None,
+    *,
+    time_axis_mode: str,
+    domain: str,
+) -> None:
+    """Stamps plot-1 axis ranges from the processor zoom store.
+
+    Used after a figure rebuild whose ``uirevision`` must change (delete).
+    A missing store, a coordinate mismatch, or an autorange snapshot leaves
+    the figure's own autorange untouched. No range is invented.
+
+    Args:
+        fig (plotly.graph_objects.Figure): Working figure to mutate.
+        zoom (dict | None): Client zoom snapshot.
+        time_axis_mode (str): Current ``mjd`` or ``date`` axis.
+        domain (str): Current ``mag`` or ``flux`` domain.
+    """
+    apply_zoom_store_to_figure(
+        fig,
+        zoom,
+        time_axis_mode=time_axis_mode,
+        domain=domain,
+    )
 
 
 def empty_figure(

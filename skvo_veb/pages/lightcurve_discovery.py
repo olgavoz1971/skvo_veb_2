@@ -20,7 +20,12 @@ from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.discovery_fetch_context import discovery_fetch_context_from_store
 from skvo_veb.lc_providers.registry import list_missions
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import apply_phot_domain_view, export_curvedash, export_file_extension
+from skvo_veb.utils.lc_bridge import (
+    apply_phot_domain_view,
+    build_curvedash_title,
+    export_curvedash,
+    export_file_extension,
+)
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
     DEFAULT_EXPORT_FORMAT,
@@ -59,11 +64,11 @@ from skvo_veb.utils.lc_discovery_search import (
     run_catalog_search_for_mission,
 )
 from skvo_veb.utils.lc_discovery_time_bounds import parse_discovery_time_bounds
-from skvo_veb.utils.lc_figure import figure_from_serialized
+from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import (
-    apply_plot_point_selection,
-    clear_plot_point_selection,
-    delete_selected_rows,
+    apply_zoom_store_to_figure,
+    delete_rows_by_perm_indices,
+    normalize_selected_perm_store,
 )
 from skvo_veb.utils.lc_session_cache import (
     generate_user_tab_id,
@@ -700,6 +705,7 @@ def _discovery_empty_figure():
         yaxis_title='flux',
         margin=dict(l=48, b=48, t=24, r=16),
         dragmode='lasso',
+        clickmode='event+select',
         autosize=True,
     )
     return fig
@@ -905,7 +911,7 @@ def _lightcurve_graph_panel():
             dbc.Row(
                 [
                     dcc.Markdown(
-                        '_**Click on a point to select it, or use Lasso or Box selector**_',
+                        '_**Click or lasso to mark points. Marks stay until Unselect or Delete selected**_',
                         style={
                             'font-size': 14,
                             'font-family': 'courier',
@@ -1007,6 +1013,9 @@ def layout():
             dcc.Store(id='store_lc_discovery_selected_key', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_highlight_name', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_resolved_target', **SESSION_STORE),
+            dcc.Store(id='store_lc_discovery_selected_perm', data=[]),
+            dcc.Store(id='store_lc_discovery_zoom'),
+            dcc.Store(id='store_lc_discovery_clientside'),
             dcc.Download(id='lc_discovery_download'),
         ],
         className='g-10 lc-discovery-page',
@@ -1421,6 +1430,8 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         fetch_alert_style=Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
         plot_tab_disabled=Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
         active_tab=Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
+        selected_perm=Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
+        zoom=Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
     ),
     inputs=dict(
         download_clicks=Input('lc_discovery_fetch_button', 'n_clicks'),
@@ -1495,6 +1506,8 @@ def fetch_lc_discovery_lightcurve(
             fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,
             active_tab=no_update,
+            selected_perm=no_update,
+            zoom=no_update,
         )
 
     if mission_id and mission_id_from_lc_key(lc_key) != mission_id:
@@ -1515,6 +1528,8 @@ def fetch_lc_discovery_lightcurve(
             fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,
             active_tab=no_update,
+            selected_perm=no_update,
+            zoom=no_update,
         )
 
     fold_controls_style = {'display': 'block', 'min-height': '30px'}
@@ -1568,6 +1583,8 @@ def fetch_lc_discovery_lightcurve(
             fetch_alert_style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN,
             plot_tab_disabled=False,
             active_tab='lc_discovery_plot_tab',
+            selected_perm=[],
+            zoom=None,
         )
     except Exception as exc:
         logger.warning('lightcurve_discovery.fetch_lc_discovery_lightcurve: %s', exc)
@@ -1586,6 +1603,8 @@ def fetch_lc_discovery_lightcurve(
             fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,
             active_tab=no_update,
+            selected_perm=no_update,
+            zoom=no_update,
         )
 
 
@@ -1624,16 +1643,22 @@ def replot_lc_discovery_lightcurve(replot_clicks, user_tab_id):
     Input('lc_discovery_time_axis_switch', 'value'),
     State('store_lc_discovery_user_tab_id', 'data'),
     State('lc_discovery_fold_switch', 'value'),
+    State('store_lc_discovery_zoom', 'data'),
     prevent_initial_call='initial_duplicate',
 )
-def plot_lc_discovery_curve(_revision, time_axis_mode, user_tab_id, phase_view):
+def plot_lc_discovery_curve(_revision, time_axis_mode, user_tab_id, phase_view, zoom):
     """Builds the Discovery lightcurve figure from the session cache.
+
+    Orange marks live in the client perm store, not ``CurveDash.selected``.
+    After delete, ``uirevision`` changes so zoom is stamped from the zoom store
+    when axis, domain, and fold flags match.
 
     Args:
         _revision (str, optional): Plot revision token.
         time_axis_mode (str): MJD or calendar date axis mode.
         user_tab_id (str, optional): Session cache key.
         phase_view (bool): Whether to show folded phases.
+        zoom (dict, optional): Client zoom snapshot.
 
     Returns:
         dict: Plotly figure dictionary.
@@ -1645,13 +1670,23 @@ def plot_lc_discovery_curve(_revision, time_axis_mode, user_tab_id, phase_view):
         raise PreventUpdate
     try:
         js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
-        fig = figure_from_serialized(
-            js_lightcurve,
-            phase_view=bool(phase_view),
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        fig = build_curvedash_scatter_figure(
+            lcd,
+            title=build_curvedash_title(lcd),
             display_epoch=DISPLAY_EPOCH_JD,
+            phase_view=bool(phase_view),
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
             color_by_label=False,
             dragmode='lasso',
+            highlight_from_selected_column=False,
+        )
+        apply_zoom_store_to_figure(
+            fig,
+            zoom,
+            time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
+            domain=lcd.active_domain or DOMAIN_FLUX,
+            extra_tags={'phase': bool(phase_view)},
         )
         set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
         return fig
@@ -1804,110 +1839,34 @@ def sync_lc_discovery_mag_switch(_, user_tab_id):
 
 @callback(
     Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
-    Input('lc_discovery_graph', 'selectedData'),
-    Input('lc_discovery_graph', 'clickData'),
-    State('store_lc_discovery_user_tab_id', 'data'),
-    prevent_initial_call=True,
-)
-def merge_lc_discovery_plot_selection(selected_data, click_data, user_tab_id):
-    """Marks clicked or lasso-selected points in the server cache and replots.
-
-    Args:
-        selected_data (dict, optional): Plotly lasso/box selection payload.
-        click_data (dict, optional): Plotly click payload.
-        user_tab_id (str, optional): Session cache key.
-
-    Returns:
-        str: New revision token.
-
-    Raises:
-        PreventUpdate: When the event carries no usable points.
-    """
-    if not ctx.triggered or not user_tab_id:
-        raise PreventUpdate
-    trigger_prop = ctx.triggered[0]['prop_id'].rsplit('.', 1)[-1]
-    event_data = selected_data if trigger_prop == 'selectedData' else click_data
-    if not event_data or not event_data.get('points'):
-        raise PreventUpdate
-    try:
-        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
-        lcd = CurveDash.from_serialized(js_lightcurve)
-        apply_plot_point_selection(lcd, event_data)
-        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        return _bump_lc_revision()
-    except Exception as exc:
-        logger.warning('lightcurve_discovery.merge_lc_discovery_plot_selection: %s', exc)
-        set_props(
-            'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
-        )
-        raise PreventUpdate
-
-
-@callback(
-    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
-    Input('lc_discovery_unselect_button', 'n_clicks'),
-    State('store_lc_discovery_user_tab_id', 'data'),
-    prevent_initial_call=True,
-)
-def unselect_lc_discovery_points(n_clicks, user_tab_id):
-    """Clears all ``selected`` markers in the cached lightcurve and replots.
-
-    Args:
-        n_clicks (int): Unselect button click count.
-        user_tab_id (str, optional): Session cache key.
-
-    Returns:
-        str: New revision token.
-
-    Raises:
-        PreventUpdate: When the button was not clicked or no cache exists.
-    """
-    if not n_clicks or not user_tab_id:
-        raise PreventUpdate
-    try:
-        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
-        lcd = CurveDash.from_serialized(js_lightcurve)
-        clear_plot_point_selection(lcd)
-        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
-        return _bump_lc_revision()
-    except Exception as exc:
-        logger.warning('lightcurve_discovery.unselect_lc_discovery_points: %s', exc)
-        set_props(
-            'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
-        )
-        raise PreventUpdate
-
-
-@callback(
-    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
     Input('lc_discovery_delete_button', 'n_clicks'),
     State('store_lc_discovery_user_tab_id', 'data'),
+    State('store_lc_discovery_selected_perm', 'data'),
     prevent_initial_call=True,
 )
-def delete_lc_discovery_selected_points(n_clicks, user_tab_id):
-    """Removes rows marked ``selected=1`` from the cached lightcurve.
+def delete_lc_discovery_selected_points(n_clicks, user_tab_id, selected_perm):
+    """Removes client-marked rows from the session-cached lightcurve.
+
+    Orange marks live in ``store_lc_discovery_selected_perm``. The figure is
+    rebuilt afterwards so the cache and Scattergl traces stay aligned.
 
     Args:
         n_clicks (int): Delete button click count.
         user_tab_id (str, optional): Session cache key.
+        selected_perm: Client list of ``perm_index`` values.
 
     Returns:
-        str: New revision token.
+        tuple: New revision token and a cleared perm store.
 
     Raises:
-        PreventUpdate: When nothing is selected or deletion would empty the curve.
+        PreventUpdate: When nothing is marked or deletion would empty the curve.
     """
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
     try:
-        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
-        lcd = CurveDash.from_serialized(js_lightcurve)
-        if lcd.lightcurve is None or 'selected' not in lcd.lightcurve.columns:
-            raise PipeException('Select points to delete first.')
-        if not (lcd.lightcurve['selected'] == 1).any():
+        marked = normalize_selected_perm_store(selected_perm)
+        if not marked:
             set_props(
                 'lc_discovery_plot_alert',
                 {
@@ -1916,12 +1875,22 @@ def delete_lc_discovery_selected_points(n_clicks, user_tab_id):
                 },
             )
             raise PreventUpdate
-        delete_selected_rows(lcd)
+        js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        lcd = CurveDash.from_serialized(js_lightcurve)
+        n_before = 0 if lcd.lightcurve is None else len(lcd.lightcurve)
+        delete_rows_by_perm_indices(lcd, marked)
+        n_after = 0 if lcd.lightcurve is None else len(lcd.lightcurve)
+        if n_after == n_before:
+            raise PipeException('Marked points were not found in the lightcurve')
         if lcd.lightcurve is None or lcd.lightcurve.empty:
             raise PipeException('Cannot delete all points from the lightcurve')
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
-        return _bump_lc_revision()
+        logger.info(
+            'Discovery deleted %s selected point(s)',
+            n_before - n_after,
+        )
+        return _bump_lc_revision(), []
     except PreventUpdate:
         raise
     except Exception as exc:
@@ -1978,4 +1947,49 @@ def download_lc_discovery_lightcurve(n_clicks, user_tab_id, table_format):
             {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
         )
         return no_update
+
+
+clientside_callback(
+    ClientsideFunction(namespace='lcdSelect', function_name='bindGraph'),
+    Output('store_lc_discovery_clientside', 'data', allow_duplicate=True),
+    Input('lc_discovery_graph', 'figure'),
+    Input('store_lc_discovery_selected_perm', 'data'),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace='lcdSelect', function_name='mergeSelection'),
+    Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
+    Input('lc_discovery_graph', 'selectedData'),
+    Input('lc_discovery_graph', 'clickData'),
+    State('store_lc_discovery_selected_perm', 'data'),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace='lcdSelect', function_name='clearSelection'),
+    Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
+    Input('lc_discovery_unselect_button', 'n_clicks'),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace='lcdSelect', function_name='captureZoom'),
+    Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
+    Input('lc_discovery_graph', 'relayoutData'),
+    State('store_lc_discovery_zoom', 'data'),
+    State('lc_discovery_time_axis_switch', 'value'),
+    State('lc_discovery_mag_switch', 'value'),
+    State('lc_discovery_fold_switch', 'value'),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace='lcdSelect', function_name='invalidateZoom'),
+    Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
+    Input('lc_discovery_time_axis_switch', 'value'),
+    Input('lc_discovery_mag_switch', 'value'),
+    Input('lc_discovery_fold_switch', 'value'),
+    prevent_initial_call=True,
+)
 

@@ -93,9 +93,10 @@ def plot_uirevision(
     domain: str,
     time_axis_mode: str,
 ) -> str:
-    """Returns Plotly ``uirevision`` so zoom is kept without a zoom store.
+    """Returns Plotly ``uirevision`` so zoom is kept across view-only replots.
 
-    Selection flags are not included. Delete changes the row count or JD span.
+    Selection flags are not included. Delete changes the row count or JD
+    span, so that rebuild stamps ranges from the processor zoom store.
 
     Args:
         lcd (CurveDash | None): Working light curve, or ``None`` when empty.

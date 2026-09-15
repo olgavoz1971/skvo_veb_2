@@ -20,7 +20,19 @@ curve. Time crop affects the plots and the fit, not Export lightcurve.
 Export lightcurve writes the full working series after deletes, stem
 `{upload}_lc`.
 
-Zoom / knot-shape behaviour is a separate note:
+Cleaning on plot 1 is client-side until Delete selected: click, box, and
+lasso union into a browser store of `perm_index` values and paint Plotly
+`selectedpoints` on the live Scattergl traces. Unselect clears that store.
+Delete selected drops those rows in the session cache and rebuilds the
+figure so the traces match the remaining photometry. Empty-space clicks
+do not unselect.
+
+Zoom after that rebuild is a dedicated `dcc.Store` snapshot (axis ranges,
+time-axis mode, photometric domain). A new upload, or a change of time
+axis or domain, clears it. View-only replots still rely on Plotly
+`uirevision`. Agent porting notes:
+[dash_plotly_select_delete_zoom.md](dash_plotly_select_delete_zoom.md).
+Knot-shape behaviour is a separate note:
 [lc_processor_zoom_shapes.md](lc_processor_zoom_shapes.md).
 
 Maths live in `skvo_veb/utils/lc_processor/`. The page must not invent
