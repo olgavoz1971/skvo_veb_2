@@ -28,6 +28,7 @@ from dash import (
 )
 from dash.exceptions import PreventUpdate
 
+from skvo_veb.components.message import status_alert
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_export import (
     apply_export_ephemeris,
@@ -175,6 +176,7 @@ ACCORDION_EXTREMA_ITEM_ID = "lc-processor-accordion-extrema"
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
 EXTREMUM_MIN = "min"
 EXTREMUM_MAX = "max"
+DEFAULT_SMOOTH_METHOD = "spline_lsq"
 
 PAGE_ABOUT_MARKDOWN = """
 Load a light curve, inspect it, delete bad points, and export the working
@@ -187,39 +189,6 @@ a stretch of plot 2. A new smooth, a domain change, or a delete clears
 plot 2 and the rough-extrema marks.
 """
 
-# dbc.Alert ``duration`` for info/success. Warning and danger stay until
-# dismiss, a newer message, or a new file. Tweak this one value only.
-STATUS_ALERT_DURATION_MS = 4000
-_STATUS_ALERT_TIMED_COLORS = frozenset({"info", "success"})
-
-
-def _status_alert(message: str, color: str) -> dbc.Alert:
-    """Builds the shared plot-column status alert.
-
-    Every message is dismissable. Info and success use
-    ``STATUS_ALERT_DURATION_MS`` via the ready-made ``dbc.Alert``
-    timer. Warning and danger omit ``duration`` and stay.
-
-    Args:
-        message (str): User-facing text.
-        color (str): Bootstrap alert colour.
-
-    Returns:
-        dash_bootstrap_components.Alert: Overlay alert.
-    """
-    duration = (
-        STATUS_ALERT_DURATION_MS if color in _STATUS_ALERT_TIMED_COLORS else None
-    )
-    return dbc.Alert(
-        message,
-        color=color,
-        className="py-2 mb-0",
-        dismissable=True,
-        duration=duration,
-        is_open=True,
-        key=str(uuid.uuid4()),
-    )
-
 
 def _bump_lc_revision() -> str:
     """Returns a new plot-revision token.
@@ -228,6 +197,92 @@ def _bump_lc_revision() -> str:
         str: UUID string.
     """
     return str(uuid.uuid4())
+
+
+def _processor_ui_payload(
+    *,
+    source_filename: str | None = None,
+    method: str | None = None,
+    t_min=None,
+    t_max=None,
+    time_axis: str | None = None,
+    show_errors: bool | None = None,
+    export_stem: str | None = None,
+    export_format: str | None = None,
+    previous: dict | None = None,
+    replace_crop: bool = False,
+) -> dict:
+    """Builds the session UI chrome dict for the processor page.
+
+    Tool inputs that must not live on ``CurveDash`` (method, crop, stems,
+    upload filename chip) travel here. Scientific fields stay on the cached
+    curve.
+
+    Args:
+        source_filename (str, optional): Original upload file name.
+        method (str, optional): Smooth method id.
+        t_min: Crop lower bound (MJD), or empty.
+        t_max: Crop upper bound (MJD), or empty.
+        time_axis (str, optional): ``mjd`` or ``date``.
+        show_errors (bool, optional): Error-bar switch.
+        export_stem (str, optional): Working-curve export stem.
+        export_format (str, optional): Export format id.
+        previous (dict, optional): Prior chrome dict to merge.
+        replace_crop (bool): When ``True``, write ``t_min`` / ``t_max`` even
+            if they are ``None`` (upload reset).
+
+    Returns:
+        dict: Session-storage payload for ``store-lc-processor-ui``.
+    """
+    base = dict(previous) if isinstance(previous, dict) else {}
+    if source_filename is not None:
+        base["source_filename"] = source_filename
+    if method is not None:
+        base["method"] = method
+    if replace_crop or t_min is not None:
+        base["t_min"] = t_min
+    if replace_crop or t_max is not None:
+        base["t_max"] = t_max
+    if time_axis is not None:
+        base["time_axis"] = time_axis
+    if show_errors is not None:
+        base["show_errors"] = bool(show_errors)
+    if export_stem is not None:
+        base["export_stem"] = export_stem
+    if export_format is not None:
+        base["export_format"] = export_format
+    return base
+
+
+def _ui_source_filename(ui_store) -> str | None:
+    """Returns the upload file name from the session UI chrome store.
+
+    Args:
+        ui_store: ``store-lc-processor-ui`` payload.
+
+    Returns:
+        str | None: Original filename, if stored.
+    """
+    if not isinstance(ui_store, dict):
+        return None
+    name = ui_store.get("source_filename")
+    if name is None or str(name).strip() == "":
+        return None
+    return str(name)
+
+
+def _display_epoch_value(lcd: CurveDash) -> float | None:
+    """Maps a cached absolute epoch to the sidebar Epoch offset.
+
+    Args:
+        lcd (CurveDash): Session-cached working curve.
+
+    Returns:
+        float | None: Display offset, or ``None`` when the curve has no epoch.
+    """
+    if lcd.epoch is None:
+        return None
+    return display_epoch_offset(lcd.epoch, DISPLAY_EPOCH_JD)
 
 
 def _clear_fit_blobs(user_tab_id: str) -> None:
@@ -580,7 +635,7 @@ def _smooth_drawer() -> list:
                 dbc.Select(
                     id="lc-processor-method",
                     options=method_options,
-                    value="spline_lsq",
+                    value=DEFAULT_SMOOTH_METHOD,
                     size="sm",
                 ),
             ],
@@ -1309,7 +1364,8 @@ def layout():
                 is_open=False,
             ),
             dcc.Store(id="store-lc-processor-user-tab-id", **SESSION_STORE),
-            dcc.Store(id="store-lc-processor-lc-revision"),
+            dcc.Store(id="store-lc-processor-lc-revision", **SESSION_STORE),
+            dcc.Store(id="store-lc-processor-ui", **SESSION_STORE),
             dcc.Store(id="store-lc-processor-selected-perm", data=[]),
             dcc.Store(id="store-lc-processor-zoom"),
             dcc.Store(id="store-lc-processor-knots", data=[]),
@@ -1428,6 +1484,7 @@ def toggle_about(open_clicks, close_clicks, is_open):
 @callback(
     Output("store-lc-processor-user-tab-id", "data"),
     Output("store-lc-processor-lc-revision", "data"),
+    Output("store-lc-processor-ui", "data"),
     Output("lc-processor-upload-text", "children"),
     Output("lc-processor-upload-detail", "children"),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
@@ -1456,38 +1513,48 @@ def upload_lightcurve(contents, filename, user_tab_id):
         user_tab_id: Existing tab id, if any.
 
     Returns:
-        tuple: Tab id, revision, upload chip, cleared overlay, stem, domain,
-        ephemeris, crop reset, cleared selection and zoom stores.
+        tuple: Tab id, revision, UI chrome, upload chip, cleared overlay, stem,
+        domain, ephemeris, crop reset, cleared selection and zoom stores.
     """
     if contents is None:
         raise PreventUpdate
     try:
         _content_type, content_string = contents.split(",", 1)
         decoded = base64.b64decode(content_string)
-        lcd = ingest_lightcurve_file(BytesIO(decoded), filename or "uploaded")
+        source_name = filename or "uploaded"
+        lcd = ingest_lightcurve_file(BytesIO(decoded), source_name)
         if user_tab_id is None:
             user_tab_id = generate_user_tab_id()
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         _clear_fit_blobs(user_tab_id)
         native = lcd.active_domain
         domain = native if native in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
-        epoch_display = (
-            display_epoch_offset(lcd.epoch, DISPLAY_EPOCH_JD)
-            if lcd.epoch is not None
-            else None
+        epoch_display = _display_epoch_value(lcd)
+        export_stem = suggested_lc_export_stem(source_name)
+        ui_payload = _processor_ui_payload(
+            source_filename=source_name,
+            method=DEFAULT_SMOOTH_METHOD,
+            t_min=None,
+            t_max=None,
+            time_axis=TIME_AXIS_MJD,
+            show_errors=False,
+            export_stem=export_stem,
+            export_format=DEFAULT_EXPORT_FORMAT,
+            replace_crop=True,
         )
         logger.info(
             "Lightcurve processor loaded %s (%s points)",
-            filename,
+            source_name,
             0 if lcd.lightcurve is None else len(lcd.lightcurve),
         )
         return (
             user_tab_id,
             _bump_lc_revision(),
-            _upload_status(filename or "uploaded file", tone="ok"),
+            ui_payload,
+            _upload_status(source_name, tone="ok"),
             None,
             None,
-            suggested_lc_export_stem(filename),
+            export_stem,
             domain,
             lcd.period,
             epoch_display,
@@ -1505,6 +1572,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
         return (
             no_update,
             no_update,
+            no_update,
             _upload_status(filename or "upload", tone="error"),
             format_user_upload_error(exc),
             no_update,
@@ -1520,6 +1588,200 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             no_update,
         )
+
+
+@callback(
+    Output("lc-processor-domain", "value", allow_duplicate=True),
+    Output("lc-processor-input-period", "value", allow_duplicate=True),
+    Output("lc-processor-input-epoch", "value", allow_duplicate=True),
+    Input("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def restore_processor_curve_controls(user_tab_id):
+    """Refills domain and ephemeris from the session-cached ``CurveDash``.
+
+    Args:
+        user_tab_id (str, optional): Browser tab id from session storage.
+
+    Returns:
+        tuple: Working domain, period, and display epoch.
+
+    Raises:
+        PreventUpdate: When there is no tab id or no cached lightcurve.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    if not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
+    except Exception as exc:
+        logger.warning("Lightcurve processor restore curve controls failed: %s", exc)
+        raise PreventUpdate from exc
+    native = lcd.active_domain
+    domain = native if native in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
+    logger.info("Lightcurve processor restored curve controls from session cache.")
+    return domain, lcd.period, _display_epoch_value(lcd)
+
+
+@callback(
+    Output("lc-processor-upload-text", "children", allow_duplicate=True),
+    Output("lc-processor-export-stem", "value", allow_duplicate=True),
+    Output("lc-processor-export-format", "value", allow_duplicate=True),
+    Output("lc-processor-t-min", "value", allow_duplicate=True),
+    Output("lc-processor-t-max", "value", allow_duplicate=True),
+    Output("lc-processor-method", "value", allow_duplicate=True),
+    Output("lc-processor-time-axis", "value", allow_duplicate=True),
+    Output("lc-processor-show-errors", "value", allow_duplicate=True),
+    Input("store-lc-processor-ui", "data"),
+    prevent_initial_call="initial_duplicate",
+)
+def restore_processor_ui_chrome(ui_store):
+    """Refills tool chrome from the session UI workspace store.
+
+    Args:
+        ui_store (dict, optional): ``store-lc-processor-ui`` payload.
+
+    Returns:
+        tuple: Upload chip, stem, format, crop, method, time axis, error bars.
+
+    Raises:
+        PreventUpdate: When the UI store is empty.
+    """
+    if not isinstance(ui_store, dict) or not ui_store:
+        raise PreventUpdate
+    source_name = _ui_source_filename(ui_store)
+    chip = (
+        _upload_status(source_name, tone="ok")
+        if source_name
+        else no_update
+    )
+    method = ui_store.get("method") or DEFAULT_SMOOTH_METHOD
+    time_axis = ui_store.get("time_axis") or TIME_AXIS_MJD
+    export_stem = ui_store.get("export_stem")
+    export_format = ui_store.get("export_format") or DEFAULT_EXPORT_FORMAT
+    show_errors = bool(ui_store.get("show_errors", False))
+    logger.info("Lightcurve processor restored UI chrome from session store.")
+    return (
+        chip,
+        export_stem if export_stem is not None else no_update,
+        export_format,
+        ui_store.get("t_min"),
+        ui_store.get("t_max"),
+        method,
+        time_axis,
+        show_errors,
+    )
+
+
+@callback(
+    Output("store-lc-processor-ui", "data", allow_duplicate=True),
+    Input("lc-processor-method", "value"),
+    Input("lc-processor-t-min", "value"),
+    Input("lc-processor-t-max", "value"),
+    Input("lc-processor-time-axis", "value"),
+    Input("lc-processor-show-errors", "value"),
+    Input("lc-processor-export-stem", "value"),
+    Input("lc-processor-export-format", "value"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("store-lc-processor-ui", "data"),
+    prevent_initial_call=True,
+)
+def snapshot_processor_ui_chrome(
+    method,
+    t_min,
+    t_max,
+    time_axis,
+    show_errors,
+    export_stem,
+    export_format,
+    user_tab_id,
+    previous_ui,
+):
+    """Writes tool chrome into session storage while a curve is loaded.
+
+    Args:
+        method: Smooth method id.
+        t_min: Crop lower bound.
+        t_max: Crop upper bound.
+        time_axis: Time-axis mode.
+        show_errors: Error-bar switch.
+        export_stem: Working export stem.
+        export_format: Export format id.
+        user_tab_id: Session cache key.
+        previous_ui: Prior UI chrome dict.
+
+    Returns:
+        dict: Updated UI chrome payload.
+
+    Raises:
+        PreventUpdate: When no curve is loaded yet.
+    """
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    updated = _processor_ui_payload(
+        method=method or DEFAULT_SMOOTH_METHOD,
+        t_min=t_min,
+        t_max=t_max,
+        time_axis=time_axis or TIME_AXIS_MJD,
+        show_errors=bool(show_errors),
+        export_stem=export_stem,
+        export_format=export_format or DEFAULT_EXPORT_FORMAT,
+        previous=previous_ui,
+        replace_crop=True,
+    )
+    if updated == previous_ui:
+        raise PreventUpdate
+    return updated
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Input("lc-processor-input-period", "value"),
+    Input("lc-processor-input-epoch", "value"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
+    """Writes sidebar period and epoch through to the cached ``CurveDash``.
+
+    Remount restore reads these fields from disk, so typed values must not
+    live only in the form widgets.
+
+    Args:
+        period: Sidebar period in days, or empty.
+        epoch: Sidebar epoch as display MJD, or empty.
+        user_tab_id: Session cache key.
+
+    Returns:
+        Any: ``dash.no_update`` (cache write only; plot does not depend on P/E).
+
+    Raises:
+        PreventUpdate: When there is no cache or values are unchanged.
+    """
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
+        before_period = lcd.period
+        before_epoch = lcd.epoch
+        apply_export_ephemeris(
+            lcd, period, epoch, display_epoch=DISPLAY_EPOCH_JD
+        )
+        if lcd.period == before_period and lcd.epoch == before_epoch:
+            raise PreventUpdate
+        write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        logger.debug(
+            "Lightcurve processor wrote ephemeris to session cache (P=%s, epoch=%s)",
+            lcd.period,
+            lcd.epoch,
+        )
+        return no_update
+    except PreventUpdate:
+        raise
+    except Exception as exc:
+        logger.warning("Lightcurve processor ephemeris write-through failed: %s", exc)
+        raise PreventUpdate from exc
 
 
 @callback(
@@ -1560,7 +1822,7 @@ def apply_working_domain(domain, user_tab_id):
         return (
             no_update,
             cached.active_domain,
-            _status_alert(str(exc), "warning"),
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -1569,6 +1831,7 @@ def apply_working_domain(domain, user_tab_id):
     Output("lc-processor-graph-residual", "figure"),
     Output("lc-processor-plot-alert", "children"),
     Input("store-lc-processor-lc-revision", "data"),
+    Input("store-lc-processor-user-tab-id", "data"),
     Input("lc-processor-time-axis", "value"),
     Input("lc-processor-show-errors", "value"),
     Input("lc-processor-t-min", "value"),
@@ -1576,13 +1839,14 @@ def apply_working_domain(domain, user_tab_id):
     Input("lc-processor-method", "value"),
     Input("store-lc-processor-plot2-window", "data"),
     State("store-lc-processor-knots", "data"),
-    State("store-lc-processor-user-tab-id", "data"),
+    State("store-lc-processor-ui", "data"),
     State("lc-processor-upload-lc", "filename"),
     State("lc-processor-domain", "value"),
     State("store-lc-processor-zoom", "data"),
 )
 def plot_working_and_residual(
     _revision,
+    user_tab_id,
     time_axis_mode,
     show_errors,
     t_min,
@@ -1590,8 +1854,8 @@ def plot_working_and_residual(
     method,
     plot2_window,
     knots,
-    user_tab_id,
-    filename,
+    ui_store,
+    upload_filename,
     domain,
     zoom,
 ):
@@ -1603,8 +1867,13 @@ def plot_working_and_residual(
     After a rebuild that changes ``uirevision`` (delete), axis ranges are
     stamped from the zoom store when it still matches this view.
 
+    Revision and ``user_tab_id`` are session stores so in-tab navigation
+    rehydrates both and replot runs from disk (smooth / detrend / extrema
+    blobs included). Mark and zoom stores stay memory-only.
+
     Args:
         _revision: Plot revision token.
+        user_tab_id: Session cache key.
         time_axis_mode: ``mjd`` or ``date``.
         show_errors: Error-bar switch.
         t_min: Crop start (display MJD).
@@ -1612,8 +1881,8 @@ def plot_working_and_residual(
         method: Smooth method id.
         plot2_window: Plot-2 working range (Use visible range).
         knots: Current knot list.
-        user_tab_id: Session cache key.
-        filename: Upload name for ``uirevision``.
+        ui_store: Session UI chrome (source filename for ``uirevision``).
+        upload_filename: Live upload component filename, if any.
         domain: Sidebar photometric domain.
         zoom: Client zoom snapshot for plot 1.
 
@@ -1621,6 +1890,7 @@ def plot_working_and_residual(
         tuple: Working figure, residual figure, and ``no_update`` for
         the overlay unless plotting itself fails.
     """
+    filename = _ui_source_filename(ui_store) or upload_filename
     axis = normalize_time_axis_mode(time_axis_mode)
     domain_key = domain if domain in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
     blank_w, blank_r = _blank_pair(
@@ -1750,7 +2020,7 @@ def plot_working_and_residual(
         return (
             no_update,
             blank_r,
-            _status_alert(str(exc), "warning"),
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -1859,7 +2129,7 @@ def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
         raise
     except Exception as exc:
         logger.warning("Lightcurve processor delete failed: %s", exc)
-        return no_update, _status_alert(str(exc), "warning"), no_update
+        return no_update, status_alert(str(exc), "warning"), no_update
 
 
 @callback(
@@ -1874,16 +2144,16 @@ def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
     Output("lc-processor-download-intervals-btn", "disabled"),
     Output("lc-processor-download-toms-btn", "disabled"),
     Input("store-lc-processor-lc-revision", "data"),
+    Input("store-lc-processor-user-tab-id", "data"),
     Input("store-lc-processor-plot2-window", "data"),
-    State("store-lc-processor-user-tab-id", "data"),
 )
-def gate_lightcurve_actions(_revision, plot2_window, user_tab_id):
+def gate_lightcurve_actions(_revision, user_tab_id, plot2_window):
     """Enables export, detrend, and extrema once the required cache blobs exist.
 
     Args:
         _revision: Plot revision token.
-        plot2_window: Plot-2 working range store.
         user_tab_id: Session cache key.
+        plot2_window: Plot-2 working range store.
 
     Returns:
         tuple: Disabled flags for LC export, Apply detrend, Copy from
@@ -2008,10 +2278,10 @@ def download_working_lightcurve(
         blob = export_curvedash(lcd, fmt)
         return dcc.send_bytes(blob, outfile), None
     except PipeException as exc:
-        return no_update, _status_alert(str(exc), "warning")
+        return no_update, status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("Lightcurve processor export failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
 
 
 def _cached_lcd(user_tab_id) -> CurveDash:
@@ -2175,7 +2445,7 @@ def place_knots(
     if method not in ("spline_lsq", "pspline"):
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, no_update, _status_alert(
+        return no_update, no_update, status_alert(
             "Load a light curve first.", "warning"
         )
     try:
@@ -2192,7 +2462,7 @@ def place_knots(
         )
     except Exception as exc:
         logger.exception("Could not place knots")
-        return no_update, no_update, _status_alert(str(exc), "danger")
+        return no_update, no_update, status_alert(str(exc), "danger")
     had_overlay = read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB) is not None
     had_residual = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB) is not None
     had_extrema = read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB) is not None
@@ -2204,13 +2474,13 @@ def place_knots(
         else no_update
     )
     if not placed:
-        return [], revision, _status_alert(
+        return [], revision, status_alert(
             "No interior knots could be placed on the current segments.",
             "warning",
         )
     note = None
     if method == "spline_lsq" and len(placed) < requested:
-        note = _status_alert(
+        note = status_alert(
             f"Placed {len(placed)} of {requested} knots (limited by points per night).",
             "info",
         )
@@ -2307,7 +2577,7 @@ def apply_smooth(
     if not apply_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, no_update, _status_alert(
+        return no_update, no_update, status_alert(
             "Load a light curve first.", "warning"
         )
     try:
@@ -2341,7 +2611,7 @@ def apply_smooth(
         clear_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
     except Exception as exc:
         logger.exception("Smooth fit failed")
-        return no_update, no_update, _status_alert(str(exc), "danger")
+        return no_update, no_update, status_alert(str(exc), "danger")
     return payload.get("knots") or list(knots or []), _bump_lc_revision(), None
 
 
@@ -2541,9 +2811,9 @@ def edit_extrema_on_plot(
         write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, updated)
     except Exception as exc:
         logger.exception("Manual rough-extrema edit failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
     n_hit = int(updated.get("n_extrema") or 0)
-    return _bump_lc_revision(), _status_alert(
+    return _bump_lc_revision(), status_alert(
         f"{n_hit} rough mark(s).", "info"
     )
 
@@ -2589,7 +2859,7 @@ def apply_detrend(
     if not n_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, _status_alert(
+        return no_update, status_alert(
             "Load a light curve first.", "warning"
         ), no_update, no_update, no_update
     try:
@@ -2607,7 +2877,7 @@ def apply_detrend(
         logger.exception("Detrend failed")
         return (
             no_update,
-            _status_alert(str(exc), "danger"),
+            status_alert(str(exc), "danger"),
             no_update,
             no_update,
             no_update,
@@ -2620,7 +2890,7 @@ def apply_detrend(
         n_finite,
         n_fill,
     )
-    note = _status_alert(
+    note = status_alert(
         f"Plot 2 seeded from Apply detrend ({n_finite} point(s)).", "info"
     )
     if n_fill:
@@ -2631,7 +2901,7 @@ def apply_detrend(
             parts.append(f"{fill['interp']} local interpolant")
         if fill.get("median"):
             parts.append(f"{fill['median']} piece median")
-        note = _status_alert(
+        note = status_alert(
             "Kept every point. Filled "
             + f"{n_fill} doubtful sample(s): "
             + ", ".join(parts)
@@ -2670,7 +2940,7 @@ def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
     if not n_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, _status_alert(
+        return no_update, status_alert(
             "Load a light curve first.", "warning"
         ), no_update, no_update, no_update
     try:
@@ -2683,7 +2953,7 @@ def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
         logger.exception("Copy from plot 1 failed")
         return (
             no_update,
-            _status_alert(str(exc), "danger"),
+            status_alert(str(exc), "danger"),
             no_update,
             no_update,
             no_update,
@@ -2691,7 +2961,7 @@ def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
     n_finite = sum(1 for v in payload["residual"] if v is not None)
     return (
         _bump_lc_revision(),
-        _status_alert(f"Copied {n_finite} point(s) from plot 1.", "info"),
+        status_alert(f"Copied {n_finite} point(s) from plot 1.", "info"),
         None,
         False,
         dict(WORKING_WINDOW_DISABLED),
@@ -2728,7 +2998,7 @@ def apply_plot_2_local_tilt(
     if not n_clicks:
         raise PreventUpdate
     if not tilt_line or not tilt_line.get("ready"):
-        return no_update, _status_alert(
+        return no_update, status_alert(
             "Click plot 2 once to place a tilt line, then Apply local tilt.",
             "warning",
         ), no_update, no_update
@@ -2751,14 +3021,14 @@ def apply_plot_2_local_tilt(
         logger.exception("Local tilt failed")
         return (
             no_update,
-            _status_alert(str(exc), "danger"),
+            status_alert(str(exc), "danger"),
             no_update,
             no_update,
         )
     n_hit = int((updated.get("tilts") or [{}])[-1].get("n_updated") or 0)
     return (
         _bump_lc_revision(),
-        _status_alert(f"Local tilt applied to {n_hit} point(s).", "info"),
+        status_alert(f"Local tilt applied to {n_hit} point(s).", "info"),
         None,
         False,
     )
@@ -2793,7 +3063,7 @@ def use_plot_2_visible_range(n_clicks, relayout_data, time_axis_mode, user_tab_i
         else None
     )
     if not payload:
-        return no_update, _status_alert(
+        return no_update, status_alert(
             "Seed plot 2 first: Apply detrend or Copy from plot 1.",
             "warning",
         )
@@ -2807,11 +3077,11 @@ def use_plot_2_visible_range(n_clicks, relayout_data, time_axis_mode, user_tab_i
             jd_min, jd_max, np.asarray(payload["jd"], dtype=float)
         )
     except PipeException as exc:
-        return no_update, _status_alert(str(exc), "warning")
+        return no_update, status_alert(str(exc), "warning")
     if store_payload.get("enabled"):
-        note = _status_alert("Plot 2 now uses this time range only.", "info")
+        note = status_alert("Plot 2 now uses this time range only.", "info")
     else:
-        note = _status_alert(
+        note = status_alert(
             "Visible range covers the full plot-2 series; working range cleared.",
             "info",
         )
@@ -2837,7 +3107,7 @@ def restore_full_plot_2(n_clicks):
         raise PreventUpdate
     return (
         dict(WORKING_WINDOW_DISABLED),
-        _status_alert("Full plot 2 restored.", "info"),
+        status_alert("Full plot 2 restored.", "info"),
     )
 
 
@@ -2982,10 +3252,10 @@ def download_detrended_lightcurve(
         blob = export_curvedash(lcd, fmt)
         return dcc.send_bytes(blob, outfile), None
     except PipeException as exc:
-        return no_update, _status_alert(str(exc), "warning")
+        return no_update, status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("Lightcurve processor detrend export failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
 
 
 @callback(
@@ -3035,7 +3305,7 @@ def find_rough_extrema(
     if not n_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return no_update, _status_alert("Load a light curve first.", "warning")
+        return no_update, status_alert("Load a light curve first.", "warning")
     try:
         lcd = _cached_lcd(user_tab_id)
         times, _y, _e, _perm, _labels = cropped_series(lcd, t_min, t_max)
@@ -3054,7 +3324,7 @@ def find_rough_extrema(
         write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, payload)
     except Exception as exc:
         logger.exception("Rough extrema find failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
     n_hit = int(payload.get("n_extrema") or 0)
     n_skipped = int(payload.get("n_skipped_short") or 0)
     kind = payload.get("kind") or "min"
@@ -3064,7 +3334,7 @@ def find_rough_extrema(
         f" Skipped {n_skipped} short segment(s)." if n_skipped else ""
     )
     if n_hit == 0:
-        return _bump_lc_revision(), _status_alert(
+        return _bump_lc_revision(), status_alert(
             f"No rough {plural} found.{skip_txt}", "warning"
         )
     median_d = payload.get("median_interval_d")
@@ -3072,7 +3342,7 @@ def find_rough_extrema(
         f" Median interval {median_d:.6f} d." if median_d is not None else ""
     )
     label = noun if n_hit == 1 else plural
-    return _bump_lc_revision(), _status_alert(
+    return _bump_lc_revision(), status_alert(
         f"Found {n_hit} rough {label}.{median_txt}{skip_txt}", "info"
     )
 
@@ -3084,10 +3354,13 @@ def find_rough_extrema(
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-intervals-export-stem", "value"),
     State("lc-processor-interval-delta", "value"),
+    State("store-lc-processor-ui", "data"),
     State("lc-processor-upload-lc", "filename"),
     prevent_initial_call=True,
 )
-def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filename):
+def download_rough_intervals(
+    n_clicks, user_tab_id, stem, interval_delta, ui_store, upload_filename
+):
     """Exports GP-layout intervals centred on the last rough extrema.
 
     Args:
@@ -3095,13 +3368,15 @@ def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filena
         user_tab_id: Session cache key.
         stem: Intervals stem (already ``_int`` by default).
         interval_delta: Half-width in days (current widget).
-        filename: Original upload name.
+        ui_store: Session UI chrome (source filename).
+        upload_filename: Live upload component filename, if any.
 
     Returns:
         tuple: Download payload and optional alert.
     """
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
+    filename = _ui_source_filename(ui_store) or upload_filename
     try:
         content = format_intervals_from_payload(
             read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
@@ -3115,7 +3390,7 @@ def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filena
         return dcc.send_string(content, outfile), None
     except Exception as exc:
         logger.exception("Lightcurve processor intervals export failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
 
 
 @callback(
@@ -3124,23 +3399,26 @@ def download_rough_intervals(n_clicks, user_tab_id, stem, interval_delta, filena
     Input("lc-processor-download-toms-btn", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-toms-export-stem", "value"),
+    State("store-lc-processor-ui", "data"),
     State("lc-processor-upload-lc", "filename"),
     prevent_initial_call=True,
 )
-def download_rough_toms(n_clicks, user_tab_id, stem, filename):
+def download_rough_toms(n_clicks, user_tab_id, stem, ui_store, upload_filename):
     """Exports compact ToM times from the last rough extrema (σ is empty).
 
     Args:
         n_clicks: Button clicks.
         user_tab_id: Session cache key.
         stem: Timing stem (already ``_rough_toms`` by default).
-        filename: Original upload name.
+        ui_store: Session UI chrome (source filename).
+        upload_filename: Live upload component filename, if any.
 
     Returns:
         tuple: Download payload and optional alert.
     """
     if not n_clicks or not user_tab_id:
         raise PreventUpdate
+    filename = _ui_source_filename(ui_store) or upload_filename
     try:
         content = format_rough_toms_download(
             read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
@@ -3153,7 +3431,7 @@ def download_rough_toms(n_clicks, user_tab_id, stem, filename):
         return dcc.send_string(content, outfile), None
     except Exception as exc:
         logger.exception("Lightcurve processor rough ToM export failed")
-        return no_update, _status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "danger")
 
 
 clientside_callback(

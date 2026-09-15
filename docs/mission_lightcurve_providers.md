@@ -485,6 +485,7 @@ Reuse patterns from `pages/lightcurve_asassn.py` and `lightcurve_tess_srv.py`:
 | **Submit query** | Background job: `run_catalog_search()` → AgGrid + markdown card |
 | **Cancel query** | Cancel background search (same pattern as TESS srv) |
 | **Load / row select** | `provider.fetch_lightcurve(lc_key)` → `volc_to_curvedash` → session cache |
+| **Restore (in-tab)** | `restore_lc_discovery_tabs`: cache hit → enable Light curve tab and select it. `restore_lc_discovery_search_table`: rebuild AgGrid / object card from session stores. `refresh_lc_discovery_aladin`: remount the sky map from the same stores (not from AgGrid). Plot from persisted revision. Do not require catalogue `rowData` to admit a working curve. Table and Aladin highlight callbacks stay separate so restoring the grid does not require `lc_discovery_aladin` to already exist. |
 | **Plot mark / Unselect / Delete** | Client union of `perm_index`; Unselect clears the perm store; Delete mutates the session-cached `CurveDash` |
 | **Replot / trim / export** | Unchanged shared utils on `CurveDash` |
 
@@ -588,7 +589,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 | Simbad for non-cone missions | Retry `search_catalog(object_name=simbad_main_name)` |
 | Simbad for cone missions | `pick_archive_id_from_simbad` → direct ID first; cone at Simbad coords last |
 | Background callbacks | App-level Celery (prod) or Diskcache (dev); `background=True` on Submit |
-| Catalog persistence | Store serialised row dicts in `store_lc_discovery_catalog` after search |
+| Catalog persistence | Store serialised row dicts in `store_lc_discovery_catalog` after search; `restore_lc_discovery_search_table` writes them back to AgGrid on in-tab remount |
 
 **Still open:** cone/radius UX for name-only missions (show radius disabled with hint vs hide).
 

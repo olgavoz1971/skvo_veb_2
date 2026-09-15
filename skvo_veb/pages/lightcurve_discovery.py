@@ -15,7 +15,7 @@ from dash import Input, Output, State, callback, clientside_callback, ctx, dash,
 from dash.dependencies import ClientsideFunction
 from dash.exceptions import PreventUpdate
 
-from skvo_veb.components import message
+from skvo_veb.components.message import status_alert
 from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.discovery_fetch_context import discovery_fetch_context_from_store
 from skvo_veb.lc_providers.registry import list_missions
@@ -59,7 +59,9 @@ from skvo_veb.utils.lc_discovery_catalog_columns import (
 )
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
+    catalog_results_header_from_store,
     catalog_truncation_notice,
+    catalog_truncation_notice_from_store,
     catalog_rows_for_aggrid,
     run_catalog_search_for_mission,
 )
@@ -131,8 +133,6 @@ LC_DISCOVERY_TIME_MAX_PLACEHOLDER_MJD = 'Latest MJD (optional)'
 _LC_DISCOVERY_CATALOG_HEADER_DEFAULT = 'Submit a query to list available lightcurves'
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN = {'display': 'none'}
 _LC_DISCOVERY_SEARCH_STATUS_STYLE_VISIBLE = {'display': 'block'}
-_LC_DISCOVERY_ALERT_STYLE_HIDDEN = {'display': 'none'}
-_LC_DISCOVERY_ALERT_CLEARED = (None, _LC_DISCOVERY_ALERT_STYLE_HIDDEN)
 _LC_DISCOVERY_ALADIN_WIDTH = 400
 _LC_DISCOVERY_ALADIN_HEIGHT = 400
 
@@ -225,6 +225,26 @@ def _discovery_catalog_column_defs(mission_id: str | None) -> list[dict]:
     if not slug:
         return catalog_column_defs_for_capabilities(MissionCapabilities())
     return catalog_column_defs_for_mission(slug)
+
+
+def _mission_id_from_restored_catalog(row_data: list[dict] | None) -> str:
+    """Reads the mission slug from the first restored catalogue row.
+
+    Args:
+        row_data (list[dict], optional): Serialised AgGrid catalogue rows.
+
+    Returns:
+        str: Mission slug embedded in the row ``lc_key``.
+
+    Raises:
+        PipeException: When a restored row is missing a valid ``lc_key``.
+    """
+    if not row_data:
+        raise PipeException('Restored catalogue is empty.')
+    lc_key = row_data[0].get('lc_key')
+    if not lc_key:
+        raise PipeException('Restored catalogue row is missing lc_key.')
+    return mission_id_from_lc_key(lc_key)
 
 
 def _click_help(help_id: str, title: str, body, *, placement: str = 'bottom'):
@@ -677,8 +697,8 @@ def _search_results_panel():
                 ],
                 id='lc_discovery_catalog_row',
             ),
-            html.Div(id='lc_discovery_search_alert', style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN),
-            html.Div(id='lc_discovery_fetch_alert', style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN),
+            html.Div(id='lc_discovery_search_alert'),
+            html.Div(id='lc_discovery_fetch_alert'),
             catalog_help_pop,
         ],
         lg=9,
@@ -891,7 +911,7 @@ def _lightcurve_graph_panel():
     """
     return dbc.Col(
         [
-            html.Div(id='lc_discovery_plot_alert', style={'display': 'none'}),
+            html.Div(id='lc_discovery_plot_alert'),
             dbc.Row(
                 [
                     dcc.Graph(
@@ -1035,9 +1055,7 @@ def layout():
     Output('lc_discovery_search_status', 'children', allow_duplicate=True),
     Output('lc_discovery_search_status', 'style', allow_duplicate=True),
     Output('lc_discovery_search_alert', 'children', allow_duplicate=True),
-    Output('lc_discovery_search_alert', 'style', allow_duplicate=True),
     Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
-    Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
     Output('store_lc_discovery_catalog', 'data', allow_duplicate=True),
     Output('store_lc_discovery_resolved_target', 'data', allow_duplicate=True),
     Input('lc_discovery_submit_query_button', 'n_clicks'),
@@ -1098,14 +1116,8 @@ def submit_catalog_search(
 
     set_props('lc_discovery_object_card', {'style': {'display': 'none'}})
     set_props('lc_discovery_object_card_markdown', {'children': ''})
-    set_props(
-        'lc_discovery_search_alert',
-        {'children': None, 'style': _LC_DISCOVERY_ALERT_STYLE_HIDDEN},
-    )
-    set_props(
-        'lc_discovery_fetch_alert',
-        {'children': None, 'style': _LC_DISCOVERY_ALERT_STYLE_HIDDEN},
-    )
+    set_props('lc_discovery_search_alert', {'children': None})
+    set_props('lc_discovery_fetch_alert', {'children': None})
 
     def _update_search_status(message: str) -> None:
         """Replaces the Discovery status bar with the current search step.
@@ -1127,8 +1139,6 @@ def submit_catalog_search(
         time_max_text,
         time_max_format,
     )
-    empty_alert = _LC_DISCOVERY_ALERT_CLEARED
-    fetch_alert_cleared = _LC_DISCOVERY_ALERT_CLEARED
     column_defs = _discovery_catalog_column_defs(mission_id)
     try:
         time_bounds = parse_discovery_time_bounds(
@@ -1157,9 +1167,8 @@ def submit_catalog_search(
             {'display': 'none'},
             '',
             _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
-            message.warning_alert(exc),
-            {'display': 'block'},
-            *fetch_alert_cleared,
+            status_alert(str(exc), 'warning'),
+            None,
             None,
             None,
         )
@@ -1175,9 +1184,8 @@ def submit_catalog_search(
             {'display': 'none'},
             '',
             _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
-            message.warning_alert(str(exc)),
-            {'display': 'block'},
-            *fetch_alert_cleared,
+            status_alert(str(exc), 'warning'),
+            None,
             None,
             None,
         )
@@ -1200,8 +1208,8 @@ def submit_catalog_search(
         {'display': 'block'},
         '',
         _LC_DISCOVERY_SEARCH_STATUS_STYLE_HIDDEN,
-        *empty_alert,
-        *fetch_alert_cleared,
+        None,
+        None,
         row_data,
         outcome.to_store_dict(),
     )
@@ -1211,20 +1219,35 @@ def submit_catalog_search(
     Output('lc_discovery_aladin_container', 'children'),
     Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
     Input('store_lc_discovery_resolved_target', 'data'),
-    State('lc_discovery_catalog_table', 'rowData'),
-    prevent_initial_call=True,
+    Input('store_lc_discovery_catalog', 'data'),
+    prevent_initial_call='initial_duplicate',
 )
-def refresh_lc_discovery_aladin(search_metadata, row_data):
-    """Rebuilds Aladin only when a new search completes, not on row selection.
+def refresh_lc_discovery_aladin(search_metadata, catalog_store):
+    """Rebuilds Aladin from session search stores, not from AgGrid row selection.
+
+    Uses the catalogue Store so in-tab remount can remount the map before the
+    grid finishes rehydrating. Does not depend on ``lc_discovery_aladin`` being
+    present in the layout already.
 
     Args:
         search_metadata (dict, optional): Serialised search outcome metadata.
-        row_data (list[dict]): Current AgGrid catalogue rows.
+        catalog_store (list[dict], optional): Serialised catalogue row dicts.
 
     Returns:
         tuple: Fresh Aladin view (or placeholder) and cleared highlight store.
+
+    Raises:
+        PreventUpdate: When neither store has content to show.
     """
-    return _build_lc_discovery_aladin_view(row_data, search_metadata), None
+    rows = catalog_store or []
+    if not search_metadata and not rows:
+        raise PreventUpdate
+    if ctx.triggered_id not in (
+        'store_lc_discovery_resolved_target',
+        'store_lc_discovery_catalog',
+    ):
+        raise PreventUpdate
+    return _build_lc_discovery_aladin_view(rows, search_metadata), None
 
 
 @callback(
@@ -1232,27 +1255,25 @@ def refresh_lc_discovery_aladin(search_metadata, row_data):
     Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
     Input('lc_discovery_catalog_table', 'cellClicked'),
     Input('lc_discovery_catalog_table', 'selectedRows'),
-    Input('lc_discovery_aladin', 'selectedStar'),
     State('store_lc_discovery_highlight_name', 'data'),
     State('lc_discovery_catalog_table', 'rowData'),
     prevent_initial_call=True,
 )
-def update_lc_discovery_highlight_from_ui(
+def update_lc_discovery_highlight_from_table(
     cell_clicked,
     selected_rows,
-    selected_star,
     current_highlight_name,
     row_data,
 ):
-    """Records the active catalogue row from either the table or the sky map.
+    """Records the active catalogue row from the AgGrid table only.
 
-    A shared store avoids ping-pong callbacks that re-write ``selectedRows`` and
-    ``selectedStar`` against each other (which made both the grid and Aladin blink).
+    Kept separate from the Aladin ``selectedStar`` callback so restoring
+    catalogue ``rowData`` after navigation does not require ``lc_discovery_aladin``
+    to already exist in the layout.
 
     Args:
         cell_clicked (dict, optional): AgGrid ``cellClicked`` event payload.
         selected_rows (list[dict]): AgGrid selected rows.
-        selected_star (dict, optional): Aladin ``selectedStar`` payload.
         current_highlight_name (str, optional): Current highlight marker name.
         row_data (list[dict]): Current AgGrid catalogue rows.
 
@@ -1266,34 +1287,59 @@ def update_lc_discovery_highlight_from_ui(
         raise PreventUpdate
 
     triggered_prop = ctx.triggered[0]['prop_id']
-    component_id, _, triggered_field = triggered_prop.partition('.')
+    _, _, triggered_field = triggered_prop.partition('.')
 
-    if component_id == 'lc_discovery_catalog_table':
-        row = None
-        if triggered_field == 'cellClicked':
-            row = catalog_row_from_cell_clicked(cell_clicked, row_data or [])
-        elif selected_rows:
-            row = selected_rows[0]
-        if row is None:
-            raise PreventUpdate
-        if row.get('ra_deg') is None or row.get('dec_deg') is None:
-            raise PreventUpdate
-        highlight_name = aladin_marker_name(row)
-        lc_key = row.get('lc_key')
-    elif component_id == 'lc_discovery_aladin':
-        if not selected_star or not selected_star.get('name') or not row_data:
-            raise PreventUpdate
-        highlight_name = str(selected_star['name'])
-        matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
-        if matched_row is None:
-            raise PreventUpdate
-        lc_key = matched_row.get('lc_key')
-    else:
+    row = None
+    if triggered_field == 'cellClicked':
+        row = catalog_row_from_cell_clicked(cell_clicked, row_data or [])
+    elif selected_rows:
+        row = selected_rows[0]
+    if row is None:
         raise PreventUpdate
-
+    if row.get('ra_deg') is None or row.get('dec_deg') is None:
+        raise PreventUpdate
+    highlight_name = aladin_marker_name(row)
+    lc_key = row.get('lc_key')
     if highlight_name == current_highlight_name:
         raise PreventUpdate
     return highlight_name, lc_key
+
+
+@callback(
+    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
+    Input('lc_discovery_aladin', 'selectedStar'),
+    State('store_lc_discovery_highlight_name', 'data'),
+    State('lc_discovery_catalog_table', 'rowData'),
+    prevent_initial_call=True,
+)
+def update_lc_discovery_highlight_from_aladin(
+    selected_star,
+    current_highlight_name,
+    row_data,
+):
+    """Records the active catalogue row from an Aladin marker click.
+
+    Args:
+        selected_star (dict, optional): Aladin ``selectedStar`` payload.
+        current_highlight_name (str, optional): Current highlight marker name.
+        row_data (list[dict]): Current AgGrid catalogue rows.
+
+    Returns:
+        tuple: Marker name and ``lc_key`` for the highlighted row.
+
+    Raises:
+        PreventUpdate: When the highlight is unchanged or cannot be resolved.
+    """
+    if not selected_star or not selected_star.get('name') or not row_data:
+        raise PreventUpdate
+    highlight_name = str(selected_star['name'])
+    matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
+    if matched_row is None:
+        raise PreventUpdate
+    if highlight_name == current_highlight_name:
+        raise PreventUpdate
+    return highlight_name, matched_row.get('lc_key')
 
 
 @callback(
@@ -1307,7 +1353,8 @@ def sync_lc_discovery_highlight_to_aladin(highlight_name, row_data, current_star
     """Highlights an Aladin marker when the shared store changes from a table click.
 
     Map clicks are already handled inside the Aladin component; this callback runs
-    only for table-driven highlight changes.
+    only for table-driven highlight changes. It is registered against a dynamic id
+    (``suppress_callback_exceptions``); it only runs once Aladin is mounted.
 
     Args:
         highlight_name (str, optional): Shared marker name from the highlight store.
@@ -1361,19 +1408,170 @@ clientside_callback(
 
 
 @callback(
+    output=dict(
+        table_data=Output('lc_discovery_catalog_table', 'rowData', allow_duplicate=True),
+        column_defs=Output('lc_discovery_catalog_table', 'columnDefs', allow_duplicate=True),
+        table_header=Output('lc_discovery_catalog_header', 'children', allow_duplicate=True),
+        truncation_text=Output('lc_discovery_catalog_truncation_notice', 'children', allow_duplicate=True),
+        truncation_style=Output('lc_discovery_catalog_truncation_notice', 'style', allow_duplicate=True),
+        object_card_markdown=Output('lc_discovery_object_card_markdown', 'children', allow_duplicate=True),
+        object_card_style=Output('lc_discovery_object_card', 'style', allow_duplicate=True),
+    ),
+    inputs=dict(
+        catalog_store=Input('store_lc_discovery_catalog', 'data'),
+    ),
+    state=dict(
+        search_metadata=State('store_lc_discovery_resolved_target', 'data'),
+        current_rows=State('lc_discovery_catalog_table', 'rowData'),
+    ),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_lc_discovery_search_table(catalog_store, search_metadata, current_rows):
+    """Rebuilds Search-tab chrome from session stores after in-tab navigation.
+
+    Catalogue rows stay in ``store_lc_discovery_catalog``; this callback writes
+    them back to AgGrid on remount. Aladin is remounted separately by
+    ``refresh_lc_discovery_aladin`` from the same stores. Photometry is not
+    involved.
+
+    Args:
+        catalog_store (list[dict], optional): Serialised catalogue row dicts.
+        search_metadata (dict, optional): Serialised search outcome metadata.
+        current_rows (list[dict], optional): Current AgGrid catalogue rows.
+
+    Returns:
+        dict: Restored grid, header, and object card.
+
+    Raises:
+        PreventUpdate: When the catalogue store is empty or the grid already
+            has rows (Submit already populated it).
+    """
+    if ctx.triggered_id != 'store_lc_discovery_catalog':
+        raise PreventUpdate
+    rows = catalog_store or []
+    if not rows:
+        raise PreventUpdate
+    if current_rows:
+        raise PreventUpdate
+    truncation_text, truncation_style = catalog_truncation_notice_from_store(
+        search_metadata
+    )
+    markdown = ''
+    if isinstance(search_metadata, dict):
+        markdown = search_metadata.get('resolved_markdown') or ''
+    header = catalog_results_header_from_store(search_metadata)
+    logger.info(
+        'Discovery restored catalogue chrome rows=%s',
+        len(rows),
+    )
+    return {
+        'table_data': rows,
+        'column_defs': _discovery_catalog_column_defs(
+            _mission_id_from_restored_catalog(rows)
+        ),
+        'table_header': header or no_update,
+        'truncation_text': truncation_text,
+        'truncation_style': truncation_style,
+        'object_card_markdown': markdown,
+        'object_card_style': {'display': 'block'} if markdown else {'display': 'none'},
+    }
+
+
+@callback(
+    Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
+    Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
+    Input('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_lc_discovery_tabs(user_tab_id):
+    """Re-opens the Light curve tab when this tab still has a cached working curve.
+
+    Args:
+        user_tab_id (str, optional): Browser tab id from session storage.
+
+    Returns:
+        tuple: Plot tab enabled and selected.
+
+    Raises:
+        PreventUpdate: When there is no tab id or no cached lightcurve.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    logger.info('Discovery restored Light curve tab from session cache.')
+    return False, 'lc_discovery_plot_tab'
+
+
+@callback(
+    Output('lc_discovery_period_input', 'value', allow_duplicate=True),
+    Output('lc_discovery_epoch_input', 'value', allow_duplicate=True),
+    Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
+    Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
+    Input('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_lc_discovery_curve_controls(user_tab_id):
+    """Refills Light curve tools from the session-cached ``CurveDash``.
+
+    Period, epoch, magnitude domain, and fold flag are scientific state on the
+    cached curve (updated when the user folds or toggles magnitude). Remount
+    must not leave those inputs empty while the plot restores from disk.
+
+    Args:
+        user_tab_id (str, optional): Browser tab id from session storage.
+
+    Returns:
+        tuple: Period, display epoch, magnitude switch, fold switch.
+
+    Raises:
+        PreventUpdate: When there is no tab id or no cached lightcurve.
+    """
+    if not user_tab_id:
+        raise PreventUpdate
+    if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    try:
+        lcd = CurveDash.from_serialized(
+            read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        )
+    except Exception as exc:
+        logger.warning('Discovery restore curve controls failed: %s', exc)
+        raise PreventUpdate from exc
+    period = lcd.period
+    period = None if not period else round(period, 5)
+    logger.info('Discovery restored curve controls from session cache.')
+    return (
+        period,
+        _display_epoch_value(lcd),
+        lcd.active_domain == DOMAIN_MAG,
+        bool(lcd.folded_view),
+    )
+
+
+@callback(
     Output('lc_discovery_plot_tab', 'disabled'),
     Input('lc_discovery_catalog_table', 'rowData'),
+    Input('store_lc_discovery_user_tab_id', 'data'),
 )
-def toggle_lc_discovery_plot_tab(row_data):
-    """Enables the Light curve tab once a search returns catalogue rows.
+def toggle_lc_discovery_plot_tab(row_data, user_tab_id):
+    """Enables the Light curve tab when a catalogue or a cached curve exists.
+
+    A cache hit is enough after layout remount: the working curve lives on
+    disk, not in AgGrid ``rowData``.
 
     Args:
         row_data (list[dict]): Current AgGrid catalogue rows.
+        user_tab_id (str, optional): Session cache key.
 
     Returns:
-        bool: ``True`` to keep the tab disabled when the catalogue is empty.
+        bool: ``True`` to keep the tab disabled.
     """
-    return not row_data
+    if row_data:
+        return False
+    if user_tab_id and has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        return False
+    return True
 
 
 @callback(
@@ -1397,7 +1595,7 @@ def toggle_lc_discovery_fetch_buttons(lc_key):
 @callback(
     Output('lc_discovery_replot_button', 'disabled'),
     Input('store_lc_discovery_lc_revision', 'data'),
-    State('store_lc_discovery_user_tab_id', 'data'),
+    Input('store_lc_discovery_user_tab_id', 'data'),
 )
 def toggle_lc_discovery_replot_button(_revision, user_tab_id):
     """Enables rePlot once a lightcurve is cached for this session.
@@ -1416,7 +1614,6 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
 
 @callback(
     output=dict(
-        plot_alert_style=Output('lc_discovery_plot_alert', 'style', allow_duplicate=True),
         plot_alert_message=Output('lc_discovery_plot_alert', 'children', allow_duplicate=True),
         fold_controls_style=Output('lc_discovery_fold_controls', 'style', allow_duplicate=True),
         fold_warning_style=Output('lc_discovery_fold_warning_label', 'style', allow_duplicate=True),
@@ -1427,7 +1624,6 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         mag_switch=Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
         fold_switch=Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
         fetch_alert_message=Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
-        fetch_alert_style=Output('lc_discovery_fetch_alert', 'style', allow_duplicate=True),
         plot_tab_disabled=Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
         active_tab=Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
         selected_perm=Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
@@ -1490,8 +1686,7 @@ def fetch_lc_discovery_lightcurve(
     catalog_row = catalog_row_for_lc_key(row_data, lc_key)
     if catalog_row is None:
         return dict(
-            plot_alert_style={'display': 'none'},
-            plot_alert_message='',
+            plot_alert_message=None,
             fold_controls_style={'display': 'none', 'min-height': '30px'},
             fold_warning_style={'display': 'none'},
             user_tab_id=no_update,
@@ -1500,10 +1695,10 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=message.warning_alert(
-                'Selected row is no longer in the catalogue table.'
+            fetch_alert_message=status_alert(
+                'Selected row is no longer in the catalogue table.',
+                'warning',
             ),
-            fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,
             active_tab=no_update,
             selected_perm=no_update,
@@ -1512,8 +1707,7 @@ def fetch_lc_discovery_lightcurve(
 
     if mission_id and mission_id_from_lc_key(lc_key) != mission_id:
         return dict(
-            plot_alert_style={'display': 'none'},
-            plot_alert_message='',
+            plot_alert_message=None,
             fold_controls_style={'display': 'none', 'min-height': '30px'},
             fold_warning_style={'display': 'none'},
             user_tab_id=no_update,
@@ -1522,10 +1716,10 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=message.warning_alert(
-                'Selected row does not match the current mission.'
+            fetch_alert_message=status_alert(
+                'Selected row does not match the current mission.',
+                'warning',
             ),
-            fetch_alert_style={'display': 'block'},
             plot_tab_disabled=no_update,
             active_tab=no_update,
             selected_perm=no_update,
@@ -1569,8 +1763,7 @@ def fetch_lc_discovery_lightcurve(
         logger.info("Discovery lightcurve fetch succeeded: %s", status_line)
 
         return dict(
-            plot_alert_style={'display': 'none'},
-            plot_alert_message='',
+            plot_alert_message=None,
             fold_controls_style=fold_controls_style,
             fold_warning_style=fold_warning_style,
             user_tab_id=user_tab_id,
@@ -1580,7 +1773,6 @@ def fetch_lc_discovery_lightcurve(
             mag_switch=lcd.active_domain == DOMAIN_MAG,
             fold_switch=lcd.folded_view,
             fetch_alert_message=None,
-            fetch_alert_style=_LC_DISCOVERY_ALERT_STYLE_HIDDEN,
             plot_tab_disabled=False,
             active_tab='lc_discovery_plot_tab',
             selected_perm=[],
@@ -1589,8 +1781,7 @@ def fetch_lc_discovery_lightcurve(
     except Exception as exc:
         logger.warning('lightcurve_discovery.fetch_lc_discovery_lightcurve: %s', exc)
         return dict(
-            plot_alert_style={'display': 'none'},
-            plot_alert_message='',
+            plot_alert_message=None,
             fold_controls_style={'display': 'none', 'min-height': '30px'},
             fold_warning_style={'display': 'none'},
             user_tab_id=no_update,
@@ -1599,8 +1790,7 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=message.warning_alert(exc),
-            fetch_alert_style={'display': 'block'},
+            fetch_alert_message=status_alert(str(exc), 'warning'),
             plot_tab_disabled=no_update,
             active_tab=no_update,
             selected_perm=no_update,
@@ -1633,7 +1823,7 @@ def replot_lc_discovery_lightcurve(replot_clicks, user_tab_id):
         raise PreventUpdate
     if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
         raise PreventUpdate
-    set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+    set_props('lc_discovery_plot_alert', {'children': None})
     return dict(revision=_bump_lc_revision())
 
 
@@ -1688,13 +1878,13 @@ def plot_lc_discovery_curve(_revision, time_axis_mode, user_tab_id, phase_view, 
             domain=lcd.active_domain or DOMAIN_FLUX,
             extra_tags={'phase': bool(phase_view)},
         )
-        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('lc_discovery_plot_alert', {'children': None})
         return fig
     except Exception as exc:
         logger.warning('lightcurve_discovery.plot_lc_discovery_curve: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+            {'children': status_alert(str(exc), 'warning')},
         )
         return no_update
 
@@ -1747,13 +1937,13 @@ def fold_or_recalculate_lc_discovery_phase(n_clicks, phase_view, user_tab_id, pe
         lcd.folded_view = bool(phase_view)
         lcd.recalc_phase()
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('lc_discovery_plot_alert', {'children': None})
         return _bump_lc_revision(), no_update
     except Exception as exc:
         logger.warning('lightcurve_discovery.fold_or_recalculate_lc_discovery_phase: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+            {'children': status_alert(str(exc), 'warning')},
         )
         return no_update, False
 
@@ -1790,7 +1980,7 @@ def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
 
         apply_phot_domain_view(lcd, show_magnitude)
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('lc_discovery_plot_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('lc_discovery_plot_alert', {'children': None})
         return _bump_lc_revision(), no_update
     except PreventUpdate:
         raise
@@ -1798,7 +1988,7 @@ def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
         logger.warning('lightcurve_discovery.toggle_lc_discovery_mag_view: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+            {'children': status_alert(str(exc), 'warning')},
         )
         try:
             js_lightcurve = read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
@@ -1870,8 +2060,10 @@ def delete_lc_discovery_selected_points(n_clicks, user_tab_id, selected_perm):
             set_props(
                 'lc_discovery_plot_alert',
                 {
-                    'children': message.warning_alert('Select points to delete first.'),
-                    'style': {'display': 'block'},
+                    'children': status_alert(
+                        'Select points to delete first.',
+                        'warning',
+                    ),
                 },
             )
             raise PreventUpdate
@@ -1885,7 +2077,7 @@ def delete_lc_discovery_selected_points(n_clicks, user_tab_id, selected_perm):
         if lcd.lightcurve is None or lcd.lightcurve.empty:
             raise PipeException('Cannot delete all points from the lightcurve')
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('lc_discovery_plot_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('lc_discovery_plot_alert', {'children': None})
         logger.info(
             'Discovery deleted %s selected point(s)',
             n_before - n_after,
@@ -1897,7 +2089,7 @@ def delete_lc_discovery_selected_points(n_clicks, user_tab_id, selected_perm):
         logger.warning('lightcurve_discovery.delete_lc_discovery_selected_points: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+            {'children': status_alert(str(exc), 'warning')},
         )
         raise PreventUpdate
 
@@ -1938,13 +2130,13 @@ def download_lc_discovery_lightcurve(n_clicks, user_tab_id, table_format):
         ext = export_file_extension(table_format)
         outfile = f'{outfile_base}.{ext}'
 
-        set_props('lc_discovery_plot_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('lc_discovery_plot_alert', {'children': None})
         return dcc.send_bytes(file_bstring, outfile)
     except Exception as exc:
         logger.warning('lightcurve_discovery.download_lc_discovery_lightcurve: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
-            {'children': message.warning_alert(exc), 'style': {'display': 'block'}},
+            {'children': status_alert(str(exc), 'warning')},
         )
         return no_update
 

@@ -13,7 +13,9 @@ from skvo_veb.utils.lc_discovery_search import (
     SEARCH_MODE_SIMBAD_ARCHIVE_ID,
     SEARCH_MODE_SIMBAD_CONE,
     catalog_results_header,
+    catalog_results_header_from_store,
     catalog_truncation_notice,
+    catalog_truncation_notice_from_store,
     catalog_rows_for_aggrid,
     radius_to_arcsec,
     status_no_match_asking_simbad,
@@ -295,6 +297,31 @@ def test_catalog_truncation_notice_when_truncated():
     text, style = catalog_truncation_notice(outcome)
     assert "truncated" in text
     assert style == {"display": "block"}
+
+
+def test_catalog_chrome_from_store_matches_search_outcome():
+    """Session restore rebuilds header and truncation from the metadata store."""
+    outcome = SearchOutcome(
+        catalog=empty_catalog_table(),
+        resolved_markdown="Resolved target",
+        search_mode=SEARCH_MODE_CONE,
+        centre_ra_deg=AA_AND.ra_deg,
+        centre_dec_deg=AA_AND.dec_deg,
+        user_target=AA_AND_COORDS,
+        radius_value=10.0,
+        radius_unit="arcsec",
+        catalog_may_be_truncated=True,
+        catalog_truncation_detail="Results may be truncated: example.",
+    )
+    payload = outcome.to_store_dict()
+    assert catalog_results_header_from_store(payload) == catalog_results_header(outcome)
+    assert catalog_truncation_notice_from_store(payload) == catalog_truncation_notice(
+        outcome
+    )
+    assert catalog_results_header_from_store(None) == ""
+    text, style = catalog_truncation_notice_from_store(None)
+    assert text == ""
+    assert style == {"display": "none"}
 
 
 def test_run_catalog_search_applies_optional_time_bounds():

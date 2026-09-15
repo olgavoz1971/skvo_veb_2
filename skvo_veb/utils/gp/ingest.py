@@ -9,7 +9,11 @@ logger = logging.getLogger(__name__)
 
 
 def pack_uploaded_lightcurve(decoded: bytes, filename: str) -> str:
-    """Ingest user bytes through the canonical bridge and serialise for ``dcc.Store``.
+    """Ingest user bytes through the canonical bridge and serialise for session cache.
+
+    The returned string is the opaque VOLightCurve transport JSON written by
+    the Extrema modeller page into ``lc_session_cache`` (namespace
+    ``gp_for_oc``), not a CurveDash payload.
 
     Args:
         decoded (bytes): Raw file content after base64 decode.

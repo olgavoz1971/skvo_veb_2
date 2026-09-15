@@ -610,6 +610,7 @@ from skvo_veb.utils.oc.tom_io import (
 )
 from skvo_veb.utils.gp.plot_data import (
     folding_metadata_from_transport,
+    apply_folding_metadata_to_transport,
     transport_revision_token,
     unpack_json_for_gp_plot,
 )
@@ -646,6 +647,7 @@ from skvo_veb.utils.lc_figure import (
     apply_time_xaxis_format,
     time_axis_xaxis_title,
 )
+from skvo_veb.components.message import status_alert
 from skvo_veb.components.extrema_modeller_appearance import (
     CARD_COL_WIDTH,
     MAVKA_PIECE_COLOURS,
@@ -660,6 +662,13 @@ from skvo_veb.utils.lc_interaction import (
     apply_plot_relayout_ranges_to_figure,
     plot_x_to_jd,
 )
+from skvo_veb.utils.lc_session_cache import (
+    generate_user_tab_id,
+    has_cached_lc,
+    read_serialized_lc,
+    write_serialized_lc,
+)
+from skvo_veb.utils.page_session import SESSION_STORE
 
 jd0 = PAGE_DISPLAY_EPOCH_JD
 LC_INTERVALS_HELP_MARKDOWN = LC_INTERVALS_HELP_MARKDOWN.replace(
@@ -668,6 +677,8 @@ LC_INTERVALS_HELP_MARKDOWN = LC_INTERVALS_HELP_MARKDOWN.replace(
 )
 
 logger = logging.getLogger(__name__)
+
+GP_PAGE_NAMESPACE = "gp_for_oc"
 
 _LIVE_SLOT_PROGRESS_OUTPUTS = [
     Output({"type": "gp-live-slot", "index": i}, "children")
@@ -693,6 +704,105 @@ params_float = DEFAULT_FLOAT_PARAMS
 # # Initialize diskcache for background callbacks
 # cache = diskcache.Cache("./cache")
 # background_callback_manager = DiskcacheManager(cache)
+
+
+def _bump_gp_lc_revision() -> str:
+    """Returns a new revision token to trigger prep-plot rebuilds.
+
+    Returns:
+        str: UUID string.
+    """
+    return str(uuid.uuid4())
+
+
+def _read_gp_transport_json(user_tab_id: str | None) -> str | None:
+    """Returns cached GP transport JSON, or None when missing.
+
+    Args:
+        user_tab_id (str | None): Session cache key from ``SESSION_STORE``.
+
+    Returns:
+        str | None: Opaque VOLightCurve transport JSON, or ``None``.
+    """
+    if not user_tab_id or not has_cached_lc(GP_PAGE_NAMESPACE, user_tab_id):
+        return None
+    return read_serialized_lc(GP_PAGE_NAMESPACE, user_tab_id)
+
+
+def _write_gp_transport_json(user_tab_id: str | None, transport_json: str) -> str:
+    """Writes transport JSON to the session cache; returns the tab id used.
+
+    Args:
+        user_tab_id (str | None): Existing tab id, or ``None`` to mint one.
+        transport_json (str): Opaque VOLightCurve transport JSON string.
+
+    Returns:
+        str: Tab id under which the payload was stored.
+    """
+    if user_tab_id is None:
+        user_tab_id = generate_user_tab_id()
+    write_serialized_lc(GP_PAGE_NAMESPACE, user_tab_id, transport_json)
+    return user_tab_id
+
+
+def _session_lc_filename(stored_name, upload_filename) -> str | None:
+    """Prefers the session-stored light-curve name over the live upload widget.
+
+    Args:
+        stored_name: ``store-gp-lc-filename`` value.
+        upload_filename: ``upload-lc.filename``, if any.
+
+    Returns:
+        str | None: Best available original file name.
+    """
+    if stored_name is not None and str(stored_name).strip():
+        return str(stored_name)
+    if upload_filename is not None and str(upload_filename).strip():
+        return str(upload_filename)
+    return None
+
+
+def _session_intervals_filename(stored_status, upload_filename) -> str | None:
+    """Prefers the session intervals chip name over the live upload widget.
+
+    Args:
+        stored_status: ``store-active-intervals-name`` payload.
+        upload_filename: ``upload-intervals.filename``, if any.
+
+    Returns:
+        str | None: Best available intervals file name.
+    """
+    if isinstance(stored_status, dict):
+        name = stored_status.get("name")
+        if name is not None and str(name).strip():
+            return str(name)
+    if upload_filename is not None and str(upload_filename).strip():
+        return str(upload_filename)
+    return None
+
+
+def _prep_display_switch_flags(stored) -> tuple[bool, bool]:
+    """Resolves prep Show intervals registry / Show error bars from session store.
+
+    Missing store or keys use the layout defaults: registry off, error bars
+    off. Accepts legacy ``show_intervals`` as an alias of ``show_registry``.
+
+    Args:
+        stored: ``store-gp-prep-switches`` payload.
+
+    Returns:
+        tuple: ``(show_registry, show_errorbars)``.
+    """
+    if not isinstance(stored, dict):
+        return False, False
+    show_registry = stored.get("show_registry")
+    if show_registry is None:
+        show_registry = stored.get("show_intervals")
+    show_errorbars = stored.get("show_errorbars")
+    return (
+        False if show_registry is None else bool(show_registry),
+        False if show_errorbars is None else bool(show_errorbars),
+    )
 
 
 def _gp_click_help(
@@ -1050,6 +1160,17 @@ def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
     placement="top",
     label="TIPS",
     trigger_class_name="lc-discovery-help-btn gp-prep-tips-btn",
+)
+(
+    _prep_registry_help_btn,
+    _prep_registry_help_pop,
+) = _gp_click_help(
+    "prep_registry",
+    "Show intervals registry",
+    "Opens the Selected intervals side list. Building that list (one card per "
+    "window) is costly for hundreds of intervals. Interval stripes on the prep "
+    "plot are drawn whenever intervals are loaded; this switch only controls "
+    "the registry panel.",
 )
 (
     _prep_errorbars_help_btn,
@@ -1576,6 +1697,7 @@ sidebar_lc = html.Div([
                 id="gp-quadratic-oc-fields",
                 className="gp-sidebar-btn-stack d-none",
             ),
+            html.Div(id="gp-fold-feedback", className="gp-export-feedback"),
         ],
         className="gp-sidebar-block",
     ),
@@ -1604,6 +1726,17 @@ sidebar_lc = html.Div([
                 ],
                 value="mag",
                 id="view-mode-radio",
+            ),
+            html.Div(
+                [
+                    dbc.Switch(
+                        id="gp-prep-show-registry",
+                        label="Show intervals registry",
+                        value=False,
+                    ),
+                    html.Div(_prep_registry_help_btn, className="lc-discovery-field-help"),
+                ],
+                className="gp-sidebar-switch-row",
             ),
             html.Div(
                 [
@@ -1644,6 +1777,7 @@ sidebar_lc = html.Div([
         ],
         className="gp-sidebar-block",
     ),
+    _prep_registry_help_pop,
     _prep_errorbars_help_pop,
 
     html.Hr(),
@@ -1858,7 +1992,7 @@ intervals_registry = html.Div([
 
 registry_toggle_btn = dbc.Button(
     # region unfold
-    html.I(className="bi bi-chevron-right", id="registry-toggle-icon"),
+    html.I(className="bi bi-chevron-left", id="registry-toggle-icon"),
     id="btn-toggle-registry",
     color="light",
     size="sm",
@@ -3048,9 +3182,13 @@ def layout():
         *[ _accordion_help_modal(spec) for spec in _ACCORDION_HELP_SPECS ],
         _accordion_help_proxies(),
 
-        dcc.Store(id='store-lc-data'),
+        dcc.Store(id='store-gp-user-tab-id', **SESSION_STORE),
+        dcc.Store(id='store-gp-lc-revision', **SESSION_STORE),
+        dcc.Store(id='store-gp-lc-filename', **SESSION_STORE),
+        dcc.Store(id='store-gp-view-mode', **SESSION_STORE),
+        dcc.Store(id='store-gp-prep-switches', **SESSION_STORE),
         dcc.Store(id='store-gp-prep-working-window', data=WORKING_WINDOW_DISABLED),
-        dcc.Store(id='store-intervals-data'),
+        dcc.Store(id='store-intervals-data', **SESSION_STORE),
         dcc.Store(id='store-gp-interval-pick-bands'),
         dcc.Store(id='store-gp-intervals-marked', data=[]),
         dcc.Store(id='store-gp-prep-mark-selection'),
@@ -3060,7 +3198,7 @@ def layout():
         dcc.Store(id='store-gp-prep-render-token', data=''),
         dcc.Store(id='store-gp-trend-click'),
         dcc.Store(id='store-gp-trend-line'),
-        dcc.Store(id='store-active-intervals-name'),
+        dcc.Store(id='store-active-intervals-name', **SESSION_STORE),
         dcc.Store(id='scale-calc-trigger', data=0),  # Incremented by Guess parameters only
 
         # --- 2. GLOBAL DATA HUB
@@ -3107,7 +3245,7 @@ def layout():
                                     dbc.Collapse(
                                         intervals_registry,
                                         id="registry-collapse",
-                                        is_open=True,
+                                        is_open=False,
                                         dimension="width",
                                         className="gp-registry-collapse",
                                     )
@@ -3225,23 +3363,7 @@ def toggle_accordion_help_modal(n_open, n_close, is_open):
     return is_open
 
 
-# --- Open/Close registry
-@callback(
-    # region unfold
-    Output("registry-collapse", "is_open"),
-    Output("registry-toggle-icon", "className"),
-    Input("btn-toggle-registry", "n_clicks"),
-    State("registry-collapse", "is_open"),
-    prevent_initial_call=True
-    # endregion
-)
-def toggle_registry(n_clicks, is_open):
-    if is_open:
-        # Closing: return is_open=False and the Left arrow icon
-        return False, "bi bi-chevron-left"
-    else:
-        # Opening: return is_open=True and the Right arrow icon
-        return True, "bi bi-chevron-right"
+# --- Open/Close registry is owned by render_registry (open only with content ready)
 
 
 @callback(
@@ -3294,7 +3416,8 @@ def toggle_parabola_legend(n_clicks, is_open):
     Output('store-gp-interval-pick-bands', 'data'),
     Output('store-gp-intervals-marked', 'data'),
     Output('store-gp-prep-render-token', 'data'),
-    Input('store-lc-data', 'data'),
+    Input('store-gp-lc-revision', 'data'),
+    Input('store-gp-user-tab-id', 'data'),
     Input('store-intervals-data', 'data'),
     Input('folding-switch', 'value'),
     Input('view-mode-radio', 'value'),
@@ -3314,7 +3437,8 @@ def toggle_parabola_legend(n_clicks, is_open):
     # endregion
 )
 def update_prep_graph(
-    lc_json_string,
+    _revision,
+    user_tab_id,
     intervals_data,
     folding_on,
     view_mode,
@@ -3333,6 +3457,7 @@ def update_prep_graph(
     # Bumped on every replot so the clientside binders can rebind their Plotly
     # listeners without being handed the figure itself.
     render_token = uuid.uuid4().hex[:8]
+    lc_json_string = _read_gp_transport_json(user_tab_id)
 
     if not lc_json_string:
         return (
@@ -3704,15 +3829,15 @@ def gate_restore_full_lightcurve(working_window_store):
     Output("gp-prep-working-window-status", "children"),
     Input("store-gp-prep-working-window", "data"),
     Input("gp_time_axis_switch", "value"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
 )
-def describe_working_window(working_window_store, time_axis_mode, lc_json_string):
+def describe_working_window(working_window_store, time_axis_mode, user_tab_id):
     """Shows whether prep uses the full light curve or a working JD window.
 
     Args:
         working_window_store: Working range store payload.
         time_axis_mode: Active prep plot time axis.
-        lc_json_string: Full light curve transport JSON.
+        user_tab_id: Session cache key for the working light curve.
 
     Returns:
         str: Sentence-case status for the sidebar.
@@ -3721,6 +3846,7 @@ def describe_working_window(working_window_store, time_axis_mode, lc_json_string
     if window is None:
         return "Full light curve (zoom changes the view only)."
     timescale = None
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if lc_json_string:
         try:
             import json as _json
@@ -3746,7 +3872,7 @@ def describe_working_window(working_window_store, time_axis_mode, lc_json_string
     State("prep-graph", "relayoutData"),
     State("gp_time_axis_switch", "value"),
     State("folding-switch", "value"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     prevent_initial_call=True,
 )
 def apply_visible_range_as_working_window(
@@ -3754,7 +3880,7 @@ def apply_visible_range_as_working_window(
     relayout_data,
     time_axis_mode,
     folding_on,
-    lc_json_string,
+    user_tab_id,
 ):
     """Sets the prep working window from the current plot zoom.
 
@@ -3763,22 +3889,19 @@ def apply_visible_range_as_working_window(
         relayout_data: Latest prep graph relayout payload.
         time_axis_mode: Active time axis mode.
         folding_on: Phase folding checklist value.
-        lc_json_string: Full light curve transport JSON.
+        user_tab_id: Session cache key for the working light curve.
 
     Returns:
         tuple: Updated working window store and optional feedback alert.
     """
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if not n_clicks or not lc_json_string:
         return dash.no_update, dash.no_update
 
     if gp_checklist_switch_is_on(folding_on):
         return (
             dash.no_update,
-            dbc.Alert(
-                "Unfold the light curve before setting a working range from zoom.",
-                color="warning",
-                className="py-2 small mb-0",
-            ),
+            status_alert("Unfold the light curve before setting a working range from zoom.", "warning"),
         )
 
     try:
@@ -3790,24 +3913,12 @@ def apply_visible_range_as_working_window(
         )
         store_payload = build_working_window_store(jd_min, jd_max, lc_json_string)
     except PipeException as exc:
-        return dash.no_update, dbc.Alert(
-            str(exc),
-            color="warning",
-            className="py-2 small mb-0",
-        )
+        return dash.no_update, status_alert(str(exc), "warning")
 
     if store_payload.get("enabled"):
-        message = dbc.Alert(
-            "Prep plot and folding now use this time range only.",
-            color="success",
-            className="py-2 small mb-0",
-        )
+        message = status_alert("Prep plot and folding now use this time range only.", "success")
     else:
-        message = dbc.Alert(
-            "Visible range covers the full light curve; working range cleared.",
-            color="info",
-            className="py-2 small mb-0",
-        )
+        message = status_alert("Visible range covers the full light curve; working range cleared.", "info")
     return store_payload, message
 
 
@@ -3830,11 +3941,7 @@ def restore_full_lightcurve_working_window(n_clicks):
         return dash.no_update, dash.no_update
     return (
         WORKING_WINDOW_DISABLED,
-        dbc.Alert(
-            "Full light curve restored for prep and folding.",
-            color="success",
-            className="py-2 small mb-0",
-        ),
+        status_alert("Full light curve restored for prep and folding.", "success"),
     )
 
 
@@ -3928,11 +4035,12 @@ def commit_remove_marked_intervals(n_clicks, intervals, marked):
     Output("store-intervals-data", "data", allow_duplicate=True),
     Input("btn-remove-empty-intervals", "n_clicks"),
     State("store-intervals-data", "data"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     prevent_initial_call=True,
 )
-def commit_remove_empty_intervals(n_clicks, intervals, lc_json_string):
+def commit_remove_empty_intervals(n_clicks, intervals, user_tab_id):
     """Drops all point-free intervals in one store update (one prep replot)."""
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if not n_clicks or not intervals or not lc_json_string:
         raise PreventUpdate
     drop = empty_interval_indices(intervals, lc_json_string)
@@ -3961,6 +4069,41 @@ def toggle_quadratic_oc_fields(fold_ephemeris_mode):
 
 
 @callback(
+    Output("folding-switch", "value", allow_duplicate=True),
+    Output("gp-fold-feedback", "children"),
+    Input("folding-switch", "value"),
+    State("input-period", "value"),
+    prevent_initial_call=True,
+)
+def reject_fold_without_period(folding_on, period):
+    """Blocks Fold when period is missing or not positive; restores the switch.
+
+    The prep plot only enters phase view when ``period > 0``. Without this
+    guard the Fold switch can sit on while the curve stays unfolded.
+
+    Args:
+        folding_on: ``folding-switch`` checklist value.
+        period: Sidebar period in days, or empty.
+
+    Returns:
+        tuple: Cleared Fold checklist and a warning alert, or ``no_update`` /
+        cleared feedback when Fold is off or period is valid.
+    """
+    if not gp_checklist_switch_is_on(folding_on):
+        return no_update, None
+    try:
+        period_d = float(period) if period is not None and period != "" else None
+    except (TypeError, ValueError):
+        period_d = None
+    if period_d is not None and period_d > 0:
+        return no_update, None
+    return (
+        [],
+        status_alert("Set a positive period (days) before folding.", "warning"),
+    )
+
+
+@callback(
     Output("gp-interval-mark-mode", "value"),
     Output("gp-interval-mark-mode", "options"),
     Output("gp-prep-trend-mode", "value"),
@@ -3985,12 +4128,12 @@ def disable_prep_interaction_modes_when_folded(folding_on):
 
 
 @callback(
-    Output("store-lc-data", "data", allow_duplicate=True),
+    Output("store-gp-lc-revision", "data", allow_duplicate=True),
     Output("gp-trend-feedback", "children"),
     Output("store-gp-trend-line", "data", allow_duplicate=True),
     Output("gp-prep-trend-mode", "value", allow_duplicate=True),
     Input("btn-apply-prep-trend", "n_clicks"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     State("store-gp-trend-line", "data"),
     State("view-mode-radio", "value"),
     State("gp_time_axis_switch", "value"),
@@ -4000,35 +4143,28 @@ def disable_prep_interaction_modes_when_folded(folding_on):
 )
 def commit_prep_linear_detrend(
     n_clicks,
-    lc_json_string,
+    user_tab_id,
     trend_line,
     view_mode,
     time_axis_mode,
     folding_on,
     working_window_store,
 ):
-    """Applies the user trend line to the stored light curve."""
+    """Applies the user trend line to the cached working light curve."""
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if not n_clicks or not lc_json_string:
         raise PreventUpdate
     if gp_checklist_switch_is_on(folding_on):
         return (
             no_update,
-            dbc.Alert(
-                "Trend removal is only available on the unfolded light curve.",
-                color="warning",
-                className="py-2 small mb-0",
-            ),
+            status_alert("Trend removal is only available on the unfolded light curve.", "warning"),
             no_update,
             no_update,
         )
     if not trend_line or not trend_line.get("ready"):
         return (
             no_update,
-            dbc.Alert(
-                "Click the prep plot once to place a trend line, then Apply.",
-                color="warning",
-                className="py-2 small mb-0",
-            ),
+            status_alert("Click the prep plot once to place a trend line, then Apply.", "warning"),
             no_update,
             no_update,
         )
@@ -4044,10 +4180,11 @@ def commit_prep_linear_detrend(
             display_epoch=jd0,
             jd_bounds=jd_bounds,
         )
+        _write_gp_transport_json(user_tab_id, updated)
     except PipeException as exc:
         return (
             no_update,
-            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+            status_alert(str(exc), "warning"),
             no_update,
             no_update,
         )
@@ -4055,22 +4192,17 @@ def commit_prep_linear_detrend(
         logger.exception("Prep trend removal failed")
         return (
             no_update,
-            dbc.Alert(
-                f"Could not apply trend removal: {exc}",
-                color="danger",
-                className="py-2 small mb-0",
-            ),
+            status_alert(f"Could not apply trend removal: {exc}", "danger"),
             no_update,
             no_update,
         )
     return (
-        updated,
-        dbc.Alert(
+        _bump_gp_lc_revision(),
+        status_alert(
             "Trend removed from the working range."
             if jd_bounds
             else "Trend removed from the working light curve.",
-            color="success",
-            className="py-2 small mb-0",
+            "success",
         ),
         None,
         [],
@@ -4080,7 +4212,10 @@ def commit_prep_linear_detrend(
 # ------ Lightcurve ----
 
 @callback(
-    Output('store-lc-data', 'data'),
+    Output('store-gp-user-tab-id', 'data'),
+    Output('store-gp-lc-revision', 'data'),
+    Output('store-gp-lc-filename', 'data'),
+    Output('store-gp-view-mode', 'data'),
     Output('upload-lc-text', 'children'),
     Output({"type": "gp-upload-detail", "index": "lc"}, 'children'),
     Output('input-period', 'value'),
@@ -4093,41 +4228,51 @@ def commit_prep_linear_detrend(
     Input('upload-lc', 'contents'),
     State('upload-lc', 'filename'),
     State("main-workflow-accordion", "active_item"),
+    State('store-gp-user-tab-id', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def upload_lc(contents, filename, accordion_active):
+def upload_lc(contents, filename, accordion_active, user_tab_id):
     """Ingests a light-curve file and opens Lightcurve and intervals on success.
 
     Args:
         contents: ``dcc.Upload`` file payload.
         filename: Original upload filename.
         accordion_active: Current workflow accordion ``active_item``.
+        user_tab_id: Existing session cache key, if any.
 
     Returns:
-        tuple: Store, upload chip, folding fields, working-window reset, and
-        accordion open set. Failures leave the accordion unchanged.
+        tuple: Tab id, revision, LC filename, view mode, upload chip, folding
+        fields, working-window reset, and accordion open set. Failures leave
+        the accordion unchanged.
     """
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 10
+        return (dash.no_update,) * 13
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
 
         lc_json_string = pack_uploaded_lightcurve(decoded, filename)
+        tab_id = _write_gp_transport_json(user_tab_id, lc_json_string)
+        revision = _bump_gp_lc_revision()
         period, epoch_abs, active_domain = folding_metadata_from_transport(lc_json_string)
         epoch_display = (
             display_epoch_offset(epoch_abs, jd0) if epoch_abs is not None else None
         )
+        source_name = filename or "uploaded"
+        view_mode = active_domain if active_domain in ("mag", "flux") else "mag"
 
         return (
-            lc_json_string,
-            _gp_upload_status(filename, tone="ok"),
+            tab_id,
+            revision,
+            source_name,
+            view_mode,
+            _gp_upload_status(source_name, tone="ok"),
             None,
             period,
             epoch_display,
-            active_domain,
+            view_mode,
             WORKING_WINDOW_DISABLED,
             None,
             None,
@@ -4139,6 +4284,9 @@ def upload_lc(contents, filename, accordion_active):
         logger.error(traceback.format_exc())
 
         return (
+            dash.no_update,
+            dash.no_update,
+            dash.no_update,
             dash.no_update,
             _gp_upload_status(filename, tone="error"),
             _gp_upload_failure_detail(
@@ -4153,6 +4301,201 @@ def upload_lc(contents, filename, accordion_active):
             dash.no_update,
             dash.no_update,
         )
+
+
+@callback(
+    Output('upload-lc-text', 'children', allow_duplicate=True),
+    Input('store-gp-lc-filename', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_gp_lc_filename_chip(stored_name):
+    """Refills the light-curve upload chip from session storage.
+
+    Args:
+        stored_name (str, optional): Original upload file name.
+
+    Returns:
+        dash component: File-name chip.
+
+    Raises:
+        PreventUpdate: When no filename is stored.
+    """
+    if not stored_name or not str(stored_name).strip():
+        raise PreventUpdate
+    logger.info('GP restored light-curve filename chip from session store.')
+    return _gp_upload_status(str(stored_name), tone='ok')
+
+
+@callback(
+    Output('input-period', 'value', allow_duplicate=True),
+    Output('input-epoch', 'value', allow_duplicate=True),
+    Output('view-mode-radio', 'value', allow_duplicate=True),
+    Input('store-gp-user-tab-id', 'data'),
+    State('store-gp-view-mode', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_gp_folding_controls(user_tab_id, stored_view_mode):
+    """Refills P / Epoch from transport meta and Mag/Flux from session chrome.
+
+    Args:
+        user_tab_id (str, optional): Browser tab id from session storage.
+        stored_view_mode (str, optional): Last Mag/Flux radio value.
+
+    Returns:
+        tuple: Period, display epoch, and view-mode radio value.
+
+    Raises:
+        PreventUpdate: When there is no tab id or no cached light curve.
+    """
+    lc_json_string = _read_gp_transport_json(user_tab_id)
+    if not lc_json_string:
+        raise PreventUpdate
+    try:
+        period, epoch_abs, active_domain = folding_metadata_from_transport(
+            lc_json_string
+        )
+    except Exception as exc:
+        logger.warning('GP restore folding controls failed: %s', exc)
+        raise PreventUpdate from exc
+    epoch_display = (
+        display_epoch_offset(epoch_abs, jd0) if epoch_abs is not None else None
+    )
+    if stored_view_mode in ('mag', 'flux'):
+        view_mode = stored_view_mode
+    else:
+        view_mode = active_domain if active_domain in ('mag', 'flux') else 'mag'
+    logger.info('GP restored folding controls from transport meta.')
+    return period, epoch_display, view_mode
+
+
+@callback(
+    Output('store-gp-lc-revision', 'data', allow_duplicate=True),
+    Input('input-period', 'value'),
+    Input('input-epoch', 'value'),
+    State('store-gp-user-tab-id', 'data'),
+    prevent_initial_call=True,
+)
+def sync_gp_ephemeris_to_cache(period, epoch, user_tab_id):
+    """Writes prep period and epoch through to transport ``meta``.
+
+    Remount restore reads these fields from the session cache, so typed values
+    must not live only in the form widgets. Mag/Flux stays in
+    ``store-gp-view-mode`` so native ``active_domain`` is not overwritten.
+
+    Args:
+        period: Sidebar period in days, or empty.
+        epoch: Sidebar epoch as display MJD, or empty.
+        user_tab_id: Session cache key.
+
+    Returns:
+        Any: ``dash.no_update`` (cache write only).
+
+    Raises:
+        PreventUpdate: When there is no cache or values are unchanged.
+    """
+    lc_json_string = _read_gp_transport_json(user_tab_id)
+    if not lc_json_string:
+        raise PreventUpdate
+    try:
+        updated, changed = apply_folding_metadata_to_transport(
+            lc_json_string,
+            period,
+            epoch,
+            display_epoch=jd0,
+        )
+        if not changed:
+            raise PreventUpdate
+        _write_gp_transport_json(user_tab_id, updated)
+        logger.debug(
+            'GP wrote ephemeris to session cache (P=%s, epoch=%s)',
+            period,
+            epoch,
+        )
+        return no_update
+    except PreventUpdate:
+        raise
+    except Exception as exc:
+        logger.warning('GP ephemeris write-through failed: %s', exc)
+        raise PreventUpdate from exc
+
+
+@callback(
+    Output('store-gp-view-mode', 'data', allow_duplicate=True),
+    Input('view-mode-radio', 'value'),
+    State('store-gp-user-tab-id', 'data'),
+    prevent_initial_call=True,
+)
+def snapshot_gp_view_mode(view_mode, user_tab_id):
+    """Persists the Mag/Flux prep radio in session storage.
+
+    Args:
+        view_mode: ``mag`` or ``flux``.
+        user_tab_id: Session cache key.
+
+    Returns:
+        str: View mode to store.
+
+    Raises:
+        PreventUpdate: When no curve is loaded or the value is empty.
+    """
+    if not user_tab_id or view_mode not in ('mag', 'flux'):
+        raise PreventUpdate
+    if not has_cached_lc(GP_PAGE_NAMESPACE, user_tab_id):
+        raise PreventUpdate
+    return view_mode
+
+
+@callback(
+    Output('store-gp-prep-switches', 'data'),
+    Input('gp-prep-show-registry', 'value'),
+    Input('gp-prep-show-errorbars', 'value'),
+    prevent_initial_call=True,
+)
+def snapshot_gp_prep_switches(show_registry, show_errorbars):
+    """Persists prep registry / error-bar switches in session storage.
+
+    Args:
+        show_registry: Selected intervals registry switch.
+        show_errorbars: Error-bar switch.
+
+    Returns:
+        dict: ``{"show_registry": bool, "show_errorbars": bool}``.
+    """
+    return {
+        "show_registry": bool(show_registry),
+        "show_errorbars": bool(show_errorbars),
+    }
+
+
+@callback(
+    Output('gp-prep-show-registry', 'value', allow_duplicate=True),
+    Output('gp-prep-show-errorbars', 'value', allow_duplicate=True),
+    Input('store-gp-prep-switches', 'data'),
+    prevent_initial_call='initial_duplicate',
+)
+def restore_gp_prep_switches(stored):
+    """Refills the prep display switches from session storage.
+
+    Args:
+        stored (dict, optional): ``store-gp-prep-switches`` payload.
+
+    Returns:
+        tuple: Show-registry and show-errorbars values.
+
+    Raises:
+        PreventUpdate: When the store is empty.
+    """
+    if not isinstance(stored, dict) or not stored:
+        raise PreventUpdate
+    show_registry, show_errorbars = _prep_display_switch_flags(stored)
+    if (
+        stored.get("show_registry") is None
+        and stored.get("show_intervals") is None
+        and stored.get("show_errorbars") is None
+    ):
+        raise PreventUpdate
+    logger.info('GP restored prep display switches from session store.')
+    return show_registry, show_errorbars
 
 
 @callback(
@@ -4356,12 +4699,13 @@ def clear_all_intervals(n_clicks):
     Output({'type': 'float-input', 'index': 'length_scale_max'}, 'value', allow_duplicate=True),
     Input('scale-calc-trigger', 'data'),
     State('store-intervals-data', 'data'),
-    State('store-lc-data', 'data'),
+    State('store-gp-user-tab-id', 'data'),
     prevent_initial_call=True
     # endregion
 )
-def update_GP_scale(trigger_clicks, intervals, lc_json_string):
+def update_GP_scale(trigger_clicks, intervals, user_tab_id):
     """Fills length-scale bounds from data when the user clicks Guess parameters."""
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if not trigger_clicks or not lc_json_string or not intervals:
         return dash.no_update, dash.no_update, dash.no_update
 
@@ -4396,7 +4740,7 @@ def update_GP_scale(trigger_clicks, intervals, lc_json_string):
     State('input-period', 'value'),  # we bring phase interval into jd-space
     State('input-epoch', 'value'),
     State('gp_time_axis_switch', 'value'),
-    State('store-lc-data', 'data'),  # We need this to get JD span
+    State('store-gp-user-tab-id', 'data'),
     State('store-gp-prep-working-window', 'data'),
     State('gp-fold-ephemeris-mode', 'value'),
     State('input-oc-a', 'value'),
@@ -4414,7 +4758,7 @@ def add_selection_to_registry(
     period,
     epoch,
     time_axis_mode,
-    lc_json,
+    user_tab_id,
     working_window_store,
     fold_ephemeris_mode,
     oc_a,
@@ -4429,13 +4773,10 @@ def add_selection_to_registry(
         return (
             dash.no_update,
             dash.no_update,
-            dbc.Alert(
-                "Turn off Remove trend before adding intervals from a box selection.",
-                color="warning",
-                className="py-2 small mb-0",
-            ),
+            status_alert("Turn off Remove trend before adding intervals from a box selection.", "warning"),
         )
 
+    lc_json = _read_gp_transport_json(user_tab_id)
     x_min, x_max = selected_data['range']['x']
     updated_list = list(current_intervals or [])
 
@@ -4499,7 +4840,7 @@ def add_selection_to_registry(
         return (
             dash.no_update,
             dash.no_update,
-            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -4548,20 +4889,29 @@ def add_selection_to_registry(
 
 
 # ------- interval registry stuff ----
-@callback(
-    Output('registry-list-container', 'children'),
-    Input('store-intervals-data', 'data'),
-    Input('gp_time_axis_switch', 'value'),
-    Input('store-gp-prep-working-window', 'data'),
-    State('store-lc-data', 'data'),
-)
-def render_registry(intervals, time_axis_mode, working_window_store, lc_json_string):
-    """Renders interval cards using the same time axis as the prep plot."""
+def _build_interval_registry_children(
+    intervals,
+    time_axis_mode,
+    working_window_store,
+    user_tab_id,
+):
+    """Builds Selected intervals cards (or an empty-state message).
+
+    Args:
+        intervals: Interval registry rows.
+        time_axis_mode: Prep time-axis mode.
+        working_window_store: Working-range store payload.
+        user_tab_id: Session cache key for timescale metadata.
+
+    Returns:
+        list or component: Registry body children.
+    """
     if not intervals:
         return html.P("No intervals selected.", className="text-muted small italic")
 
     axis_mode = time_axis_mode or TIME_AXIS_MJD
     timescale = None
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if lc_json_string:
         try:
             import json as _json
@@ -4617,6 +4967,78 @@ def render_registry(intervals, time_axis_mode, working_window_store, lc_json_str
             ], className="shadow-sm")
         )
     return cards
+
+
+@callback(
+    Output('registry-list-container', 'children'),
+    Output('registry-collapse', 'is_open'),
+    Output('registry-toggle-icon', 'className'),
+    Input('store-intervals-data', 'data'),
+    Input('gp_time_axis_switch', 'value'),
+    Input('store-gp-prep-working-window', 'data'),
+    Input('store-gp-prep-switches', 'data'),
+    Input('btn-toggle-registry', 'n_clicks'),
+    State('store-gp-user-tab-id', 'data'),
+    State('registry-collapse', 'is_open'),
+)
+def render_registry(
+    intervals,
+    time_axis_mode,
+    working_window_store,
+    prep_switches,
+    _n_clicks,
+    user_tab_id,
+    is_open,
+):
+    """Builds registry cards and opens the panel only when content is ready.
+
+    Turning Show intervals registry on waits for the card list, then opens the
+    collapse in the same response so the empty shell never flashes. The chevron
+    only toggles visibility and keeps existing children mounted.
+
+    Args:
+        intervals: Interval registry rows.
+        time_axis_mode: Prep time-axis mode.
+        working_window_store: Working-range store payload.
+        prep_switches: ``store-gp-prep-switches`` payload.
+        _n_clicks: Registry chevron clicks.
+        user_tab_id: Session cache key for timescale metadata.
+        is_open (bool): Current collapse state.
+
+    Returns:
+        tuple: ``(children, is_open, icon_class_name)``.
+
+    Raises:
+        PreventUpdate: Chevron click while the registry switch is off.
+    """
+    show_registry, _ = _prep_display_switch_flags(prep_switches)
+    triggered = callback_context.triggered_id
+
+    if not show_registry:
+        if triggered == 'btn-toggle-registry':
+            raise PreventUpdate
+        return (
+            html.P(
+                "Turn on Show intervals registry to list registered windows.",
+                className="text-muted small italic",
+            ),
+            False,
+            "bi bi-chevron-left",
+        )
+
+    if triggered == 'btn-toggle-registry':
+        if is_open:
+            return no_update, False, "bi bi-chevron-left"
+        return no_update, True, "bi bi-chevron-right"
+
+    body = _build_interval_registry_children(
+        intervals,
+        time_axis_mode,
+        working_window_store,
+        user_tab_id,
+    )
+    # Content and open state travel together (switch on, remount, data refresh).
+    return body, True, "bi bi-chevron-right"
 
 
 # --------  Delete individual interval ----------
@@ -4763,7 +5185,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     Output('gp-review-page-label', 'children'),
     Output("oc-export-filename", "value", allow_duplicate=True),
     Input('run-btn', 'n_clicks'),
-    State('store-lc-data', 'data'),
+    State('store-gp-user-tab-id', 'data'),
     State('store-intervals-data', 'data'),
     State('guess-sigma', 'value'),
     State('extrema-mode', 'value'),
@@ -4771,6 +5193,7 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     State({'type': 'float-input', 'index': ALL}, 'id'),  # Get the IDs
     State({'type': 'float-input', 'index': ALL}, 'value'),  # Get the values
     State("gp-max-half-width", "value"),
+    State("store-gp-lc-filename", "data"),
     State("upload-lc", "filename"),
     State("oc-tom-source", "value"),
     background=True,
@@ -4787,8 +5210,8 @@ def create_interval_card(content, badges=None, is_fail=False, checkbox_id=None):
     prevent_initial_call=True
     # endregion
 )
-def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extrema_mode, kernel_type, ids,
-           float_values, max_half_width_raw, lc_filename, oc_source):
+def run_gp(set_progress, n_clicks, user_tab_id, intervals, guess_sigma, extrema_mode, kernel_type, ids,
+           float_values, max_half_width_raw, stored_lc_name, upload_filename, oc_source):
     def _push_live(stored_entries: list, total_work: int) -> None:
         done = len(stored_entries)
         visible_page = live_visible_page_for_done_count(done)
@@ -4800,19 +5223,17 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
     set_progress((live_progress_label(0, 0), *empty_slots, "WAITING"))
     clear_gp_batch_stop()
     logger.debug("run_gp started")
+    lc_filename = _session_lc_filename(stored_lc_name, upload_filename)
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     try:
         p = build_gp_float_params(ids, float_values)
     except ValueError as exc:
-        error_alert = dbc.Alert(
-            str(exc), color="warning", className="py-2 small mb-0"
-        )
+        error_alert = status_alert(str(exc), "warning")
         return error_alert, "FINISHED", None, "", no_update
     try:
         max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
     except ValueError as exc:
-        error_alert = dbc.Alert(
-            str(exc), color="warning", className="py-2 small mb-0"
-        )
+        error_alert = status_alert(str(exc), "warning")
         return error_alert, "FINISHED", None, "", no_update
     # Add a standalone guess_sigma
     p['guess_sigma'] = guess_sigma
@@ -4822,9 +5243,9 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
 
     # 1. Validation: Ensure files are loaded
     if not lc_json_string or not intervals:
-        error_alert = dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
+        error_alert = status_alert("Please upload both lightcurve and intervals files.", "warning")
         return error_alert, "FINISHED", None, "", no_update
-        # return dbc.Alert("Please upload both lightcurve and intervals files.", color="warning")
+        # return status_alert("Please upload both lightcurve and intervals files.", "warning")
     # di = json.loads(lc_json_string)
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
@@ -4952,7 +5373,7 @@ def run_gp(set_progress, n_clicks, lc_json_string, intervals, guess_sigma, extre
             else "No fits to review."
         )
         return (
-            dbc.Alert(msg, color="warning"),
+            status_alert(msg, "warning"),
             "FINISHED_STOPPED" if stopped_early else "FINISHED",
             None,
             "",
@@ -5006,31 +5427,41 @@ def guess_gp_parameters(n_clicks, ids, current_trigger):
 
 @callback(
     Output('export-intervals-filename', 'value'),
+    Input('store-active-intervals-name', 'data'),
+    Input('store-gp-lc-filename', 'data'),
     Input('upload-intervals', 'filename'),
     Input('upload-lc', 'filename'),
-    prevent_initial_call=True,
+    prevent_initial_call='initial_duplicate',
 )
-def update_intervals_output_filename(intervals_filename, lc_filename):
+def update_intervals_output_filename(
+    intervals_status, lc_stored_name, intervals_filename, lc_filename
+):
     """Default interval export stem: ``{name}_int`` from intervals or light curve.
 
     Args:
-        intervals_filename: Uploaded intervals filename, if any.
-        lc_filename: Uploaded light-curve filename, if any.
+        intervals_status: Session intervals chip payload.
+        lc_stored_name: Session light-curve filename.
+        intervals_filename: Live intervals upload filename, if any.
+        lc_filename: Live light-curve upload filename, if any.
 
     Returns:
         str: Stem that always ends with ``_int`` before the download adds ``.dat``.
     """
-    source = intervals_filename or lc_filename
+    source = _session_intervals_filename(
+        intervals_status, intervals_filename
+    ) or _session_lc_filename(lc_stored_name, lc_filename)
     return gp_suggested_intervals_stem(source)
 
 
 @callback(
     Output("export-lc-filename", "value"),
+    Input("store-gp-lc-filename", "data"),
     Input("upload-lc", "filename"),
-    prevent_initial_call=True,
+    prevent_initial_call="initial_duplicate",
 )
-def update_lc_export_default_filename(filename):
+def update_lc_export_default_filename(stored_name, upload_filename):
     """Default light curve export stem from the uploaded file name."""
+    filename = _session_lc_filename(stored_name, upload_filename)
     if filename:
         return suggested_lc_export_stem(filename)
     return "gp_lightcurve"
@@ -5038,20 +5469,22 @@ def update_lc_export_default_filename(filename):
 
 @callback(
     Output("btn-download-lc", "disabled"),
-    Input("store-lc-data", "data"),
+    Input("store-gp-lc-revision", "data"),
+    Input("store-gp-user-tab-id", "data"),
 )
-def gate_lc_export_button(lc_json_string):
-    """Light curve export is available whenever prep data is loaded."""
-    return not lc_json_string
+def gate_lc_export_button(_revision, user_tab_id):
+    """Light curve export is available whenever prep data is cached."""
+    return not (user_tab_id and has_cached_lc(GP_PAGE_NAMESPACE, user_tab_id))
 
 
 @callback(
     Output("download-lc-file", "data"),
     Output("gp-lc-export-feedback", "children"),
     Input("btn-download-lc", "n_clicks"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     State("gp-lc-export-format", "value"),
     State("export-lc-filename", "value"),
+    State("store-gp-lc-filename", "data"),
     State("upload-lc", "filename"),
     State("store-gp-prep-working-window", "data"),
     State("input-period", "value"),
@@ -5060,18 +5493,21 @@ def gate_lc_export_button(lc_json_string):
 )
 def download_gp_prep_lightcurve(
     n_clicks,
-    lc_json_string,
+    user_tab_id,
     table_format,
     filename_stem,
+    stored_lc_name,
     upload_filename,
     working_window_store,
     period,
     epoch,
 ):
-    """Exports the stored prep light curve (including manual detrend) via lc_bridge."""
+    """Exports the cached prep light curve (including manual detrend) via lc_bridge."""
+    lc_json_string = _read_gp_transport_json(user_tab_id)
     if not n_clicks or not lc_json_string:
         raise PreventUpdate
     fmt = table_format or DEFAULT_EXPORT_FORMAT
+    upload_filename = _session_lc_filename(stored_lc_name, upload_filename)
     try:
         export_json = transport_json_for_prep_export(
             lc_json_string,
@@ -5092,29 +5528,24 @@ def download_gp_prep_lightcurve(
         return dcc.send_bytes(file_bytes, outfile), None
     except PipeException as exc:
         logger.warning("GP light curve export failed: %s", exc)
-        return no_update, dbc.Alert(
-            str(exc),
-            color="warning",
-            className="py-2 small mb-0",
-        )
+        return no_update, status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("GP light curve export failed")
-        return no_update, dbc.Alert(
-            f"Could not export light curve: {exc}",
-            color="danger",
-            className="py-2 small mb-0",
-        )
+        return no_update, status_alert(f"Could not export light curve: {exc}", "danger")
 
 
 # Build GP output filename
 @callback(
     Output('export-filename', 'value'),
+    Input('store-gp-lc-filename', 'data'),
     Input('upload-lc', 'filename'),
-    prevent_initial_call=True
+    prevent_initial_call='initial_duplicate',
 )
-def update_default_filename(filename):
+def update_default_filename(stored_name, upload_filename):
     """Default GP timing export stem: ``{lightcurve}_gp``."""
-    return gp_suggested_timing_stem(filename)
+    return gp_suggested_timing_stem(
+        _session_lc_filename(stored_name, upload_filename)
+    )
 
 
 @callback(
@@ -5361,12 +5792,13 @@ def update_mavka_status_ui(run_clicks, stop_clicks, signal_status):
     Output("mavka-review-page-label", "children"),
     Output("oc-export-filename", "value", allow_duplicate=True),
     Input("mavka-run-btn", "n_clicks"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     State("store-intervals-data", "data"),
     State("view-mode-radio", "value"),
     State("mavka-extrema-mode", "value"),
     State("mavka-method", "value"),
     State("mavka-max-half-width", "value"),
+    State("store-gp-lc-filename", "data"),
     State("upload-lc", "filename"),
     State("oc-tom-source", "value"),
     background=True,
@@ -5384,13 +5816,14 @@ def update_mavka_status_ui(run_clicks, stop_clicks, signal_status):
 def run_mavka(
     set_progress,
     n_clicks,
-    lc_json_string,
+    user_tab_id,
     intervals,
     view_mode,
     extrema_mode,
     method,
     max_half_width_raw,
-    lc_filename,
+    stored_lc_name,
+    upload_filename,
     oc_source,
 ):
     """Fits one MAVKA method on every interval; sparse and failed windows become cards."""
@@ -5405,30 +5838,26 @@ def run_mavka(
     empty_slots = build_mavka_live_page_slot_children([], 0)
     set_progress((mavka_live_progress_label(0, 0), *empty_slots, "WAITING"))
     clear_mavka_batch_stop()
+    lc_filename = _session_lc_filename(stored_lc_name, upload_filename)
     logger.debug("run_mavka started")
+    lc_json_string = _read_gp_transport_json(user_tab_id)
 
     if extrema_mode != "min":
-        error_alert = dbc.Alert(MAXIMA_NOT_AVAILABLE, color="warning")
+        error_alert = status_alert(MAXIMA_NOT_AVAILABLE, "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     if not method:
-        error_alert = dbc.Alert(
-            "Select an approximation method.", color="warning", className="py-2 small mb-0"
-        )
+        error_alert = status_alert("Select an approximation method.", "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     try:
         max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
     except ValueError as exc:
-        error_alert = dbc.Alert(
-            str(exc), color="warning", className="py-2 small mb-0"
-        )
+        error_alert = status_alert(str(exc), "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     if not lc_json_string or not intervals:
-        error_alert = dbc.Alert(
-            "Please upload both lightcurve and intervals files.", color="warning"
-        )
+        error_alert = status_alert("Please upload both lightcurve and intervals files.", "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     view_mode = view_mode or "mag"
@@ -5436,7 +5865,7 @@ def run_mavka(
         lc = unpack_json_for_gp_plot(lc_json_string, view_mode=view_mode)
     except Exception as exc:
         logger.exception("MAVKA light curve unpack failed")
-        error_alert = dbc.Alert(str(exc), color="danger")
+        error_alert = status_alert(str(exc), "danger")
         return error_alert, "FINISHED", None, "", no_update
 
     invert_y = bool(lc.get("is_mag"))
@@ -5538,7 +5967,7 @@ def run_mavka(
             else "No fits to review."
         )
         return (
-            dbc.Alert(msg, color="warning"),
+            status_alert(msg, "warning"),
             "FINISHED_STOPPED" if stopped_early else "FINISHED",
             None,
             "",
@@ -5570,13 +5999,16 @@ def run_mavka(
 
 @callback(
     Output("mavka-export-filename", "value"),
+    Input("store-gp-lc-filename", "data"),
     Input("upload-lc", "filename"),
     Input("mavka-method", "value"),
-    prevent_initial_call=True,
+    prevent_initial_call="initial_duplicate",
 )
-def update_mavka_default_filename(filename, method):
+def update_mavka_default_filename(stored_name, upload_filename, method):
     """Default MAVKA export stem: ``{lightcurve}_{method}`` (WSAP, WSL, …)."""
-    return mavka_suggested_timing_stem(filename, method)
+    return mavka_suggested_timing_stem(
+        _session_lc_filename(stored_name, upload_filename), method
+    )
 
 
 @callback(
@@ -5831,12 +6263,13 @@ def update_parabola_status_ui(run_clicks, stop_clicks, signal_status):
     Output("parabola-review-page-label", "children"),
     Output("oc-export-filename", "value", allow_duplicate=True),
     Input("parabola-run-btn", "n_clicks"),
-    State("store-lc-data", "data"),
+    State("store-gp-user-tab-id", "data"),
     State("store-intervals-data", "data"),
     State("view-mode-radio", "value"),
     State("parabola-extrema-mode", "value"),
     State("parabola-use-weights", "value"),
     State("parabola-max-half-width", "value"),
+    State("store-gp-lc-filename", "data"),
     State("upload-lc", "filename"),
     State("oc-tom-source", "value"),
     background=True,
@@ -5854,13 +6287,14 @@ def update_parabola_status_ui(run_clicks, stop_clicks, signal_status):
 def run_parabola(
     set_progress,
     n_clicks,
-    lc_json_string,
+    user_tab_id,
     intervals,
     view_mode,
     extrema_mode,
     use_weights,
     max_half_width_raw,
-    lc_filename,
+    stored_lc_name,
+    upload_filename,
     oc_source,
 ):
     """Fits a local parabola on every interval; sparse and failed windows become cards."""
@@ -5874,29 +6308,23 @@ def run_parabola(
 
     empty_slots = build_parabola_live_page_slot_children([], 0)
     set_progress((parabola_live_progress_label(0, 0), *empty_slots, "WAITING"))
+    lc_filename = _session_lc_filename(stored_lc_name, upload_filename)
     clear_parabola_batch_stop()
     logger.debug("run_parabola started")
+    lc_json_string = _read_gp_transport_json(user_tab_id)
 
     if extrema_mode not in ("min", "max"):
-        error_alert = dbc.Alert(
-            "Select Search minima or Search maxima.",
-            color="warning",
-            className="py-2 small mb-0",
-        )
+        error_alert = status_alert("Select Search minima or Search maxima.", "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     try:
         max_half_width_d = resolve_max_half_width_d(max_half_width_raw)
     except ValueError as exc:
-        error_alert = dbc.Alert(
-            str(exc), color="warning", className="py-2 small mb-0"
-        )
+        error_alert = status_alert(str(exc), "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     if not lc_json_string or not intervals:
-        error_alert = dbc.Alert(
-            "Please upload both lightcurve and intervals files.", color="warning"
-        )
+        error_alert = status_alert("Please upload both lightcurve and intervals files.", "warning")
         return error_alert, "FINISHED", None, "", no_update
 
     view_mode = view_mode or "mag"
@@ -5904,7 +6332,7 @@ def run_parabola(
         lc = unpack_json_for_gp_plot(lc_json_string, view_mode=view_mode)
     except Exception as exc:
         logger.exception("Parabola light curve unpack failed")
-        error_alert = dbc.Alert(str(exc), color="danger")
+        error_alert = status_alert(str(exc), "danger")
         return error_alert, "FINISHED", None, "", no_update
 
     invert_y = bool(lc.get("is_mag"))
@@ -6022,7 +6450,7 @@ def run_parabola(
             else "No fits to review."
         )
         return (
-            dbc.Alert(msg, color="warning"),
+            status_alert(msg, "warning"),
             "FINISHED_STOPPED" if stopped_early else "FINISHED",
             None,
             "",
@@ -6055,12 +6483,15 @@ def run_parabola(
 
 @callback(
     Output("parabola-export-filename", "value"),
+    Input("store-gp-lc-filename", "data"),
     Input("upload-lc", "filename"),
-    prevent_initial_call=True,
+    prevent_initial_call="initial_duplicate",
 )
-def update_parabola_default_filename(filename):
+def update_parabola_default_filename(stored_name, upload_filename):
     """Default parabola export stem: ``{lightcurve}_parabola``."""
-    return parabola_suggested_timing_stem(filename)
+    return parabola_suggested_timing_stem(
+        _session_lc_filename(stored_name, upload_filename)
+    )
 
 
 @callback(
@@ -6384,7 +6815,7 @@ def oc_add_cycle_shift(n_clicks, at_time, delta_e, rows):
             raise ValueError(f"At-time must be a finite {page_time_label()}.")
         delta = _oc_parse_delta_e(delta_e)
     except (TypeError, ValueError) as exc:
-        return no_update, dbc.Alert(str(exc), color="warning", className="py-2 small mb-0")
+        return no_update, status_alert(str(exc), "warning")
     stored = list(rows or [])
     stored.append({"at_mjd": at_mjd, "delta_e": delta})
     return stored, None
@@ -6504,7 +6935,7 @@ def oc_plot(
         return (
             no_update,
             no_update,
-            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -6637,7 +7068,7 @@ def oc_use_visible_range(n_clicks, relayout_data, payload):
         return (
             no_update,
             no_update,
-            dbc.Alert(str(exc), color="warning", className="py-2 small mb-0"),
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -6697,9 +7128,7 @@ def oc_correct_period(n_clicks, payload, fit_range):
         return result, None
     except Exception as exc:
         logger.error("O-C period correction failed: %s", exc)
-        return no_update, dbc.Alert(
-            str(exc), color="warning", className="py-2 small mb-0"
-        )
+        return no_update, status_alert(str(exc), "warning")
 
 
 @callback(
@@ -6723,21 +7152,13 @@ def oc_adopt_ephemeris(n_clicks, result):
     if not n_clicks:
         raise PreventUpdate
     if not result:
-        return no_update, no_update, dbc.Alert(
-            "Correct period first.",
-            color="warning",
-            className="py-2 small mb-0",
-        )
+        return no_update, no_update, status_alert("Correct period first.", "warning")
     period = float(result["p_corrected"])
     epoch = display_epoch_offset(result["t0_corrected_jd"], jd0)
     return (
         period,
         epoch,
-        dbc.Alert(
-            "Adopted into P and Epoch. Press Plot to rebuild the O-C.",
-            color="success",
-            className="py-2 small mb-0",
-        ),
+        status_alert("Adopted into P and Epoch. Press Plot to rebuild the O-C.", "success"),
     )
 
 
@@ -6754,17 +7175,11 @@ def oc_download(n_clicks, filename_input, payload):
     if not n_clicks:
         raise PreventUpdate
     if not payload:
-        return no_update, dbc.Alert(
-            "Plot O-C first, then download.",
-            color="warning",
-            className="py-2 small mb-0",
-        )
+        return no_update, status_alert("Plot O-C first, then download.", "warning")
     try:
         body = format_oc_dat(payload)
         outfile = oc_export_download_name(filename_input)
         return dcc.send_string(body, outfile), None
     except Exception as exc:
         logger.error("O-C export failed: %s", exc)
-        return no_update, dbc.Alert(
-            str(exc), color="danger", className="py-2 small mb-0"
-        )
+        return no_update, status_alert(str(exc), "danger")

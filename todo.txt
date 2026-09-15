@@ -1,10 +1,11 @@
-============ GP
-- Add saving pictures
-- Decrease picture sizes, arrange thi into twree columns (?)
-- Add manual trend removal on the prep view (on unfolded curve)
+UI:
 
-============= math:
-- Add Sharcschild template fitting method for timing
+Add progressors !!!!!
+
+Add x to error messages and time dor disappearing of normal messages
+
+Add photometric zeropints entry, unit warini instead of faiure, unit entry
+etc to the lightcurve processor page
 
 ============ Discovey page:
 

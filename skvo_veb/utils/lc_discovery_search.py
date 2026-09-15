@@ -373,6 +373,43 @@ def status_querying_archive_id(provider_name: str, archive_id: str) -> str:
     return f"Querying {provider_name} for id={archive_id}…"
 
 
+def catalog_results_header_from_store(search_metadata: dict | None) -> str:
+    """Builds the catalogue table title from serialised search metadata.
+
+    Args:
+        search_metadata (dict, optional): ``SearchOutcome.to_store_dict()`` payload.
+
+    Returns:
+        str: Title text for the results table header, or empty when metadata is missing.
+    """
+    if not search_metadata:
+        return ""
+    search_mode = search_metadata.get("search_mode")
+    user_target = search_metadata.get("user_target") or ""
+    if search_mode in (SEARCH_MODE_CONE, SEARCH_MODE_SIMBAD_CONE):
+        lookup = search_metadata.get("simbad_main_id") or user_target
+        lookup_prefix = ""
+        if search_mode == SEARCH_MODE_SIMBAD_CONE and lookup and str(lookup).strip():
+            lookup_prefix = f"{str(lookup).strip()} - "
+        centre_ra_deg = search_metadata.get("centre_ra_deg")
+        centre_dec_deg = search_metadata.get("centre_dec_deg")
+        if centre_ra_deg is not None and centre_dec_deg is not None:
+            coord = SkyCoord(
+                ra=float(centre_ra_deg) * u.deg,
+                dec=float(centre_dec_deg) * u.deg,
+                frame="icrs",
+            )
+            coord_text = skycoord_to_hms_dms(coord)
+            radius_text = _format_discovery_radius(
+                search_metadata.get("radius_value"),
+                search_metadata.get("radius_unit"),
+            )
+            if radius_text:
+                return f"{lookup_prefix}{coord_text}, r = {radius_text}"
+            return f"{lookup_prefix}{coord_text}"
+    return user_target
+
+
 def catalog_results_header(outcome: SearchOutcome) -> str:
     """Builds the catalogue table title for the Search results panel.
 
@@ -385,26 +422,26 @@ def catalog_results_header(outcome: SearchOutcome) -> str:
     Returns:
         str: Title text for the results table header.
     """
-    if outcome.search_mode in (SEARCH_MODE_CONE, SEARCH_MODE_SIMBAD_CONE):
-        lookup = outcome.simbad_main_id or outcome.user_target
-        lookup_prefix = ""
-        if outcome.search_mode == SEARCH_MODE_SIMBAD_CONE and lookup and str(lookup).strip():
-            lookup_prefix = f"{str(lookup).strip()} - "
-        if outcome.centre_ra_deg is not None and outcome.centre_dec_deg is not None:
-            coord = SkyCoord(
-                ra=outcome.centre_ra_deg * u.deg,
-                dec=outcome.centre_dec_deg * u.deg,
-                frame="icrs",
-            )
-            coord_text = skycoord_to_hms_dms(coord)
-            radius_text = _format_discovery_radius(
-                outcome.radius_value,
-                outcome.radius_unit,
-            )
-            if radius_text:
-                return f"{lookup_prefix}{coord_text}, r = {radius_text}"
-            return f"{lookup_prefix}{coord_text}"
-    return outcome.user_target
+    return catalog_results_header_from_store(outcome.to_store_dict())
+
+
+def catalog_truncation_notice_from_store(
+    search_metadata: dict | None,
+) -> tuple[str, dict[str, str]]:
+    """Builds the truncation warning from serialised search metadata.
+
+    Args:
+        search_metadata (dict, optional): ``SearchOutcome.to_store_dict()`` payload.
+
+    Returns:
+        tuple[str, dict]: Notice text and layout style (hidden when not applicable).
+    """
+    if not search_metadata or not search_metadata.get("catalog_may_be_truncated"):
+        return "", {"display": "none"}
+    detail = search_metadata.get("catalog_truncation_detail") or (
+        "Results may be truncated: the search reached the provider row limit."
+    )
+    return detail, {"display": "block"}
 
 
 def catalog_truncation_notice(outcome: SearchOutcome) -> tuple[str, dict[str, str]]:
@@ -416,12 +453,7 @@ def catalog_truncation_notice(outcome: SearchOutcome) -> tuple[str, dict[str, st
     Returns:
         tuple[str, dict]: Notice text and layout style (hidden when not applicable).
     """
-    if not outcome.catalog_may_be_truncated:
-        return "", {"display": "none"}
-    detail = outcome.catalog_truncation_detail or (
-        "Results may be truncated: the search reached the provider row limit."
-    )
-    return detail, {"display": "block"}
+    return catalog_truncation_notice_from_store(outcome.to_store_dict())
 
 
 def _provider_time_kwargs(time_bounds: DiscoveryTimeBounds | None) -> dict[str, float | None]:

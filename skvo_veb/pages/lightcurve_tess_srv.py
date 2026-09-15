@@ -1,7 +1,5 @@
 # DISK_CACHE = True  # this makes sense only for a local version
-import os
 import re
-import time
 
 DISK_CACHE = False
 
@@ -33,13 +31,6 @@ import lightkurve as lk
 from dash.exceptions import PreventUpdate
 from lightkurve import LightkurveError
 
-# Configure user data storage on the server side
-import diskcache
-
-user_cache_dir = os.getenv('USER_CACHE_DIR')
-user_cache = diskcache.Cache(user_cache_dir)
-# This works weirdly with apache2, it could re-import module occasionally
-# user_cache.clear()  # Cleans all entries on startup.
 import uuid
 
 from skvo_veb.components import message
@@ -74,6 +65,12 @@ from skvo_veb.utils.lc_interaction import (
     require_time_view_for_trim,
     trim_curvedash_from_selection_bounds,
 )
+from skvo_veb.utils.lc_session_cache import (
+    generate_user_tab_id,
+    has_cached_lc,
+    read_serialized_lc,
+    write_serialized_lc,
+)
 from skvo_veb.utils.tess_lc_builder import (
     create_lc_from_selected_rows,
     effective_flux_method_for_selection,
@@ -98,6 +95,8 @@ register_page(__name__, name='TESS curve',
               path='/tess_lc',
               title='TESS Lightcurve Tool',
               in_navbar=True)
+
+TESS_LC_SRV_NAMESPACE = 'tess_lc_srv'
 
 label_font_size = '0.8em'
 switch_label_style = {'display': 'inline-block', 'padding': '2px', 'font-size': label_font_size}
@@ -832,29 +831,22 @@ def reset_flux_on_new_search(_search_store):
     prevent_initial_call='initial_duplicate',
 )
 def restore_lc_srv_tabs(user_tab_id):
+    """Re-opens the graph tab when this tab still has a cached working curve.
+
+    Args:
+        user_tab_id (str, optional): Browser tab id from session storage.
+
+    Returns:
+        tuple: Graph tab enabled and selected.
+
+    Raises:
+        PreventUpdate: When there is no tab id or no cached lightcurve.
+    """
     if not user_tab_id:
         raise PreventUpdate
-    user_key = _compose_user_key(user_tab_id)
-    if user_cache.get(user_key, default=None) is None:
+    if not has_cached_lc(TESS_LC_SRV_NAMESPACE, user_tab_id):
         raise PreventUpdate
     return False, 'tess_lc_srv_graph_tab'
-
-
-def _compose_user_key(user_tab_id):
-    return f'{user_tab_id}_data'
-
-
-def extract_data_from_user_cache(user_tab_id):
-    if user_tab_id is None:
-        raise PipeException('Please, retrieve light curve first')
-    user_key = _compose_user_key(user_tab_id)
-    user_data = user_cache.get(user_key, default=None)
-    if user_data is None:  # m.b user's cache has been expired and deleted
-        logger.warning(f'lightcurve_tess: extract_data_from_user_cache time={time.time()} {user_tab_id=}')
-        raise PipeException('Please, retrieve light curve. User\'s cache is empty')
-    # Implement sliding expiration:
-    user_cache.set(user_key, user_data, expire=86400)  # Refresh the expiration time on read
-    return user_data
 
 
 def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXIS_MJD):
@@ -919,7 +911,7 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         lc = create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
                                           phase_view, period, epoch, search_store=search_store)
         # write it to server user cache
-        write_user_data_to_cache(lc, user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
 
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         output = {'lc': str(uuid.uuid4())}  # trigger dependent callbacks
@@ -951,7 +943,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
             raise PipeException('Set the period and try again')
         if epoch is None:
             epoch = 0
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         if lcd.lightcurve is None:
             raise PipeException('shift_to_minimum: Please, retrieve curves first')
@@ -966,7 +958,7 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         lcd.epoch = new_epoch
         lcd.recalc_phase()
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
-        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
         return dummy_lc, display_epoch_offset(new_epoch, jd0)
     except Exception as e:
@@ -1057,7 +1049,7 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
         period = safe_float(period)
         if phase_view and not period:
             raise PipeException('Set the period and try again')
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         if lcd.lightcurve is None:
             raise PipeException('recalculate_phase: Please, retrieve curves first')
@@ -1071,7 +1063,7 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
 
         lcd.recalc_phase()
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
-        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         return dummy_lc, dash.no_update
     except Exception as e:
@@ -1097,7 +1089,7 @@ def toggle_mag_view(show_magnitude, user_tab_id):
     if not user_tab_id:
         raise PreventUpdate
     try:
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
 
         desired_domain = DOMAIN_MAG if show_magnitude else DOMAIN_FLUX
@@ -1105,7 +1097,7 @@ def toggle_mag_view(show_magnitude, user_tab_id):
             return dash.no_update, dash.no_update
 
         apply_tess_phot_domain_view(lcd, show_magnitude)
-        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
         return str(uuid.uuid4()), dash.no_update
     except Exception as exc:
@@ -1114,7 +1106,7 @@ def toggle_mag_view(show_magnitude, user_tab_id):
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         switch_value = not show_magnitude
         try:
-            js_lightcurve = extract_data_from_user_cache(user_tab_id)
+            js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
             lcd = CurveDash.from_serialized(js_lightcurve)
             switch_value = lcd.active_domain == DOMAIN_MAG
         except Exception:
@@ -1133,7 +1125,7 @@ def sync_mag_view_switch(_, user_tab_id):
     if not user_tab_id:
         raise PreventUpdate
     try:
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         return lcd.active_domain == DOMAIN_MAG
     except Exception:
@@ -1150,11 +1142,10 @@ def sync_mag_view_switch(_, user_tab_id):
 def plot_tess_curve(_, time_axis_mode, user_tab_id, phase_view):
     if not user_tab_id:
         raise PreventUpdate
-    user_key = _compose_user_key(user_tab_id)
-    if user_cache.get(user_key, default=None) is None:
+    if not has_cached_lc(TESS_LC_SRV_NAMESPACE, user_tab_id):
         raise PreventUpdate
     try:
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         fig = plot_lc(js_lightcurve, phase_view, time_axis_mode)
         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
         return fig
@@ -1202,7 +1193,7 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
     output = {key: dash.no_update for key in output_keys}
 
     try:
-        lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
+        lcd = CurveDash.from_serialized(read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id))
         if lcd.lightcurve is None:
             raise PipeException('periodogram: Please, retrieve curves first')
         if lcd.active_domain != 'flux' or lcd.flux is None:
@@ -1376,14 +1367,14 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, tim
 
     try:
         require_time_view_for_trim(phase_view)
-        lcd = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
+        lcd = CurveDash.from_serialized(read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id))
         trim_curvedash_from_selection_bounds(
             lcd,
             selection_bounds,
             display_epoch=jd0,
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
-        write_user_data_to_cache(lcd.serialize(), user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
         set_props('graph_tess_lc_srv', {'selectedData': None})
         return str(uuid.uuid4()), None
@@ -1392,19 +1383,6 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, tim
         alert_message = message.warning_alert(exc)
         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
         return dash.no_update, dash.no_update
-
-
-def write_user_data_to_cache(user_data, user_tab_id):
-    user_key = _compose_user_key(user_tab_id)
-    user_cache.set(user_key, user_data,
-                   expire=86400)  # in seconds todo: check and change it
-    logger.info(f'lightcurve_tess: write_user_data_to_cache time={time.time()}')
-
-
-def generate_user_tab_id():
-    user_tab_id = str(uuid.uuid4())  # Generate a unique tab_id
-    logger.info(f'Generated new tab_id: {user_tab_id}')
-    return user_tab_id
 
 
 @callback(
@@ -1515,11 +1493,12 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         flux_method = effective_flux_method_for_selection(
             selected_rows, table_data, flux_method
         )
-        write_user_data_to_cache(
+        write_serialized_lc(
+            TESS_LC_SRV_NAMESPACE,
+            user_tab_id,
             create_lc_from_selected_rows(
                 selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store
             ),
-            user_tab_id,
         )
         # Return a new UUID to ensure the dcc.Store value always changes.
         # This triggers dependent callbacks even if no other data is updated.
@@ -1559,7 +1538,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
         raise PreventUpdate
 
     try:
-        js_lightcurve = extract_data_from_user_cache(user_tab_id)
+        js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
         
         # Update period and epoch in the exported lightcurve metadata if they exist
@@ -1747,7 +1726,7 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         # 3. Handle append state and serialization
         try:
             if append and user_tab_id:
-                lcd_stored = CurveDash.from_serialized(extract_data_from_user_cache(user_tab_id))
+                lcd_stored = CurveDash.from_serialized(read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id))
 
                 if lcd_stored.lightcurve is None:
                     logger.warning('lightcurve_tess: handle upload: no stored lightcurves found')
@@ -1764,7 +1743,7 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
         if user_tab_id is None:
             user_tab_id = generate_user_tab_id()
             output['user_tab_id'] = user_tab_id
-        write_user_data_to_cache(lc, user_tab_id)
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
         output['lightcurve'] = str(uuid.uuid4())
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'

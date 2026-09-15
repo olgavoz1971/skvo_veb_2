@@ -50,19 +50,22 @@ Changing the **Data provider** radio does **not** clear truncation text; the nex
 
 ### `lc_discovery_search_alert`
 
-- **Type:** Bootstrap warning alert (`message.warning_alert`).
+- **Type:** Bootstrap alert via `status_alert` (dismissable; warning sticky).
 - **Lifetime:** **Result set** (search failure only).
 - **Appears:** Validation or orchestration errors (`PipeException`) from submit.
-- **Hidden:** At the **start** of a new Submit (so an old error does not linger during the next run), on successful search.
+- **Hidden:** Cleared to empty `children` at the **start** of a new Submit (so an
+  old error does not linger during the next run), and on successful search.
 
 Changing the **Data provider** radio does **not** clear this alert.
 
 ### `lc_discovery_fetch_alert`
 
-- **Type:** Bootstrap alert (warning on fetch failure; success is not duplicated here).
+- **Type:** Bootstrap alert via `status_alert` (warning on fetch failure).
 - **Lifetime:** **Last fetch** (errors only under the table).
 - **Appears:** Retrieve / Re-retrieve failures (missing row, mission mismatch, provider errors).
-- **Hidden:** At Submit start, on successful catalogue search, and after a **successful** fetch (the UI switches to the Light curve tab; no persistent “switch tab” banner).
+- **Hidden:** Cleared to empty `children` at Submit start, on successful catalogue
+  search, and after a **successful** fetch (the UI switches to the Light curve
+  tab; no persistent “switch tab” banner).
 
 Changing the **Data provider** radio does **not** clear fetch alerts; the next Submit clears them at job start.
 
@@ -79,9 +82,15 @@ Successful loads are logged server-side; the plot tab reflects the loaded curve.
 
 ## Light curve tab (Plot)
 
-<!-- Append here: lc_discovery_plot_alert, lc_discovery_fold_warning_label, fetch/progress coupling, etc. -->
+### `lc_discovery_plot_alert`
 
-*To be documented when Plot-tab message behaviour is reviewed.*
+- **Type:** Bootstrap alert via `status_alert` (dismissable; warning sticky).
+- **Appears:** Plot / fold / mag / delete / download failures on the Light curve tab.
+- **Hidden:** Cleared to empty `children` on successful replot, fold, mag switch,
+  delete, or download.
+
+`lc_discovery_fold_warning_label` remains a plain visibility-toggled label when
+period is missing after fetch — not a `status_alert`.
 
 ---
 
@@ -92,7 +101,8 @@ When adding a new message region:
 1. Assign one of the lifetimes above.
 2. Clear it in every callback that **invalidates** that lifetime (same places as catalogue `rowData` / `store_lc_discovery_resolved_target`).
 3. Prefer **one** channel per concern (avoid duplicating the same text in a label and an alert).
-4. Do not add orphan `html.Div` placeholders without callbacks.
+4. Use `status_alert(text, colour)` and set **`children` only** (empty/`None` clears; do not toggle `display` style on alert slots).
+5. Do not add orphan `html.Div` placeholders without callbacks.
 
 Related code:
 

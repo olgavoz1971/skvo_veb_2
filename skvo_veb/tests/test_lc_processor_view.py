@@ -1171,19 +1171,16 @@ def test_apply_local_tilt_fails_without_a_seed_or_hits():
 
 def test_status_alert_duration_and_dismissable():
     """Info uses the shared duration; warning and danger stay; all dismiss."""
-    from skvo_veb.pages.lightcurve_processor import (
-        STATUS_ALERT_DURATION_MS,
-        _status_alert,
-    )
+    from skvo_veb.components.message import STATUS_ALERT_DURATION_MS, status_alert
 
     assert STATUS_ALERT_DURATION_MS == 4000
-    info = _status_alert("Plot 2 seeded.", "info")
+    info = status_alert("Plot 2 seeded.", "info")
     assert info.dismissable is True
     assert info.duration == STATUS_ALERT_DURATION_MS
     assert info.is_open is True
-    warning = _status_alert("Load a light curve first.", "warning")
+    warning = status_alert("Load a light curve first.", "warning")
     assert warning.dismissable is True
     assert warning.duration is None
-    danger = _status_alert("Smooth fit failed.", "danger")
+    danger = status_alert("Smooth fit failed.", "danger")
     assert danger.dismissable is True
     assert danger.duration is None

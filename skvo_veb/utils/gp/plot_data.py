@@ -138,3 +138,55 @@ def folding_metadata_from_transport(json_str: str) -> tuple[float | None, float 
     if epoch is not None:
         epoch = float(epoch)
     return period, epoch, domain
+
+
+def apply_folding_metadata_to_transport(
+    json_str: str,
+    period,
+    epoch_display,
+    *,
+    display_epoch: float,
+    active_domain: str | None = None,
+) -> tuple[str, bool]:
+    """Writes prep ephemeris / view domain into transport ``meta``.
+
+    Empty period or epoch widgets leave the existing meta values. Domain is
+    updated only when ``active_domain`` is a non-empty string.
+
+    Args:
+        json_str (str): Serialised lightcurve transport JSON.
+        period: Sidebar period in days, or empty.
+        epoch_display: Sidebar epoch as an offset from ``display_epoch``.
+        display_epoch (float): Same MJD reference as the prep Epoch field.
+        active_domain (str, optional): ``mag`` or ``flux`` for the view radio.
+
+    Returns:
+        tuple: ``(updated_json, changed)`` where ``changed`` is ``True`` when any
+        meta field was written.
+    """
+    from skvo_veb.utils.lc_config import absolute_jd_from_display_epoch
+    from skvo_veb.utils.my_tools import safe_float
+
+    packet = json.loads(json_str)
+    meta = packet.setdefault("meta", {})
+    changed = False
+
+    period_val = safe_float(period)
+    if period_val is not None and period_val > 0:
+        if meta.get("period") != period_val:
+            meta["period"] = period_val
+            changed = True
+
+    epoch_abs = absolute_jd_from_display_epoch(epoch_display, display_epoch)
+    if epoch_abs is not None:
+        if meta.get("epoch") != epoch_abs:
+            meta["epoch"] = epoch_abs
+            changed = True
+
+    if active_domain in ("mag", "flux") and meta.get("active_domain") != active_domain:
+        meta["active_domain"] = active_domain
+        changed = True
+
+    if not changed:
+        return json_str, False
+    return json.dumps(packet), True

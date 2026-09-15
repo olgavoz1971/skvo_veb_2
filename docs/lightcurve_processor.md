@@ -27,6 +27,17 @@ Delete selected drops those rows in the session cache and rebuilds the
 figure so the traces match the remaining photometry. Empty-space clicks
 do not unselect.
 
+**In-tab resume:** `store-lc-processor-user-tab-id`,
+`store-lc-processor-lc-revision`, and `store-lc-processor-ui` use session
+storage. After leaving the page and returning in the same browser tab,
+plot 1 rebuilds from the session-cached `CurveDash` (plus smooth /
+extrema blobs when present) and plot 2 from the detrend blob. Domain,
+period, and epoch refill from that cached curve (P / Epoch also write
+through while editing). Method, time crop, export stem / format, time
+axis, error bars, and the upload filename chip refill from
+`store-lc-processor-ui`. Orange marks, zoom, knot list, and plot-2
+window stay memory-only and reset on remount.
+
 Zoom after that rebuild is a dedicated `dcc.Store` snapshot (axis ranges,
 time-axis mode, photometric domain). A new upload, or a change of time
 axis or domain, clears it. View-only replots still rely on Plotly
@@ -43,11 +54,11 @@ working range, two-point line) lives in `lc_export.py`,
 Status text uses one overlay on the plot column
 (`lc-processor-plot-alert`). Drawers do not grow. A new message replaces
 the previous one. Every alert is dismissable. Info and success use the
-ready-made `dbc.Alert` `duration` (`STATUS_ALERT_DURATION_MS` in
-`skvo_veb/pages/lightcurve_processor.py`). Warning and danger stay until
-dismiss, a newer message, or a new file. A successful upload, domain
-change, or delete clears the overlay. Plot redraw, zoom, and drawer
-open/close do not.
+ready-made `dbc.Alert` `duration` via shared
+`skvo_veb.components.message.status_alert` (`STATUS_ALERT_DURATION_MS`).
+Warning and danger stay until dismiss, a newer message, or a new file. A
+successful upload, domain change, or delete clears the overlay. Plot
+redraw, zoom, and drawer open/close do not.
 
 ---
 

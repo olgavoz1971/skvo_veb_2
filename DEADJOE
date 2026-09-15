@@ -1,0 +1,47 @@
+
+*** These modified files were found in JOE when it aborted on Tue Sep 15 20:55:15 2026
+*** JOE was aborted because the terminal closed
+
+*** File '(Unnamed)'
+  
+# cycle_number
+0.010 TE
+0.010 SK
+0.015 SK
+# timing_mode:
+# skip
+skip
+24
+0.0001
+
+*** File '(Unnamed)'
+peri
+epo
+KO
+2460844
+MA
+Du
+2460845
+IN
+..
+..
+
+*** File '(Unnamed)'
+tonguetwisters.txt
+durrell.txt
+durrell.txt
+words.txt
+words.txt
+words.txt
+words.txt
+words.txt
+words.txt
+words.txt
+todo.txt
+todo.txt
+
+*** File '* Startup Log *'
+Processing '/etc/joe/joerc'...
+Processing '/etc/joe/ftyperc'...
+Finished processing /etc/joe/ftyperc
+Finished processing /etc/joe/joerc

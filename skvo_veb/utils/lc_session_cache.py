@@ -36,6 +36,18 @@ def get_lc_user_cache() -> diskcache.Cache:
     return _user_cache
 
 
+def reset_lc_user_cache_for_tests() -> None:
+    """Closes the process-wide cache so tests can retarget ``USER_CACHE_DIR``.
+
+    Production code must not call this.
+    """
+    global _user_cache
+    cache = _user_cache
+    _user_cache = None
+    if cache is not None:
+        cache.close()
+
+
 def compose_lc_cache_key(page_namespace: str, user_tab_id: str) -> str:
     """Builds a deterministic cache key for a page tab session.
 
@@ -47,6 +59,16 @@ def compose_lc_cache_key(page_namespace: str, user_tab_id: str) -> str:
         str: Cache key string.
     """
     return f'{page_namespace}_{user_tab_id}_data'
+
+
+def _touch_cache_key(user_key: str, user_data) -> None:
+    """Refreshes sliding expiry for one cache key.
+
+    Args:
+        user_key (str): Disk cache key.
+        user_data: Payload already read from that key.
+    """
+    get_lc_user_cache().set(user_key, user_data, expire=_CACHE_EXPIRE_SECONDS)
 
 
 def has_cached_lc(page_namespace: str, user_tab_id: str | None) -> bool:
@@ -89,7 +111,7 @@ def read_serialized_lc(page_namespace: str, user_tab_id: str | None) -> str:
             user_tab_id,
         )
         raise PipeException('Please, retrieve the lightcurve. Session cache is empty')
-    get_lc_user_cache().set(user_key, user_data, expire=_CACHE_EXPIRE_SECONDS)
+    _touch_cache_key(user_key, user_data)
     return user_data
 
 
@@ -102,7 +124,7 @@ def write_serialized_lc(page_namespace: str, user_tab_id: str, serialized: str) 
         serialized (str): JSON string from ``CurveDash.serialize()``.
     """
     user_key = compose_lc_cache_key(page_namespace, user_tab_id)
-    get_lc_user_cache().set(user_key, serialized, expire=_CACHE_EXPIRE_SECONDS)
+    _touch_cache_key(user_key, serialized)
     logger.info(
         'lc_session_cache.write_serialized_lc: namespace=%s tab=%s',
         page_namespace,

@@ -38,13 +38,15 @@ The caching mechanisms are split into three dedicated subsystems depending on th
 ### A. The User Session Cache (`user_cache`)
 * **Underlying Technology:** SQLite-backed `diskcache` (multi-process and thread-safe).
 * **Location Configuration:** Specified by the `USER_CACHE_DIR` environment variable.
-* **Role:** Stores user-specific, customised, or uploaded lightcurve data. TESS lightcurves are represented as high-level scientific curves (`CurveDash` instances) and can be quite large. Passing these data payloads to the browser via `dcc.Store` would cause severe network and browser rendering lags. Instead, the application generates a unique `user_tab_id` and caches the data on the server.
-* **Scope (experimental):** At present, this **server-side user session cache** is used on **one page only** — `skvo_veb/pages/lightcurve_tess_srv.py` (TESS archive lightcurve tool). Other pages (for example `tess_cutout.py`) still hold working lightcurves in browser `dcc.Store` session storage where the design predates this experiment or payload sizes are manageable. See [§2 Hybrid Client–Server Architecture](#2-hybrid-clientserver-architecture-for-interactive-lightcurves-experimental) for the full rationale and data-flow diagrams.
+* **Canonical accessor:** `skvo_veb/utils/lc_session_cache.py` is the **only** module that opens this cache. Pages must not construct a second `diskcache.Cache(USER_CACHE_DIR)`.
+* **Role:** Stores user-specific, customised, or uploaded lightcurve data as serialised payloads (usually `CurveDash` JSON; Extrema modeller keeps VOLightCurve transport JSON). Passing these payloads to the browser via `dcc.Store` would cause severe network and browser rendering lags. Instead, each page generates a unique `user_tab_id` and caches the data on the server under a **page namespace**.
+* **Scope (Goal 1 pages):** TESS archive (`tess_lc_srv`), Lightcurve Discovery (`lc_discovery`), Lightcurve Processor (`lc_processor`), Extrema modeller (`gp_for_oc`), and legacy ASAS-SN (`asassn`). TESS cutout (`/tess`) still holds the working curve in `dcc.Store` (out of scope for ticket 3).
+* **In-tab resume:** Dash Pages remount layout on navigation. TESS (`restore_lc_srv_tabs`) and Discovery (`restore_lc_discovery_tabs`) re-open the plot tab when `has_cached_lc(namespace, user_tab_id)` is true, then replot from the persisted revision UUID. Discovery also restores Light curve tools (period, epoch, mag, fold) from the cached `CurveDash` via `restore_lc_discovery_curve_controls`. Processor and Extrema modeller (`/gp`, ticket 3 phase 4) persist both `user_tab_id` and plot revision in `SESSION_STORE` and replot from disk when those Inputs hydrate. Processor restores domain / ephemeris from `CurveDash` and tool chrome from `store-lc-processor-ui` (not on `CurveDash`). `/gp` keeps transport JSON on disk (not CurveDash); restores P / Epoch from transport `meta`, and intervals plus both filenames from session Stores. Photometry never lives in `dcc.Store`. Marks, trend line, and working-window Stores on `/gp` stay memory-only. Legacy ASAS-SN resume remains deferred (out of scope for phase 4).
 * **Key Implementation Details:**
-  * **Tab UUID Generation:** When a user initialises the page, a unique UUID (`user_tab_id`) is generated on the server and stored in a lightweight `dcc.Store` on the client.
-  * **Replot trigger UUID:** `store_tess_lightcurve_lc_srv` holds **only a random UUID**, not the lightcurve JSON. Dependent callbacks fire when this value changes after cache writes.
+  * **Tab UUID Generation:** When a user first retrieves or uploads, a unique UUID (`user_tab_id`) is generated on the server and stored in a lightweight `dcc.Store` (`storage_type='session'`).
+  * **Replot trigger UUID:** The page revision Store holds **only a random UUID**, not the lightcurve JSON. Dependent callbacks fire when this value changes after cache writes.
   * **Sliding Expiration:** To prevent server-disk exhaustion from inactive sessions, the cache uses a **sliding expiration window** of 24 hours (`expire=86400` seconds). Every read operation refreshes this timer.
-  * **Cache key:** `{user_tab_id}_data` → serialised `CurveDash` JSON string.
+  * **Cache key:** `{namespace}_{user_tab_id}_data` → serialised payload string. Most pages store `CurveDash` JSON. **Exception (ticket 3 phase 4):** Extrema modeller (`gp_for_oc`) stores the existing VOLightCurve **transport JSON** (same opaque string formerly in `store-lc-data`); `write_serialized_lc` / `read_serialized_lc` treat it as an opaque string. Processor extras use `{namespace}_{user_tab_id}_{blob}`.
 
 ### B. The TESS Public Data Cache (`tess_cache`)
 * **Underlying Technology:** Custom file-based key-value wrapper (`skvo_veb/utils/tess_cache.py`).
@@ -103,7 +105,7 @@ The experimental design on `lightcurve_tess_srv.py` therefore **splits responsib
   │                                                                         │
   │   user_cache (diskcache / SQLite)                                       │
   │   ┌──────────────────────────────────────────────────────────────┐      │
-  │   │  key: "{user_tab_id}_data"  →  CurveDash JSON (full LC)      │      │
+  │   │  key: "{namespace}_{user_tab_id}_data"  →  CurveDash JSON (full LC) │      │
   │   └──────────────────────────────────────────────────────────────┘      │
   │        ▲ read/write          ▲ read/write          ▲ read only          │
   │        │                     │                     │                    │
@@ -231,7 +233,7 @@ Both pages share the same **selection bounds** pattern: clientside extraction of
 
 * **Session vs. cache lifetime:** `dcc.Store(storage_type='session')` survives page refresches within the same browser tab but is cleared when the tab closes. `user_cache` entries expire after **24 hours of inactivity** (sliding window refreshed on every read). A user can therefore lose server cache while the tab UUID store still holds an ID — the plot callback then raises a friendly “please retrieve again” error.
 * **Concurrency:** Multiple Apache workers share one `USER_CACHE_DIR`; SQLite WAL makes concurrent reads/writes safe for different `user_tab_id` keys.
-* **Future direction:** If the experiment proves stable, the same `{user_tab_id}` + `user_cache` pattern could be extended to other high-volume pages; until then, treat `lightcurve_tess_srv.py` as the reference implementation documented here.
+* **Future direction:** TESS cutout (`/tess`) still holds the working curve in `dcc.Store`. Legacy ASAS-SN already uses `lc_session_cache` but has no TESS-style restore ritual (deferred; Discovery is the long-term UI). See [§2 Hybrid Client–Server Architecture](#2-hybrid-clientserver-architecture-for-interactive-lightcurves-experimental) for the TESS rationale.
 
 Related detail on trim/export clipping and bridge export paths: [`docs/lightcurve_data_flow.md`](lightcurve_data_flow.md) §6.
 

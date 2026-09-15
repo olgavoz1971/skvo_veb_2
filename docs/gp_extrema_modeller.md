@@ -124,6 +124,19 @@ Flux** is a view toggle. MAVKA and Parabola fit whatever that toggle currently
 shows. Gaussian Process converts to a **normalised instrumental flux** (not Jy
 or e/s). Timing (JD) is the scientific product.
 
+Working photometry lives in the server session cache (`lc_session_cache`,
+namespace `gp_for_oc`) as VOLightCurve **transport JSON** — the same opaque
+string formerly held in `dcc.Store`. The browser keeps `user_tab_id`, a
+revision UUID, the light-curve filename, Mag/Flux view, the intervals list,
+and the intervals filename chip in `SESSION_STORE`. Leaving `/gp` and
+returning in the same tab replots from disk, refills P / Epoch from
+transport `meta` (edits write through), and restores intervals, both
+file-name chips, Mag/Flux, and the prep Show intervals registry / Show error
+bars switches. The prep plot always draws interval stripes when intervals are
+loaded; the registry switch only opens the Selected intervals panel and builds
+its cards (defaults off). Marks, trend line, and the working-window Store
+remain memory-only.
+
 Default magnitude zero point when upload metadata lacks a complete PhotCal is
 `DEFAULT_REFERENCE_MAG` in `skvo_veb/utils/lc_config.py` (paired with
 `DEFAULT_ZP_FLUX_DIMENSIONLESS`). Prep and all three timers share that pair.
