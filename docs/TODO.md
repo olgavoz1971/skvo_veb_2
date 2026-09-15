@@ -17,13 +17,13 @@ give it the next unused ID. When a ticket is done, move its row to
 |----|-------|--------|
 | 1 | Discovery shared fetch cache (per provider) | Open |
 | 2 | TESS time-interval cleaning (client mark, server trim, keep zoom) | Open |
-| 4 | Unified dismissable / timed status alerts (all LC pages) | Open (Phases 0–2 done) |
 
 ## Done
 
 | ID | Title | Status |
 |----|-------|--------|
 | 3 | Unify server session LC (common base, then page-by-page) | Done (phases 0–4; ASAS-SN + cutout out of scope) |
+| 4 | Unified dismissable / timed status alerts (all LC pages) | Done (Phases 0–3; ASAS-SN out of scope) |
 
 ---
 
@@ -571,8 +571,8 @@ second alert design.
 [lightcurve_processor.md](lightcurve_processor.md) (status text rules).
 
 **Related outdated helpers:** same module’s legacy `warning_alert` /
-`info_alert` (no dismiss, no duration) still used by Discovery / TESS /
-ASAS-SN until later phases.
+`info_alert` (no dismiss, no duration). Migrated pages use `status_alert`
+instead; legacy helpers may remain for unmigrated callers outside this ticket.
 
 ### Goal
 
@@ -593,11 +593,10 @@ zoom, and accordion open/close must **not** clear alerts by accident.
 | **Processor** `/lc_processor` | One plot-column overlay; uses shared `status_alert` | Phase 0 done |
 | **GP** `/gp` | Zone `*-feedback` slots use shared `status_alert` (prep, trend, export, interval add, O-C, run errors) | Phase 1 done |
 | **Discovery** `/lc_discovery` | Search / fetch / plot alerts use shared `status_alert`; children-only (no show/hide style) | Phase 2 done |
-| **TESS** `/tess_lc` | Same `message.*` pattern; several alert divs (tools / search / download / plot) | Same as Discovery |
-| **Legacy ASAS-SN** `/asassn` | Same `message.warning_alert` + show/hide div | Same; lower priority if Discovery supersedes |
+| **TESS** `/tess_lc` | Tools / search / download / plot alerts use shared `status_alert`; children-only | Phase 3 done |
 
-`components/message.py` is the shared factory for Discovery/TESS/ASAS-SN and
-is the main reason those pages never got Processor’s dismiss/timer rules.
+`components/message.py` is the shared factory. Legacy `warning_alert` /
+`info_alert` are not part of this ticket’s remaining work.
 
 ### Proposed approach
 
@@ -644,12 +643,9 @@ into one shared builder, then migrate callers.
 
 - Same as Discovery for tools / search / download / plot alert divs.
 
-#### Phase 4 (optional) — Legacy ASAS-SN
-
-- Only if `/asassn` stays in active use; otherwise leave until removed.
-
 ### Out of scope
 
+- Legacy ASAS-SN (`/asassn`) — not migrated under this ticket.
 - Redesigning accordion help / About modals.
 - Toast libraries or non-Bootstrap notification stacks.
 - Changing scientific fail-fast text (still show the real error; only the
@@ -667,9 +663,7 @@ into one shared builder, then migrate callers.
 
 ### Status
 
-**Open.** Phases 0–2 done: shared `status_alert` in
-`skvo_veb/components/message.py`; Processor, Extrema modeller (`/gp`), and
-Discovery (`/lc_discovery`) use it. Discovery alert slots are children-only
-(no display style Outputs). Legacy `warning_alert` / `info_alert` remain for
-TESS / ASAS-SN until Phases 3–4. Next: Phase 3 (TESS).
-
+**Done.** Phases 0–3 complete: shared `status_alert` in
+`skvo_veb/components/message.py`; Processor, Extrema modeller (`/gp`),
+Discovery (`/lc_discovery`), and TESS (`/tess_lc`) use it with children-only
+alert slots. Legacy ASAS-SN left out of scope.

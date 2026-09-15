@@ -33,7 +33,7 @@ from lightkurve import LightkurveError
 
 import uuid
 
-from skvo_veb.components import message
+from skvo_veb.components.message import status_alert
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
@@ -162,7 +162,7 @@ def layout():
                         dbc.Spinner(
                             children=html.Div(
                                 id='div_tess_lc_srv_tools_alert',
-                                style={'display': 'none', 'marginTop': '8px'},
+                                style={'marginTop': '8px'},
                             ),
                             size='sm',
                             spinner_style={'width': '2rem', 'height': '2rem'},
@@ -214,14 +214,14 @@ def layout():
                                     style={"height": "350px", "width": "100%"}
                                 ),
                             ], id="table_tess_lc_srv_row", style={"display": "none"}),  # Search results
-                            html.Div(id='div_tess_lc_srv_search_alert', style={"display": "none"}),  # Alert
+                            html.Div(id='div_tess_lc_srv_search_alert'),  # Alert
                         ]),
                     ], lg=9, md=8, sm=7, xs=12),  # SearchResults Table is here
                 ], style={'marginBottom': '10px'}),  # Search and SearchResults
                 dbc.Spinner(children=[
                     dbc.Label(id="download_tess_lc_srv_result", children='',
                               style={"color": "green", "text-align": "center"}),
-                    html.Div(id='div_tess_lc_srv_download_alert', style={"display": "none"}),  # Alert
+                    html.Div(id='div_tess_lc_srv_download_alert'),  # Alert
                 ], spinner_style={
                     "align-items": "center",
                     "justify-content": "center",
@@ -451,7 +451,7 @@ def layout():
                     ], lg=2, md=3, sm=4, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),  # Tools
                     dbc.Col([
-                        html.Div(children='', id='div_tess_lc_srv_alert', style={'display': 'none'}),
+                        html.Div(id='div_tess_lc_srv_alert'),
                         dbc.Row([
                             dcc.Graph(id='graph_tess_lc_srv',
                                       figure=px.scatter(),
@@ -512,7 +512,6 @@ def toggle_pg_option_collapse(method):
         dec=Output('dec_tess_lc_srv_input', 'value', allow_duplicate=True),
         resolved_coords=Output('store_resolved_coords_tess_lc_srv', 'data'),
         alert_message=Output('div_tess_lc_srv_tools_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('resolve_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -528,13 +527,11 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
         'ra': dash.no_update,
         'dec': dash.no_update,
         'resolved_coords': dash.no_update,
-        'alert_message': '',
-        'alert_style': {'display': 'none'}
+        'alert_message': None,
     }
 
     if not obj_name or not obj_name.strip():
-        output['alert_message'] = message.warning_alert("Please enter an object name first.")
-        output['alert_style'] = {'display': 'block'}
+        output['alert_message'] = status_alert("Please enter an object name first.", 'warning')
         return output
 
     try:
@@ -544,8 +541,7 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
         output['resolved_coords'] = {'obj_name': obj_name.strip(), 'ra': ra, 'dec': dec}
     except Exception as e:
         logger.warning(f"lightcurve_tess_srv.resolve_coordinates error: {e}")
-        output['alert_message'] = message.warning_alert(e)
-        output['alert_style'] = {'display': 'block'}
+        output['alert_message'] = status_alert(str(e), 'warning')
 
     return output
 
@@ -553,7 +549,6 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
 @callback(
     output=dict(
         alert_message=Output('div_tess_lc_srv_tools_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_tools_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('clean_cache_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -573,8 +568,7 @@ def handle_clean_cache_lc_srv(n_clicks, obj_name, ra, dec, radius, resolved_coor
         target, search_mode = tess_processor.resolve_search_target(obj_name, ra, dec, resolved_coords)
     except PipeException as e:
         return {
-            'alert_message': message.warning_alert(e),
-            'alert_style': {'display': 'block'}
+            'alert_message': status_alert(str(e), 'warning'),
         }
 
     try:
@@ -587,15 +581,13 @@ def handle_clean_cache_lc_srv(n_clicks, obj_name, ra, dec, radius, resolved_coor
         msg_text = f"Cache cleaned successfully for '{target}'. {deleted_count} cached file(s) deleted."
         logger.info(f"handle_clean_cache_lc_srv: {msg_text}")
         return {
-            'alert_message': message.info_alert(msg_text),
-            'alert_style': {'display': 'block'}
+            'alert_message': status_alert(msg_text, 'info'),
         }
     except Exception as e:
         err_msg = f"Failed to clean cache for '{target}': {e}"
         logger.error(f"handle_clean_cache_lc_srv: {err_msg}", exc_info=True)
         return {
-            'alert_message': message.warning_alert(err_msg),
-            'alert_style': {'display': 'block'}
+            'alert_message': status_alert(err_msg, 'warning'),
         }
 
 
@@ -608,7 +600,6 @@ def handle_clean_cache_lc_srv(n_clicks, obj_name, ra, dec, radius, resolved_coor
         selected_rows=Output("data_tess_lc_srv_table", "selectedRows"),
         content_style=Output("table_tess_lc_srv_row", "style"),  # to show the table and Title
         alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
         ra_out=Output('ra_tess_lc_srv_input', 'value', allow_duplicate=True),
         dec_out=Output('dec_tess_lc_srv_input', 'value', allow_duplicate=True),
         resolved_out=Output('store_resolved_coords_tess_lc_srv', 'data', allow_duplicate=True),
@@ -640,8 +631,7 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     try:
         target, search_mode = tess_processor.resolve_search_target(obj_name, ra, dec, resolved_coords)
     except PipeException as e:
-        output['alert_message'] = message.warning_alert(e)
-        output['alert_style'] = {'display': 'block'}
+        output['alert_message'] = status_alert(str(e), 'warning')
         output['selected_rows'] = []
         output['content_style'] = {'display': 'none'}
         return output
@@ -659,8 +649,7 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     try:
         rad_val = float(radius) if radius else None
     except ValueError:
-        output['alert_message'] = message.warning_alert("Radius must be a valid positive number.")
-        output['alert_style'] = {'display': 'block'}
+        output['alert_message'] = status_alert("Radius must be a valid positive number.", 'warning')
         output['selected_rows'] = []
         output['content_style'] = {'display': 'none'}
         return output
@@ -713,15 +702,13 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
             output['table_data'] = data
             output['selected_rows'] = []  # start without any selection
             output['content_style'] = {'display': 'block'}  # show the table with search results
-            output['alert_message'] = ''
-            output['alert_style'] = {'display': 'none'}  # hide alert
+            output['alert_message'] = None  # clear alert
         else:
             raise PipeException('No data found')
     except Exception as e:
         logger.warning(f'tess_lightcurve.search: {e}')
         output['selected_rows'] = []
-        output['alert_message'] = message.warning_alert(e)
-        output['alert_style'] = {'display': 'block'}  # show the alert
+        output['alert_message'] = status_alert(str(e), 'warning')  # show the alert
         output['content_style'] = {'display': 'none'}  # hide empty or wrong table
 
     return output
@@ -913,14 +900,14 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         # write it to server user cache
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
 
-        set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         output = {'lc': str(uuid.uuid4())}  # trigger dependent callbacks
         return output
 
     except Exception as e:
         logger.warning(f'lightcurve_tess.replot_selected_curves: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         return dash.no_update
 
 
@@ -957,14 +944,14 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
         new_epoch = lcd.shift_epoch(phi_min)
         lcd.epoch = new_epoch
         lcd.recalc_phase()
-        set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
         return dummy_lc, display_epoch_offset(new_epoch, jd0)
     except Exception as e:
         logger.warning(f'lightcurve_tess.shift_to_minimum: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         return dash.no_update, dash.no_update
 
 
@@ -985,8 +972,8 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
 #         return dash.no_update
 #     except Exception as e:
 #         logger.warning(f'lightcurve_tess.fold: {e}')
-#         alert_message = message.warning_alert(e)
-#         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+#         alert_message = status_alert(str(e), 'warning')
+#         set_props('div_tess_lc_srv_alert', {'children': alert_message})
 #         return False
 
 
@@ -1018,12 +1005,12 @@ def shift_to_minimum(n_clicks, user_tab_id, period, epoch):
 #                 lcd.epoch = epoch + jd0
 #             lcd.recalc_phase()
 #         lcd.folded_view = phase_view
-#         set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+#         set_props('div_tess_lc_srv_alert', {'children': None})
 #         return lcd.serialize(), dash.no_update
 #     except Exception as e:
 #         logger.warning(f'lightcurve_tess.fold: {e}')
-#         alert_message = message.warning_alert(e)
-#         set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+#         alert_message = status_alert(str(e), 'warning')
+#         set_props('div_tess_lc_srv_alert', {'children': alert_message})
 #         return dash.no_update, False
 
 # fold it here
@@ -1064,12 +1051,12 @@ def fold_or_recalculate_phase(n_clicks, phase_view, user_tab_id, period, epoch):
         lcd.recalc_phase()
         dummy_lc = str(uuid.uuid4())  # trigger dependent callbacks; return a string → JSON-serializable
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         return dummy_lc, dash.no_update
     except Exception as e:
         logger.warning(f'lightcurve_tess.recalculate_phase: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         return dash.no_update, False
 
 
@@ -1098,12 +1085,12 @@ def toggle_mag_view(show_magnitude, user_tab_id):
 
         apply_tess_phot_domain_view(lcd, show_magnitude)
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         return str(uuid.uuid4()), dash.no_update
     except Exception as exc:
         logger.warning(f'lightcurve_tess_srv.toggle_mag_view: {exc}')
-        alert_message = message.warning_alert(exc)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(exc), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         switch_value = not show_magnitude
         try:
             js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
@@ -1147,12 +1134,12 @@ def plot_tess_curve(_, time_axis_mode, user_tab_id, phase_view):
     try:
         js_lightcurve = read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id)
         fig = plot_lc(js_lightcurve, phase_view, time_axis_mode)
-        set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         return fig
     except Exception as e:
         logger.warning(f'lightcurve_tess.plot_tess_curve: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         return dash.no_update
 
 
@@ -1273,13 +1260,13 @@ def periodogram(n_clicks, user_tab_id, period_freq, method, nterms, oversample,
         output['pg_fig'] = fig
         output['pg_row_style'] = {'display': 'block'}
         output['results_row_style'] = {'display': 'block'}
-        set_props('div_tess_lc_srv_alert', {'children': None, 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
     except Exception as e:
         logger.warning(f'lightcurve_tess.periodogram: {e}')
         output['results_row_style'] = {'display': 'none'}
         output['pg_row_style'] = {'display': 'none'}
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
 
     return output
 
@@ -1375,13 +1362,13 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, tim
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lcd.serialize())
-        set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
         set_props('graph_tess_lc_srv', {'selectedData': None})
         return str(uuid.uuid4()), None
     except Exception as exc:
         logger.warning(f'lightcurve_tess_srv.trim_srv_lightcurve: {exc}')
-        alert_message = message.warning_alert(exc)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(exc), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         return dash.no_update, dash.no_update
 
 
@@ -1389,7 +1376,6 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, tim
     output=dict(
         message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
         alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
-        alert_style=Output('div_tess_lc_srv_search_alert', 'style', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('purge_redownload_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -1407,8 +1393,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
     if not selected_rows:
         return {
             'message_results': '',
-            'alert_message': message.warning_alert('Select at least one table row to purge and re-retrieve.'),
-            'alert_style': {'display': 'block'},
+            'alert_message': status_alert('Select at least one table row to purge and re-retrieve.', 'warning'),
         }
 
     try:
@@ -1426,15 +1411,13 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
         logger.info(f'purge_redownload_selected_rows: {msg}')
         return {
             'message_results': msg,
-            'alert_message': message.info_alert(msg),
-            'alert_style': {'display': 'block'},
+            'alert_message': status_alert(msg, 'info'),
         }
     except Exception as exc:
         logger.error(f'purge_redownload_selected_rows failed: {exc}', exc_info=True)
         return {
             'message_results': '',
-            'alert_message': message.warning_alert(exc),
-            'alert_style': {'display': 'block'},
+            'alert_message': status_alert(str(exc), 'warning'),
         }
 
 
@@ -1508,13 +1491,13 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'
         output['message_results'] = 'Success, switch to the next Tab'
-        set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_download_alert', {'children': None})
     except Exception as e:
         logger.warning(f'lightcurve_tess.download_tess_curve {e}')
-        alert_message = message.warning_alert(e)
+        alert_message = status_alert(str(e), 'warning')
         output['graph_tab_disabled'] = True
         output['message_results'] = ''
-        set_props('div_tess_lc_srv_download_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        set_props('div_tess_lc_srv_download_alert', {'children': alert_message})
     if phase_view:
         set_props('fold_tess_lc_srv_switch', {'value': False})  # this triggers callbacks, hanging on the switch
     return output
@@ -1565,12 +1548,12 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
         outfile = f'{outfile_base}.{ext}'
 
         ret = dcc.send_bytes(file_bstring, outfile)
-        set_props('div_tess_lc_srv_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_alert', {'children': None})
 
     except Exception as e:
         logger.warning(f'tess_lc.download_to_user_tess_lc_srv_lightcurve: {e}')
-        alert_message = message.warning_alert(e)
-        set_props('div_tess_lc_srv_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        alert_message = status_alert(str(e), 'warning')
+        set_props('div_tess_lc_srv_alert', {'children': alert_message})
         ret = dash.no_update
 
     return ret
@@ -1756,13 +1739,13 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
             output['epoch_val'] = display_epoch_offset(epoch, jd0)
         else:
             output['epoch_val'] = dash.no_update
-        set_props('div_tess_lc_srv_download_alert', {'children': '', 'style': {'display': 'none'}})
+        set_props('div_tess_lc_srv_download_alert', {'children': None})
     except Exception as e:
         logger.warning('lightcurve_tess.handle_upload: %s', e, exc_info=True)
-        alert_message = message.warning_alert(format_user_upload_error(e))
+        alert_message = status_alert(format_user_upload_error(e), 'warning')
         output['graph_tab_disabled'] = True
         output['message_results'] = ''
-        set_props('div_tess_lc_srv_download_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        set_props('div_tess_lc_srv_download_alert', {'children': alert_message})
     if phase_view:
         set_props('fold_tess_lc_srv_switch', {'value': False})
     return output

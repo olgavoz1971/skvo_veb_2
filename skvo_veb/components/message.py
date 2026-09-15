@@ -3,7 +3,7 @@
 ``status_alert`` is the canonical factory (Ticket 4): dismissable always;
 ``info`` / ``success`` auto-clear; ``warning`` / ``danger`` stay until
 dismiss or replacement. Legacy ``warning_alert`` / ``info_alert`` keep their
-old undismissable shape until Discovery / TESS / ASAS-SN migrate.
+old undismissable shape for any remaining non-migrated callers.
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ def warning_alert(arg: Exception | str):
     Upload catch sites should pass a pre-sanitised string from
     ``format_user_upload_error``; this helper does not hide exception text.
 
-    Legacy helper for Discovery / TESS / ASAS-SN. New call sites should use
-    ``status_alert`` (dismissable; sticky warning).
+    Legacy helper for pages not yet on ``status_alert``. New call sites should
+    use ``status_alert`` (dismissable; sticky warning).
 
     Args:
         arg (Exception | str): User-facing message, or an exception whose
