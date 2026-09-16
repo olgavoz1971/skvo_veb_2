@@ -34,6 +34,11 @@ from lightkurve import LightkurveError
 import uuid
 
 from skvo_veb.components.message import status_alert
+from skvo_veb.components.loading import (
+    SPINNER_STYLE_CENTERED,
+    SPINNER_STYLE_COMPACT,
+    wrap_with_spinner,
+)
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils import lightkurve_cache
@@ -159,19 +164,19 @@ def layout():
                             dbc.Switch(id='switch_append_tess_lc_srv', label='Append', value=False,
                                        label_style=switch_label_style, persistence=False),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),  # upload
-                        dbc.Spinner(
-                            children=html.Div(
+                        wrap_with_spinner(
+                            html.Div(
                                 id='div_tess_lc_srv_tools_alert',
                                 style={'marginTop': '8px'},
                             ),
                             size='sm',
-                            spinner_style={'width': '2rem', 'height': '2rem'},
+                            spinner_style=SPINNER_STYLE_COMPACT,
                         ),
                     ], lg=3, md=4, sm=5, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),
                     # Search tools
                     dbc.Col([
-                        dbc.Spinner(children=[
+                        wrap_with_spinner([
                             html.Div([
                                 html.Div([
                                     html.H3("Search results", id="table_tess_lc_srv_header"),
@@ -218,14 +223,14 @@ def layout():
                         ]),
                     ], lg=9, md=8, sm=7, xs=12),  # SearchResults Table is here
                 ], style={'marginBottom': '10px'}),  # Search and SearchResults
-                dbc.Spinner(children=[
-                    dbc.Label(id="download_tess_lc_srv_result", children='',
-                              style={"color": "green", "text-align": "center"}),
-                    html.Div(id='div_tess_lc_srv_download_alert'),  # Alert
-                ], spinner_style={
-                    "align-items": "center",
-                    "justify-content": "center",
-                }, color="primary",
+                wrap_with_spinner(
+                    [
+                        dbc.Label(id="download_tess_lc_srv_result", children='',
+                                  style={"color": "green", "text-align": "center"}),
+                        html.Div(id='div_tess_lc_srv_download_alert'),  # Alert
+                    ],
+                    color="primary",
+                    spinner_style=SPINNER_STYLE_CENTERED,
                 ),
             ], tab_id='tess_lc_srv_search_tab'),
             dbc.Tab(label='Plot', children=[

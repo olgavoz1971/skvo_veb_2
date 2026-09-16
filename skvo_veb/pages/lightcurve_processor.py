@@ -16,6 +16,7 @@ import dash_bootstrap_components as dbc
 from dash import (
     ClientsideFunction,
     Input,
+    MATCH,
     Output,
     State,
     callback,
@@ -29,6 +30,15 @@ from dash import (
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components.message import status_alert
+from skvo_veb.components.photcal_editor import photcal_editor_body, photcal_field_ids
+from skvo_veb.components.upload_status import (
+    register_upload_busy_clientside,
+    upload_detail_collapse,
+    upload_detail_id,
+    upload_failure_detail,
+    upload_slot,
+    upload_status_chip,
+)
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_export import (
     apply_export_ephemeris,
@@ -41,10 +51,16 @@ from skvo_veb.utils.lc_export import (
     suggested_rough_toms_export_stem,
 )
 from skvo_veb.utils.lc_bridge import (
-    apply_phot_domain_view,
     export_curvedash,
     format_user_upload_error,
     ingest_lightcurve_file,
+)
+from skvo_veb.utils.photcal_coherence import (
+    fill_missing_photcal_form_values,
+    format_photcal_warning_message,
+    inspect_curve_photcal,
+    photcal_form_values_from_curvedash,
+    write_photcal_form_to_curvedash,
 )
 from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD,
@@ -173,13 +189,15 @@ ACCORDION_LC_ITEM_ID = "lc-processor-accordion-lc"
 ACCORDION_SMOOTH_ITEM_ID = "lc-processor-accordion-smooth"
 ACCORDION_DETREND_ITEM_ID = "lc-processor-accordion-detrend"
 ACCORDION_EXTREMA_ITEM_ID = "lc-processor-accordion-extrema"
+PHOTCAL_ID_PREFIX = "lc-processor-photcal"
+_PHOTCAL_IDS = photcal_field_ids(PHOTCAL_ID_PREFIX)
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
 EXTREMUM_MIN = "min"
 EXTREMUM_MAX = "max"
 DEFAULT_SMOOTH_METHOD = "spline_lsq"
 
 PAGE_ABOUT_MARKDOWN = """
-Load a light curve, inspect it, delete bad points, and export the working
+Load a lightcurve, inspect it, delete bad points, and export the working
 series. Time crop affects the plot and Smooth only. Export lightcurve writes
 the whole working series (after deletes) as ``{name}_lc``.
 
@@ -283,6 +301,44 @@ def _display_epoch_value(lcd: CurveDash) -> float | None:
     if lcd.epoch is None:
         return None
     return display_epoch_offset(lcd.epoch, DISPLAY_EPOCH_JD)
+
+
+def _photcal_form_outputs(lcd: CurveDash) -> tuple:
+    """Calibration editor field values from a cached ``CurveDash``.
+
+    Args:
+        lcd (CurveDash): Session-cached working curve.
+
+    Returns:
+        tuple: ``zp_flux``, ``zp_flux_unit``, ``zp_mag``, ``mag_sys``,
+        ``flux_unit`` for the sidebar inputs.
+    """
+    vals = photcal_form_values_from_curvedash(lcd)
+    return (
+        vals["zp_flux"],
+        vals["zp_flux_unit"],
+        vals["zp_mag"],
+        vals["mag_sys"],
+        vals["flux_unit"],
+    )
+
+
+def _photcal_form_outputs_from_dict(vals: dict) -> tuple:
+    """Unpacks a photcal form dict into the sidebar output tuple.
+
+    Args:
+        vals (dict): Keys matching :func:`photcal_form_values_from_storage`.
+
+    Returns:
+        tuple: Same order as :func:`_photcal_form_outputs`.
+    """
+    return (
+        vals["zp_flux"],
+        vals["zp_flux_unit"],
+        vals["zp_mag"],
+        vals["mag_sys"],
+        vals["flux_unit"],
+    )
 
 
 def _clear_fit_blobs(user_tab_id: str) -> None:
@@ -405,30 +461,82 @@ def _param_block(block_id: str, children: list, *, visible: bool) -> html.Div:
     )
 
 
-def _upload_placeholder() -> html.Span:
-    """Idle caption before a file is chosen.
+def _collapsible_drawer_section(
+    index: str,
+    label: str,
+    help_id: str,
+    help_title: str,
+    help_body: str,
+    body_children: list,
+    *,
+    start_open: bool = False,
+    label_class: str = "lcp-section-label",
+) -> html.Div:
+    """Sidebar block with a chevron toggle and a closed-by-default collapse.
+
+    The heading matches every other drawer section: one ``lcp-sidebar-heading-row``
+    (chevron, label, ``?``) with the help popover as a sibling — not nested
+    inside the flex row.
+
+    Args:
+        index (str): Pattern-matching index shared by toggle, icon, and collapse.
+        label (str): Visible section label.
+        help_id (str): Help slug for the ``?`` control.
+        help_title (str): Popover title.
+        help_body (str): Popover body.
+        body_children (list): Controls shown when expanded.
+        start_open (bool): Initial collapse state. Defaults to closed.
+        label_class (str): CSS class for the label.
 
     Returns:
-        dash.html.Span: Muted placeholder.
+        dash.html.Div: Heading row plus ``dbc.Collapse`` body.
     """
-    return html.Span("Drag or select", className="lcp-upload-name-text text-muted")
+    icon_class = "bi bi-chevron-down" if start_open else "bi bi-chevron-right"
+    help_btn, help_pop = _click_help(help_id, help_title, help_body)
+    return html.Div(
+        [
+            html.Div(
+                [
+                    dbc.Button(
+                        html.I(
+                            id={
+                                "type": "lcp-drawer-collapse-icon",
+                                "index": index,
+                            },
+                            className=icon_class,
+                        ),
+                        id={"type": "lcp-drawer-collapse-btn", "index": index},
+                        color="link",
+                        size="sm",
+                        className="lcp-drawer-collapse-btn",
+                    ),
+                    html.Label(label, className=f"{label_class} mb-0"),
+                    html.Div(help_btn, className="lcp-field-help"),
+                ],
+                className="lcp-sidebar-heading-row",
+            ),
+            help_pop,
+            dbc.Collapse(
+                html.Div(body_children, className="lcp-drawer-collapse-body"),
+                id={"type": "lcp-drawer-collapse", "index": index},
+                is_open=start_open,
+            ),
+        ],
+        className="lcp-sidebar-block lcp-drawer-collapse-section",
+    )
 
 
 def _upload_status(filename: str, *, tone: str) -> html.Div:
-    """Filename chip after an upload attempt.
+    """Filename chip after an upload attempt (shared upload pattern).
 
     Args:
-        filename (str): Original file name.
-        tone (str): ``ok`` or ``error``.
+        filename (str): Original file name (or busy caption source).
+        tone (str): ``ok``, ``error``, or ``busy``.
 
     Returns:
-        dash.html.Div: Status row.
+        dash.html.Div: Icon plus truncating label.
     """
-    colour = "text-success" if tone == "ok" else "text-danger"
-    return html.Div(
-        [html.Span(filename, className=f"lcp-upload-name-text {colour}")],
-        className="lcp-upload-status",
-    )
+    return upload_status_chip(filename, tone=tone)
 
 
 def _blank_pair(*, time_axis_mode: str, domain: str, filename: str | None = None):
@@ -467,22 +575,15 @@ def _lightcurve_drawer() -> list:
     """Builds the Light curve accordion body.
 
     Returns:
-        list: Domain, crop, ephemeris, and export widgets.
+        list: Domain, calibration, crop, ephemeris, and export widgets.
     """
     export_help = _heading_with_help(
         "Export",
         "export-lc",
         "Export",
         "Time crop applies to the plot only. This export writes the whole "
-        "working light curve after deleted points. The stem field already "
+        "working lightcurve after deleted points. The stem field already "
         "ends in _lc.",
-    )
-    ephemeris_help = _heading_with_help(
-        "Ephemeris",
-        "ephemeris",
-        "Ephemeris",
-        "Written into the exported file. Empty fields keep the values from "
-        "the upload.",
     )
     return [
         html.Div(
@@ -515,6 +616,18 @@ def _lightcurve_drawer() -> list:
             ],
             className="lcp-sidebar-block",
         ),
+        _collapsible_drawer_section(
+            "calibration",
+            "Calibration",
+            "photcal",
+            "Calibration",
+            "Zero points and the flux column unit used for magnitude↔flux "
+            "conversion. Filled from the uploaded lightcurve. Fill missing "
+            "defaults only completes empty fields (never overwrites file "
+            "values). Apply calibration writes them into the working "
+            "CurveDash (domain switch and export use that copy).",
+            photcal_editor_body(PHOTCAL_ID_PREFIX),
+        ),
         html.Div(
             [
                 _heading_with_help(
@@ -535,15 +648,14 @@ def _lightcurve_drawer() -> list:
             ],
             className="lcp-sidebar-block",
         ),
-        html.Div(
+        _collapsible_drawer_section(
+            "time-crop",
+            "Time crop (MJD)",
+            "time-crop",
+            "Time crop (MJD)",
+            "Applies to the working plot and later Smooth fits. "
+            "Export lightcurve still writes the full working series.",
             [
-                _heading_with_help(
-                    "Time crop (MJD)",
-                    "time-crop",
-                    "Time crop (MJD)",
-                    "Applies to the working plot and later Smooth fits. "
-                    "Export lightcurve still writes the full working series.",
-                ),
                 dbc.Input(
                     id="lc-processor-t-min",
                     type="number",
@@ -559,11 +671,15 @@ def _lightcurve_drawer() -> list:
                     size="sm",
                 ),
             ],
-            className="lcp-sidebar-block",
         ),
-        html.Div(
+        _collapsible_drawer_section(
+            "ephemeris",
+            "Ephemeris",
+            "ephemeris",
+            "Ephemeris",
+            "Written into the exported file. Empty fields keep the values from "
+            "the upload.",
             [
-                ephemeris_help,
                 dbc.InputGroup(
                     [
                         dbc.InputGroupText("P"),
@@ -587,7 +703,6 @@ def _lightcurve_drawer() -> list:
                     size="sm",
                 ),
             ],
-            className="lcp-sidebar-block",
         ),
         html.Div(
             [
@@ -863,7 +978,7 @@ def _smooth_drawer() -> list:
                     "split-gaps",
                     "Split on gaps",
                     "When on, each smooth is fitted separately on contiguous "
-                    "stretches of the light curve. A gap is a jump in time "
+                    "stretches of the lightcurve. A gap is a jump in time "
                     "larger than the break-tolerance threshold. When off, "
                     "the whole series is treated as one segment.",
                 ),
@@ -978,7 +1093,7 @@ def _detrend_drawer() -> list:
                     "The line is the model; the working range is the "
                     "locality. Magnitudes subtract the line; flux divides "
                     "by it. Restore full plot 2 shows the whole seeded "
-                    "series. Reload the light curve to undo.",
+                    "series. Reload the lightcurve to undo.",
                 ),
                 html.Div(
                     id="lc-processor-plot2-window-status",
@@ -1169,7 +1284,7 @@ def _extrema_drawer() -> list:
                     "Intervals use the GP .dat layout and the stem "
                     "_int. Times use the compact ToM layout (JD and "
                     "empty σ) and the stem _rough_toms. Both start "
-                    "from the Light curve _lc field.",
+                    "from the Lightcurve _lc field.",
                 ),
                 _heading_with_help(
                     "Interval half-width (days)",
@@ -1233,14 +1348,14 @@ def _sidebar() -> html.Div:
     """Builds the tools accordion. Plots stay outside this column.
 
     Returns:
-        dash.html.Div: Light curve, Smooth, Detrend, and Rough extrema drawers.
+        dash.html.Div: Lightcurve, Smooth, Detrend, and Rough extrema drawers.
     """
     return html.Div(
         dbc.Accordion(
             [
                 dbc.AccordionItem(
                     html.Div(_lightcurve_drawer(), className="lcp-drawer-body"),
-                    title="Light curve",
+                    title="Lightcurve",
                     item_id=ACCORDION_LC_ITEM_ID,
                 ),
                 dbc.AccordionItem(
@@ -1266,6 +1381,30 @@ def _sidebar() -> html.Div:
         ),
         className="lcp-sidebar",
     )
+
+
+@callback(
+    Output({"type": "lcp-drawer-collapse", "index": MATCH}, "is_open"),
+    Output({"type": "lcp-drawer-collapse-icon", "index": MATCH}, "className"),
+    Input({"type": "lcp-drawer-collapse-btn", "index": MATCH}, "n_clicks"),
+    State({"type": "lcp-drawer-collapse", "index": MATCH}, "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_lcp_drawer_section(n_clicks, is_open):
+    """Opens or closes a Light curve drawer section collapse.
+
+    Args:
+        n_clicks (int | None): Clicks on the section chevron.
+        is_open (bool): Current collapse state.
+
+    Returns:
+        tuple: New ``is_open`` flag and chevron icon class.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    opened = not bool(is_open)
+    icon = "bi bi-chevron-down" if opened else "bi bi-chevron-right"
+    return opened, icon
 
 
 def _plot_toolbar() -> html.Div:
@@ -1386,31 +1525,14 @@ def layout():
             html.Div(
                 [
                     html.Div(
-                        dcc.Upload(
-                            id="lc-processor-upload-lc",
-                            children=html.Div(
-                                [
-                                    dbc.Button(
-                                        "Load lightcurve",
-                                        color="secondary",
-                                        outline=True,
-                                        size="sm",
-                                    ),
-                                    html.Div(
-                                        _upload_placeholder(),
-                                        id="lc-processor-upload-text",
-                                        className="lcp-upload-name",
-                                    ),
-                                ],
-                                className="lcp-upload-target-inner",
-                            ),
-                            className="lcp-upload-target",
-                            className_active="lcp-upload-target lcp-upload-target-active",
-                            className_reject="lcp-upload-target lcp-upload-target-reject",
+                        upload_slot(
+                            "lc-processor-upload-lc",
+                            "Load lightcurve",
+                            "processor-lc",
                         ),
-                        className="lcp-data-slot",
+                        className="lcp-data-bar",
                     ),
-                    html.Div(id="lc-processor-upload-detail", className="lcp-upload-detail"),
+                    upload_detail_collapse("processor-lc"),
                 ],
                 className="lcp-data-hub",
             ),
@@ -1481,17 +1603,26 @@ def toggle_about(open_clicks, close_clicks, is_open):
     return not is_open
 
 
+# Immediate busy chip while the sync ingest callback runs (Ticket 6 Option B).
+register_upload_busy_clientside("lc-processor-upload-lc")
+
+
 @callback(
     Output("store-lc-processor-user-tab-id", "data"),
     Output("store-lc-processor-lc-revision", "data"),
     Output("store-lc-processor-ui", "data"),
-    Output("lc-processor-upload-text", "children"),
-    Output("lc-processor-upload-detail", "children"),
+    Output("lc-processor-upload-lc-text", "children"),
+    Output(upload_detail_id("processor-lc"), "children"),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Output("lc-processor-export-stem", "value"),
     Output("lc-processor-domain", "value"),
     Output("lc-processor-input-period", "value"),
     Output("lc-processor-input-epoch", "value"),
+    Output(_PHOTCAL_IDS["zp_flux"], "value"),
+    Output(_PHOTCAL_IDS["zp_flux_unit"], "value"),
+    Output(_PHOTCAL_IDS["zp_mag"], "value"),
+    Output(_PHOTCAL_IDS["mag_sys"], "value"),
+    Output(_PHOTCAL_IDS["flux_unit"], "value"),
     Output("lc-processor-t-min", "value"),
     Output("lc-processor-t-max", "value"),
     Output("store-lc-processor-knots", "data"),
@@ -1514,7 +1645,8 @@ def upload_lightcurve(contents, filename, user_tab_id):
 
     Returns:
         tuple: Tab id, revision, UI chrome, upload chip, cleared overlay, stem,
-        domain, ephemeris, crop reset, cleared selection and zoom stores.
+        domain, ephemeris, calibration fields, crop reset, cleared selection
+        and zoom stores.
     """
     if contents is None:
         raise PreventUpdate
@@ -1558,6 +1690,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             domain,
             lcd.period,
             epoch_display,
+            *_photcal_form_outputs(lcd),
             None,
             None,
             [],
@@ -1574,7 +1707,15 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             no_update,
             _upload_status(filename or "upload", tone="error"),
-            format_user_upload_error(exc),
+            upload_failure_detail(
+                "Lightcurve upload failed",
+                format_user_upload_error(exc),
+            ),
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
             no_update,
             no_update,
             no_update,
@@ -1594,17 +1735,22 @@ def upload_lightcurve(contents, filename, user_tab_id):
     Output("lc-processor-domain", "value", allow_duplicate=True),
     Output("lc-processor-input-period", "value", allow_duplicate=True),
     Output("lc-processor-input-epoch", "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["mag_sys"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
     Input("store-lc-processor-user-tab-id", "data"),
     prevent_initial_call="initial_duplicate",
 )
 def restore_processor_curve_controls(user_tab_id):
-    """Refills domain and ephemeris from the session-cached ``CurveDash``.
+    """Refills domain, ephemeris, and calibration from the session cache.
 
     Args:
         user_tab_id (str, optional): Browser tab id from session storage.
 
     Returns:
-        tuple: Working domain, period, and display epoch.
+        tuple: Working domain, period, display epoch, and photcal form fields.
 
     Raises:
         PreventUpdate: When there is no tab id or no cached lightcurve.
@@ -1621,11 +1767,16 @@ def restore_processor_curve_controls(user_tab_id):
     native = lcd.active_domain
     domain = native if native in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
     logger.info("Lightcurve processor restored curve controls from session cache.")
-    return domain, lcd.period, _display_epoch_value(lcd)
+    return (
+        domain,
+        lcd.period,
+        _display_epoch_value(lcd),
+        *_photcal_form_outputs(lcd),
+    )
 
 
 @callback(
-    Output("lc-processor-upload-text", "children", allow_duplicate=True),
+    Output("lc-processor-upload-lc-text", "children", allow_duplicate=True),
     Output("lc-processor-export-stem", "value", allow_duplicate=True),
     Output("lc-processor-export-format", "value", allow_duplicate=True),
     Output("lc-processor-t-min", "value", allow_duplicate=True),
@@ -1785,9 +1936,176 @@ def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
 
 
 @callback(
+    Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["mag_sys"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input(_PHOTCAL_IDS["fill_missing"], "n_clicks"),
+    State(_PHOTCAL_IDS["zp_flux"], "value"),
+    State(_PHOTCAL_IDS["zp_flux_unit"], "value"),
+    State(_PHOTCAL_IDS["zp_mag"], "value"),
+    State(_PHOTCAL_IDS["mag_sys"], "value"),
+    State(_PHOTCAL_IDS["flux_unit"], "value"),
+    prevent_initial_call=True,
+)
+def fill_processor_photcal_missing(
+    n_clicks,
+    zp_flux,
+    zp_flux_unit,
+    zp_mag,
+    mag_sys,
+    flux_unit,
+):
+    """Fills empty calibration fields from application defaults only.
+
+    Does not write the session ``CurveDash`` and does not change unit fields
+    that are blank (blank remains dimensionless).
+
+    Args:
+        n_clicks: Fill-missing button clicks.
+        zp_flux: Current ZP flux form value.
+        zp_flux_unit: Current ZP flux unit form value.
+        zp_mag: Current ZP mag form value.
+        mag_sys: Current magnitude system form value.
+        flux_unit: Current flux column unit form value.
+
+    Returns:
+        tuple: Updated form fields and a short info alert.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    before = {
+        "zp_flux": zp_flux,
+        "zp_flux_unit": zp_flux_unit if zp_flux_unit is not None else "",
+        "zp_mag": zp_mag,
+        "mag_sys": mag_sys if mag_sys is not None else "",
+        "flux_unit": flux_unit if flux_unit is not None else "",
+    }
+    after = fill_missing_photcal_form_values(before)
+    changed = any(before[k] != after[k] for k in ("zp_flux", "zp_mag", "mag_sys"))
+    alert = (
+        status_alert(
+            "Filled missing zero points and/or magnitude system from "
+            "application defaults. Unit blanks were left unchanged. "
+            "Press Apply calibration to adopt into the working lightcurve.",
+            "info",
+        )
+        if changed
+        else status_alert("No missing calibration fields to fill.", "info")
+    )
+    return (*_photcal_form_outputs_from_dict(after), alert)
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["mag_sys"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input(_PHOTCAL_IDS["apply"], "n_clicks"),
+    State(_PHOTCAL_IDS["zp_flux"], "value"),
+    State(_PHOTCAL_IDS["zp_flux_unit"], "value"),
+    State(_PHOTCAL_IDS["zp_mag"], "value"),
+    State(_PHOTCAL_IDS["mag_sys"], "value"),
+    State(_PHOTCAL_IDS["flux_unit"], "value"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def apply_processor_photcal(
+    n_clicks,
+    zp_flux,
+    zp_flux_unit,
+    zp_mag,
+    mag_sys,
+    flux_unit,
+    user_tab_id,
+):
+    """Adopts calibration editor values into the session ``CurveDash``.
+
+    Writes ``metadata['photcal']`` and ``metadata['flux_unit']``, runs the
+    shared reconcile policy, and bumps the plot revision. ZP magnitude unit
+    is always ``mag``. Domain switch and export read only the cached curve.
+
+    Args:
+        n_clicks: Apply button clicks.
+        zp_flux: Form zero-point flux.
+        zp_flux_unit: Form ZP flux unit.
+        zp_mag: Form zero-point magnitude.
+        mag_sys: Form magnitude system.
+        flux_unit: Form flux column unit.
+        user_tab_id: Session cache key.
+
+    Returns:
+        tuple: Revision, refreshed form fields, and optional alert.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return (
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            status_alert("Load a lightcurve first.", "warning"),
+        )
+    try:
+        lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
+        warnings = write_photcal_form_to_curvedash(
+            lcd,
+            zp_flux=zp_flux,
+            zp_flux_unit=zp_flux_unit,
+            zp_mag=zp_mag,
+            mag_sys=mag_sys,
+            flux_unit=flux_unit,
+        )
+        write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        photcal_text = format_photcal_warning_message(warnings)
+        alert = (
+            status_alert(photcal_text, "warning")
+            if photcal_text
+            else status_alert("Calibration adopted into the working lightcurve.", "success")
+        )
+        logger.info("Lightcurve processor applied photcal to session cache")
+        return (_bump_lc_revision(), *_photcal_form_outputs(lcd), alert)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Lightcurve processor photcal apply failed: %s", exc)
+        return (
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            status_alert(str(exc), "warning"),
+        )
+    except Exception as exc:
+        logger.exception("Lightcurve processor photcal apply failed")
+        return (
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            status_alert(str(exc), "danger"),
+        )
+
+
+@callback(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
     Output("lc-processor-domain", "value", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["mag_sys"], "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
     Input("lc-processor-domain", "value"),
     State("store-lc-processor-user-tab-id", "data"),
     prevent_initial_call=True,
@@ -1795,14 +2113,17 @@ def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
 def apply_working_domain(domain, user_tab_id):
     """Writes the requested photometric domain onto the cached curve.
 
-    A failed conversion restores the radio to the cached domain.
+    Photcal is inspected without rewriting. Inappropriate calibration rejects
+    the switch (radio restored) with a warning. Successful switches convert
+    using photcal as stored on the session ``CurveDash`` (Apply calibration
+    first if the form was edited).
 
     Args:
         domain (str): ``mag`` or ``flux``.
         user_tab_id: Session cache key.
 
     Returns:
-        tuple: Revision token, domain radio value, optional alert.
+        tuple: Revision, domain radio, optional alert, refreshed photcal fields.
     """
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         raise PreventUpdate
@@ -1810,10 +2131,34 @@ def apply_working_domain(domain, user_tab_id):
         lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
         if domain not in (DOMAIN_FLUX, DOMAIN_MAG) or domain == lcd.active_domain:
             raise PreventUpdate
-        apply_phot_domain_view(lcd, show_magnitude=(domain == DOMAIN_MAG))
+
+        problems = inspect_curve_photcal(lcd)
+        if problems:
+            photcal_text = format_photcal_warning_message(problems)
+            hint = (
+                "Open Calibration collapse, correct, "
+                "apply calibration, then try again"
+            )
+            alert_text = f"{photcal_text}\n\n{hint}" if photcal_text else hint
+            return (
+                no_update,
+                lcd.active_domain,
+                status_alert(alert_text, "warning"),
+                *_photcal_form_outputs(lcd),
+            )
+
+        if domain == DOMAIN_MAG:
+            lcd.convert_to_mag()
+        else:
+            lcd.convert_to_flux()
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         _clear_fit_blobs(user_tab_id)
-        return _bump_lc_revision(), domain, None
+        return (
+            _bump_lc_revision(),
+            domain,
+            None,
+            *_photcal_form_outputs(lcd),
+        )
     except PreventUpdate:
         raise
     except (PipeException, ValueError) as exc:
@@ -1823,6 +2168,7 @@ def apply_working_domain(domain, user_tab_id):
             no_update,
             cached.active_domain,
             status_alert(str(exc), "warning"),
+            *_photcal_form_outputs(cached),
         )
 
 
@@ -1911,7 +2257,11 @@ def plot_working_and_residual(
         perm = np.asarray(view.perm_index, dtype=int)
         labels = raw_labels(view)
         invert_y = view.active_domain == DOMAIN_MAG
-        y_label = "Magnitude" if invert_y else "Flux"
+        unit = (view.phot_unit or "").strip()
+        if invert_y:
+            y_label = f"magnitude, {unit}" if unit else "magnitude"
+        else:
+            y_label = f"flux, {unit}" if unit else "flux"
         timescale, refposition = timescale_refposition(view)
         uirev = plot_uirevision(lcd, filename, view.active_domain or domain_key, axis)
         payload = read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
@@ -2002,6 +2352,7 @@ def plot_working_and_residual(
                 y_label=residual_axis_title(
                     None if detrend_payload is None else detrend_payload.get("origin"),
                     invert_y=invert_y,
+                    phot_unit=view.phot_unit,
                 ),
                 invert_y=invert_y,
                 show_errors=bool(show_errors),
@@ -2446,7 +2797,7 @@ def place_knots(
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         return no_update, no_update, status_alert(
-            "Load a light curve first.", "warning"
+            "Load a lightcurve first.", "warning"
         )
     try:
         lcd = _cached_lcd(user_tab_id)
@@ -2578,7 +2929,7 @@ def apply_smooth(
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         return no_update, no_update, status_alert(
-            "Load a light curve first.", "warning"
+            "Load a lightcurve first.", "warning"
         )
     try:
         lcd = _cached_lcd(user_tab_id)
@@ -2860,7 +3211,7 @@ def apply_detrend(
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         return no_update, status_alert(
-            "Load a light curve first.", "warning"
+            "Load a lightcurve first.", "warning"
         ), no_update, no_update, no_update
     try:
         lcd = _cached_lcd(user_tab_id)
@@ -2941,7 +3292,7 @@ def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         return no_update, status_alert(
-            "Load a light curve first.", "warning"
+            "Load a lightcurve first.", "warning"
         ), no_update, no_update, no_update
     try:
         lcd = _cached_lcd(user_tab_id)

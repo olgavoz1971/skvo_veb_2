@@ -76,7 +76,7 @@ def test_resolve_photcal_qlp_with_tess_mag():
     photcal = resolve_photcal(["QLP"], stitched=False, tess_mag=11.42)
     assert photcal[PHOTCAL_KEY_ZP_MAG] == 11.42
     assert photcal[PHOTCAL_KEY_ZP_FLUX] == 1.0
-    assert photcal[PHOTCAL_KEY_ZP_FLUX_UNIT] == QLP_FLUX_UNIT.to_string()
+    assert photcal[PHOTCAL_KEY_ZP_FLUX_UNIT] is None
 
 
 def test_resolve_photcal_qlp_stitched_omits_zero_points():
@@ -171,8 +171,8 @@ def test_qlp_without_tessmag_rejects_magnitude_conversion():
         apply_tess_phot_domain_view(lcd, True)
 
 
-def test_qlp_unit_mismatch_rejects_magnitude_conversion():
-    """Incompatible flux and zero-point units must fail rather than silently convert."""
+def test_qlp_unit_mismatch_reconciles_to_flux_column_unit():
+    """Incompatible ZP unit is corrected to the flux column unit (Ticket 7)."""
     lcd = _build_archive_lcd(
         [100.0, 200.0],
         [1.0, 2.0],
@@ -180,8 +180,9 @@ def test_qlp_unit_mismatch_rejects_magnitude_conversion():
         photcal=resolve_tess_photcal(["QLP"], tess_mag=11.42),
         flux_unit="electron s-1",
     )
-    with pytest.raises(PipeException, match="flux_to_mag failed"):
-        apply_tess_phot_domain_view(lcd, True)
+    apply_tess_phot_domain_view(lcd, True)
+    assert lcd.active_domain == DOMAIN_MAG
+    assert lcd.metadata["photcal"][PHOTCAL_KEY_ZP_FLUX_UNIT] == "electron s-1"
 
 
 def test_background_flux_rejects_magnitude_conversion():

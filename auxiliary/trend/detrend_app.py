@@ -711,7 +711,7 @@ def _detrend_drawer() -> list:
                     "export-detrend",
                     "Export",
                     "Filename gains _detrended. Format and stem come from "
-                    "Light curve. Residual is from the last Apply smooth.",
+                    "Lightcurve. Residual is from the last Apply smooth.",
                 ),
                 dbc.Button(
                     "Export detrended",
@@ -745,7 +745,7 @@ def _sidebar() -> html.Div:
             [
                 dbc.AccordionItem(
                     html.Div(_lightcurve_drawer(), className="detrend-drawer-body"),
-                    title="Light curve",
+                    title="Lightcurve",
                     item_id=ACCORDION_LC_ITEM_ID,
                 ),
                 dbc.AccordionItem(
@@ -792,7 +792,7 @@ app.layout = dbc.Container(
                             children=html.Div(
                                 [
                                     dbc.Button(
-                                        "Load light curve",
+                                        "Load lightcurve",
                                         color="secondary",
                                         outline=True,
                                         size="sm",
@@ -895,7 +895,7 @@ def _lcd_from_store(lc_json: str, domain: str | None = None) -> CurveDash:
     """
     lcd = CurveDash.from_serialized(lc_json)
     if lcd.lightcurve is None or lcd.lightcurve.empty:
-        raise ValueError("no light curve is loaded")
+        raise ValueError("no lightcurve is loaded")
     if domain in (DOMAIN_FLUX, DOMAIN_MAG) and domain != lcd.active_domain:
         apply_phot_domain_view(lcd, show_magnitude=(domain == DOMAIN_MAG))
     return lcd

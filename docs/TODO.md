@@ -17,11 +17,14 @@ give it the next unused ID. When a ticket is done, move its row to
 |----|-------|--------|
 | 1 | Discovery shared fetch cache (per provider) | Open |
 | 2 | TESS time-interval cleaning (client mark, server trim, keep zoom) | Open |
+| 7 | Photcal coherence, domain-switch policy, and shared calibration UI | Open (Phase 1 done; Phase 2 next) |
 
 ## Done
 
 | ID | Title | Status |
 |----|-------|--------|
+| 6 | Professional busy feedback for long lightcurve uploads (GP + Processor) | Done (unified icons + ? detail) |
+| 5 | Spinners for background-callback long operations | Done (Phases 0–1; Phase 2 waived) |
 | 3 | Unify server session LC (common base, then page-by-page) | Done (phases 0–4; ASAS-SN + cutout out of scope) |
 | 4 | Unified dismissable / timed status alerts (all LC pages) | Done (Phases 0–3; ASAS-SN out of scope) |
 
@@ -667,3 +670,338 @@ into one shared builder, then migrate callers.
 `skvo_veb/components/message.py`; Processor, Extrema modeller (`/gp`),
 Discovery (`/lc_discovery`), and TESS (`/tess_lc`) use it with children-only
 alert slots. Legacy ASAS-SN left out of scope.
+
+---
+
+## Ticket 5 — Spinners for background-callback long operations
+
+**Audience:** agents. Think first; implement only when asked, **one phase
+at a time**. **Every phase must start with a discussion** of where and how
+spinners attach on that page (slots, Outputs inside the wrap, coexistence
+with existing progress UI) before any code. Reference behaviour is TESS —
+do not invent a second loading design.
+
+**Reference:** `skvo_veb/pages/lightcurve_tess_srv.py` and
+`skvo_veb/pages/tess_cutout.py` — `dbc.Spinner` wrapping stable layout
+slots (tools alert, search results + alert, download result + alert).
+Spinners appear when a **background** callback updates an Output inside
+the wrap; layout does not jump; `running=` still disables action buttons
+and enables Cancel.
+
+**Related:** Discovery search status strip
+(`lc_discovery_search_status`, [lc_discovery_messages.md](lc_discovery_messages.md));
+GP/MAVKA/Parabola live `progress=` / `set_progress` review cards on `/gp`.
+
+### Goal
+
+Long operations implemented as **background callbacks** should show a
+classical spinner in a reserved slot, matching TESS:
+
+- No full-page overlay that covers the whole UI.
+- No widgets jumping when the spinner appears or clears.
+- Existing progress text / live cards stay; spinner complements them.
+
+First approach scope: **background callbacks only**. Ordinary
+(non-background) callbacks are out of scope until a later ticket.
+
+### Current state (do not re-derive)
+
+| Page | Background jobs | Spinner today | Other progress UI |
+|------|-----------------|---------------|-------------------|
+| **TESS** `/tess_lc` | Search, retrieve, purge/re-retrieve, periodogram | Shared `wrap_with_spinner` (Phase 0) | Button disable + Cancel via `running=` |
+| **TESS cutout** `/tess_cutout` | Search, retrieve sector | Shared `wrap_with_spinner` (Phase 0) | Same |
+| **Discovery** `/lc_discovery` | Catalogue Submit; Retrieve / Re-retrieve | Compact spinner centred in header row (`catalog_spinner_target`); tools log has no spinner; table untouched | Submit: step text via `progress=` → `lc_discovery_search_status` |
+| **GP** `/gp` | GP / MAVKA / Parabola batch runs | No | Live review cards via `progress=` / `set_progress` (must keep) |
+| **Processor** `/lc_processor` | None | — | Out of scope for this ticket |
+
+### Proposed approach
+
+**Do not** invent per-page spinner widgets or `dcc.Loading` page shells.
+**Do** promote TESS’s `dbc.Spinner` wrap into one shared factory, then
+attach it page by page after each phase’s discussion.
+
+```text
+ skvo_veb/components/loading.py
+   wrap_with_spinner(children, …) → dbc.Spinner
+     SPINNER_STYLE_COMPACT / SPINNER_STYLE_CENTERED match TESS
+           │
+           ▼
+ Pages: wrap existing reserved slots only
+   Outputs that should show “busy” must live under that Spinner
+```
+
+**Trigger rule:** a background callback shows the spinner only if it
+updates an Output that is a descendant of the Spinner’s `children`.
+
+**Layout rule:** wrap slots that already reserve space (alert strip,
+results panel, status row). Never insert a spinner row that appears and
+disappears.
+
+### Phases
+
+#### Phase 0 — Shared helper (+ TESS / cutout refactor)
+
+- **Start with discussion:** factory name/module, default props, whether
+  Phase 0 also refactors `/tess_lc` and `/tess_cutout` onto the helper or
+  leaves them as the visual reference only.
+- Add a thin shared wrapper around `dbc.Spinner` with TESS-matching
+  defaults.
+- Document the trigger and layout rules (above) for later phases.
+- **Done:** `skvo_veb/components/loading.py` (`wrap_with_spinner`,
+  `SPINNER_STYLE_COMPACT`, `SPINNER_STYLE_CENTERED`); `/tess_lc` and
+  `/tess_cutout` use it (no raw `dbc.Spinner`). Phase 3 optional align
+  step is therefore unnecessary.
+
+#### Phase 1 — Discovery `/lc_discovery`
+
+- **Start with discussion:** which slots to wrap (tools column, status
+  strip, Retrieve zone, or TESS-style split); how spinner coexists with
+  `lc_discovery_search_status` progress text; which Submit/Fetch Outputs
+  must sit inside the wrap.
+- Add spinner(s) for catalogue Submit and Retrieve / Re-retrieve.
+- **Must preserve** the search status step text (`progress=` channel).
+- **Done (Proposal A → header centre):** Compact spinner reserved in the
+  **centre** of the catalogue header row (`lc_discovery_catalog_spinner_target`,
+  `size='sm'` + `SPINNER_STYLE_COMPACT`). Shared by Submit and Retrieve.
+  Tools-side status text has **no** spinner. Table / Aladin are not wrapped.
+  Search + fetch Bootstrap alerts share one under-table slot
+  (`lc_discovery_catalog_alert`); truncation, tools status, and plot alert
+  unchanged.
+#### Phase 2 — Extrema modeller `/gp`
+
+- **Start with discussion:** where to wrap relative to live review /
+  results UI; how spinner coexists with `set_progress` live cards; whether
+  one wrap covers GP + MAVKA + Parabola or separate zones.
+- **Waived:** GP / MAVKA / Parabola already expose live review cards via
+  `progress=` / `set_progress`. No extra spinner — the cards are the
+  busy feedback. Do not replace or duplicate them with `wrap_with_spinner`.
+
+#### Phase 3 (optional) — Align TESS / cutout onto the shared helper
+
+- **Cancelled:** completed as part of Phase 0.
+
+### Out of scope
+
+- Legacy ASAS-SN (`/asassn`).
+- Lightcurve Processor (no background callbacks today).
+- Spinners for non-background callbacks (see Ticket 6 for upload busy UX).
+- Full-page or toast-style loading overlays.
+- Replacing Discovery status text or GP live cards with a spinner alone.
+
+### Acceptance
+
+1. Background long ops on migrated pages (TESS, cutout, Discovery) show a
+   TESS-like spinner without layout jump where a spinner was agreed.
+2. Discovery search status progress text still updates during Submit.
+3. GP live review progress remains the sole busy UI for batch runs (no
+   spinner added).
+4. Shared helper is the only new spinner factory; pages do not invent a
+   second pattern.
+5. Each phase’s implementation follows a prior discussion of that page’s
+   slot and Output placement.
+
+### Status
+
+**Done.** Phases 0–1 implemented; Phase 2 waived (GP live cards sufficient);
+Phase 3 cancelled into Phase 0. Upload busy feedback is **Ticket 6**, not
+this ticket.
+
+---
+
+## Ticket 6 — Professional busy feedback for long lightcurve uploads
+
+**Audience:** agents. Think first; implement only when asked. Apply the
+**same** pattern on Extrema modeller (`/gp`) and Lightcurve Processor
+(`/lc_processor`).
+
+**Related:** Ticket 5 (background spinners — done; upload was out of scope);
+GP `upload_lc` / `_gp_upload_status`; Processor `upload_lightcurve` /
+`_upload_status`; `skvo_veb/components/loading.py` (`wrap_with_spinner`).
+
+### Problem
+
+Large lightcurve files can take a long time after drop/select. Today both
+pages use an ordinary (non-background) upload callback: the UI looks idle
+until parse + session-cache write finish, then the chip flips to ok/error.
+
+### Goal
+
+Immediate, professional busy feedback on upload — fixed slot, no layout
+jump, clear success/failure — matching the spirit of Ticket 5 without
+inventing a full-page overlay.
+
+### Options (pick one before coding)
+
+| Option | Mechanism | Pros | Cons |
+|--------|-----------|------|------|
+| **A** | Promote upload to `background=True`; reserved Output under `wrap_with_spinner` (chip/status slot) | Same family as Discovery Retrieve; Cancel possible | More plumbing; need careful Outputs / `running=` |
+| **B** | Keep sync upload; clientside (or instant chip) “Reading / ingesting `filename`…” as soon as `contents` arrive; server clears to ok/error | Cheap; works today; same recipe both pages | No true Cancel; no byte progress; sync still blocks the worker |
+
+True byte-level progress bars are a poor fit: `dcc.Upload` already holds
+the file in the browser before the server callback runs; slowness is
+mostly decode / parse / cache write.
+
+### Decision
+
+**Option B** chosen. Option A deferred unless Cancel / worker starvation
+becomes a real problem.
+
+### Shared building blocks
+
+- `skvo_veb/components/upload_status.py` — chip (always with icon),
+  ``?`` failure detail + collapse, busy clientside registration, shared
+  MATCH callbacks for show/toggle
+- `skvo_veb/assets/upload_status.css` — ``skvo-upload-*`` layout
+- `skvo_veb/assets/upload_status_clientside.js` — ``skvoUpload.buildBusyChip``
+
+**One contract:** hourglass busy chip → ok/error icon chip; failures use a
+titled detail behind ``?`` (collapse starts closed). Pages pass upload ids
+and detail indexes only.
+
+### Implementation plan
+
+1. **Done:** Shared pattern (icons + hourglass + ``?``).
+2. **Done (GP):** LC, intervals, and O-C timings uploads.
+3. **Done (Processor):** Same pattern on ``lc-processor-upload-lc``.
+4. Sync server upload callbacks still write ok / error (and clear detail).
+5. No `wrap_with_spinner`, no background upload, no full-page overlay.
+
+### Out of scope
+
+- Fitting / batch runners on `/gp` (Ticket 5 Phase 2 waived).
+- Full-page overlays, toasts, or a second spinner design language.
+- ASAS-SN.
+- Option A (background upload).
+
+### Status
+
+**Done.** Unified upload status pattern on GP and Processor (Option B busy +
+GP-style icons / ``?`` failure detail).
+
+---
+
+## Ticket 7 — Photcal coherence, domain-switch policy, and shared calibration UI
+
+**Audience:** agents. Think first; implement only when asked, **one phase
+at a time**. Every phase starts with a short discussion of policy and
+placement. Scientific integrity rules apply: **no silent unit promotions**,
+no invented zeropoints unless the developer explicitly chooses an
+**explicit** fallback policy in Phase 1.
+
+**Pages:** Lightcurve Processor (`/lc_processor`) first; Extrema modeller
+(`/gp`) for the same domain-switch / photcal rules; Discovery
+(`/lc_discovery`) optional for the shared calibration editor.
+
+**Related:** `skvo_veb/utils/lc_bridge.py` (`volc_to_curvedash`,
+`photcal_from_metadata`, `apply_phot_domain_view`);
+`skvo_veb/volightcurve/lightcurve.py` (`PhotCal`);
+`CurveDash.convert_to_mag` / `convert_to_flux`;
+`docs/lightcurve_data_flow.md` (may be stale on fallbacks).
+
+### Context (do not re-derive)
+
+Processor / Discovery CurveDash path:
+
+```text
+file or archive → VOLightCurve → volc_to_curvedash
+  → metadata['photcal'] + native domain on CurveDash
+  → session cache
+domain switch → apply_phot_domain_view → PhotCal mag↔flux
+```
+
+Honest science: few providers ship a coherent photcal GROUP. Ingest
+copies what exists; it does **not** convert. Mag↔flux fails when ZP
+pair or units are incomplete / incoherent. Soft demotion of invalid ZP
+units to dimensionless (in `PhotCal`) conflicts with the no-silent-fallback
+rule and must be addressed under this ticket’s policy decision.
+
+GP uses a related but not identical ingest path (`pack_uploaded_lightcurve`
+/ transport JSON). Domain / photcal **policy** from Phase 1 still applies
+there; do not invent a second calibration object.
+
+### Goal
+
+1. Surface incomplete or incoherent photcal clearly (especially at domain
+   switch), with an explicit product decision on mismatch handling.
+2. Provide a **shareable** calibration edit UI/workflow (not page-hardcoded
+   markup) that writes into `metadata['photcal']` via the existing
+   dataflow.
+3. Leave room for non-classical magnitude kinds later (e.g. luptitudes).
+
+### Phases
+
+#### Phase 1 — Coherence check + domain-switch policy (Processor + GP)
+
+**Decision (locked):**
+
+| Case | Policy |
+|------|--------|
+| Unit mismatch / invalid ``zp_flux_unit`` | **Warn** via ``status_alert``, **proceed**; flux column unit **wins**; write corrected ``zp_flux_unit`` into photcal; message states this explicitly |
+| Incomplete photcal (missing ZP pair) | Apply **application defaults** from ``volightcurve/photcal_defaults.py``; comprehensive warning; write into photcal |
+| GP | **Same** shared path — **no** GP-local defaults |
+| Invalid ZP unit string | Same as unit mismatch (flux column wins) |
+| When to warn | Ingest **and** retrieve (and domain switch when corrections still apply) |
+| Pages | Shared helper first; wire **Processor** (+ GP align, Discovery retrieve/mag); TESS later |
+
+**Done:**
+
+- ``skvo_veb/volightcurve/photcal_defaults.py``
+- ``skvo_veb/utils/photcal_coherence.py`` (``reconcile_*``)
+- ``PhotCal`` raises on invalid units (no silent demotion)
+- ``apply_phot_domain_view`` reconciles then converts; returns warnings
+- Processor upload + domain switch alerts
+- GP upload reconcile + ``resolve_gp_photcal`` uses shared policy
+- Discovery: **no** photcal reconcile / **no** photcal warnings on retrieve;
+  mag↔flux uses stored provider photcal; failure → error alert below
+  Delete selected; unitless ``---``→``None`` at VO→CurveDash ingest only
+
+#### Phase 2 — Shareable calibration editor (Processor, optional Discovery)
+
+- **Start with discussion:** panel placement, which photcal fields are
+  editable, how Apply writes `metadata['photcal']` and re-validates.
+- Build **shared** layout + callbacks/helpers (component or utils module),
+  not a one-off block inside `lightcurve_processor.py` alone.
+- Processor adopts first; Discovery optionally mounts the same editor on
+  a fetched CurveDash.
+- Edit → validate (Phase 1 helper) → `write_serialized_lc` (or GP
+  equivalent write-through). Success updates or clears the warning.
+
+#### Phase 3 (future) — Other magnitude kinds
+
+- Think through non-classical systems (e.g. luptitudes / asinh mags):
+  metadata representation, whether `PhotCal` / domain toggle still apply,
+  and UI labelling.
+- **No implementation** until Phases 1–2 are settled and the developer
+  asks to open this phase.
+
+### Out of scope
+
+- Silent “assume Jy / AB / dimensionless” fixes without an explicit
+  Phase 1 decision.
+- Parallel photcal stores beside `CurveDash.metadata['photcal']`.
+- Converting to a “standard” domain at ingest to hide bad units.
+- ASAS-SN unless later named in.
+
+### Acceptance
+
+1. Domain switch on Processor and GP uses one photcal policy; user always
+   sees why conversion is blocked or which **explicit** fallback was
+   applied.
+2. No silent ZP-unit promotion remains that contradicts that policy.
+3. Calibration editing (when Phase 2 lands) is shareable code used by
+   Processor (and Discovery if opted in), writing through the existing
+   CurveDash photcal dataflow.
+4. Phase 3 stays design-only until requested.
+
+### Status
+
+**Open.** Phase 1: Processor/GP still use shared reconcile helpers. Discovery
+does **not** rewrite or warn on provider photcal (retrieve/mag switch). Phase 2
+next when asked. TESS retrieve/upload still to adopt the helper where appropriate.
+
+**Unitless encoding (shared dataflow):** Internal storage uses ``None`` for
+dimensionless units (CurveDash / photcal / PhotCal). File export keeps a present
+``unit`` attribute with the empty string (`VO_DIMENSIONLESS_WIRE` in
+`volightcurve/vo_unit_codec.py` — change only there). Astropy’s ``unit="---"``
+sentinel is mapped to ``None`` on ingest and rewritten to ``unit=""`` on write.
+UI labels use ``to_display`` (never bare ``None``).

@@ -648,6 +648,19 @@ from skvo_veb.utils.lc_figure import (
     time_axis_xaxis_title,
 )
 from skvo_veb.components.message import status_alert
+from skvo_veb.components.upload_status import (
+    register_upload_busy_clientside,
+    upload_detail_collapse,
+    upload_detail_id,
+    upload_failure_detail,
+    upload_placeholder,
+    upload_slot,
+    upload_status_chip,
+)
+from skvo_veb.utils.photcal_coherence import (
+    format_photcal_warning_message,
+    reconcile_photcal_dict,
+)
 from skvo_veb.components.extrema_modeller_appearance import (
     CARD_COL_WIDTH,
     MAVKA_PIECE_COLOURS,
@@ -971,133 +984,18 @@ def _active_items_opening_lc(active_item) -> list:
     return items
 
 
-GP_UPLOAD_STATUS_ICONS = {
-    "ok": "bi-check-circle-fill text-success",
-    "info": "bi-check-circle-fill text-primary",
-    "error": "bi-exclamation-triangle-fill text-danger",
-}
-
-
-def _gp_upload_placeholder() -> html.Span:
-    """Idle caption shown in a data-bar slot before a file is chosen.
-
-    Returns:
-        dash.html.Span: Muted hint for the ``upload-*-text`` slot.
-    """
-    return html.Span("Drag or select", className="gp-upload-name-text text-muted")
-
-
 def _gp_upload_status(filename: str, *, tone: str) -> html.Div:
-    """File name chip shown next to an upload button.
+    """File name chip shown next to an upload button (shared upload pattern).
 
     Args:
         filename (str): File name to display; truncated at the front when long.
-        tone (str): ``ok`` for a loaded file, ``info`` for an exported file,
-            ``error`` for a file that failed to parse.
+            For ``tone='busy'`` the shared busy caption is built instead.
+        tone (str): ``ok``, ``info``, ``error``, or ``busy``.
 
     Returns:
         dash.html.Div: Icon plus truncating file name for ``upload-*-text``.
-
-    Raises:
-        ValueError: If ``tone`` is not a known status tone.
     """
-    if tone not in GP_UPLOAD_STATUS_ICONS:
-        raise ValueError(f"Unknown upload status tone: {tone}")
-    return html.Div(
-        [
-            html.I(className=f"bi {GP_UPLOAD_STATUS_ICONS[tone]} gp-upload-status-icon"),
-            html.Span(filename, className="gp-upload-name-text", title=filename),
-        ],
-        className="gp-upload-status",
-    )
-
-
-def _gp_upload_failure_detail(title: str, body: str) -> html.Div:
-    """Explanatory block revealed by the ``?`` button after a failed upload.
-
-    Args:
-        title (str): Short headline, e.g. ``Lightcurve upload failed``.
-        body (str): User-facing error text (may span several lines).
-
-    Returns:
-        dash.html.Div: Content for a ``gp-upload-detail`` collapse.
-    """
-    return html.Div(
-        [
-            html.B(title),
-            html.Pre(body, className="gp-upload-detail-body"),
-        ]
-    )
-
-
-def _gp_upload_slot(upload_id: str, button_label: str, detail_index: str) -> html.Div:
-    """Builds one data-bar slot: load button, file name and a detail toggle.
-
-    Clicking anywhere in the target opens the file dialogue; the dashed outline
-    appears only while a file is dragged over it.
-
-    Args:
-        upload_id (str): Id for the ``dcc.Upload``; the file name area gets
-            ``<upload_id>-text``.
-        button_label (str): Sentence-case button label, e.g. ``Load lightcurve``.
-        detail_index (str): ``index`` of the matching detail collapse components.
-
-    Returns:
-        dash.html.Div: Slot ready to place in the data bar.
-    """
-    return html.Div(
-        [
-            dcc.Upload(
-                id=upload_id,
-                children=html.Div(
-                    [
-                        dbc.Button(
-                            button_label,
-                            color="secondary",
-                            outline=True,
-                            size="sm",
-                        ),
-                        html.Div(
-                            _gp_upload_placeholder(),
-                            id=f"{upload_id}-text",
-                            className="gp-upload-name",
-                        ),
-                    ],
-                    className="gp-upload-target-inner",
-                ),
-                className="gp-upload-target",
-                className_active="gp-upload-target gp-upload-target-active",
-                className_reject="gp-upload-target gp-upload-target-reject",
-            ),
-            dbc.Button(
-                html.I(className="bi bi-question-circle"),
-                id={"type": "gp-upload-detail-btn", "index": detail_index},
-                color="link",
-                size="sm",
-                className="gp-upload-detail-btn d-none",
-            ),
-        ],
-        className="gp-data-slot",
-    )
-
-
-def _gp_upload_detail_row(detail_index: str) -> dbc.Collapse:
-    """Full-width collapse holding the failure explanation for one slot.
-
-    Args:
-        detail_index (str): ``index`` shared with the slot's ``?`` button.
-
-    Returns:
-        dash_bootstrap_components.Collapse: Closed collapse with an empty body.
-    """
-    return dbc.Collapse(
-        html.Div(
-            id={"type": "gp-upload-detail", "index": detail_index},
-            className="gp-upload-detail",
-        ),
-        id={"type": "gp-upload-detail-collapse", "index": detail_index},
-        is_open=False,
-    )
+    return upload_status_chip(filename, tone=tone)
 
 
 (
@@ -1846,9 +1744,8 @@ sidebar_lc = html.Div([
     ),
 ], className="gp-sidebar bg-light border rounded shadow-sm")
 
-# Actions that operate on the plot itself live above it, not in the sidebar: the
-# marking and trend gestures happen on the graph, and the two modes compete for the
-# same click, which is only obvious when their switches sit side by side.
+# Actions that operate on the plot (and the interval set built from it) live
+# above the graph: Add interval, registry clear actions, marking, and trend.
 prep_plot_toolbar = html.Div(
     [
         html.Div(
@@ -1860,6 +1757,22 @@ prep_plot_toolbar = html.Div(
                     size="sm",
                 ),
                 html.Div(_add_interval_help_btn, className="lc-discovery-field-help"),
+                dbc.Button(
+                    "Clear empty",
+                    id="btn-remove-empty-intervals",
+                    color="link",
+                    size="sm",
+                    disabled=True,
+                    className="gp-registry-action gp-registry-action-caution",
+                ),
+                dbc.Button(
+                    "Clear all",
+                    id="btn-clear-intervals",
+                    color="link",
+                    size="sm",
+                    disabled=True,
+                    className="gp-registry-action text-danger",
+                ),
             ],
             className="gp-plot-toolbar-cluster",
         ),
@@ -1955,32 +1868,10 @@ graph_lc = html.Div([
     html.Div([_prep_tips_btn, _prep_tips_pop], className="mt-2"),
 ], className="border rounded p-2 bg-white")
 
-# List maintenance belongs to the list: these two act on the registry, not the plot.
 intervals_registry = html.Div([
     html.Div(
         [
             html.H6("Selected intervals", className="gp-card-title"),
-            html.Div(
-                [
-                    dbc.Button(
-                        "Clear empty",
-                        id="btn-remove-empty-intervals",
-                        color="link",
-                        size="sm",
-                        disabled=True,
-                        className="gp-registry-action gp-registry-action-caution",
-                    ),
-                    dbc.Button(
-                        "Clear all",
-                        id="btn-clear-intervals",
-                        color="link",
-                        size="sm",
-                        disabled=True,
-                        className="gp-registry-action text-danger",
-                    ),
-                ],
-                className="gp-registry-header-actions",
-            ),
         ],
         className="gp-registry-header",
     ),
@@ -2910,8 +2801,8 @@ sidebar_oc = html.Div(
         ),
         html.Div(
             [
-                _gp_upload_slot("upload-oc-toms", "Load timings", "oc-toms"),
-                _gp_upload_detail_row("oc-toms"),
+                upload_slot("upload-oc-toms", "Load timings", "oc-toms"),
+                upload_detail_collapse("oc-toms"),
             ],
             className="gp-sidebar-group",
         ),
@@ -3207,13 +3098,14 @@ def layout():
             [
                 html.Div(
                     [
-                        _gp_upload_slot('upload-lc', "Load lightcurve", "lc"),
-                        _gp_upload_slot('upload-intervals', "Load intervals", "intervals"),
+                        upload_slot('upload-lc', "Load lightcurve", "lc"),
+                        upload_slot('upload-intervals', "Load intervals", "intervals"),
                     ],
                     className="gp-data-bar",
                 ),
-                _gp_upload_detail_row("lc"),
-                _gp_upload_detail_row("intervals"),
+                upload_detail_collapse("lc"),
+                upload_detail_collapse("intervals"),
+                html.Div(id="gp-lc-photcal-alert", className="gp-lc-photcal-alert"),
             ],
             className="gp-data-hub",
         ),
@@ -4217,7 +4109,8 @@ def commit_prep_linear_detrend(
     Output('store-gp-lc-filename', 'data'),
     Output('store-gp-view-mode', 'data'),
     Output('upload-lc-text', 'children'),
-    Output({"type": "gp-upload-detail", "index": "lc"}, 'children'),
+    Output(upload_detail_id("lc"), 'children'),
+    Output("gp-lc-photcal-alert", "children"),
     Output('input-period', 'value'),
     Output('input-epoch', 'value'),
     Output('view-mode-radio', 'value'),
@@ -4244,16 +4137,24 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
     Returns:
         tuple: Tab id, revision, LC filename, view mode, upload chip, folding
         fields, working-window reset, and accordion open set. Failures leave
-        the accordion unchanged.
+        the accordion unchanged. Photcal promote warnings go to the visible
+        ``gp-lc-photcal-alert`` slot (not the ``?`` failure collapse).
     """
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
-        return (dash.no_update,) * 13
+        return (dash.no_update,) * 14
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
 
         lc_json_string = pack_uploaded_lightcurve(decoded, filename)
+        packet = json.loads(lc_json_string)
+        photcal, photcal_warnings = reconcile_photcal_dict(
+            packet["meta"].get("photcal"),
+            flux_unit=packet["meta"].get("flux_unit"),
+        )
+        packet["meta"]["photcal"] = photcal
+        lc_json_string = json.dumps(packet)
         tab_id = _write_gp_transport_json(user_tab_id, lc_json_string)
         revision = _bump_gp_lc_revision()
         period, epoch_abs, active_domain = folding_metadata_from_transport(lc_json_string)
@@ -4262,6 +4163,10 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
         )
         source_name = filename or "uploaded"
         view_mode = active_domain if active_domain in ("mag", "flux") else "mag"
+        photcal_text = format_photcal_warning_message(photcal_warnings)
+        photcal_alert = (
+            status_alert(photcal_text, "warning") if photcal_text else None
+        )
 
         return (
             tab_id,
@@ -4270,6 +4175,7 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
             view_mode,
             _gp_upload_status(source_name, tone="ok"),
             None,
+            photcal_alert,
             period,
             epoch_display,
             view_mode,
@@ -4289,10 +4195,11 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
             dash.no_update,
             dash.no_update,
             _gp_upload_status(filename, tone="error"),
-            _gp_upload_failure_detail(
+            upload_failure_detail(
                 "Lightcurve upload failed",
                 format_user_upload_error(e),
             ),
+            None,
             dash.no_update,
             dash.no_update,
             dash.no_update,
@@ -4498,52 +4405,13 @@ def restore_gp_prep_switches(stored):
     return show_registry, show_errorbars
 
 
-@callback(
-    Output({"type": "gp-upload-detail-btn", "index": MATCH}, "className"),
-    Output({"type": "gp-upload-detail-collapse", "index": MATCH}, "is_open"),
-    Input({"type": "gp-upload-detail", "index": MATCH}, "children"),
-)
-def reflect_upload_failure_detail(detail):
-    """Shows the ``?`` toggle only while a slot has an explanation to give.
-
-    Args:
-        detail: Children of the slot's detail container (``None`` when the last
-            upload succeeded).
-
-    Returns:
-        tuple: ``(button_class_name, collapse_is_open)``; the collapse always
-        starts closed so a new upload never leaves stale text open.
-    """
-    base = "gp-upload-detail-btn"
-    return (base if detail else f"{base} d-none"), False
-
-
-@callback(
-    Output(
-        {"type": "gp-upload-detail-collapse", "index": MATCH},
-        "is_open",
-        allow_duplicate=True,
-    ),
-    Input({"type": "gp-upload-detail-btn", "index": MATCH}, "n_clicks"),
-    State({"type": "gp-upload-detail-collapse", "index": MATCH}, "is_open"),
-    prevent_initial_call=True,
-)
-def toggle_upload_failure_detail(n_clicks, is_open):
-    """Expands or hides the failure explanation under the data bar.
-
-    Args:
-        n_clicks (int | None): Clicks on the slot's ``?`` button.
-        is_open (bool): Current collapse state.
-
-    Returns:
-        bool: Requested collapse state.
-    """
-    if not n_clicks:
-        raise PreventUpdate
-    return not is_open
-
-
 # Callbacks for Intervals file upload/download/signs
+
+# Immediate busy chip while the sync ingest callback runs (Ticket 6 Option B).
+register_upload_busy_clientside("upload-lc")
+register_upload_busy_clientside("upload-intervals")
+register_upload_busy_clientside("upload-oc-toms")
+
 
 @callback(
     Output('upload-intervals-text', 'children'),
@@ -4561,7 +4429,7 @@ def update_global_intervals_label(stored_status):
         the file name chip.
     """
     if not stored_status:
-        return _gp_upload_placeholder()
+        return upload_placeholder()
 
     return _gp_upload_status(stored_status["name"], tone=stored_status["tone"])
 
@@ -4570,7 +4438,7 @@ def update_global_intervals_label(stored_status):
     # region unfold me
     Output('store-intervals-data', 'data'),
     Output('store-active-intervals-name', 'data'),
-    Output({"type": "gp-upload-detail", "index": "intervals"}, 'children'),
+    Output(upload_detail_id("intervals"), 'children'),
     Output("main-workflow-accordion", "active_item", allow_duplicate=True),
     Input('upload-intervals', 'contents'),
     State('upload-intervals', 'filename'),
@@ -4619,7 +4487,7 @@ def upload_intervals(contents, filename, accordion_active):
         return (
             dash.no_update,
             {"name": filename, "tone": "error"},
-            _gp_upload_failure_detail(
+            upload_failure_detail(
                 "Intervals upload failed",
                 format_user_upload_error(e),
             ),
@@ -4654,7 +4522,7 @@ def upload_intervals(contents, filename, accordion_active):
     Output("download-intervals-file", "data"),
     Output("store-active-intervals-name", "data", allow_duplicate=True),
     Output(
-        {"type": "gp-upload-detail", "index": "intervals"},
+        upload_detail_id("intervals"),
         "children",
         allow_duplicate=True,
     ),
@@ -6706,7 +6574,7 @@ def update_oc_export_filename(source, gp_store, mavka_store, parabola_store, upl
 @callback(
     Output("store-oc-uploaded-toms", "data"),
     Output("upload-oc-toms-text", "children"),
-    Output({"type": "gp-upload-detail", "index": "oc-toms"}, "children"),
+    Output(upload_detail_id("oc-toms"), "children"),
     Output("oc-tom-source", "value"),
     Output("oc-export-filename", "value", allow_duplicate=True),
     Input("upload-oc-toms", "contents"),
@@ -6740,7 +6608,7 @@ def upload_oc_toms(contents, filename):
         return (
             no_update,
             _gp_upload_status(filename or "timings.dat", tone="error"),
-            _gp_upload_failure_detail(
+            upload_failure_detail(
                 "Timings upload failed",
                 str(exc),
             ),

@@ -92,7 +92,7 @@ def plot_lc_with_maxima(
         y_label = "flux"
     ax.set_xlabel("Julian Date")
     ax.set_ylabel(y_label)
-    ax.set_title("Light curve with template timing maxima")
+    ax.set_title("Lightcurve with template timing maxima")
     fig.tight_layout()
     save_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_path, dpi=150)

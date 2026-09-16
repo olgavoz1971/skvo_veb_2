@@ -1,4 +1,4 @@
-"""Plot-oriented JSON unpack for the GP page (domain view + GP photcal fallback)."""
+"""Plot-oriented JSON unpack for the GP page (domain view + shared photcal)."""
 
 from __future__ import annotations
 
@@ -9,17 +9,21 @@ import astropy.units as u
 import numpy as np
 
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG
-from skvo_veb.utils.lc_bridge import unpack_json_for_plotly, _jd0_from_packet_meta
+from skvo_veb.utils.lc_bridge import (
+    unpack_json_for_plotly,
+    _jd0_from_packet_meta,
+    photometry_yaxis_title,
+)
 from skvo_veb.utils.gp.flux import resolve_gp_photcal
 
 
 def unpack_json_for_gp_plot(json_str: str, view_mode: str = "mag") -> dict:
-    """Unpack transport JSON for the GP prep plot, with GP calibration fallback.
+    """Unpack transport JSON for the GP prep plot, with shared photcal policy.
 
     Uses ``unpack_json_for_plotly`` when bridge photcal is complete. When the user
-    requests a domain conversion but upload metadata lacks zero points (typical for
-    exported CSV flux), applies ``resolve_gp_photcal`` (PhotCal from the curve,
-    else ``lc_config`` fallbacks).
+    requests a domain conversion but upload metadata lacks zero points, applies
+    ``resolve_gp_photcal`` (Ticket 7 Phase 1 shared reconcile — no GP-local
+    defaults).
 
     Args:
         json_str (str): Serialised lightcurve from ``pack_volc_to_json``.
@@ -37,7 +41,7 @@ def unpack_json_for_gp_plot(json_str: str, view_mode: str = "mag") -> dict:
 
 
 def _unpack_with_gp_photcal(json_str: str, view_mode: str) -> dict:
-    """Decode transport JSON and convert domains using GP ``PhotCal`` defaults."""
+    """Decode transport JSON and convert domains using shared photcal policy."""
     packet = json.loads(json_str)
     meta = packet["meta"]
     data = np.array(packet["data"], dtype=object)
@@ -86,7 +90,7 @@ def _unpack_with_gp_photcal(json_str: str, view_mode: str) -> dict:
                     pc.flux_err_to_mag_err(flux_q, err_q).value, dtype=float
                 )
 
-    y_label = "Magnitude" if view_mode == DOMAIN_MAG else "Normalised flux"
+    y_label = photometry_yaxis_title(view_mode, meta)
     return {
         "x": t,
         "y": y_data,

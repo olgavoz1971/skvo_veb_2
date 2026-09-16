@@ -20,18 +20,27 @@ from skvo_veb.utils.my_tools import PipeException
 logger = logging.getLogger(__name__)
 
 
-def residual_axis_title(origin: str | None, *, invert_y: bool) -> str:
+def residual_axis_title(
+    origin: str | None,
+    *,
+    invert_y: bool,
+    phot_unit: str | None = None,
+) -> str:
     """Returns the plot-2 y-axis title for a residual origin.
 
     Args:
         origin (str | None): ``smooth``, ``copy``, or missing (treat as smooth).
         invert_y (bool): ``True`` for magnitude.
+        phot_unit (str, optional): Active photometry unit label for copy mode.
 
     Returns:
         str: Axis title.
     """
     if origin == DETREND_ORIGIN_COPY:
-        return "Magnitude" if invert_y else "Flux"
+        unit = (phot_unit or "").strip()
+        if invert_y:
+            return f"magnitude,{unit}" if unit else "magnitude"
+        return f"flux,{unit}" if unit else "flux"
     return "Δmag (obs − trend)" if invert_y else "flux / trend"
 
 

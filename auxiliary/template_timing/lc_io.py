@@ -106,7 +106,7 @@ def lightcurve_jd_extent(path: Path) -> tuple[float, float]:
     lcd = load_lightcurve(path)
     jd = np.asarray(lcd.jd, dtype=float)
     if jd.size == 0:
-        raise ValueError(f"empty light curve: {path}")
+        raise ValueError(f"empty lightcurve: {path}")
     return float(np.min(jd)), float(np.max(jd))
 
 

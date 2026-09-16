@@ -6,6 +6,12 @@ astronomical concepts like coordinate systems, time systems, and photometric cal
 """
 
 from .lightcurve import *
+from .vo_unit_codec import (
+    VO_DIMENSIONLESS_WIRE,
+    to_display,
+    to_internal,
+    to_wire,
+)
 
 __all__ = [
     "VOLightCurve",
@@ -21,4 +27,8 @@ __all__ = [
     "is_magnitude_phot_column",
     "assign_photometry_column_semantics",
     "apply_non_votable_heuristics",
+    "VO_DIMENSIONLESS_WIRE",
+    "to_internal",
+    "to_wire",
+    "to_display",
 ]

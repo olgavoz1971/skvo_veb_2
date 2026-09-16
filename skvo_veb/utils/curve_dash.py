@@ -28,6 +28,7 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_MAG,
 )
 from skvo_veb.utils.lc_bridge import photcal_from_metadata
+from skvo_veb.volightcurve.vo_unit_codec import to_display, to_internal
 
 from astropy import units as u
 
@@ -35,22 +36,23 @@ jd0 = DEFAULT_EPOCH_JD
 fill_nans = 'median'
 
 
-def astropy_init(unit_str: str):
+def astropy_init(unit_str: str | None):
     """Initialises an Astropy Unit from a string representation.
 
-    If the provided unit string is empty or invalid, returns a dimensionless unit.
+    Empty / ``None`` / Astropy ``---`` map to dimensionless (see ``vo_unit_codec``).
 
     Args:
-        unit_str (str): The string representing the physical unit.
+        unit_str (str, optional): The string representing the physical unit.
 
     Returns:
         astropy.units.Unit: The initialised Astropy Unit object.
     """
-    if not unit_str:
+    internal = to_internal(unit_str)
+    if internal is None:
         return u.Unit()
     try:
-        return u.Unit(unit_str)
-    except ValueError:
+        return u.Unit(internal)
+    except Exception:
         return u.Unit()
 
 
@@ -115,7 +117,7 @@ class CurveDash:
                  name: str = '', lookup_name: str | None = None, gaia_id=None,
                  title: str = '',
                  band='',
-                 time_unit: str = '', flux_unit: str = '', mag_unit: str = 'mag',
+                 time_unit: str = '', flux_unit: str | None = None, mag_unit: str = 'mag',
                  timescale: str | None = None,  # one pf astropy.time Scale or 'hjd' for Heliocentric julian
                  period: float | None = None, period_unit: str = 'd',
                  epoch: float | None = jd0,
@@ -145,7 +147,7 @@ class CurveDash:
             title (str, optional): Display title.
             band (str, optional): Photometric band.
             time_unit (str, optional): Unit of time data.
-            flux_unit (str, optional): Unit of flux data.
+            flux_unit (str, optional): Unit of flux data (``None`` = dimensionless).
             mag_unit (str, optional): Unit of magnitude data. Defaults to ``'mag'``.
             timescale (str, optional): Astropy time scale or ``'hjd'``.
             period (float, optional): Variability period.
@@ -213,6 +215,7 @@ class CurveDash:
             lookup_name = ''
 
         resolved_domain = active_domain or domain
+        stored_flux_unit = to_internal(flux_unit) if resolved_domain == DOMAIN_FLUX else None
         self.metadata = {
             'name': name,
             'lookup_name': lookup_name,
@@ -223,7 +226,7 @@ class CurveDash:
             'timescale': timescale,
             'title': title,
             'flux_correction': flux_correction,
-            'flux_unit': flux_unit if resolved_domain == DOMAIN_FLUX else '',
+            'flux_unit': stored_flux_unit,
             'mag_unit': mag_unit if resolved_domain == DOMAIN_MAG else '',
             'active_domain': resolved_domain,
             'photcal': photcal or {},
@@ -682,7 +685,7 @@ class CurveDash:
             return ''
         if self.active_domain == DOMAIN_MAG:
             return self.metadata.get('mag_unit', 'mag')
-        return self.metadata.get('flux_unit', '')
+        return to_display(to_internal(self.metadata.get('flux_unit')))
 
     @property
     def photcal(self) -> dict:
@@ -729,9 +732,16 @@ class CurveDash:
         photcal = self._resolve_photcal()
         mag_values = mag_col.values.astype(float)
         mag_quantity = mag_values * u.mag
-        flux_quantity = photcal.mag_to_flux(mag_quantity)
+        try:
+            flux_quantity = photcal.mag_to_flux(mag_quantity)
+        except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
+            logger.critical("PhotCal mag_to_flux failed: %s", exc)
+            raise PipeException(
+                "Cannot convert to flux: "
+                f"{exc}. Check the photometric calibration zero points."
+            ) from exc
         flux_vals = np.array(flux_quantity.value, dtype=float)
-        flux_unit_str = str(flux_quantity.unit)
+        flux_unit_str = to_internal(flux_quantity.unit)
 
         if mag_err_col is not None:
             err_quantity = mag_err_col.values.astype(float) * u.mag
@@ -780,13 +790,11 @@ class CurveDash:
             mag_quantity = photcal.flux_to_mag(flux_quantity)
             mag_vals = np.array(mag_quantity.value, dtype=float)
         except (u.UnitsError, u.UnitTypeError, TypeError, ValueError) as exc:
-            logger.critical('PhotCal flux_to_mag failed (%s)', exc)
-            # zp_m = photcal.zp_mag.value
-            # zp_f = photcal.zp_flux.value
-            # valid = flux_vals > 0
-            # mag_vals = np.full_like(flux_vals, np.nan)
-            # mag_vals[valid] = zp_m - 2.5 * np.log10(flux_vals[valid] / zp_f)
-            raise PipeException('PhotCal flux_to_mag failed (%s)', exc)
+            logger.critical("PhotCal flux_to_mag failed: %s", exc)
+            raise PipeException(
+                "Cannot convert to magnitude: "
+                f"{exc}. Flux column and zero-point flux units must match."
+            ) from exc
         if flux_err_col is not None:
             flux_vals = flux_col.values.astype(float)
             err_vals = flux_err_col.values.astype(float)
@@ -807,7 +815,7 @@ class CurveDash:
         self.lightcurve = df
         self.metadata['active_domain'] = DOMAIN_MAG
         self.metadata['mag_unit'] = 'mag'
-        self.metadata['flux_unit'] = ''
+        self.metadata['flux_unit'] = None
 
     @property
     def flux(self):
@@ -909,12 +917,14 @@ class CurveDash:
 
     @property
     def flux_unit(self):
-        """Gets the flux unit string.
+        """Gets the internal flux unit (``None`` when dimensionless).
 
         Returns:
-            str: The flux unit string.
+            str or None: Stored flux unit label, or ``None`` when unitless.
         """
-        return self.metadata.get('flux_unit') if self.metadata else ''
+        if not self.metadata:
+            return None
+        return to_internal(self.metadata.get('flux_unit'))
 
     @property
     def flux_unit_ap(self):

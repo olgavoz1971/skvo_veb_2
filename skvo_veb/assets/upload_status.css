@@ -1,0 +1,86 @@
+/* Shared upload chip + ? failure detail (Ticket 6). Used by GP and Processor. */
+
+.skvo-upload-slot {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 1 1 20rem;
+    min-width: 0;
+}
+
+.skvo-upload-target {
+    display: flex;
+    align-items: center;
+    flex: 1 1 auto;
+    min-width: 0;
+    cursor: pointer;
+    padding: 0.25rem;
+    border: 1px dashed transparent;
+    border-radius: 0.25rem;
+}
+
+.skvo-upload-target-active {
+    border-color: #0d6efd;
+    background-color: rgba(13, 110, 253, 0.08);
+}
+
+.skvo-upload-target-reject {
+    border-color: #dc3545;
+    background-color: rgba(220, 53, 69, 0.08);
+}
+
+.skvo-upload-target-inner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    min-width: 0;
+}
+
+.skvo-upload-target .btn {
+    flex: 0 0 auto;
+}
+
+.skvo-upload-name,
+.skvo-upload-status {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.skvo-upload-status-icon {
+    flex: 0 0 auto;
+}
+
+.skvo-upload-name-text {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+}
+
+.skvo-upload-detail-btn {
+    flex: 0 0 auto;
+    padding: 0 0.25rem;
+    line-height: 1;
+    text-decoration: none;
+}
+
+.skvo-upload-detail {
+    margin-top: 0.25rem;
+    padding: 0.75rem;
+    border: 1px solid #f5c2c7;
+    border-radius: 0.25rem;
+    background-color: #fdf2f3;
+}
+
+.skvo-upload-detail-body {
+    margin-bottom: 0;
+    font-size: 0.875rem;
+    white-space: pre-wrap;
+}

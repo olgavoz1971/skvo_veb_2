@@ -9,50 +9,40 @@ import astropy.units as u
 import numpy as np
 import pandas as pd
 
-from skvo_veb.utils.lc_bridge import unpack_json_for_plotly
-from skvo_veb.utils.lc_config import (
-    DEFAULT_REFERENCE_MAG,
-    DEFAULT_ZP_FLUX_DIMENSIONLESS,
-    PHOTCAL_KEY_ZP_FLUX,
-    PHOTCAL_KEY_ZP_MAG,
-)
+from skvo_veb.utils.lc_bridge import photcal_from_metadata, unpack_json_for_plotly
+from skvo_veb.utils.photcal_coherence import reconcile_photcal_dict
 from skvo_veb.volightcurve.lightcurve import PhotCal
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_gp_photcal(meta: dict) -> PhotCal:
-    """Build a ``PhotCal`` for mag-to-flux conversion on the GP page.
+    """Build a ``PhotCal`` for mag-to-flux conversion.
 
-    Uses transport ``photcal`` when both zero points are present; otherwise applies
-    lightcurve fallbacks from ``lc_config`` (dimensionless instrumental flux,
-    configurable reference mag).
+    Uses transport photcal after upload-time promotion. Reconcile is applied
+    again only when inspection still reports problems (idempotent if upload
+    already promoted).
 
     Args:
-        meta (dict): Transport packet ``meta`` block.
+        meta (dict): Transport packet ``meta`` block (may be mutated).
 
     Returns:
-        PhotCal: Calibration for monotonic mag-to-flux conversion before GP normalisation.
+        PhotCal: Calibration for monotonic mag-to-flux conversion before GP
+        normalisation.
     """
-    photcal = meta.get("photcal") or {}
-    zp_mag = photcal.get(PHOTCAL_KEY_ZP_MAG)
-    zp_flux = photcal.get(PHOTCAL_KEY_ZP_FLUX)
-    if zp_mag is not None and zp_flux is not None:
-        return PhotCal(
-            zp_flux=float(zp_flux),
-            zp_flux_unit=photcal.get("zp_flux_unit") or None,
-            zp_mag=float(zp_mag),
-            zp_mag_unit=photcal.get("zp_mag_unit") or "mag",
+    from skvo_veb.utils.photcal_coherence import inspect_photcal_dict
+
+    flux_unit = meta.get("flux_unit")
+    problems = inspect_photcal_dict(meta.get("photcal"), flux_unit=flux_unit)
+    if problems:
+        photcal, warnings = reconcile_photcal_dict(
+            meta.get("photcal"),
+            flux_unit=flux_unit,
         )
-    if zp_mag is None:
-        zp_mag = DEFAULT_REFERENCE_MAG
-    else:
-        zp_mag = float(zp_mag)
-    if zp_flux is None:
-        zp_flux = DEFAULT_ZP_FLUX_DIMENSIONLESS
-    else:
-        zp_flux = float(zp_flux)
-    return PhotCal(zp_flux=zp_flux, zp_flux_unit=None, zp_mag=zp_mag, zp_mag_unit="mag")
+        meta["photcal"] = photcal
+        for message in warnings:
+            logger.warning("GP photcal promote: %s", message)
+    return photcal_from_metadata(meta.get("photcal") or {})
 
 
 def decode_gp_flux_arrays(json_str: str) -> dict:
@@ -65,8 +55,8 @@ def decode_gp_flux_arrays(json_str: str) -> dict:
     :func:`get_gp_flux_fragment` in a loop.
 
     For magnitude-native uploads the conversion uses ``PhotCal`` from transport
-    metadata, falling back to ``lc_config`` zero points via
-    :func:`resolve_gp_photcal`.
+    metadata after shared photcal reconciliation
+    (:func:`resolve_gp_photcal`).
 
     Args:
         json_str (str): Serialised lightcurve transport JSON.

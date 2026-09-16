@@ -15,13 +15,17 @@ This document defines **lifetimes** so messages do not outlive the action or dat
 | **Result set** | Describes the current catalogue search | New search **completes** (Submit) |
 | **Last fetch** | Describes the last Retrieve / Re-retrieve on the Search tab | New search starts, or a new fetch attempt |
 
+Search failures and fetch failures share **`lc_discovery_catalog_alert`**
+(one slot under the table); lifetimes above still govern when that slot is cleared.
+
 ---
 
 ## Search tab — tools column (left)
 
 ### `lc_discovery_search_status`
 
-- **Type:** Plain text bar (`.lc-discovery-search-status`).
+- **Type:** Plain text bar (`.lc-discovery-search-status`). No spinner wrap
+  (progress text alone is the Submit feedback).
 - **Lifetime:** **Job** (catalogue background search).
 - **Appears:** Step messages from `run_catalog_search` via the submit callback `progress` channel (Simbad resolve, cone query, etc.).
 - **Hidden:** When the background search callback returns (success or `PipeException`). Not used for fetch.
@@ -48,26 +52,25 @@ Changing the **Data provider** radio does **not** clear the card, table, or Alad
 
 Changing the **Data provider** radio does **not** clear truncation text; the next Submit replaces it.
 
-### `lc_discovery_search_alert`
+### `lc_discovery_catalog_alert`
 
 - **Type:** Bootstrap alert via `status_alert` (dismissable; warning sticky).
-- **Lifetime:** **Result set** (search failure only).
-- **Appears:** Validation or orchestration errors (`PipeException`) from submit.
-- **Hidden:** Cleared to empty `children` at the **start** of a new Submit (so an
-  old error does not linger during the next run), and on successful search.
+- **Placement:** Single slot **under** the catalogue table / Aladin row.
+- **Lifetimes:** Shares one physical slot for:
+  - **Result set** — search validation / orchestration failures (`PipeException`).
+  - **Last fetch** — Retrieve / Re-retrieve failures (missing row, mission
+    mismatch, provider errors).
+- **Appears:** Submit errors, or Retrieve / Re-retrieve errors.
+- **Hidden:** Cleared to empty `children` at Submit start, on successful
+  catalogue search, at Retrieve job start, and after a **successful** fetch
+  (UI switches to the Light curve tab; no persistent banner).
+- **Spinner:** Compact `wrap_with_spinner` (`size='sm'`, `SPINNER_STYLE_COMPACT`)
+  on `lc_discovery_catalog_spinner_target` in the **centre** of the catalogue
+  header row (Submit + Retrieve). Table / Aladin are not wrapped. Tools status
+  log is separate (text only).
 
-Changing the **Data provider** radio does **not** clear this alert.
-
-### `lc_discovery_fetch_alert`
-
-- **Type:** Bootstrap alert via `status_alert` (warning on fetch failure).
-- **Lifetime:** **Last fetch** (errors only under the table).
-- **Appears:** Retrieve / Re-retrieve failures (missing row, mission mismatch, provider errors).
-- **Hidden:** Cleared to empty `children` at Submit start, on successful catalogue
-  search, and after a **successful** fetch (the UI switches to the Light curve
-  tab; no persistent “switch tab” banner).
-
-Changing the **Data provider** radio does **not** clear fetch alerts; the next Submit clears them at job start.
+Changing the **Data provider** radio does **not** clear this alert; the next
+Submit clears it at job start.
 
 Successful loads are logged server-side; the plot tab reflects the loaded curve.
 

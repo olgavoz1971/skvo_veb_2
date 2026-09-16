@@ -24,6 +24,7 @@ from skvo_veb.utils.lc_config import (
 )
 from skvo_veb.utils.lc_bridge import apply_phot_domain_view
 from skvo_veb.volightcurve.time_reference import export_absolute_jd_as_time_offset
+from skvo_veb.volightcurve.vo_unit_codec import to_internal
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,7 @@ def resolve_photcal(
             return meta
         meta.update({
             PHOTCAL_KEY_ZP_FLUX: 1.0,
-            PHOTCAL_KEY_ZP_FLUX_UNIT: QLP_FLUX_UNIT.to_string(),
+            PHOTCAL_KEY_ZP_FLUX_UNIT: to_internal(QLP_FLUX_UNIT),
             PHOTCAL_KEY_ZP_MAG: zp_mag,
             PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
             PHOTCAL_KEY_MAG_SYS: "Vega",
@@ -151,7 +152,7 @@ tess_filter_group_meta = filter_group_meta
 resolve_tess_photcal = resolve_photcal
 
 
-def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str:
+def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
     """Returns the flux-unit label stored on a TESS archive ``CurveDash``.
 
     Pipeline-specific units are assigned at ingest from mission configuration,
@@ -162,11 +163,12 @@ def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str:
         lightkurve_flux_unit: Unit object or string from the downloaded product.
 
     Returns:
-        str: Serialised flux unit for ``CurveDash`` metadata.
+        str or None: Serialised flux unit for ``CurveDash`` metadata
+        (``None`` = dimensionless).
     """
     if is_qlp_pipeline(authors):
-        return QLP_FLUX_UNIT.to_string()
-    return str(lightkurve_flux_unit)
+        return to_internal(QLP_FLUX_UNIT)
+    return to_internal(lightkurve_flux_unit)
 
 
 def validate_tess_magnitude_conversion(lcd) -> None:

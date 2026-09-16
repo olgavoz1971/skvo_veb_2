@@ -50,6 +50,7 @@ from skvo_veb.volightcurve.time_reference import (
     export_absolute_jd_as_time_offset,
     normalise_table_epoch_to_absolute_jd,
 )
+from skvo_veb.volightcurve.vo_unit_codec import to_display, to_internal
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +510,7 @@ def tabular_table_to_curvedash(table: Table, filename: str):
             **common_kwargs,
             flux=phot_vals,
             flux_err=err_vals,
-            flux_unit=str(table[phot_col].unit or ""),
+            flux_unit=to_internal(table[phot_col].unit),
             active_domain=DOMAIN_FLUX,
         )
 
@@ -589,6 +590,8 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
 
     # Photometry calibration extraction (full photcal GROUP)
     photcal_meta = _extract_photcal_meta(lc, primary_col)
+    active_domain = "mag" if primary_col in mag_cols else "flux"
+    phot_unit = to_internal(lc.table[primary_col].unit)
 
     # Data Extraction
     # .value is used to strip Astropy units before JSON serialization
@@ -606,10 +609,14 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     # Final Construction
     table_meta = lc.table.meta or {}
     meta_block = {
-        "active_domain": "mag" if primary_col in mag_cols else "flux",
+        "active_domain": active_domain,
         "jd0": lc.timesys.jd0,
         "photcal": photcal_meta,
     }
+    if active_domain == "flux":
+        meta_block["flux_unit"] = phot_unit
+    else:
+        meta_block["mag_unit"] = phot_unit or "mag"
     timesys = lc.timesys
     if timesys is not None:
         if timesys.timescale:
@@ -766,12 +773,14 @@ def curvedash_from_transport_json(
             mag_unit=str(meta.get("mag_unit") or "mag"),
         )
     else:
-        flux_unit = meta.get("flux_unit") or photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT) or ""
+        flux_unit = to_internal(
+            meta.get("flux_unit") or photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
+        )
         lcd = CurveDash(
             **common_kwargs,
             flux=v_raw,
             flux_err=err,
-            flux_unit=str(flux_unit) if flux_unit else "",
+            flux_unit=flux_unit,
         )
 
     envelope = meta.get(METADATA_KEY_VO_ENVELOPE)
@@ -779,6 +788,29 @@ def curvedash_from_transport_json(
         lcd.metadata[METADATA_KEY_VO_ENVELOPE] = envelope
 
     return lcd
+
+
+def photometry_yaxis_title(view_mode: str, meta: dict) -> str:
+    """Builds a photometry y-axis title with units (``flux,Jy`` / ``magnitude,mag``).
+
+    Args:
+        view_mode (str): ``mag`` or ``flux`` for the plotted domain.
+        meta (dict): Transport packet ``meta`` (may include ``flux_unit``,
+            ``mag_unit``, and ``photcal``).
+
+    Returns:
+        str: Axis title such as ``flux,Jy`` or ``magnitude,mag``.
+    """
+    if view_mode == DOMAIN_MAG:
+        unit = str(meta.get("mag_unit") or "mag").strip() or "mag"
+        return f"magnitude,{unit}"
+
+    flux_unit = to_internal(meta.get("flux_unit"))
+    if flux_unit is None:
+        photcal = meta.get("photcal") or {}
+        flux_unit = to_internal(photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT))
+    unit = to_display(flux_unit)
+    return f"flux,{unit}"
 
 
 def unpack_json_for_plotly(json_str: str, view_mode='mag'):
@@ -873,7 +905,7 @@ def unpack_json_for_plotly(json_str: str, view_mode='mag'):
         'err': e_data,
         'flag': f,
         'x_label': "Julian Date (JD)",
-        'y_label': "Magnitude" if view_mode == 'mag' else "Flux",
+        'y_label': photometry_yaxis_title(view_mode, meta),
         'is_mag': (view_mode == 'mag'),
         'timescale': meta.get('timescale'),
         'refposition': meta.get('refposition'),
@@ -1044,7 +1076,8 @@ def pretty_print_lc_json(json_str: str, max_rows: int = 5):
         f"JD0 (Offset):   {meta.get('jd0', 'N/A')}",
         f"CALIBRATION:    Sys: {photcal.get('mag_sys', 'N/A')}",
         f"                ZP Mag:  {photcal.get('zp_mag')} {photcal.get('zp_mag_unit')}",
-        f"                ZP Flux: {photcal.get('zp_flux')} {photcal.get('zp_flux_unit')}",
+        f"                ZP Flux: {photcal.get('zp_flux')} "
+        f"{to_display(to_internal(photcal.get('zp_flux_unit')))}",
         "-" * 80,
         "SCHEMA / COLUMN MAPPING:",
     ]
@@ -1210,16 +1243,11 @@ def photcal_from_metadata(photcal: dict | None) -> PhotCal:
             "require zp_flux and zp_mag."
         )
 
-    # An empty ``zp_flux_unit`` means dimensionless zero-point flux (for example
-    # TESS QLP archive products stored with ``u.dimensionless_unscaled``). ``PhotCal``
-    # already defaults to dimensionless when no unit is supplied. A non-empty string
-    # must be a valid Astropy/VO unit label (for example SPOC ``electron s-1``).
     kwargs = {
         "zp_flux": float(zp_flux),
         "zp_mag": float(zp_mag),
+        "zp_flux_unit": to_internal(zp_flux_unit),
     }
-    if zp_flux_unit:
-        kwargs["zp_flux_unit"] = zp_flux_unit
     zp_mag_unit = photcal.get(PHOTCAL_KEY_ZP_MAG_UNIT)
     if zp_mag_unit:
         kwargs["zp_mag_unit"] = zp_mag_unit
@@ -1250,24 +1278,26 @@ def _jd0_from_packet_meta(meta: dict) -> float:
     return float(meta["jd0"])
 
 
-def _unit_to_storage_string(unit) -> str:
+def _unit_to_storage_string(unit) -> str | None:
     """Serialises an Astropy unit for CurveDash metadata storage.
 
-    VOUnit cannot represent every Astropy unit (for example TESS ``electron``).
-    Non-standard units fall back to Astropy's canonical string form.
+    Dimensionless / empty / Astropy ``---`` map to ``None`` (internal unitless).
+    VOUnit cannot represent every Astropy unit (for example TESS ``electron``);
+    non-standard units fall back to Astropy's canonical string form.
 
     Args:
-        unit (astropy.units.Unit): Physical unit to serialise.
+        unit: Physical unit to serialise (Astropy unit, string, or ``None``).
 
     Returns:
-        str: Unit label safe to store in application metadata.
+        str or None: Unit label for application metadata, or ``None`` when unitless.
     """
-    if unit is None:
-        return ""
+    internal = to_internal(unit)
+    if internal is None:
+        return None
     try:
-        return unit.to_string("vounit")
+        return u.Unit(internal).to_string("vounit")
     except (ValueError, u.UnitsError, u.UnitTypeError):
-        return unit.to_string()
+        return internal
 
 
 def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
@@ -1307,12 +1337,24 @@ def _serialise_photcal_group(photdm, table_meta: dict | None = None) -> dict:
     if photcal is not None:
         if photcal.zp_flux is not None:
             meta[PHOTCAL_KEY_ZP_FLUX] = float(photcal.zp_flux.value)
-            meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = _unit_to_storage_string(photcal.zp_flux.unit)
+            # Truly invalid unit strings stay as text for Ticket 7 reconcile.
+            # Astropy empty / ``---`` already normalised to ``None`` in PhotCal.
+            if getattr(photcal, "_zp_flux_unit_unparsed", False):
+                meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = photcal._zp_flux_unit_text
+            else:
+                meta[PHOTCAL_KEY_ZP_FLUX_UNIT] = _unit_to_storage_string(
+                    photcal.zp_flux.unit
+                )
         if photcal.zp_mag is not None:
             meta[PHOTCAL_KEY_ZP_MAG] = float(photcal.zp_mag.value)
-            meta[PHOTCAL_KEY_ZP_MAG_UNIT] = (
-                _unit_to_storage_string(photcal.zp_mag.unit) if photcal.zp_mag.unit else "mag"
-            )
+            if getattr(photcal, "_zp_mag_unit_unparsed", False):
+                meta[PHOTCAL_KEY_ZP_MAG_UNIT] = photcal._zp_mag_unit_text
+            else:
+                meta[PHOTCAL_KEY_ZP_MAG_UNIT] = (
+                    _unit_to_storage_string(photcal.zp_mag.unit)
+                    if photcal.zp_mag.unit
+                    else "mag"
+                )
         if photcal.mag_sys:
             meta[PHOTCAL_KEY_MAG_SYS] = photcal.mag_sys
 
@@ -1353,9 +1395,10 @@ def _photcal_group_to_votable_fields(photcal: dict | None, include_zero_points: 
         if zp_flux is not None and zp_mag is not None:
             fields["zero_point_flux"] = float(zp_flux)
             fields["zero_point_ref_mag"] = float(zp_mag)
-            zp_flux_unit = photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
-            if zp_flux_unit:
-                fields["zero_point_flux_unit"] = zp_flux_unit
+            # Internal ``None`` = dimensionless; ``write_vo_lightcurve`` applies wire.
+            fields["zero_point_flux_unit"] = to_internal(
+                photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT)
+            )
             mag_sys = photcal.get(PHOTCAL_KEY_MAG_SYS)
             if mag_sys:
                 fields["magnitude_system"] = mag_sys
@@ -1633,7 +1676,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
             **common_kwargs,
             flux=phot_vals,
             flux_err=err_vals,
-            flux_unit=str(volc.table[phot_col].unit or ""),
+            flux_unit=to_internal(volc.table[phot_col].unit),
             active_domain=DOMAIN_FLUX,
         )
 
@@ -1783,17 +1826,28 @@ def curvedash_to_table(lcd) -> Table:
     return t_out
 
 
-def apply_phot_domain_view(lcd, show_magnitude: bool) -> None:
+def apply_phot_domain_view(lcd, show_magnitude: bool) -> list[str]:
     """Converts the stored lightcurve to flux or magnitude view in place.
+
+    Reconciles photcal first (Ticket 7 Phase 1): incomplete defaults and
+    flux-unit-wins corrections are written into ``metadata['photcal']`` and
+    returned as warning strings for the UI.
 
     Args:
         lcd (CurveDash): Cached lightcurve to mutate.
         show_magnitude (bool): When true, convert to magnitude domain.
+
+    Returns:
+        list[str]: Photcal reconciliation warnings (empty when none).
     """
+    from skvo_veb.utils.photcal_coherence import reconcile_curve_photcal
+
+    warnings = reconcile_curve_photcal(lcd)
     if show_magnitude:
         lcd.convert_to_mag()
     else:
         lcd.convert_to_flux()
+    return warnings
 
 
 def curvedash_to_tabular_table(lcd) -> Table:

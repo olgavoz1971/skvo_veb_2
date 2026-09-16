@@ -9,6 +9,11 @@ from __future__ import annotations
 
 import math
 
+from skvo_veb.volightcurve.photcal_defaults import (
+    DEFAULT_ZP_FLUX as DEFAULT_ZP_FLUX_DIMENSIONLESS,
+    DEFAULT_ZP_MAG as DEFAULT_REFERENCE_MAG,
+)
+
 # Julian Date offset for Modified Julian Date: MJD = JD - JD_TO_MJD.
 JD_TO_MJD = 2400000.5
 
@@ -149,11 +154,8 @@ PHOTCAL_KEY_ZP_MAG = "zp_mag"
 PHOTCAL_KEY_ZP_MAG_UNIT = "zp_mag_unit"
 PHOTCAL_KEY_MAG_SYS = "mag_sys"
 
-# Fallback PhotCal when an upload lacks a complete zero-point pair (legacy
-# VSNET-style files without MAG0 / a PhotCal GROUP). Prep, GP, MAVKA, and
-# Parabola all use this pair; it is not a GP kernel parameter.
-DEFAULT_REFERENCE_MAG = 20.0
-DEFAULT_ZP_FLUX_DIMENSIONLESS = 1.0
+# PhotCal numeric fallbacks: see ``volightcurve.photcal_defaults``
+# (``DEFAULT_REFERENCE_MAG`` / ``DEFAULT_ZP_FLUX_DIMENSIONLESS`` imported above).
 
 # Keys inside ``metadata['vo_envelope']`` (mission-blind round-trip).
 VO_ENVELOPE_KEY_LIGHTCURVE_TITLE = "lightcurve_title"

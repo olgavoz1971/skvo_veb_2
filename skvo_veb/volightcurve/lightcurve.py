@@ -21,6 +21,12 @@ from gavo.votable.model import VOTable as V
 
 import logging
 
+from skvo_veb.volightcurve.vo_unit_codec import (
+    rewrite_astropy_empty_unit_attributes,
+    to_internal,
+    to_wire,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +102,9 @@ class PhotCal:
             zp_flux (float or astropy.units.Quantity, optional): Zero-point flux value.
                 Defaults to 1.0.
             zp_flux_unit (str or astropy.units.Unit, optional): Unit for the zero-point flux.
-                Defaults to None (which results in dimensionless).
+                Defaults to None (dimensionless). Empty string and Astropy ``---``
+                are normalised to ``None``. Invalid strings are retained for later
+                photcal reconcile (Ticket 7); they do not abort ingest.
             zp_mag (float or astropy.units.Quantity, optional): Zero-point magnitude value.
                 Defaults to 0.0.
             zp_mag_unit (str or astropy.units.Unit, optional): Unit for the zero-point magnitude.
@@ -105,19 +113,33 @@ class PhotCal:
                 Defaults to "Vega".
         """
         # zp_flux, unit-aware. # photDM:PhotCal.zeroPoint.flux.value
+        # Internal unitless is ``None`` (see ``vo_unit_codec``). Astropy/VO empty
+        # and ``---`` sentinels map to ``None`` here. Truly invalid strings are
+        # retained for Ticket 7 reconcile (flux-column-wins + user warning).
+        internal_flux_unit = to_internal(zp_flux_unit)
+        self._zp_flux_unit_text = internal_flux_unit
+        self._zp_flux_unit_unparsed = False
         if isinstance(zp_flux, u.Quantity):
             self._zp_flux = zp_flux
         else:
             unit = u.dimensionless_unscaled
-            if zp_flux_unit:
+            if internal_flux_unit is not None:
                 try:
-                    unit = u.Unit(zp_flux_unit)
+                    unit = u.Unit(internal_flux_unit)
                 except Exception as e:
-                    logger.warning(f"Invalid zp_flux_unit '{zp_flux_unit}': {type(e)}")
+                    logger.warning(
+                        "Invalid zp_flux_unit '%s' retained for photcal reconcile: %s",
+                        internal_flux_unit,
+                        e,
+                    )
+                    self._zp_flux_unit_unparsed = True
+                    self._zp_flux_unit_text = str(internal_flux_unit).strip()
+                    unit = u.dimensionless_unscaled
             self._zp_flux = zp_flux * unit
 
         # zp_mag  photDM:PhotCal.zeroPoint.referenceMagnitude.value
-        # Here. I hope, I can guess the default ;-)
+        self._zp_mag_unit_text = zp_mag_unit
+        self._zp_mag_unit_unparsed = False
         if isinstance(zp_mag, u.Quantity):
             self._zp_mag = zp_mag
         else:
@@ -126,7 +148,13 @@ class PhotCal:
                 try:
                     m_unit = u.Unit(zp_mag_unit)
                 except Exception as e:
-                    logger.warning(f"Invalid zp_mag_unit '{zp_mag_unit}': {type(e)}")
+                    logger.warning(
+                        "Invalid zp_mag_unit '%s' retained for photcal reconcile: %s",
+                        zp_mag_unit,
+                        e,
+                    )
+                    self._zp_mag_unit_unparsed = True
+                    m_unit = u.mag
             self._zp_mag = zp_mag * m_unit
 
         self._mag_sys = mag_sys  # photDM:PhotCal.magnitudeSystem.type
@@ -529,7 +557,9 @@ def extract_photdm(tree):
 
                     if ut == UT_FLUX.lower():
                         cal_params["zp_flux"] = float(target_param.value)
-                        cal_params["zp_flux_unit"] = getattr(target_param, "unit", None)
+                        cal_params["zp_flux_unit"] = to_internal(
+                            getattr(target_param, "unit", None)
+                        )
                     elif ut == UT_MAG.lower():
                         cal_params["zp_mag"] = float(target_param.value)
                         cal_params["zp_mag_unit"] = target_param.unit
@@ -1515,8 +1545,8 @@ class VOLightCurve:
         votable_description: str | None = None,
         creator: str | None = None,
         zero_point_flux: float | None = None,
-        # zero_point_flux_unit: str = "Jy", #    No assumption about calibrated things
-        zero_point_flux_unit: str = "",
+        # Internal: ``None`` = dimensionless (wire form is ``VO_DIMENSIONLESS_WIRE``).
+        zero_point_flux_unit: str | None = None,
         zero_point_ref_mag: float | None = None,
         zero_point_ref_mag_unit: str = "mag",
         magnitude_system: str = "Vega",
@@ -1623,7 +1653,7 @@ def write_vo_lightcurve(
     votable_description: str | None = None,
     creator: str | None = None,
     zero_point_flux: float | None = None,
-    zero_point_flux_unit: str = "",
+    zero_point_flux_unit: str | None = None,
     zero_point_ref_mag: float | None = None,
     zero_point_ref_mag_unit: str = "mag",
     magnitude_system: str = "Vega",
@@ -1666,7 +1696,8 @@ def write_vo_lightcurve(
         votable_description (str, optional): High-level global description. Defaults to None.
         creator (str, optional): Pipeline or entity creator name. Defaults to None.
         zero_point_flux (float, optional): Zero point flux value. Defaults to None.
-        zero_point_flux_unit (str, optional): Unit of zeroPointFlux.
+        zero_point_flux_unit (str, optional): Internal unit of zeroPointFlux
+            (``None`` = dimensionless; written as ``VO_DIMENSIONLESS_WIRE``).
         zero_point_ref_mag (float, optional): Reference magnitude zero point. Defaults to None.
         zero_point_ref_mag_unit (str, optional): Unit of zeroPointReferenceMagnitude. Defaults to "mag".
         magnitude_system (str, optional): Type of magnitude system. Defaults to "Vega".
@@ -1831,7 +1862,14 @@ def write_vo_lightcurve(
 
     # zeroPointFlux (Optional PARAM)
     if zero_point_flux is not None:
-        p_zpf = Param(vot_file, name='zeroPointFlux', value=float(zero_point_flux), datatype='double', unit=zero_point_flux_unit)
+        zpf_unit_wire = to_wire(to_internal(zero_point_flux_unit))
+        p_zpf = Param(
+            vot_file,
+            name='zeroPointFlux',
+            value=float(zero_point_flux),
+            datatype='double',
+            unit=zpf_unit_wire,
+        )
         p_zpf.utype = 'photDM:PhotCal.zeroPoint.flux.value'
         p_zpf.ucd = 'phot.flux;arith.zp'
         g.entries.append(p_zpf)
@@ -1946,20 +1984,20 @@ def write_vo_lightcurve(
         p_extra.description = param_desc
         tab.params.append(p_extra)
 
-    # Write to target path or stream
+    # Write to target path or stream. Astropy emits unit="---" for empty units;
+    # always rewrite to VO_DIMENSIONLESS_WIRE (see vo_unit_codec).
     tabledata_format = 'binary' if binary else 'tabledata'
     needs_ampersand_repair = bool(publication_id and "&" in str(publication_id))
+    buffer = io.BytesIO()
+    vot_file.to_xml(buffer, tabledata_format=tabledata_format)
+    payload = rewrite_astropy_empty_unit_attributes(buffer.getvalue())
     if needs_ampersand_repair:
-        buffer = io.BytesIO()
-        vot_file.to_xml(buffer, tabledata_format=tabledata_format)
-        payload = _repair_votable_xml_char_param_ampersands(buffer.getvalue())
-        if hasattr(output_stream_or_path, "write"):
-            output_stream_or_path.write(payload)
-        else:
-            with open(output_stream_or_path, "wb") as handle:
-                handle.write(payload)
+        payload = _repair_votable_xml_char_param_ampersands(payload)
+    if hasattr(output_stream_or_path, "write"):
+        output_stream_or_path.write(payload)
     else:
-        vot_file.to_xml(output_stream_or_path, tabledata_format=tabledata_format)
+        with open(output_stream_or_path, "wb") as handle:
+            handle.write(payload)
 
 
 

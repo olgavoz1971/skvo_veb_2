@@ -16,12 +16,12 @@ from dash.dependencies import ClientsideFunction
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components.message import status_alert
+from skvo_veb.components.loading import SPINNER_STYLE_COMPACT, wrap_with_spinner
 from skvo_veb.logging_config import configure_logging
 from skvo_veb.lc_providers.discovery_fetch_context import discovery_fetch_context_from_store
 from skvo_veb.lc_providers.registry import list_missions
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
-    apply_phot_domain_view,
     build_curvedash_title,
     export_curvedash,
     export_file_extension,
@@ -568,137 +568,135 @@ def _search_results_panel():
                 [
                     html.Div(
                         [
+                            html.H3(
+                                _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
+                                id='lc_discovery_catalog_header',
+                                className='fs-6 mb-0 lc-discovery-catalog-title',
+                            ),
                             html.Div(
-                                [
-                                    html.Div(
-                                        [
-                                            html.H3(
-                                                _LC_DISCOVERY_CATALOG_HEADER_DEFAULT,
-                                                id='lc_discovery_catalog_header',
-                                                className='fs-6 mb-0 lc-discovery-catalog-title',
-                                            ),
-                                            html.Div(
-                                                catalog_help_btn,
-                                                className='lc-discovery-field-help',
-                                            ),
-                                        ],
-                                        className='lc-discovery-catalog-title-row',
-                                    ),
-                                    dbc.Stack(
-                                        [
-                                            dbc.Button(
-                                                'Retrieve',
-                                                id='lc_discovery_fetch_button',
-                                                size='sm',
-                                                className='me-2',
-                                            ),
-                                            dbc.Button(
-                                                'Reretrieve',
-                                                id='lc_discovery_refetch_button',
-                                                size='sm',
-                                                outline=True,
-                                                color='warning',
-                                                className='me-2',
-                                            ),
-                                            dbc.Button(
-                                                'Cancel',
-                                                id='lc_discovery_cancel_fetch_button',
-                                                size='sm',
-                                                disabled=True,
-                                            ),
-                                        ],
-                                        direction='horizontal',
-                                        gap=2,
-                                    ),
-                                ],
-                                style={
-                                    'display': 'flex',
-                                    'justifyContent': 'space-between',
-                                    'alignItems': 'center',
-                                    'width': '100%',
-                                },
+                                catalog_help_btn,
+                                className='lc-discovery-field-help',
                             ),
                         ],
-                        className='lc-discovery-catalog-header-row',
+                        className='lc-discovery-catalog-header-left',
                     ),
                     html.Div(
-                        id='lc_discovery_catalog_truncation_notice',
-                        className='small text-warning mb-2',
-                        style={'display': 'none'},
-                    ),
-                    dbc.Row(
                         [
-                            dbc.Col(
+                            wrap_with_spinner(
                                 html.Div(
-                                    dag.AgGrid(
-                                        id='lc_discovery_catalog_table',
-                                        columnDefs=_discovery_catalog_column_defs(
-                                            _default_mission_id()
-                                        ),
-                                        rowData=[],
-                                        columnSize='autoSize',
-                                        defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
-                                        dashGridOptions={
-                                            'theme': 'themeBalham',
-                                            # 'rowHeight': 22,
-                                            # 'headerHeight': 24,
-                                            'rowSelection': {
-                                                'mode': 'singleRow',
-                                                'checkboxes': False,
-                                                # 'enableClickSelection': True,
-                                            },
-                                            'animateRows': False,
-                                            'pagination': False,
-                                            # 'paginationPageSize': 10,
-                                            'domLayout': 'normal',
-                                            # 'suppressHorizontalScroll': False,
-                                            # 'alwaysShowHorizontalScroll': True,
-                                            # 'enableCellTextSelection': True,
-                                            # "cellSelection": True,
-                                            'ensureDomOrder': True,
-                                            'getRowId': {
-                                                'function': 'params.data.lc_key'
-                                            },
-                                        },
-                                        className='lc-discovery-catalog-aggrid ag-theme-balham',
-                                        style={'height': '100%', 'width': '100%'},
-                                    ),
-                                    className='lc-discovery-catalog-grid',
+                                    id='lc_discovery_catalog_spinner_target',
+                                    className='lc-discovery-catalog-busy',
                                 ),
-                                lg=7,
-                                md=7,
-                                sm=12,
-                                xs=12,
+                                size='sm',
+                                color='primary',
+                                spinner_style=SPINNER_STYLE_COMPACT,
                             ),
-                            dbc.Col(
+                            dbc.Stack(
                                 [
-                                    html.Div(
-                                        _lc_discovery_aladin_placeholder(
-                                            'Submit a query to show sources on the sky map.'
-                                        ),
-                                        id='lc_discovery_aladin_container',
-                                        className='lc-discovery-aladin-wrap',
+                                    dbc.Button(
+                                        'Retrieve',
+                                        id='lc_discovery_fetch_button',
+                                        size='sm',
+                                        className='me-2',
                                     ),
-                                    html.P(
-                                        'Click a table row to highlight the object on the map, '
-                                        'and vice versa.',
-                                        className='lc-discovery-aladin-hint text-muted mb-0',
+                                    dbc.Button(
+                                        'Reretrieve',
+                                        id='lc_discovery_refetch_button',
+                                        size='sm',
+                                        outline=True,
+                                        color='warning',
+                                        className='me-2',
+                                    ),
+                                    dbc.Button(
+                                        'Cancel',
+                                        id='lc_discovery_cancel_fetch_button',
+                                        size='sm',
+                                        disabled=True,
                                     ),
                                 ],
-                                lg=5,
-                                md=5,
-                                sm=12,
-                                xs=12,
-                                className='lc-discovery-aladin-col',
+                                direction='horizontal',
+                                gap=2,
                             ),
                         ],
-                        className='g-2 lc-discovery-catalog-body-row',
+                        className='lc-discovery-catalog-header-actions',
                     ),
                 ],
-                id='lc_discovery_catalog_row',
+                className='lc-discovery-catalog-header-row',
             ),
-            html.Div(id='lc_discovery_search_alert'),
-            html.Div(id='lc_discovery_fetch_alert'),
+            html.Div(
+                id='lc_discovery_catalog_truncation_notice',
+                className='small text-warning mb-2',
+                style={'display': 'none'},
+            ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        html.Div(
+                            dag.AgGrid(
+                                id='lc_discovery_catalog_table',
+                                columnDefs=_discovery_catalog_column_defs(
+                                    _default_mission_id()
+                                ),
+                                rowData=[],
+                                columnSize='autoSize',
+                                defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
+                                dashGridOptions={
+                                    'theme': 'themeBalham',
+                                    # 'rowHeight': 22,
+                                    # 'headerHeight': 24,
+                                    'rowSelection': {
+                                        'mode': 'singleRow',
+                                        'checkboxes': False,
+                                        # 'enableClickSelection': True,
+                                    },
+                                    'animateRows': False,
+                                    'pagination': False,
+                                    # 'paginationPageSize': 10,
+                                    'domLayout': 'normal',
+                                    # 'suppressHorizontalScroll': False,
+                                    # 'alwaysShowHorizontalScroll': True,
+                                    # 'enableCellTextSelection': True,
+                                    # "cellSelection": True,
+                                    'ensureDomOrder': True,
+                                    'getRowId': {
+                                        'function': 'params.data.lc_key'
+                                    },
+                                },
+                                className='lc-discovery-catalog-aggrid ag-theme-balham',
+                                style={'height': '100%', 'width': '100%'},
+                            ),
+                            className='lc-discovery-catalog-grid',
+                        ),
+                        lg=7,
+                        md=7,
+                        sm=12,
+                        xs=12,
+                    ),
+                    dbc.Col(
+                        [
+                            html.Div(
+                                _lc_discovery_aladin_placeholder(
+                                    'Submit a query to show sources on the sky map.'
+                                ),
+                                id='lc_discovery_aladin_container',
+                                className='lc-discovery-aladin-wrap',
+                            ),
+                            html.P(
+                                'Click a table row to highlight the object on the map, '
+                                'and vice versa.',
+                                className='lc-discovery-aladin-hint text-muted mb-0',
+                            ),
+                        ],
+                        lg=5,
+                        md=5,
+                        sm=12,
+                        xs=12,
+                        className='lc-discovery-aladin-col',
+                    ),
+                ],
+                className='g-2 lc-discovery-catalog-body-row',
+            ),
+            html.Div(id='lc_discovery_catalog_alert'),
             catalog_help_pop,
         ],
         lg=9,
@@ -761,7 +759,7 @@ def _lightcurve_tools_panel():
     return dbc.Col(
         [
             dbc.Label(
-                'Light curve tools',
+                'Lightcurve tools',
                 style={'display': 'flex', 'justify-content': 'center'},
             ),
             dbc.Button(
@@ -911,7 +909,6 @@ def _lightcurve_graph_panel():
     """
     return dbc.Col(
         [
-            html.Div(id='lc_discovery_plot_alert'),
             dbc.Row(
                 [
                     dcc.Graph(
@@ -967,6 +964,10 @@ def _lightcurve_graph_panel():
                 ],
                 class_name=row_class_name,
             ),
+            html.Div(
+                id='lc_discovery_plot_alert',
+                className='lc-discovery-plot-alert',
+            ),
         ],
         lg=10,
         md=9,
@@ -1011,7 +1012,7 @@ def layout():
                         ],
                     ),
                     dbc.Tab(
-                        label='Light curve',
+                        label='Lightcurve',
                         tab_id='lc_discovery_plot_tab',
                         id='lc_discovery_plot_tab',
                         disabled=True,
@@ -1054,8 +1055,8 @@ def layout():
     Output('lc_discovery_object_card', 'style', allow_duplicate=True),
     Output('lc_discovery_search_status', 'children', allow_duplicate=True),
     Output('lc_discovery_search_status', 'style', allow_duplicate=True),
-    Output('lc_discovery_search_alert', 'children', allow_duplicate=True),
-    Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
+    Output('lc_discovery_catalog_alert', 'children', allow_duplicate=True),
+    Output('lc_discovery_catalog_spinner_target', 'children', allow_duplicate=True),
     Output('store_lc_discovery_catalog', 'data', allow_duplicate=True),
     Output('store_lc_discovery_resolved_target', 'data', allow_duplicate=True),
     Input('lc_discovery_submit_query_button', 'n_clicks'),
@@ -1116,8 +1117,9 @@ def submit_catalog_search(
 
     set_props('lc_discovery_object_card', {'style': {'display': 'none'}})
     set_props('lc_discovery_object_card_markdown', {'children': ''})
-    set_props('lc_discovery_search_alert', {'children': None})
-    set_props('lc_discovery_fetch_alert', {'children': None})
+    set_props('lc_discovery_catalog_alert', {'children': None})
+    # Same strip as Retrieve: spinner in the catalogue header (not on the tools log).
+    set_props('lc_discovery_catalog_spinner_target', {'children': ''})
 
     def _update_search_status(message: str) -> None:
         """Replaces the Discovery status bar with the current search step.
@@ -1499,7 +1501,7 @@ def restore_lc_discovery_tabs(user_tab_id):
         raise PreventUpdate
     if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
         raise PreventUpdate
-    logger.info('Discovery restored Light curve tab from session cache.')
+    logger.info('Discovery restored Lightcurve tab from session cache.')
     return False, 'lc_discovery_plot_tab'
 
 
@@ -1623,7 +1625,8 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         epoch_val=Output('lc_discovery_epoch_input', 'value', allow_duplicate=True),
         mag_switch=Output('lc_discovery_mag_switch', 'value', allow_duplicate=True),
         fold_switch=Output('lc_discovery_fold_switch', 'value', allow_duplicate=True),
-        fetch_alert_message=Output('lc_discovery_fetch_alert', 'children', allow_duplicate=True),
+        fetch_spinner=Output('lc_discovery_catalog_spinner_target', 'children', allow_duplicate=True),
+        catalog_alert_message=Output('lc_discovery_catalog_alert', 'children', allow_duplicate=True),
         plot_tab_disabled=Output('lc_discovery_plot_tab', 'disabled', allow_duplicate=True),
         active_tab=Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
         selected_perm=Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
@@ -1682,6 +1685,9 @@ def fetch_lc_discovery_lightcurve(
     if not ctx.triggered_id or not lc_key:
         raise PreventUpdate
 
+    set_props('lc_discovery_catalog_spinner_target', {'children': ''})
+    set_props('lc_discovery_catalog_alert', {'children': None})
+
     force_refresh = ctx.triggered_id == 'lc_discovery_refetch_button'
     catalog_row = catalog_row_for_lc_key(row_data, lc_key)
     if catalog_row is None:
@@ -1695,7 +1701,8 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=status_alert(
+            fetch_spinner=None,
+            catalog_alert_message=status_alert(
                 'Selected row is no longer in the catalogue table.',
                 'warning',
             ),
@@ -1716,7 +1723,8 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=status_alert(
+            fetch_spinner=None,
+            catalog_alert_message=status_alert(
                 'Selected row does not match the current mission.',
                 'warning',
             ),
@@ -1772,7 +1780,8 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=_display_epoch_value(lcd),
             mag_switch=lcd.active_domain == DOMAIN_MAG,
             fold_switch=lcd.folded_view,
-            fetch_alert_message=None,
+            fetch_spinner=None,
+            catalog_alert_message=None,
             plot_tab_disabled=False,
             active_tab='lc_discovery_plot_tab',
             selected_perm=[],
@@ -1790,7 +1799,8 @@ def fetch_lc_discovery_lightcurve(
             epoch_val=no_update,
             mag_switch=no_update,
             fold_switch=no_update,
-            fetch_alert_message=status_alert(str(exc), 'warning'),
+            fetch_spinner=None,
+            catalog_alert_message=status_alert(str(exc), 'warning'),
             plot_tab_disabled=no_update,
             active_tab=no_update,
             selected_perm=no_update,
@@ -1978,7 +1988,11 @@ def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
         if lcd.active_domain == desired_domain:
             raise PreventUpdate
 
-        apply_phot_domain_view(lcd, show_magnitude)
+        # Convert using provider photcal as stored — never reconcile/rewrite.
+        if show_magnitude:
+            lcd.convert_to_mag()
+        else:
+            lcd.convert_to_flux()
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('lc_discovery_plot_alert', {'children': None})
         return _bump_lc_revision(), no_update
@@ -1986,6 +2000,7 @@ def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
         raise
     except Exception as exc:
         logger.warning('lightcurve_discovery.toggle_lc_discovery_mag_view: %s', exc)
+        # Same alert style as Processor (warning, not danger): plain British English.
         set_props(
             'lc_discovery_plot_alert',
             {'children': status_alert(str(exc), 'warning')},

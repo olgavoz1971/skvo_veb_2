@@ -13,6 +13,9 @@
     --lcp-caution: #c05621;
     --lcp-caution-hover: #8f3d13;
     --lcp-plot-height: clamp(20rem, 55vh, 40rem);
+    /* ZP flux row: enlarge value vs unit (tweak these two). */
+    --lcp-photcal-zp-value-flex: 4 1 0;
+    --lcp-photcal-zp-unit-flex: 0 0 3.5rem;
 }
 
 .lcp-page {
@@ -178,6 +181,7 @@
 .lcp-sidebar .form-check,
 .lcp-plot-toolbar .form-check {
     margin-bottom: 0;
+    min-height: 0;
 }
 
 .lcp-sidebar-block {
@@ -187,11 +191,55 @@
     margin-bottom: var(--lcp-space-lg);
 }
 
+/* Collapsed drawer sections sit closer than full control blocks. */
+.lcp-drawer-collapse-section {
+    margin-top: 0;
+    margin-bottom: var(--lcp-space-sm);
+}
+
+.lcp-drawer-collapse-section .lcp-sidebar-heading-row {
+    margin-bottom: 0;
+}
+
+/* Space above a collapse: drop the previous block's bottom margin entirely. */
+.lcp-sidebar-block:has(+ .lcp-drawer-collapse-section) {
+    margin-bottom: 0;
+}
+
 .lcp-sidebar-heading-row {
     display: flex;
     align-items: center;
     gap: var(--lcp-space-xs);
     margin-bottom: var(--lcp-space-xs);
+}
+
+.lcp-drawer-collapse-btn {
+    padding: 0;
+    margin: 0;
+    line-height: 1;
+    color: inherit;
+}
+
+.lcp-drawer-collapse-btn:hover,
+.lcp-drawer-collapse-btn:focus-visible {
+    color: inherit;
+}
+
+.lcp-drawer-collapse-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--lcp-space-xs);
+}
+
+/* Calibration ZP flux: value grows; unit stays narrow. Tokens in :root above. */
+.lcp-page .skvo-photcal-zp-flux-group .skvo-photcal-zp-value {
+    flex: var(--lcp-photcal-zp-value-flex);
+    min-width: 0;
+}
+
+.lcp-page .skvo-photcal-zp-flux-group .skvo-photcal-zp-unit {
+    flex: var(--lcp-photcal-zp-unit-flex);
+    min-width: 0;
 }
 
 .lcp-field-help {

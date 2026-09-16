@@ -20,7 +20,7 @@ CALIBRATION_PHYSICAL = "physical"
 CALIBRATION_NORMALIZED_CATALOG = "normalized_catalog"
 
 UNIT_PHYSICAL_ELECTRON_S = "electron s-1"
-UNIT_DIMENSIONLESS = ""
+UNIT_DIMENSIONLESS = None
 
 
 @dataclass(frozen=True)
@@ -419,7 +419,7 @@ def background_available(author: str, colnames: Sequence[str]) -> bool:
     return True
 
 
-def storage_flux_unit_for_selection(author: str, flux_method: str) -> str:
+def storage_flux_unit_for_selection(author: str, flux_method: str) -> str | None:
     """Returns the serialised flux-unit label for a flux-column selection.
 
     Args:
@@ -427,7 +427,7 @@ def storage_flux_unit_for_selection(author: str, flux_method: str) -> str:
         flux_method (str): ``default``, ``background``, or a photometry column name.
 
     Returns:
-        str: Unit string for ``CurveDash`` metadata.
+        str or None: Unit string for ``CurveDash`` metadata (``None`` = dimensionless).
     """
     if flux_method == FLUX_METHOD_BACKGROUND:
         bkg = get_background_spec(author)

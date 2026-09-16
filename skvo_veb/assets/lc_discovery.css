@@ -53,6 +53,44 @@
     border-radius: var(--lc-discovery-radius-sm);
 }
 
+/* Compact spinner reserved before Retrieve in the header actions group. */
+.lc-discovery-catalog-busy {
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+}
+
+.lc-discovery-catalog-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--lc-discovery-space-md);
+    margin-bottom: var(--lc-discovery-space-md);
+}
+
+.lc-discovery-catalog-header-left {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.lc-discovery-catalog-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--lc-discovery-space-md);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.lc-discovery-catalog-title {
+    line-height: 1.25;
+    word-break: break-word;
+    min-width: 0;
+}
+
 .lc-discovery-field-row {
     display: grid;
     align-items: center;
@@ -167,28 +205,6 @@
     overflow-y: auto;
     font-size: var(--lc-discovery-text-sm, 0.85rem);
     line-height: 1.45;
-}
-
-.lc-discovery-catalog-header-row {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: var(--lc-discovery-space-md);
-    margin-bottom: var(--lc-discovery-space-md);
-}
-
-.lc-discovery-catalog-title-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    width: 100%;
-    min-width: 0;
-}
-
-.lc-discovery-catalog-title {
-    line-height: 1.25;
-    word-break: break-word;
 }
 
 .lc-discovery-catalog-grid {
@@ -344,4 +360,9 @@
     .lc-discovery-tabs.nav-tabs {
         scroll-behavior: auto;
     }
+}
+
+.lc-discovery-plot-alert {
+    margin-top: var(--lc-discovery-space-md);
+    width: 100%;
 }

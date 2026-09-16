@@ -331,7 +331,7 @@ def fold_interpolated(
     *,
     n_grid: int = 5000,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fold a light curve by integrating ``dE/dt = 1/P(t)``.
+    """Fold a lightcurve by integrating ``dE/dt = 1/P(t)``.
 
     Args:
         t_lc (numpy.ndarray): Light-curve timestamps (days).

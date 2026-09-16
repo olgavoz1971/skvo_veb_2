@@ -66,6 +66,14 @@
     margin-bottom: var(--gp-page-header-gap);
 }
 
+.gp-lc-photcal-alert:not(:empty) {
+    margin-top: var(--gp-space-xs);
+}
+
+.gp-lc-photcal-alert .alert {
+    white-space: pre-wrap;
+}
+
 .gp-data-bar {
     display: flex;
     flex-wrap: wrap;
@@ -428,9 +436,9 @@
     line-height: 1.3;
 }
 
-/* Both registry actions are inline text: they only edit the interval list, never the
- * light curve. Severity is carried by the tint — caution for a filtered removal,
- * danger for wiping the list.
+/* Interval list clear actions: also used in the prep plot toolbar next to
+ * Add interval. Severity is carried by the tint — caution for a filtered
+ * removal, danger for wiping the list.
  */
 .gp-registry-header-actions {
     display: flex;

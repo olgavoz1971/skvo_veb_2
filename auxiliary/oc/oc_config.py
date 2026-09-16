@@ -140,7 +140,7 @@ def _apply_from_template_run(study: dict[str, Any], base: Path) -> dict[str, Any
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 
-    from manifest_config import load_manifest
+    from manifest_config import load_manifest  # pyright: ignore[reportMissingImports]
 
     manifest = load_manifest(manifest_path, validate_intervals=False)
     study = dict(study)
@@ -249,7 +249,7 @@ def load_oc_config(path: Path) -> OcStudyConfig:
         lightcurve_path = _resolve_path(base, str(lc_raw["path"]))
         photometry_domain = str(lc_raw.get("photometry_domain", "mag"))
         if not lightcurve_path.is_file():
-            raise FileNotFoundError(f"light curve not found: {lightcurve_path}")
+            raise FileNotFoundError(f"lightcurve not found: {lightcurve_path}")
 
     if tasks["fit_parabolic_ephemeris"] and lightcurve_path is None:
         raise ValueError(

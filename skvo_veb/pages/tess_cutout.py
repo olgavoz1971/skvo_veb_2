@@ -35,6 +35,11 @@ from lightkurve.correctors import PLDCorrector
 import dash_ag_grid as dag
 
 from skvo_veb.components import message
+from skvo_veb.components.loading import (
+    SPINNER_STYLE_CENTERED,
+    SPINNER_STYLE_COMPACT,
+    wrap_with_spinner,
+)
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils import tess_processor
 from skvo_veb.utils.page_session import SESSION_STORE, table_rows_from_lk_search_dict
@@ -125,18 +130,18 @@ def layout():
                             ],
                             value='tpf',
                             labelStyle={'display': 'inline-block', 'padding': '5px'}),
-                        dbc.Spinner(
-                            children=html.Div(
+                        wrap_with_spinner(
+                            html.Div(
                                 id='div_tess_tools_alert',
                                 style={'display': 'none', 'marginTop': '8px'},
                             ),
                             size='sm',
-                            spinner_style={'width': '2rem', 'height': '2rem'},
+                            spinner_style=SPINNER_STYLE_COMPACT,
                         ),
                     ], md=3, sm=4, xs=12,
                         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),  # SearchTools
                     dbc.Col([
-                        dbc.Spinner(children=[
+                        wrap_with_spinner([
                             html.Div([
                                 html.Div([
                                     html.H3("Search results", id="table_tess_header"),
@@ -176,14 +181,15 @@ def layout():
                         ]),
                     ], md=9, sm=8, xs=12),  # SearchResult table
                 ], style={'marginBottom': '10px'}),  # Search and SearchResults
-                dbc.Spinner(children=[
-                    dbc.Label(id="download_sector_result", children='',
-                              style={"color": "green", "text-align": "center"}),
-                    html.Div(id='div_tess_download_alert', style={"display": "none"}),  # Alert
-                ], spinner_style={
-                    "align-items": "center",
-                    "justify-content": "center",
-                }, color="primary")
+                wrap_with_spinner(
+                    [
+                        dbc.Label(id="download_sector_result", children='',
+                                  style={"color": "green", "text-align": "center"}),
+                        html.Div(id='div_tess_download_alert', style={"display": "none"}),  # Alert
+                    ],
+                    color="primary",
+                    spinner_style=SPINNER_STYLE_CENTERED,
+                )
             ],
                     tab_id='tess_search_tab',
                     id='tess_search_tab',
