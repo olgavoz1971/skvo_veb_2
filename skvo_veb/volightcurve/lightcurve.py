@@ -824,6 +824,8 @@ def is_magnitude_phot_column(table: Table, colname: str = "phot") -> bool:
     """Detects whether a ``phot`` column holds magnitudes rather than flux.
 
     Uses column unit and UCD metadata following VO photometry conventions.
+    When unit and UCD are both absent (ambiguous non-VO ``phot``), defaults to
+    **magnitude** (Ticket 8 Phase 2b).
 
     Args:
         table (astropy.table.Table): Source table.
@@ -847,7 +849,11 @@ def is_magnitude_phot_column(table: Table, colname: str = "phot") -> bool:
         return True
     if "phot.flux" in ucd:
         return False
-    return False
+    # Non-magnitude unit present (e.g. Jy) ⇒ flux.
+    if col.unit is not None:
+        return False
+    # Ambiguous bare ``phot`` (no unit, no UCD) ⇒ magnitude.
+    return True
 
 
 def assign_photometry_column_semantics(
@@ -938,7 +944,10 @@ def _promote_to_vo_standards(table):
             if col.info.meta is None:
                 col.info.meta = {}
             if name_low == 'phot':
-                ucd = 'phot.mag' if is_magnitude_phot_column(table, colname) else 'phot.flux;em.opt'
+                is_mag_phot = is_magnitude_phot_column(table, colname)
+                ucd = 'phot.mag' if is_mag_phot else 'phot.flux;em.opt'
+                if is_mag_phot and not col.unit:
+                    col.unit = u.mag
             elif 'mag' in name_low:
                 ucd = 'phot.mag'
             elif 'flux' in name_low:
@@ -1034,7 +1043,7 @@ def _pickup_epoch_from_table(table):
 
 
 _DAT_METADATA_COMMENT = re.compile(
-    r"(?:JD0|MAG0|PERIOD|EPOCH|FILTER|BAND)\s*=",
+    r"(?:JD0|MAG0|PERIOD|EPOCH|FILTER|BAND|ZP_FLUX|ZP_MAG|MAG_SYS)\s*=",
     re.IGNORECASE,
 )
 
@@ -1046,10 +1055,12 @@ def _is_dat_metadata_comment_line(line: str) -> bool:
         line (str): One entry from ``table.meta['comments']`` (without leading ``#``).
 
     Returns:
-        bool: True for lines such as ``JD0 = 0`` or ``FILTER=Gaia/GAIA3.G``.
+        bool: True for first-class calibration assignments.
     """
+    from skvo_veb.volightcurve.io_keywords import is_metadata_assignment_line
+
     text = line.strip().lstrip("#").strip()
-    return bool(_DAT_METADATA_COMMENT.search(text))
+    return is_metadata_assignment_line(text) or bool(_DAT_METADATA_COMMENT.search(text))
 
 
 def _pickup_filter_from_table(table):
@@ -1135,67 +1146,131 @@ def _recover_lc_colnames(table):
 
 
 def apply_non_votable_heuristics(volc: "VOLightCurve") -> None:
-    """Apply column promotion and comment-header metadata for non-VOTable tables.
+    """Apply column promotion and comment/flat-meta calibration for non-VOTable tables.
 
     Mutates ``volc.table``, ``volc.timesys``, and ``volc.photdms`` in place.
-    Comment-line conventions (primarily ``.dat`` uploads) include ``JD0=`` (default 0),
-    ``MAG0=``, ``PERIOD=``, ``EPOCH=``, and ``FILTER=`` / ``BAND=``.
+    Uses the shared Ticket 8 vocabulary (``JD0``, ``ZP_*``, ``FILTER``, …) from
+    ``#`` comments and flat ECSV ``meta`` keys. Legacy ``MAG0`` alone still implies
+    instrumental ``ZP_FLUX = 1`` dimensionless on ingest only.
 
     Args:
         volc (VOLightCurve): Parsed instance with ``table`` already assigned.
     """
+    from skvo_veb.volightcurve.io_keywords import (
+        KEY_EFFECTIVE_WAVELENGTH,
+        KEY_EFFECTIVE_WAVELENGTH_UNIT,
+        KEY_EPOCH,
+        KEY_FILTER,
+        KEY_FILTER_NAME,
+        KEY_JD0,
+        KEY_MAG_SYS,
+        KEY_PERIOD,
+        KEY_ZP_FLUX,
+        KEY_ZP_FLUX_UNIT,
+        KEY_ZP_MAG,
+        KEY_ZP_MAG_UNIT,
+    )
+    from skvo_veb.volightcurve.io_meta import merge_calibration_sources
+
     volc.table = _recover_lc_colnames(volc.table)
     volc.table = _promote_to_vo_standards(volc.table)
-    volc.timesys.timeorigin = _pickup_jd0_from_table(volc.table)
     if volc.table.meta is None:
         volc.table.meta = {}
-    period = _pickup_period_from_table(volc.table)
-    if period is not None:
-        volc.table.meta["period"] = period
-    epoch = _pickup_epoch_from_table(volc.table)
-    if epoch is not None:
-        volc.table.meta["epoch"] = epoch
-    heur_filter_id = _pickup_filter_from_table(volc.table)
+
+    calibration = merge_calibration_sources(
+        (volc.table.meta or {}).get("comments"),
+        volc.table.meta,
+    )
+
+    if KEY_JD0 in calibration:
+        volc.timesys.timeorigin = float(calibration[KEY_JD0])
+    else:
+        volc.timesys.timeorigin = _pickup_jd0_from_table(volc.table)
+
+    if KEY_PERIOD in calibration:
+        volc.table.meta["period"] = float(calibration[KEY_PERIOD])
+    else:
+        period = _pickup_period_from_table(volc.table)
+        if period is not None:
+            volc.table.meta["period"] = period
+
+    if KEY_EPOCH in calibration:
+        volc.table.meta["epoch"] = float(calibration[KEY_EPOCH])
+    else:
+        epoch = _pickup_epoch_from_table(volc.table)
+        if epoch is not None:
+            volc.table.meta["epoch"] = epoch
+
+    heur_filter_id = calibration.get(KEY_FILTER) or _pickup_filter_from_table(volc.table)
     if heur_filter_id:
         volc.table.meta["filter"] = heur_filter_id
-    heur_mag0 = _pickup_mag0_from_table(volc.table)
-    mag0_in_comments = _mag0_declared_in_comments(volc.table)
+    if KEY_FILTER_NAME in calibration:
+        volc.table.meta["filter_name"] = str(calibration[KEY_FILTER_NAME])
+
+    has_zp_mag = KEY_ZP_MAG in calibration
+    has_zp_flux = KEY_ZP_FLUX in calibration
+    # Mag-only keyword (MAG0 or ZP_MAG without ZP_FLUX) → instrumental flux ZP 1.
+    mag_only = has_zp_mag and not has_zp_flux
+    build_photcal = (has_zp_mag and has_zp_flux) or mag_only
+    if build_photcal:
+        zp_mag = float(calibration[KEY_ZP_MAG])
+        zp_mag_unit = calibration.get(KEY_ZP_MAG_UNIT) or "mag"
+        mag_sys = calibration.get(KEY_MAG_SYS) or "Vega"
+        if has_zp_flux:
+            zp_flux = float(calibration[KEY_ZP_FLUX])
+            zp_flux_unit = calibration.get(KEY_ZP_FLUX_UNIT)
+        else:
+            zp_flux = 1.0
+            zp_flux_unit = None
+    else:
+        zp_mag = zp_flux = zp_flux_unit = zp_mag_unit = mag_sys = None
+
+    spectral_location = calibration.get(KEY_EFFECTIVE_WAVELENGTH)
+    spectral_unit = calibration.get(KEY_EFFECTIVE_WAVELENGTH_UNIT)
 
     for colname in volc.get_flux_colnames() + volc.get_mag_colnames():
         photdm = volc.photdms.get(colname, None)
+        new_filter = PhotometryFilter(
+            filter_id=heur_filter_id,
+            spectral_location=spectral_location,
+            spectral_location_unit=spectral_unit,
+        )
+        photcal = None
+        if build_photcal:
+            photcal = PhotCal(
+                zp_flux=zp_flux,
+                zp_flux_unit=zp_flux_unit,
+                zp_mag=zp_mag,
+                zp_mag_unit=zp_mag_unit,
+                mag_sys=mag_sys,
+            )
 
         if photdm is None:
-            new_filter = (
-                PhotometryFilter(filter_id=heur_filter_id)
-                if heur_filter_id
-                else PhotometryFilter()
-            )
-            if mag0_in_comments:
-                photcal = PhotCal(
-                    zp_flux=1.0,
-                    zp_flux_unit=None,
-                    zp_mag=heur_mag0,
-                    zp_mag_unit="mag",
-                )
-            else:
-                photcal = None
             volc.photdms[colname] = PhotDM(photcal=photcal, photometry_filter=new_filter)
         else:
-            if heur_filter_id and photdm.filter_id is None:
+            if heur_filter_id and (
+                photdm.filter_id is None or photdm.filter_id == "Unknown"
+            ):
                 photdm.filter_id = heur_filter_id
-            if mag0_in_comments:
-                photdm.mag0 = heur_mag0
+            if build_photcal:
                 if photdm.photcal is None:
-                    photdm.photcal = PhotCal(
-                        zp_flux=1.0,
-                        zp_flux_unit=None,
-                        zp_mag=heur_mag0,
-                        zp_mag_unit="mag",
-                    )
+                    photdm.photcal = photcal
+                else:
+                    if has_zp_mag:
+                        photdm.mag0 = zp_mag
+                    if has_zp_flux:
+                        photdm.photcal.zp_flux = zp_flux
 
 
 def _mag0_declared_in_comments(table) -> bool:
-    """Return True when a ``MAG0=`` assignment appears in table comment metadata."""
+    """Return True when a ``MAG0=`` assignment appears in table comment metadata.
+
+    Args:
+        table (astropy.table.Table): Table with optional ``meta['comments']``.
+
+    Returns:
+        bool: True when legacy ``MAG0`` is present in comments.
+    """
     pattern = re.compile(r"MAG0\s*=\s*([+-]?\d*\.?\d+)")
     for line in table.meta.get("comments", []):
         if pattern.search(line.upper()):

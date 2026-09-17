@@ -230,7 +230,7 @@ def test_replace_series_keeps_period_epoch_and_envelope():
     assert list(lcd.phot) == [0.99, 1.01]
     assert list(lcd.label) == ["a", "c"]
     text = export_curvedash(lcd, "ascii.ecsv").decode("utf-8")
-    assert "period: 0.41" in text
+    assert "PERIOD: 0.41" in text or "period: 0.41" in text
 
 
 def test_ecsv_export_includes_sidebar_period_and_epoch():
@@ -239,5 +239,6 @@ def test_ecsv_export_includes_sidebar_period_and_epoch():
     lcd = curvedash_from_transport_json(payload, source_name="t.dat")
     apply_export_ephemeris(lcd, 0.41, 59883.12, display_epoch=DEFAULT_EPOCH_JD)
     text = export_curvedash(lcd, "ascii.ecsv").decode("utf-8")
-    assert "period: 0.41" in text
-    assert f"epoch: {59883.12 + DEFAULT_EPOCH_JD}" in text
+    assert "PERIOD: 0.41" in text or "period: 0.41" in text
+    assert "EPOCH:" in text.upper()
+    assert str(59883.12 + DEFAULT_EPOCH_JD) in text

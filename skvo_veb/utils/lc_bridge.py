@@ -1,7 +1,6 @@
 import io
 import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
@@ -10,10 +9,12 @@ from astropy import units as u
 from astropy.table import Table
 
 from skvo_veb.utils.lc_config import (
+    DEFAULT_EPOCH_JD,
     DOMAIN_FLUX,
     DOMAIN_MAG,
     EXPORT_FORMATS,
     JD_TO_MJD,
+    METADATA_KEY_FILE_COMMENTS,
     METADATA_KEY_VO_ENVELOPE,
     METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
@@ -46,6 +47,14 @@ from skvo_veb.volightcurve import (
     is_magnitude_phot_column,
     write_vo_lightcurve,
 )
+from skvo_veb.volightcurve.io import (
+    assemble_volightcurve,
+    read_lightcurve,
+    write_lightcurve,
+)
+from skvo_veb.volightcurve.io_dat import read_dat_table
+from skvo_veb.volightcurve.io_errors import LightcurveIOError
+from skvo_veb.volightcurve.io_meta import narrative_file_comments
 from skvo_veb.volightcurve.time_reference import (
     export_absolute_jd_as_time_offset,
     normalise_table_epoch_to_absolute_jd,
@@ -102,21 +111,41 @@ def read_to_volc(file_source):
         raise
 
 
-_LEGACY_DAT_COLUMN_COUNT = 3
-_LEGACY_DAT_COLUMN_HINT = "jd, mag, mag_err"
-
-# Must match label-like columns handled in ``volc_to_curvedash`` / export.
-_DAT_FREE_TEXT_COLUMNS = frozenset({"label", "sector", "flag"})
-
-_DAT_METADATA_COMMENT = re.compile(
-    r"(?:JD0|MAG0|PERIOD|EPOCH|FILTER|BAND)\s*=",
-    re.IGNORECASE,
-)
-
-
 _UPLOAD_ERROR_MAX_CHARS = 400
 _UPLOAD_ERROR_MAX_LINES = 6
 _UPLOAD_ERROR_DUMP_TAIL = " Full details were logged on the server."
+
+
+def _map_io_error(exc: BaseException) -> PipeException:
+    """Maps volightcurve I/O failures to ``PipeException`` for UI surfaces.
+
+    Args:
+        exc (BaseException): Error from ``read_lightcurve`` / ``write_lightcurve``.
+
+    Returns:
+        PipeException: User-facing wrapper preserving the original message.
+    """
+    if isinstance(exc, PipeException):
+        return exc
+    return PipeException(str(exc))
+
+
+def _read_dat_upload_table(file_source) -> Table:
+    """Compatibility wrapper: strict ``.dat`` parse via ``volightcurve.io_dat``.
+
+    Args:
+        file_source: Path or readable binary stream.
+
+    Returns:
+        astropy.table.Table: Parsed rows with ``meta['comments']`` populated.
+
+    Raises:
+        PipeException: On encoding issues, empty files, or ragged rows.
+    """
+    try:
+        return read_dat_table(file_source)
+    except LightcurveIOError as exc:
+        raise _map_io_error(exc) from exc
 
 
 def _first_nonempty_line(text: str) -> str:
@@ -180,190 +209,6 @@ def format_user_upload_error(exc: BaseException) -> str:
     return first
 
 
-def _is_dat_metadata_comment_line(line: str) -> bool:
-    """True when a ``#`` comment carries ``KEY=value`` metadata, not column names.
-
-    Args:
-        line (str): Comment text without the leading ``#``.
-
-    Returns:
-        bool: True for lines such as ``JD0 = 0`` or ``FILTER=Gaia/GAIA3.G``.
-    """
-    text = line.strip().lstrip("#").strip()
-    return bool(_DAT_METADATA_COMMENT.search(text))
-
-
-def _dat_column_label_hint(col_names: list[str] | None) -> str:
-    """Builds a parenthetical column hint for strict ``.dat`` row errors.
-
-    Args:
-        col_names (list, optional): Header names from a ``#`` comment line.
-
-    Returns:
-        str: Comma-separated names or the legacy default hint.
-    """
-    if col_names:
-        return ", ".join(col_names)
-    return _LEGACY_DAT_COLUMN_HINT + " (legacy default)"
-
-
-def _dat_column_accepts_free_text(col_name: str) -> bool:
-    """True when a declared ``.dat`` column holds arbitrary strings (e.g. ``label``).
-
-    Args:
-        col_name (str): Column name from the ``# jd mag ...`` header comment.
-
-    Returns:
-        bool: True for ``label``, ``sector``, and ``flag`` (case-insensitive).
-    """
-    return col_name.lower() in _DAT_FREE_TEXT_COLUMNS
-
-
-def _parse_dat_cell(col_name: str, token: str, line_no: int, stripped: str):
-    """Parses one whitespace-separated ``.dat`` field for table construction.
-
-    Photometry and time columns must be numeric (``nan`` / ``NaN`` allowed). Free-text
-    columns keep the raw token for promotion in ``VOLightCurve``.
-
-    Args:
-        col_name (str): Header column name for this field.
-        token (str): Field text from the row.
-        line_no (int): Source line number for errors.
-        stripped (str): Full stripped row text for errors.
-
-    Returns:
-        float or str: Cell value for the Astropy column.
-
-    Raises:
-        PipeException: When a numeric column is not numeric.
-    """
-    if _dat_column_accepts_free_text(col_name):
-        return token
-    if token.lower() == "nan":
-        return float("nan")
-    try:
-        return float(token)
-    except ValueError as exc:
-        raise PipeException(
-            f"Invalid .dat row at line {line_no}: column {col_name!r} expects a "
-            f"numeric value, got {token!r}.\n"
-            f"Offending line: {stripped}"
-        ) from exc
-
-
-def _read_dat_upload_table(file_source) -> Table:
-    """Reads a ``.dat`` upload with strict row validation and full ``#`` metadata.
-
-    Comment lines are stored in ``table.meta['comments']`` (text without ``#``).
-    Data rows must have a fixed token count: from the first non-metadata ``#`` header
-    whose word count matches the data width, or exactly three columns for legacy files.
-    Column typing follows the header names (``label`` / ``sector`` / ``flag`` stay
-    strings); promotion to VO standards runs in ``VOLightCurve.from_table``.
-
-    Args:
-        file_source: Path or readable binary stream.
-
-    Returns:
-        astropy.table.Table: Parsed rows with ``meta['comments']`` populated.
-
-    Raises:
-        PipeException: On encoding issues, empty files, or ragged rows; numeric columns only.
-    """
-    if hasattr(file_source, "seek"):
-        file_source.seek(0)
-    if hasattr(file_source, "read"):
-        raw = file_source.read()
-    else:
-        raw = Path(file_source).read_bytes()
-    if isinstance(raw, str):
-        text = raw
-    else:
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise PipeException(
-                "Invalid .dat file: content is not valid UTF-8 text."
-            ) from exc
-
-    comments: list[str] = []
-    data_rows: list[tuple[int, list[str], str]] = []
-
-    for line_no, line in enumerate(text.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            comments.append(stripped.lstrip("#").strip())
-            continue
-        tokens = stripped.split()
-        data_rows.append((line_no, tokens, stripped))
-
-    if not data_rows:
-        raise PipeException("Invalid .dat file: no data rows found.")
-
-    first_line_no, first_tokens, _ = data_rows[0]
-    n_data = len(first_tokens)
-    for line_no, tokens, stripped in data_rows[1:]:
-        if len(tokens) != n_data:
-            raise PipeException(
-                f"Invalid .dat row at line {line_no}: expected {n_data} columns "
-                f"(same as first data row at line {first_line_no}), got {len(tokens)}.\n"
-                f"Offending line: {stripped}"
-            )
-
-    header_names: list[str] | None = None
-    header_candidates: list[list[str]] = []
-    for comment in comments:
-        if _is_dat_metadata_comment_line(comment):
-            continue
-        parts = comment.split()
-        if parts:
-            header_candidates.append(parts)
-
-    for parts in header_candidates:
-        if len(parts) == n_data:
-            header_names = parts
-            break
-
-    if header_names is None and header_candidates:
-        declared = header_candidates[0]
-        raise PipeException(
-            f"Invalid .dat file: column header declares {len(declared)} columns "
-            f"({', '.join(declared)}) but data rows have {n_data} columns "
-            f"(first data row at line {first_line_no})."
-        )
-
-    if header_names is None:
-        if n_data != _LEGACY_DAT_COLUMN_COUNT:
-            raise PipeException(
-                f"Invalid .dat file: no column header comment with {n_data} names "
-                f"and data rows have {n_data} columns; legacy .dat expects "
-                f"{_LEGACY_DAT_COLUMN_COUNT} ({_LEGACY_DAT_COLUMN_HINT}). "
-                f"Add a line such as '# jd mag mag_err' or fix the column count."
-            )
-        col_names = [f"col{i + 1}" for i in range(_LEGACY_DAT_COLUMN_COUNT)]
-    else:
-        col_names = header_names
-
-    n_expected = len(col_names)
-    hint = _dat_column_label_hint(header_names)
-    columns: dict[str, list] = {name: [] for name in col_names}
-
-    for line_no, tokens, stripped in data_rows:
-        if len(tokens) != n_expected:
-            raise PipeException(
-                f"Invalid .dat row at line {line_no}: expected {n_expected} columns "
-                f"({hint}), got {len(tokens)}.\n"
-                f"Offending line: {stripped}"
-            )
-        for name, token in zip(col_names, tokens):
-            columns[name].append(_parse_dat_cell(name, token, line_no, stripped))
-
-    table = Table([columns[name] for name in col_names], names=col_names)
-    table.meta["comments"] = comments
-    return table
-
-
 def ingest_volightcurve_file(
     file_source,
     filename: str,
@@ -372,10 +217,8 @@ def ingest_volightcurve_file(
 ) -> VOLightCurve:
     """Canonical user-upload ingest: always returns a ``VOLightCurve``.
 
-    Dispatches by file extension so TESS, GP, and future pages share one parse path.
-    VOTable products use full VO metadata ingest. Tabular formats use explicit readers;
-    ``.dat`` uses strict line parsing in ``_read_dat_upload_table`` so every ``#`` metadata
-    line is kept in ``table.meta['comments']`` before heuristics run.
+    Thin wrapper around ``volightcurve.io.read_lightcurve``. Maps
+    ``LightcurveIOError`` to ``PipeException`` for UI surfaces.
 
     Args:
         file_source (str or file-like): Path or open binary stream.
@@ -384,30 +227,24 @@ def ingest_volightcurve_file(
 
     Returns:
         VOLightCurve: Parsed lightcurve with timescale and photometry metadata.
+
+    Raises:
+        PipeException: On unsupported format or parse failure.
     """
-    ext = Path(filename).suffix.lower().lstrip(".")
-    if ext in ("vot", "xml"):
-        if hasattr(file_source, "seek"):
-            file_source.seek(0)
-        return VOLightCurve(file_source, table_id=table_id)
-
-    tabular_formats = {
-        "ecsv": "ascii.ecsv",
-        "csv": "csv",
-    }
-    if ext == "dat":
-        if hasattr(file_source, "seek"):
-            file_source.seek(0)
-        return VOLightCurve.from_table(_read_dat_upload_table(file_source))
-    if ext in tabular_formats:
-        if hasattr(file_source, "seek"):
-            file_source.seek(0)
-        table = Table.read(file_source, format=tabular_formats[ext])
-        return VOLightCurve.from_table(table)
-
-    if hasattr(file_source, "seek"):
-        file_source.seek(0)
-    return VOLightCurve(file_source, table_id=table_id)
+    try:
+        return read_lightcurve(
+            file_source,
+            filename=filename,
+            table_id=table_id,
+        )
+    except LightcurveIOError as exc:
+        raise _map_io_error(exc) from exc
+    except Exception as exc:
+        # Preserve PipeException; wrap unexpected parser errors.
+        if isinstance(exc, PipeException):
+            raise
+        logger.error("read_lightcurve failed for %s: %s", filename, exc)
+        raise PipeException(str(exc)) from exc
 
 
 def ingest_lightcurve_file(file_source, filename: str):
@@ -418,8 +255,9 @@ def ingest_lightcurve_file(file_source, filename: str):
     after promotion (VOTable photcal GROUP, or ``# MAG0=`` / ``# FILTER=`` on
     ``.dat``). File extension is not used as a photcal gate.
 
-    ``.dat`` files use strict row validation in ``_read_dat_upload_table`` (fixed column
-    count per row; no padding). Failures raise ``PipeException`` with line numbers.
+    ``.dat`` files use strict row validation in ``volightcurve.io_dat`` (fixed
+    column count per row; no padding). Failures raise ``PipeException`` with
+    line numbers.
 
     Args:
         file_source (str or file-like): Path or open binary stream.
@@ -459,18 +297,23 @@ def tabular_table_to_curvedash(table: Table, filename: str):
     if time_col in ("obs_time", "mjd") and np.nanmax(jd_vals) < 1e6:
         jd_vals = jd_vals + JD_TO_MJD
 
-    if "phot" in table.colnames:
-        phot_col = "phot"
-        is_mag = is_magnitude_phot_column(table, phot_col)
+    if "mag" in table.colnames:
+        phot_col, is_mag = "mag", True
     elif "flux" in table.colnames:
         phot_col, is_mag = "flux", False
-    elif "mag" in table.colnames:
-        phot_col, is_mag = "mag", True
+    elif "phot" in table.colnames:
+        phot_col = "phot"
+        is_mag = is_magnitude_phot_column(table, phot_col)
     else:
         raise ValueError("No photometry column found in the uploaded tabular file.")
 
     err_col = None
-    for candidate in ("flux_error", "phot_error", "flux_err", "mag_err"):
+    err_candidates = (
+        ("mag_err", "flux_error", "phot_error", "flux_err")
+        if is_mag
+        else ("flux_err", "flux_error", "phot_error", "mag_err")
+    )
+    for candidate in err_candidates:
         if candidate in table.colnames:
             err_col = candidate
             break
@@ -642,6 +485,12 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
             or "lightcurve"
         ),
     )
+    narrative = narrative_file_comments(
+        table_meta.get("comments"),
+        colnames=list(lc.table.colnames),
+    )
+    if narrative:
+        meta_block[METADATA_KEY_FILE_COMMENTS] = narrative
 
     struct = {
         "schema": {
@@ -786,6 +635,9 @@ def curvedash_from_transport_json(
     envelope = meta.get(METADATA_KEY_VO_ENVELOPE)
     if envelope:
         lcd.metadata[METADATA_KEY_VO_ENVELOPE] = envelope
+    file_comments = meta.get(METADATA_KEY_FILE_COMMENTS)
+    if file_comments:
+        lcd.metadata[METADATA_KEY_FILE_COMMENTS] = list(file_comments)
 
     return lcd
 
@@ -1473,8 +1325,8 @@ def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarr
 def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     """Finds the primary photometry column in an ingested table.
 
-    Prefers magnitude columns with attached ``photcal`` metadata, then other
-    photcal-linked columns, before falling back to generic flux/mag detection.
+    Prefers explicit ``mag`` / ``flux`` names over generic ``phot`` (Ticket 8
+    Phase 2b), then photcal-linked columns, then UCD-based detection.
 
     Args:
         volc (VOLightCurve): Parsed lightcurve container.
@@ -1482,7 +1334,12 @@ def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     Returns:
         str or None: Column name for flux or magnitude values.
     """
-    if "phot" in volc.table.colnames:
+    colnames = set(volc.table.colnames)
+    if "mag" in colnames:
+        return "mag"
+    if "flux" in colnames:
+        return "flux"
+    if "phot" in colnames:
         return "phot"
 
     mag_cols = get_mag_colnames(volc.table)
@@ -1499,10 +1356,6 @@ def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
         return mag_cols[0]
     if flux_cols:
         return flux_cols[0]
-    if "flux" in volc.table.colnames:
-        return "flux"
-    if "mag" in volc.table.colnames:
-        return "mag"
     return None
 
 
@@ -1524,13 +1377,16 @@ def _resolve_photometry_error_column(volc: VOLightCurve, phot_col: str) -> str |
     if is_mag:
         if "mag_err" in volc.table.colnames:
             return "mag_err"
+        # Legacy ambiguous exports paired mag-in-``phot`` with ``flux_error``.
+        if "flux_error" in volc.table.colnames:
+            return "flux_error"
         error_cols = volc.get_mag_error_colnames()
         return error_cols[0] if error_cols else None
 
+    if "flux_err" in volc.table.colnames:
+        return "flux_err"
     if "flux_error" in volc.table.colnames:
         return "flux_error"
-    if phot_col == "flux" and "flux_err" in volc.table.colnames:
-        return "flux_err"
     error_cols = volc.get_flux_error_colnames()
     return error_cols[0] if error_cols else None
 
@@ -1686,6 +1542,12 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         if key in meta:
             lcd.metadata[key] = meta.get(key)
     lcd.metadata[METADATA_KEY_VO_ENVELOPE] = _extract_vo_envelope_meta(volc, filename=filename)
+    narrative = narrative_file_comments(
+        (volc.table.meta or {}).get("comments"),
+        colnames=list(volc.table.colnames),
+    )
+    if narrative:
+        lcd.metadata[METADATA_KEY_FILE_COMMENTS] = narrative
     for key in ('authors', 'sectors', 'flux_origins'):
         if key in meta:
             lcd.metadata[key] = _parse_list_meta(meta[key])
@@ -1854,6 +1716,8 @@ def curvedash_to_tabular_table(lcd) -> Table:
     """Builds a plain tabular export table with JD and active photometry columns.
 
     Omits application-only columns (``phase``, ``selected``, ``perm_index``).
+    Uses explicit ``mag``/``mag_err`` or ``flux``/``flux_err`` names (Ticket 8
+    Phase 2b) — never ambiguous ``phot``/``flux_error``.
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
@@ -1872,67 +1736,41 @@ def curvedash_to_tabular_table(lcd) -> Table:
             "Cannot export: no rows with valid photometry in the active domain."
         )
 
+    is_mag = lcd.active_domain == DOMAIN_MAG
+    phot_name = "mag" if is_mag else "flux"
+    err_name = "mag_err" if is_mag else "flux_err"
+
     tab = Table()
-    tab['jd'] = lcd.jd.values[keep]
-    tab['phot'] = lcd.phot.values[keep]
+    tab["jd"] = lcd.jd.values[keep]
+    tab[phot_name] = lcd.phot.values[keep]
     if lcd.phot_err is not None:
-        tab['flux_error'] = lcd.phot_err.values[keep]
+        tab[err_name] = lcd.phot_err.values[keep]
 
     phot_unit = lcd.phot_unit
-    if phot_unit:
+    if phot_unit or is_mag:
         try:
-            unit = u.mag if lcd.active_domain == DOMAIN_MAG else u.Unit(phot_unit)
-            tab['phot'].unit = unit
-            if 'flux_error' in tab.colnames:
-                tab['flux_error'].unit = unit
+            unit = u.mag if is_mag else u.Unit(phot_unit)
+            tab[phot_name].unit = unit
+            if err_name in tab.colnames:
+                tab[err_name].unit = unit
         except (ValueError, u.UnitsError, u.UnitTypeError):
-            logger.warning('Could not assign photometric units during tabular export.')
+            logger.warning("Could not assign photometric units during tabular export.")
 
-    if lcd.label is not None and 'label' in lcd.lightcurve.columns:
-        tab['label'] = lcd.lightcurve['label'].values[keep]
+    if lcd.label is not None and "label" in lcd.lightcurve.columns:
+        labels = lcd.lightcurve["label"].values[keep]
+        if any(
+            v is not None and str(v).strip() and str(v).lower() != "none"
+            for v in labels
+        ):
+            tab["label"] = labels
 
     assign_photometry_column_semantics(
         tab,
-        force_magnitude=(lcd.active_domain == DOMAIN_MAG),
+        phot_col=phot_name,
+        error_col=err_name,
+        force_magnitude=is_mag,
     )
     return tab
-
-
-def _build_ecsv_metadata(lcd) -> dict:
-    """Selects basic descriptive metadata for ECSV header export.
-
-    PhotCal zero points are intentionally excluded; only the filter name is kept.
-
-    Args:
-        lcd (CurveDash): Application lightcurve state container.
-
-    Returns:
-        dict: ECSV YAML header metadata.
-    """
-    meta = lcd.metadata or {}
-    header = {}
-    name = (
-        meta.get('lookup_name')
-        or lcd.lookup_name
-        or meta.get('name')
-        or lcd.name
-        or lcd.title
-    )
-    if name and str(name).lower() != 'none':
-        header['name'] = name
-    for key in ('ra', 'dec', 'period', 'epoch'):
-        if meta.get(key) is not None:
-            header[key] = meta[key]
-    filter_name = (meta.get("photcal") or {}).get(PHOTCAL_KEY_FILTER_NAME)
-    if filter_name:
-        header["filter"] = filter_name
-    authors = _parse_list_meta(meta.get('authors'))
-    if authors:
-        header['pipeline'] = ', '.join(str(a) for a in authors)
-    methods = _parse_list_meta(meta.get('flux_origins'))
-    if methods:
-        header['method'] = ', '.join(str(m) for m in methods)
-    return header
 
 
 def export_file_extension(table_format: str) -> str:
@@ -2152,12 +1990,56 @@ def _votable_kwargs_for_profile(lcd, profile: str | None) -> dict:
     return getattr(mod, func_name)(lcd)
 
 
+def _curvedash_to_tabular_volc(lcd) -> VOLightCurve:
+    """Assembles a ``VOLightCurve`` from CurveDash for non-VOTable export.
+
+    Tabular export uses absolute JD in the time column with ``JD0 = 0``, so
+    ``epoch`` is written in the same absolute JD system (Ticket 8 time contract).
+
+    Args:
+        lcd (CurveDash): Application lightcurve state.
+
+    Returns:
+        VOLightCurve: Product ready for ``write_lightcurve``.
+    """
+    tab = curvedash_to_tabular_table(lcd)
+    meta = lcd.metadata or {}
+    photcal = meta.get("photcal") or {}
+    free_comments = meta.get(METADATA_KEY_FILE_COMMENTS) or None
+    period = meta.get("period")
+    epoch = meta.get("epoch")
+    # CurveDash defaults epoch to DEFAULT_EPOCH_JD for UI folding; do not write
+    # that filler as file EPOCH when no period/ephemeris was supplied.
+    if (
+        epoch is not None
+        and period is None
+        and float(epoch) == float(DEFAULT_EPOCH_JD)
+    ):
+        epoch = None
+    return assemble_volightcurve(
+        tab,
+        timeorigin=0.0,
+        period=period,
+        epoch=epoch,
+        filter_id=photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER),
+        filter_name=photcal.get(PHOTCAL_KEY_FILTER_NAME),
+        zp_flux=photcal.get(PHOTCAL_KEY_ZP_FLUX),
+        zp_flux_unit=photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT),
+        zp_mag=photcal.get(PHOTCAL_KEY_ZP_MAG),
+        zp_mag_unit=photcal.get(PHOTCAL_KEY_ZP_MAG_UNIT),
+        mag_sys=photcal.get(PHOTCAL_KEY_MAG_SYS),
+        effective_wavelength=photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH),
+        effective_wavelength_unit=photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT),
+        free_comments=free_comments,
+    )
+
+
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
     """Exports a CurveDash instance to the requested file format.
 
-    VOTable export uses ``write_vo_lightcurve``. When ``profile`` is ``None``,
-    kwargs are rebuilt from ingested ``metadata`` (mission-blind round-trip). Legacy
-    pages pass ``profile='tess'``, ``'cutout'``, or ``'asassn'`` for bespoke rules.
+    VOTable export uses ``write_vo_lightcurve`` with profile or metadata kwargs.
+    Non-VOTable formats go through ``volightcurve.io.write_lightcurve`` so
+    calibration keywords are preserved (Ticket 8).
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
@@ -2192,19 +2074,11 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
         )
         return buf.getvalue()
 
-    tab = curvedash_to_tabular_table(lcd)
-    if table_format == 'ascii.ecsv':
-        tab.meta = _build_ecsv_metadata(lcd)
-    else:
-        tab.meta = {}
-
-    text_formats = {'ascii.ecsv', 'csv', 'ascii.commented_header'}
-    buf = io.StringIO() if table_format in text_formats else io.BytesIO()
-    tab.write(buf, format=table_format, overwrite=True)
-    payload = buf.getvalue()
-    if isinstance(payload, str):
-        payload = payload.encode('utf-8')
-    return payload
+    try:
+        volc = _curvedash_to_tabular_volc(lcd)
+        return write_lightcurve(volc, table_format)
+    except LightcurveIOError as exc:
+        raise _map_io_error(exc) from exc
 
 
 def _is_stitched_lightcurve(lcd) -> bool:

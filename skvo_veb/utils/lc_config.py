@@ -25,6 +25,8 @@ DEFAULT_EPOCH_JD = JD_TO_MJD
 
 # Serialised TIMESYS envelope on ``CurveDash.metadata`` (see ``lc_bridge``).
 METADATA_KEY_VO_ENVELOPE = "vo_envelope"
+# Non-calibration ``#`` comment lines preserved for tabular re-export (Ticket 8).
+METADATA_KEY_FILE_COMMENTS = "file_comments"
 
 
 def resolve_catalog_epoch(epoch) -> float | None:

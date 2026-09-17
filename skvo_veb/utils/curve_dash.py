@@ -1129,67 +1129,27 @@ class CurveDash:
         df = self.lightcurve
         self.lightcurve = df[(df['jd'] >= left_border) & (df['jd'] <= right_border)]
 
-    def download(self, table_format='ascii.ecsv') -> bytes:
-        """Serialises and exports the lightcurve to a byte string of the specified format.
+    def download(self, table_format: str = "ascii.ecsv") -> bytes:
+        """Retired (Ticket 8 Phase 3). Do not use for lightcurve export.
 
-        Supported formats include 'ascii.ecsv', 'votable', 'fits', and other ASCII table formats.
-        Uses io.StringIO or io.BytesIO to write the Astropy table to memory.
-        If you know a better way, please tell me.
+        All user-facing downloads must go through
+        ``skvo_veb.utils.lc_bridge.export_curvedash``, which uses
+        ``volightcurve.io.write_lightcurve`` / ``write_vo_lightcurve``.
 
         Args:
-            table_format (str, optional): The target file format for export. Defaults to 'ascii.ecsv'.
+            table_format (str, optional): Ignored; kept for call-site compatibility.
 
         Returns:
-            bytes: The serialised table as a UTF-8 encoded byte string.
+            bytes: Never returns; always raises.
 
         Raises:
-            PipeException: If the lightcurve is empty or the requested table_format is unsupported.
+            PipeException: Always — directs callers to ``export_curvedash``.
         """
-        import io
-        if self.lightcurve is None:
-            raise PipeException(f'CurveDash.download: Empty lightcurve')
-        if table_format in self._format_dict_text:
-            my_weird_io = io.StringIO()
-        elif table_format in self._format_dict_bytes:
-            my_weird_io = io.BytesIO()
-        else:
-            raise PipeException(f'Unsupported format {table_format}\n Valid formats: {str(self.format_dict.keys())}')
-        if table_format == 'votable':
-            raise PipeException(
-                'Standards-compliant VOTable export must use lc_bridge.export_curvedash().'
-            )
-        tab = Table.from_pandas(self.lightcurve)
-        if self.active_domain == DOMAIN_FLUX and 'flux' in tab.colnames:
-            tab['flux'].unit = self.flux_unit_ap
-            tab['flux_err'].unit = self.flux_unit_ap
-        elif self.active_domain == DOMAIN_MAG and 'mag' in tab.colnames:
-            tab['mag'].unit = u.mag
-            tab['mag_err'].unit = u.mag
-        timescale = self.timescale if self.timescale != 'hjd' else None
-
-        phot_cols = (
-            ['jd', 'phase', 'mag', 'mag_err', 'label']
-            if self.active_domain == DOMAIN_MAG
-            else ['jd', 'phase', 'flux', 'flux_err', 'label']
+        _ = table_format
+        raise PipeException(
+            "CurveDash.download is retired. Use lc_bridge.export_curvedash() "
+            "for lightcurve file export (Ticket 8)."
         )
-        if (table_format == 'pandas.json' or table_format == 'fits'
-                or table_format in self._format_dict_dat):
-            selected_columns = phot_cols
-        else:
-            tab['time'] = Time(tab['jd'], format='jd', scale=timescale)
-            selected_columns = ['time', 'phase'] + phot_cols[2:]
-
-        tab = tab[[col for col in selected_columns if col in tab.colnames]]
-        tab.meta = self.metadata
-        tab.write(my_weird_io, format=table_format, overwrite=True)
-
-        # self.lightcurve.write(my_weird_io, format=table_format, overwrite=True)
-        my_weird_string = my_weird_io.getvalue()
-        if isinstance(my_weird_string, str):
-            my_weird_string = bytes(my_weird_string, 'utf-8')
-        my_weird_io.close()  # todo Needed?
-
-        return my_weird_string
 
     def append(self, other: "CurveDash") -> None:
         """Appends another CurveDash instance's lightcurve observations to this instance.

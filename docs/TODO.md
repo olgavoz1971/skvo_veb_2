@@ -23,6 +23,7 @@ give it the next unused ID. When a ticket is done, move its row to
 
 | ID | Title | Status |
 |----|-------|--------|
+| 8 | volightcurve owns lightcurve file I/O; preserve metadata on all formats | Done (Phases 0–3) |
 | 6 | Professional busy feedback for long lightcurve uploads (GP + Processor) | Done (unified icons + ? detail) |
 | 5 | Spinners for background-callback long operations | Done (Phases 0–1; Phase 2 waived) |
 | 3 | Unify server session LC (common base, then page-by-page) | Done (phases 0–4; ASAS-SN + cutout out of scope) |
@@ -1005,3 +1006,137 @@ dimensionless units (CurveDash / photcal / PhotCal). File export keeps a present
 `volightcurve/vo_unit_codec.py` — change only there). Astropy’s ``unit="---"``
 sentinel is mapped to ``None`` on ingest and rewritten to ``unit=""`` on write.
 UI labels use ``to_display`` (never bare ``None``).
+
+---
+
+## Ticket 8 — volightcurve owns lightcurve file I/O; preserve metadata on all formats
+
+**Audience:** agents. **Think first; implement only when asked.** Every
+phase and every non-trivial step **must be discussed and agreed before
+coding** — no drive-by moves of parsers/writers.
+
+**Related:** [lightcurve_data_flow.md](lightcurve_data_flow.md),
+[dat_lightcurve_comments.md](dat_lightcurve_comments.md),
+[volightcurve_io_contract.md](volightcurve_io_contract.md) (Phase 0),
+`skvo_veb/volightcurve/` (`VOLightCurve`, `write_vo_lightcurve`,
+`apply_non_votable_heuristics`, `io_keywords`), `skvo_veb/utils/lc_bridge.py`
+(`ingest_volightcurve_file`, `export_curvedash`, `_read_dat_upload_table`,
+`_build_ecsv_metadata`), Processor export
+(`pages/lightcurve_processor.py` → `export_curvedash`).
+
+### Goal
+
+1. **First and last file steps live in ``volightcurve``** — upload parse and
+   download serialise for lightcurve products are an independent, Plotly-free
+   toolkit usable outside this app.
+2. **Preserve metadata on every format the app offers for download/upload**
+   (VOTable, ECSV, CSV, commented-header / ``.dat``, …) — photcal / zero
+   points, time origin (JD0 / TIMESYS), period, epoch, filter/band, and other
+   fields already carried on ``CurveDash`` / ``VOLightCurve`` after ingest.
+   **Do not** paper over gaps with UX “metadata not included” warnings;
+   **fix the codecs** so round-trip keeps the science metadata.
+3. ``lc_bridge`` stays the thin ``VOLightCurve`` ↔ ``CurveDash`` mapper;
+   pages never invent format-specific metadata writers.
+
+### Context (do not re-derive)
+
+Today ingest can be rich (VOTable PhotDM; ``.dat`` ``# MAG0=`` / ``JD0=`` /
+… via heuristics) while non-VOTable export in ``export_curvedash`` is lossy:
+ECSV keeps only a thin header (ZPs excluded by design today); CSV /
+``ascii.commented_header`` clears ``tab.meta`` entirely. ``.dat`` **read**
+understands comment vocabulary; **write** does not emit it. Part of ``.dat``
+parsing still sits in ``lc_bridge`` (``_read_dat_upload_table``), not next to
+volightcurve heuristics.
+
+### Locked constraints
+
+1. **Discuss before every implementation step** (phase plan, API shape,
+   which keys map to which format headers/comments, move order). No silent
+   refactors.
+2. **No Dash / Plotly / CurveDash imports inside ``volightcurve``.**
+3. **Metadata preservation is mandatory** for all user-facing LC download
+   formats — not optional, not “warn and drop”.
+4. Scientific integrity: no invented photcal or time origins on write;
+   write what the working product actually holds.
+5. British English in any new user-facing strings; technical format tokens
+   stay as-is.
+
+### Phases (start here; refine in discussion)
+
+#### Phase 0 — Agree inventory and codec contract — **Done**
+
+Documented in [volightcurve_io_contract.md](volightcurve_io_contract.md) and
+[dat_lightcurve_comments.md](dat_lightcurve_comments.md); vocabulary constants in
+`volightcurve/io_keywords.py`.
+
+**Locked decisions:**
+
+1. First-class non-VO keys only for photometric / time calibration; other
+   comments → description / re-emitted ``#`` lines.
+2. Tier B (timescale, COOSYS, facility, …) omitted on non-VOTable formats.
+3. ``EPOCH`` always shares the same ``JD0`` / timeorigin as the time column.
+4. CSV and ``ascii.commented_header`` use the same ``# KEY = value`` vocabulary
+   as ``.dat`` (one codec).
+5. Full PhotCal on ``.dat``/CSV via extended keywords (``ZP_*``, ``MAG_SYS``,
+   filter extras); ``MAG0`` / ``BAND`` remain read aliases.
+6. ECSV uses **flat** ``meta`` keys with that same vocabulary (no nested
+   ``photcal:`` schema).
+7. Public API: ``read_lightcurve`` / ``write_lightcurve``; no CurveDash names
+   inside ``volightcurve``.
+8. **Photometry domain (non-VO):** no ``DOMAIN=`` keyword. Write explicit
+   ``mag``/``mag_err`` or ``flux``/``flux_err``. Ambiguous columns default to
+   **magnitude**. (Contract §4b; implementation when asked — not Phase 3
+   ``CurveDash.download``.)
+
+#### Phase 1 — Move first and last I/O into volightcurve — **Done**
+
+- ``read_lightcurve`` / ``write_lightcurve`` / ``assemble_volightcurve`` in
+  ``volightcurve/io.py``; strict ``.dat`` reader in ``io_dat.py``.
+- ``ingest_volightcurve_file`` / tabular ``export_curvedash`` are thin wrappers.
+- Dash-free round-trip tests in ``tests/volightcurve/test_io_roundtrip.py``.
+
+#### Phase 2 — Wire app pages / docs / smoke — **Done**
+
+Scoped as **(ii)** docs + audit + smoke fixes A/B/C (``CurveDash.download``
+left for Phase 3).
+
+**Page audit (all UI downloads/uploads already on bridge):**
+
+| Surface | Upload | Download |
+|---------|--------|----------|
+| Processor | `ingest_lightcurve_file` | `export_curvedash` |
+| Discovery | (session / providers) | `export_curvedash` |
+| GP | `ingest_volightcurve_file` (gp ingest) | `export_curvedash` |
+| TESS srv | `ingest_lightcurve_file` | `export_curvedash` (+ profile) |
+| Cutout / ASAS-SN | — | `export_curvedash` (+ profile) |
+
+No page call site bypasses ``export_curvedash`` / ``ingest_*`` for LC files.
+
+**Smoke / fixes:**
+
+- **A:** Processor-style ingest→export→re-ingest tests (calibration + narrative).
+- **B:** Narrative ``#`` comments via ``metadata['file_comments']`` round-trip.
+- **C:** ECSV writes flat calibration keys only; GP/export tests accept ``PERIOD``.
+
+**Docs:** ``lightcurve_data_flow.md`` diagrams updated for
+``read_lightcurve`` / ``write_lightcurve``.
+
+#### Phase 2b — Explicit mag/flux column names on non-VO I/O — **Done**
+
+- Write CSV / ``.dat`` / ECSV with ``mag``/``mag_err`` or ``flux``/``flux_err``
+  (never ambiguous ``phot``/``flux_error``).
+- No ``DOMAIN=`` keyword.
+- Ambiguous ingest (``phot``, no unit/UCD) defaults to **magnitude**.
+- Round-trip tests cover mag CSV and legacy ``phot`` → mag.
+
+#### Phase 3 — Retire divergent paths — **Done**
+
+- ``CurveDash.download`` implementation removed; method now always raises
+  ``PipeException`` directing callers to ``lc_bridge.export_curvedash``.
+- No page or test called the old path (audit confirmed).
+- Docs updated; regression test ``test_curvedash_download_retired.py``.
+
+### Status
+
+**Done.** Phases 0–3 complete. One codec owns user-facing LC file I/O
+(``volightcurve`` read/write via thin ``lc_bridge`` wrappers).

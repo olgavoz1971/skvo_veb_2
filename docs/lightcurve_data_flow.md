@@ -6,7 +6,9 @@ This document describes how lightcurve data is ingested, processed, serialised, 
 
 **TESS background (SPOC / QLP / cutout):** see [tess_background_lightkurve.md](tess_background_lightkurve.md).
 
-**Last updated:** 2026-07-23 — VOTable ingest split (Astropy data + GAVO metadata-only parse); diagnostic trace scripts.
+**Last updated:** 2026-09-17 — Ticket 8 Phase 2 (``read_lightcurve`` /
+``write_lightcurve`` as first/last file steps; page audit). Earlier: Phase 0
+I/O contract; 2026-07-23 VOTable ingest split.
 
 ---
 
@@ -69,31 +71,33 @@ Accessors for plotting and export:
   [ Uploaded file (.vot / .dat / .csv / .ecsv) ]
                  |
                  v
-         ingest_volightcurve_file()     ← lc_bridge (dispatches by extension; always VOLightCurve)
-                 |
-       +---------+---------+
-       |                   |
-   .vot / .xml          .csv / .dat / .ecsv
-       |                   |
-       v                   v
-  VOLightCurve(file)   Table.read (explicit format)
-       |                   |
-       |                   v
-       |            VOLightCurve.from_table()
-       |                   |
-       +---------+---------+
+         ingest_volightcurve_file()     ← lc_bridge thin wrapper
                  |
                  v
-         volc_to_curvedash()            ← TESS / cutout pages → CurveDash → cache
+         volightcurve.io.read_lightcurve()   ← first file step (no Dash)
+                 |
+       +---------+---------+
+       |                   |
+   .vot / .xml          .dat / .csv / .ecsv
+       |                   |
+       v                   v
+  VOLightCurve(...)    read_dat_table / CSV preamble / ECSV
+                       → VOLightCurve.from_table()
+                 |
+                 v
+         volc_to_curvedash()            ← CurveDash → session cache
                  |
                  v
          pack_volc_to_json()            ← GP O-C page → dcc.Store transport JSON
 ```
 
-Comment-header metadata for **`.dat`** files is documented in [dat_lightcurve_comments.md](dat_lightcurve_comments.md).
+Comment-header / flat-meta conventions for **``.dat``**, CSV, and ECSV are in
+[dat_lightcurve_comments.md](dat_lightcurve_comments.md). The I/O contract is
+[volightcurve_io_contract.md](volightcurve_io_contract.md).
 
-Legacy diagram note: ``ingest_lightcurve_file()`` is now a thin wrapper around
-``ingest_volightcurve_file()`` plus ``volc_to_curvedash()``.
+``ingest_lightcurve_file()`` = ``ingest_volightcurve_file()`` +
+``volc_to_curvedash()``. Narrative ``#`` lines (not calibration keywords) are
+stored on ``CurveDash.metadata['file_comments']`` for tabular re-export.
 
 ```text
          volc_to_curvedash()  →  CurveDash.serialize()  →  DiskCache (server-side UUID)
@@ -164,23 +168,23 @@ VOTable products take a **single byte read**, then two complementary parsers —
   CurveDash.from_serialized(cache)
                  |
                  v
-         export_curvedash(lcd, format, profile)
+         export_curvedash(lcd, format, profile)   ← lc_bridge
                  |
-       +---------+---------+
-       |                   |
-  format='votable'    other formats
-  profile='tess'            |
-       |              lcd.download(format)
-       v                   |
-  curvedash_to_table()     |
-  (strip UI cols)          |
-       |                   |
-       v                   v
-  write_vo_lightcurve()   [ ECSV / CSV / FITS / … ]
-       |
-       v
-  [ Compliant VOTable v1.4 ]
+       +---------+------------------+
+       |                            |
+  VOTable formats            tabular formats
+  (optional profile)         (.dat / CSV / ECSV)
+       |                            |
+       v                            v
+  curvedash_to_table()     assemble_volightcurve()
+  write_vo_lightcurve()    write_lightcurve()   ← last file step
+       |                            |
+       v                            v
+  [ VOTable v1.4 ]         [ # KEY=value + rows / ECSV meta ]
 ```
+
+Do **not** use ``CurveDash.download`` — it is **retired** (Ticket 8 Phase 3)
+and always raises. All LC file downloads use ``export_curvedash``.
 
 ### 3.4 Optional compact JSON transport (not wired to TESS page)
 
@@ -199,11 +203,12 @@ Retained for lightweight cross-service transport; the TESS page plots from `Curv
 
 | Function | Purpose |
 |----------|---------|
-| `read_to_volc(file_source)` | File → `VOLightCurve` |
-| `ingest_lightcurve_file(file_source, filename)` | Upload entry point: VOTable → `volc_to_curvedash`; tabular → `tabular_table_to_curvedash` |
-| `volc_to_curvedash(volc, filename)` | Upload path: VO → `CurveDash`, no domain conversion |
-| `curvedash_to_table(lcd)` | Strip UI columns → clean `Table` for export |
-| `export_curvedash(lcd, format, profile)` | Unified export entry point |
+| `read_to_volc(file_source)` | Legacy helper → `VOLightCurve` |
+| `ingest_volightcurve_file(...)` | Thin wrapper → `volightcurve.io.read_lightcurve` |
+| `ingest_lightcurve_file(...)` | Upload → `VOLightCurve` → `volc_to_curvedash` |
+| `volc_to_curvedash(volc, filename)` | VO → `CurveDash` (stores `file_comments`) |
+| `curvedash_to_table(lcd)` | Strip UI columns → clean `Table` for VOTable export |
+| `export_curvedash(lcd, format, profile)` | Unified export; tabular → `write_lightcurve` |
 | `pack_volc_to_json(lc)` | Optional compact JSON transport |
 | `unpack_json_for_plotly(json_str, view_mode)` | Optional Plotly-oriented decoder |
 
@@ -294,6 +299,10 @@ Export clipping uses `prepare_lcd_for_export()` on the server (srv) or at downlo
 
 Independent VO package. Parses VOTable and heuristic ASCII.
 
+**File I/O (Ticket 8):** `io.read_lightcurve` / `io.write_lightcurve` /
+`io.assemble_volightcurve`; strict ``.dat`` in `io_dat.py`; keyword vocabulary
+in `io_keywords.py`.
+
 **VOTable ingest** (`VOLightCurve._ingest_votable`): one payload read; Astropy for table rows and TABLE PARAMs; GAVO metadata-only parse (`_gavo_votable_metadata_tree`) plus walkers for TIMESYS, COOSYS, and PhotDM including standard **`PARAMref`** resolution in `photcal` GROUPs. Does **not** use GAVO `readRaw` (full row materialisation).
 
 **Metadata modules:** `time_reference.py` (TIMESYS registry and epoch normalisation), `extract_photdm` / `extract_coosys` in `lightcurve.py`.
@@ -302,11 +311,14 @@ Provides `PhotCal.mag_to_flux()` / `flux_to_mag()`. Writes VOTable via `write_vo
 
 ### B. `skvo_veb/utils/lc_bridge.py`
 
-Decouples VO core from Dash app. Upload via `ingest_lightcurve_file()`; VO conversion via `volc_to_curvedash()`; export via `export_curvedash()`.
+Decouples VO core from Dash app. Upload via `ingest_lightcurve_file()` →
+`read_lightcurve`; VO conversion via `volc_to_curvedash()`; export via
+`export_curvedash()` → `write_lightcurve` (tabular) or `write_vo_lightcurve`
+(VOTable profiles).
 
 ### C. `skvo_veb/utils/curve_dash.py`
 
-Application state: Pandas DataFrame, `active_domain`, UI columns (`selected`, `perm_index`, `phase`). Serialisation for DiskCache. On-demand `convert_to_flux()` / `convert_to_mag()`. Non-VO export via `download()` (VOTable blocked — use bridge).
+Application state: Pandas DataFrame, `active_domain`, UI columns (`selected`, `perm_index`, `phase`). Serialisation for DiskCache. On-demand `convert_to_flux()` / `convert_to_mag()`. ``CurveDash.download`` is **retired** (raises; use ``export_curvedash``).
 
 ### D. `skvo_veb/utils/tess_lc_builder.py`
 
