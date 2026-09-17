@@ -15,7 +15,7 @@ from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.mission_config.tess import resolve_tess_photcal
-from skvo_veb.volightcurve.lightcurve import VOLightCurve
+from volightcurve.lightcurve import VOLightCurve
 
 
 def test_tess_upload_integration():

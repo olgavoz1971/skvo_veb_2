@@ -26,7 +26,7 @@ from skvo_veb.lc_providers.upjs_ts.resolve_target import resolve_upjs_target_nam
 from skvo_veb.lc_providers.upjs_ts.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

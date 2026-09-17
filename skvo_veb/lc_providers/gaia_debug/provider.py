@@ -34,7 +34,7 @@ from skvo_veb.lc_providers.lc_key import decode_lc_key, encode_lc_key
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
+from volightcurve import VOLightCurve, write_vo_lightcurve
 
 from . import debug_config as gaia_config
 from .debug_catalog import (

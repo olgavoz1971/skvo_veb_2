@@ -7,8 +7,8 @@ import io
 import pytest
 from gavo.votable import votparse
 
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import extract_photdm
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import extract_photdm
 from skvo_veb.tests.volightcurve.test_time_reference import _gaia_style_votable
 
 

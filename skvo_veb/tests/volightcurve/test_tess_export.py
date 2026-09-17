@@ -13,7 +13,7 @@ from skvo_veb.utils.mission_config.tess import (
     is_spoc_pipeline,
     resolve_tess_photcal,
 )
-from skvo_veb.volightcurve.lightcurve import VOLightCurve
+from volightcurve.lightcurve import VOLightCurve
 
 
 def test_tess_export():

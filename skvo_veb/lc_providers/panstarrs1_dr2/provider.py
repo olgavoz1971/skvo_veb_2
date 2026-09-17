@@ -26,7 +26,7 @@ from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import (
 from skvo_veb.lc_providers.panstarrs1_dr2.tap_detection import fetch_detection_table
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

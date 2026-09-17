@@ -28,7 +28,7 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_MAG,
 )
 from skvo_veb.utils.lc_bridge import photcal_from_metadata
-from skvo_veb.volightcurve.vo_unit_codec import to_display, to_internal
+from volightcurve.vo_unit_codec import to_display, to_internal
 
 from astropy import units as u
 
@@ -702,7 +702,7 @@ class CurveDash:
         """Builds a ``PhotCal`` instance from stored metadata.
 
         Returns:
-            skvo_veb.volightcurve.lightcurve.PhotCal: Calibration for mag/flux conversion.
+            volightcurve.lightcurve.PhotCal: Calibration for mag/flux conversion.
 
         Raises:
             ValueError: If stored photcal metadata is incomplete.

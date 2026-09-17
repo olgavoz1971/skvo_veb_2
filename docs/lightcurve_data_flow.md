@@ -6,9 +6,11 @@ This document describes how lightcurve data is ingested, processed, serialised, 
 
 **TESS background (SPOC / QLP / cutout):** see [tess_background_lightkurve.md](tess_background_lightkurve.md).
 
-**Last updated:** 2026-09-17 — Ticket 8 Phase 2 (``read_lightcurve`` /
-``write_lightcurve`` as first/last file steps; page audit). Earlier: Phase 0
-I/O contract; 2026-07-23 VOTable ingest split.
+**Last updated:** 2026-09-17 — Ticket 9 Phase 4 (``volightcurve`` is the
+sibling editable package at ``/home/voz/projects/UPJS/volightcurve``; nested
+copy removed from ``skvo_veb``). Earlier: Ticket 8 Phase 2
+(``read_lightcurve`` / ``write_lightcurve``); Phase 0 I/O contract;
+2026-07-23 VOTable ingest split.
 
 ---
 
@@ -16,7 +18,7 @@ I/O contract; 2026-07-23 VOTable ingest split.
 
 | Layer | Module | Knows about | Must NOT know about |
 |-------|--------|-------------|---------------------|
-| **Scientific core** | `skvo_veb/volightcurve/` | Astropy (table data), GAVO walkers (VO metadata, `PARAMref`), photDM, `PhotCal` | Dash, Plotly, `CurveDash`, cache keys, TESS pipeline UI |
+| **Scientific core** | sibling package ``volightcurve`` (``/home/voz/projects/UPJS/volightcurve``) | Astropy (table data), GAVO walkers (VO metadata, `PARAMref`), photDM, `PhotCal` | Dash, Plotly, `CurveDash`, cache keys, TESS pipeline UI |
 | **Application bridge** | `skvo_veb/utils/lc_bridge.py` | `VOLightCurve`, `CurveDash`, export profiles | Dash callbacks, HTML layout, component IDs |
 | **Application state** | `skvo_veb/utils/curve_dash.py` | Pandas DataFrame, `active_domain`, phase/selection UI columns | VOTable XML construction, Lightkurve queries |
 | **Mission / instrument config** | `utils/mission_config/` (e.g. `tess.py`), `lc_config.py` | Physical constants, pipeline identifiers | UI, parsing logic |
@@ -293,9 +295,11 @@ Export clipping uses `prepare_lcd_for_export()` on the server (srv) or at downlo
 
 ## 7. Module Reference
 
-### A. `skvo_veb/volightcurve/`
+### A. Sibling package ``volightcurve``
 
-Independent VO package. Parses VOTable and heuristic ASCII.
+Independent VO package (editable install;
+``/home/voz/projects/UPJS/volightcurve``). Parses VOTable and heuristic ASCII.
+Import as ``import volightcurve``.
 
 **File I/O (Ticket 8):** `io.read_lightcurve` / `io.write_lightcurve` /
 `io.assemble_volightcurve`; strict ``.dat`` in `io_dat.py`; keyword vocabulary

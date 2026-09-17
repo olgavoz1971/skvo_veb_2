@@ -10,8 +10,8 @@ from skvo_veb.lc_providers.gaia_dr3_ari import config
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import format_gaia_source_name
 from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import mag_error_from_flux_over_error
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import PhotCal
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import PhotCal
 
 logger = logging.getLogger(__name__)
 

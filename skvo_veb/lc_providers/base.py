@@ -17,7 +17,7 @@ from skvo_veb.lc_providers.catalog_schema import (
 from skvo_veb.lc_providers.discovery_fetch_context import DiscoveryFetchContext
 from skvo_veb.lc_providers.lc_key import cache_key, validate_lc_key
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

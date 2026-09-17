@@ -11,8 +11,8 @@ import pytest
 from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import MAG_ERR_FROM_SNR_FACTOR
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import _gavo_votable_metadata_tree, extract_photdm
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import _gavo_votable_metadata_tree, extract_photdm
 
 GAIA_ARI_VOT = Path(__file__).resolve().parents[3] / "data" / "gaia_ari.vot"
 

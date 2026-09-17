@@ -100,7 +100,7 @@ See [lightcurve_data_flow.md](lightcurve_data_flow.md) for the existing VO ↔ C
 
 ## 4. Mission provider API (ABC / Protocol)
 
-Location: **`skvo_veb/lc_providers/`** (sibling of `volightcurve/`; reusable outside Dash).
+Location: **`skvo_veb/lc_providers/`** (uses the sibling ``volightcurve`` package; reusable outside Dash).
 
 Architecturally this is **a registry of strategy/adapters implementing a shared provider interface** — often shortened to **plugin registry** or **provider registry**. Each mission file is an *adapter* (archive API → standard catalog + `VOLightCurve`); the *registry* picks which adapter runs; new missions extend the system without changing the Discovery page (open/closed principle).
 

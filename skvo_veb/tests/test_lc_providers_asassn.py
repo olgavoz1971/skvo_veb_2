@@ -20,7 +20,7 @@ from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 
 def _sample_metadata_df() -> pd.DataFrame:

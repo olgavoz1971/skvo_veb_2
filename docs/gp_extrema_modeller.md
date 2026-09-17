@@ -625,7 +625,7 @@ If a spike and the page disagree, the page and `skvo_veb/utils/` win.
 | Parabola science | `skvo_veb/utils/parabola_tom/` |
 | O-C science | `skvo_veb/utils/oc/` (`compute.py`, `period_correct.py`, `tom_io.py`, `export.py`) |
 | Intervals / working JD window | `skvo_veb/utils/lc_intervals.py`, `lc_working_window.py` |
-| Upload ingest | `skvo_veb/utils/lc_bridge.py`, `skvo_veb/volightcurve/` |
+| Upload ingest | `skvo_veb/utils/lc_bridge.py`, sibling ``volightcurve`` |
 | CSS | `skvo_veb/assets/gp_for_oc.css` |
 
 Register: `dash.register_page(..., path='/gp', order=9)` (after Lightcurve Processor).

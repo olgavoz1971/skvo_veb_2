@@ -43,14 +43,14 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
 )
-from skvo_veb.volightcurve.photcal_defaults import (
+from volightcurve.photcal_defaults import (
     DEFAULT_MAG_SYS,
     DEFAULT_ZP_FLUX,
     DEFAULT_ZP_FLUX_UNIT,
     DEFAULT_ZP_MAG,
     DEFAULT_ZP_MAG_UNIT,
 )
-from skvo_veb.volightcurve.vo_unit_codec import to_display, to_internal
+from volightcurve.vo_unit_codec import to_display, to_internal
 
 logger = logging.getLogger(__name__)
 

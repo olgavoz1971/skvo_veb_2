@@ -11,7 +11,7 @@ import pandas as pd
 
 from skvo_veb.utils.lc_bridge import photcal_from_metadata, unpack_json_for_plotly
 from skvo_veb.utils.photcal_coherence import reconcile_photcal_dict
-from skvo_veb.volightcurve.lightcurve import PhotCal
+from volightcurve.lightcurve import PhotCal
 
 logger = logging.getLogger(__name__)
 

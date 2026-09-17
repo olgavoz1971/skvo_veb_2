@@ -19,8 +19,8 @@ from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import valid_photometry_row_mask, volc_to_curvedash
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.time_reference import time_offset_to_absolute_jd
+from volightcurve import VOLightCurve
+from volightcurve.time_reference import time_offset_to_absolute_jd
 
 logger = logging.getLogger(__name__)
 

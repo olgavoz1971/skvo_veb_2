@@ -6,14 +6,16 @@ nested application schemas.
 
 **Related:** [dat_lightcurve_comments.md](dat_lightcurve_comments.md),
 [lightcurve_data_flow.md](lightcurve_data_flow.md),
-`skvo_veb/volightcurve/io_keywords.py`, Ticket 8 in [TODO.md](TODO.md).
+sibling package ``volightcurve``
+(``/home/voz/projects/UPJS/volightcurve`` — ``io_keywords.py``),
+Ticket 8 in [TODO.md](TODO.md).
 
 ---
 
 ## 1. Goals
 
-1. Upload parse and download serialise for lightcurve products live in
-   `skvo_veb/volightcurve/` (no Dash, Plotly, or CurveDash).
+1. Upload parse and download serialise for lightcurve products live in the
+   sibling ``volightcurve`` package (no Dash, Plotly, or CurveDash).
 2. Every UI download format preserves **photometric and time calibration**
    metadata that the working product already holds.
 3. Do **not** invent private file formats. Non-VO carriers reuse one plain
@@ -160,8 +162,8 @@ write_lightcurve(volc, format, stream_or_path, *, ...) -> bytes | None
 - App bridge (`lc_bridge`) maps `VOLightCurve` ↔ `CurveDash` only.
 - Package errors are plain / local; the bridge maps to `PipeException` for UI.
 
-Constants for the keyword vocabulary live in
-`skvo_veb/volightcurve/io_keywords.py`.
+Constants for the keyword vocabulary live in the sibling package
+``volightcurve.io_keywords`` (``/home/voz/projects/UPJS/volightcurve``).
 
 ## 7. Phase boundary
 

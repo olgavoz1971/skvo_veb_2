@@ -21,7 +21,7 @@ from skvo_veb.lc_providers.ztf.oid import mission_archive_match_for_oid, parse_z
 from skvo_veb.lc_providers.ztf.tap_discovery import query_objects_by_oid, query_objects_cone
 from skvo_veb.lc_providers.ztf.ztf_fetch import fetch_photometry_by_oid
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

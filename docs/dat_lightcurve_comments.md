@@ -11,7 +11,8 @@ metadata as plain ``KEY = value`` fields. The same vocabulary is used for:
 Full codec contract (API, time-origin rules, Tier B omission): 
 [volightcurve_io_contract.md](volightcurve_io_contract.md).
 
-Keyword constants: ``skvo_veb/volightcurve/io_keywords.py``.
+Keyword constants: sibling package ``volightcurve.io_keywords``
+(``/home/voz/projects/UPJS/volightcurve``).
 
 Ingest entry points use ``volightcurve.io.read_lightcurve`` (pages still go
 through ``lc_bridge.ingest_volightcurve_file``). Download uses

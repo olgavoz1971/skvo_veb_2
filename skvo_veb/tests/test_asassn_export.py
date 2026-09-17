@@ -12,7 +12,7 @@ from skvo_veb.utils.mission_config.asassn import (
 )
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash
-from skvo_veb.volightcurve.lightcurve import VOLightCurve
+from volightcurve.lightcurve import VOLightCurve
 
 
 def _sample_asassn_lcd(band: str) -> CurveDash:

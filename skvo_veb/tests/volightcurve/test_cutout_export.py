@@ -11,7 +11,7 @@ from skvo_veb.utils.mission_config.tess import (
     resolve_cutout_mask_mode,
 )
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
-from skvo_veb.volightcurve.lightcurve import VOLightCurve
+from volightcurve.lightcurve import VOLightCurve
 
 
 def test_cutout_export_no_zero_points():

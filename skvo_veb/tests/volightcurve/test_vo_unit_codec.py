@@ -8,8 +8,8 @@ import numpy as np
 from astropy.table import Table
 from astropy import units as u
 
-from skvo_veb.volightcurve import write_vo_lightcurve
-from skvo_veb.volightcurve.vo_unit_codec import (
+from volightcurve import write_vo_lightcurve
+from volightcurve.vo_unit_codec import (
     VO_DIMENSIONLESS_WIRE,
     rewrite_astropy_empty_unit_attributes,
     to_display,
@@ -69,7 +69,7 @@ def test_write_vo_dimensionless_zp_uses_empty_unit_attribute():
     assert f'unit="{VO_DIMENSIONLESS_WIRE}"' in xml
 
     # Re-ingest: PhotCal must store internal None, not UnrecognizedUnit(---).
-    from skvo_veb.volightcurve import VOLightCurve
+    from volightcurve import VOLightCurve
 
     buf.seek(0)
     lc = VOLightCurve(buf)

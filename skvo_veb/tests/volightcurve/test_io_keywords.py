@@ -1,6 +1,6 @@
 """Unit tests for Ticket 8 Phase 0 keyword vocabulary helpers."""
 
-from skvo_veb.volightcurve.io_keywords import (
+from volightcurve.io_keywords import (
     KEY_FILTER,
     KEY_JD0,
     KEY_ZP_MAG,

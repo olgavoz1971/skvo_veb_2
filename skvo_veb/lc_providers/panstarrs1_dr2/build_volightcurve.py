@@ -15,8 +15,8 @@ from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_epoch import (
 )
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import write_vo_lightcurve
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import write_vo_lightcurve
 
 logger = logging.getLogger(__name__)
 

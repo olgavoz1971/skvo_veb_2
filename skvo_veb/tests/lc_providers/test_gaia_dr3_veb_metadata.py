@@ -16,7 +16,7 @@ from skvo_veb.utils.lc_config import (
     VOTABLE_FORMAT_BINARY,
 )
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 
 def _minimal_veb_like_volc(

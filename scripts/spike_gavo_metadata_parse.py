@@ -46,8 +46,8 @@ from gavo.votable import tableparser
 from gavo.votable import votparse
 from gavo.votable.model import VOTable as V
 
-from skvo_veb.volightcurve.lightcurve import extract_photdm
-from skvo_veb.volightcurve.time_reference import extract_timesys_metadata_from_gavo
+from volightcurve.lightcurve import extract_photdm
+from volightcurve.time_reference import extract_timesys_metadata_from_gavo
 
 DEFAULT_FIXTURE = _REPO_ROOT / "bin.vot"
 

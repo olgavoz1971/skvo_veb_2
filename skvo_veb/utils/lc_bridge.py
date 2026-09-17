@@ -35,7 +35,7 @@ from skvo_veb.utils.lc_config import (
     votable_binary_encoding,
 )
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
-from skvo_veb.volightcurve import (
+from volightcurve import (
     PhotCal,
     VOLightCurve,
     assign_photometry_column_semantics,
@@ -47,19 +47,19 @@ from skvo_veb.volightcurve import (
     is_magnitude_phot_column,
     write_vo_lightcurve,
 )
-from skvo_veb.volightcurve.io import (
+from volightcurve.io import (
     assemble_volightcurve,
     read_lightcurve,
     write_lightcurve,
 )
-from skvo_veb.volightcurve.io_dat import read_dat_table
-from skvo_veb.volightcurve.io_errors import LightcurveIOError
-from skvo_veb.volightcurve.io_meta import narrative_file_comments
-from skvo_veb.volightcurve.time_reference import (
+from volightcurve.io_dat import read_dat_table
+from volightcurve.io_errors import LightcurveIOError
+from volightcurve.io_meta import narrative_file_comments
+from volightcurve.time_reference import (
     export_absolute_jd_as_time_offset,
     normalise_table_epoch_to_absolute_jd,
 )
-from skvo_veb.volightcurve.vo_unit_codec import to_display, to_internal
+from volightcurve.vo_unit_codec import to_display, to_internal
 
 logger = logging.getLogger(__name__)
 

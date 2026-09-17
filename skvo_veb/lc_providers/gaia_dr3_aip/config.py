@@ -6,7 +6,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import MAG_ERR_FROM_SNR_FACTOR
 from skvo_veb.lc_providers.tap.adql import adql_top_limit_clause
 from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
 from skvo_veb.utils.lc_config import JD_TO_MJD

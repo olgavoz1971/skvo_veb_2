@@ -18,6 +18,7 @@ give it the next unused ID. When a ticket is done, move its row to
 | 1 | Discovery shared fetch cache (per provider) | Open |
 | 2 | TESS time-interval cleaning (client mark, server trim, keep zoom) | Open |
 | 7 | Photcal coherence, domain-switch policy, and shared calibration UI | Open (Phase 1 done; Phase 2 next) |
+| 9 | Extract ``volightcurve`` as a sibling editable Python package | Open (Phase 5 done; Phase 6 optional) |
 
 ## Done
 
@@ -895,7 +896,7 @@ no invented zeropoints unless the developer explicitly chooses an
 
 **Related:** `skvo_veb/utils/lc_bridge.py` (`volc_to_curvedash`,
 `photcal_from_metadata`, `apply_phot_domain_view`);
-`skvo_veb/volightcurve/lightcurve.py` (`PhotCal`);
+sibling ``volightcurve.lightcurve.PhotCal``;
 `CurveDash.convert_to_mag` / `convert_to_flux`;
 `docs/lightcurve_data_flow.md` (may be stale on fallbacks).
 
@@ -946,7 +947,7 @@ there; do not invent a second calibration object.
 
 **Done:**
 
-- ``skvo_veb/volightcurve/photcal_defaults.py``
+- ``volightcurve.photcal_defaults`` (sibling package)
 - ``skvo_veb/utils/photcal_coherence.py`` (``reconcile_*``)
 - ``PhotCal`` raises on invalid units (no silent demotion)
 - ``apply_phot_domain_view`` inspects then converts (no invent); incomplete → raise
@@ -1033,8 +1034,10 @@ coding** — no drive-by moves of parsers/writers.
 **Related:** [lightcurve_data_flow.md](lightcurve_data_flow.md),
 [dat_lightcurve_comments.md](dat_lightcurve_comments.md),
 [volightcurve_io_contract.md](volightcurve_io_contract.md) (Phase 0),
-`skvo_veb/volightcurve/` (`VOLightCurve`, `write_vo_lightcurve`,
-`apply_non_votable_heuristics`, `io_keywords`), `skvo_veb/utils/lc_bridge.py`
+sibling ``volightcurve`` package
+(``/home/voz/projects/UPJS/volightcurve`` — ``VOLightCurve``,
+``write_vo_lightcurve``, ``apply_non_votable_heuristics``, ``io_keywords``),
+`skvo_veb/utils/lc_bridge.py`
 (`ingest_volightcurve_file`, `export_curvedash`, `_read_dat_upload_table`,
 `_build_ecsv_metadata`), Processor export
 (`pages/lightcurve_processor.py` → `export_curvedash`).
@@ -1155,3 +1158,288 @@ No page call site bypasses ``export_curvedash`` / ``ingest_*`` for LC files.
 
 **Done.** Phases 0–3 complete. One codec owns user-facing LC file I/O
 (``volightcurve`` read/write via thin ``lc_bridge`` wrappers).
+
+---
+
+## Ticket 9 — Extract ``volightcurve`` as a sibling editable Python package
+
+**Audience:** agents and developer. **Think first; implement only when
+asked, one phase at a time.** Every phase starts with a short discussion
+and stops for agreement before coding the next phase.
+
+**Hard constraints:**
+
+- Do **not** commit, push, create, or alter any GitHub repository unless the
+  developer explicitly orders that step in a later phase.
+- Keep day-to-day editing in Cursor: the library must remain a **local
+  tree** opened beside ``skvo_veb_2``, installed into the app venv with
+  ``pip install -e`` (editable). Do **not** rely on a plain (non-editable)
+  install into ``site-packages`` as the normal workflow.
+- PyPI “publish” is **out of scope** until the developer asks (optional
+  later phase). “Publish” here only ever meant “make installable,” not
+  “upload to PyPI.”
+
+**Related (library + host):**
+
+- Sibling package ``/home/voz/projects/UPJS/volightcurve`` (code, README,
+  ``TESTING.md``, ``docs/io_contract.md``, ``examples/``)
+- ``skvo_veb/utils/lc_bridge.py`` (only allowed consumer of the library
+  from the app side for CurveDash ↔ VOLightCurve)
+- ``skvo_veb/tests/volightcurve/`` (host integration tests; pure suite lives
+  with the sibling package — see its ``TESTING.md``)
+- Ticket 8 (I/O contract); [skvo_veb_2](https://github.com/olgavoz1971/skvo_veb_2)
+
+### Goal
+
+1. ``volightcurve`` becomes an independent **Python package** (directory of
+   modules), importable as ``import volightcurve``.
+2. ``skvo_veb_2`` depends on it via **editable local install** so library
+   edits stay in the library tree and track in that package’s own git
+   (when the developer creates it).
+3. Nested ``skvo_veb/volightcurve/`` is removed from the app **only after**
+   the app runs cleanly against the external package.
+4. Pure regression tests and the basic example travel with the package;
+   CurveDash / mission / bridge tests stay in ``skvo_veb_2``.
+5. Mag↔flux conversion (``mag_to_flux`` / ``flux_to_mag``) is a **documented
+   public API** of the package, not only an internal ``PhotCal`` detail used
+   by column helpers.
+
+### Target layout (end state)
+
+```text
+~/projects/UPJS/
+  volightcurve/                 ← separate local project (own git when ready)
+    pyproject.toml              ← package name: volightcurve
+    README.md
+    docs/io_contract.md
+    examples/basic_workflow.py
+    src/volightcurve/           ← or flat volightcurve/ (decide in Phase 0)
+      __init__.py
+      io.py
+      lightcurve.py
+      …
+    tests/                      ← pure package tests only
+  skvo_veb_2/                   ← existing app repo
+    skvo_veb/
+      pages/, utils/, …         ← no nested volightcurve/
+    requirements.txt            ← editable path or VCS ref to volightcurve
+```
+
+App venv:
+
+```text
+pip install -e /home/voz/projects/UPJS/volightcurve
+```
+
+Imports:
+
+```text
+# before
+from skvo_veb.volightcurve import read_lightcurve, …
+
+# after
+from volightcurve import read_lightcurve, …
+```
+
+### Non-goals (unless later asked)
+
+- PyPI upload / versioned public release process.
+- Agent-created GitHub remotes, pushes, or PRs.
+- Rewriting scientific behaviour of ``PhotCal`` / I/O codecs (Ticket 8 stands).
+- Moving ``lc_bridge`` or Dash pages into the library.
+
+### Phases (stop and discuss after each)
+
+#### Phase 0 — Agree packaging shape (discussion only)
+
+Decide and record in this ticket:
+
+1. **Tree layout:** ``src/volightcurve/`` vs top-level ``volightcurve/``.
+2. **Local path** for the sibling project (default proposal:
+   ``/home/voz/projects/UPJS/volightcurve``).
+3. **Dependency line** for ``skvo_veb_2`` (editable path in
+   ``requirements.txt`` or a small ``requirements-dev.txt`` / documented
+   ``pip install -e`` step).
+4. **Git ownership:** developer creates the new GitHub repo when ready;
+   agents do not touch remotes unless explicitly ordered.
+5. Confirm **editable install** as the only supported day-to-day link.
+
+**Exit:** written decisions below (fill when agreed). No file moves yet.
+
+**Decisions (Phase 0 — agreed):**
+
+- **Layout:** ``src/volightcurve/`` (src-layout). Keeps project root clean
+  (``tests/``, ``docs/``, ``examples/``, ``README`` beside ``src/``); avoids
+  accidentally importing a half-copied tree from the repo root. Package
+  import name remains ``volightcurve``.
+- **Local path:** ``/home/voz/projects/UPJS/volightcurve`` (sibling of
+  ``skvo_veb_2``; path currently free).
+- **How skvo_veb_2 declares the dependency:**
+  1. Documented one-liner for the app venv:
+     ``pip install -e /home/voz/projects/UPJS/volightcurve``
+  2. Plus a comment (or ``requirements-local.txt`` / documented note in
+     app README) so the editable path is not forgotten — **not** a hard
+     PyPI pin. Prefer **not** putting a machine-specific absolute path into
+     committed ``requirements.txt`` if others clone the app; use a short
+     ``docs`` / README install step, or a gitignored
+     ``requirements-local.txt``. Exact file choice confirmed with developer
+     if they prefer the path committed for a single-machine lab.
+- **Day-to-day link:** editable install (``-e``) only.
+- **When GitHub remote is created:** developer-owned, **Phase 6 only**;
+  agents do not create remotes, push, or open PRs unless explicitly ordered.
+- **Shadowing (Phase 2–3):** keep nested ``skvo_veb/volightcurve/`` until
+  Phase 4; switch imports in Phase 3 only after ``import volightcurve``
+  is proven against the sibling. Avoid leaving two live import paths.
+
+**Phase 0 status:** **Done** (developer confirmed all rows).
+#### Phase 1 — Scaffold the sibling package (local only) — **Done**
+
+- Created ``/home/voz/projects/UPJS/volightcurve`` with ``pyproject.toml``
+  (src-layout), README, ``TESTING.md``, ``docs/io_contract.md``,
+  ``examples/basic_workflow.py``.
+- Copied package sources into ``src/volightcurve/``; internal imports are
+  ``volightcurve.*`` (no ``skvo_veb.volightcurve``).
+- Pure tests under sibling ``tests/`` (I/O roundtrip, keywords, unit codec,
+  write VO, PhotDM ingest, TIMESYS helpers + shared ``fixtures_votable``).
+  Host/bridge/mission tests remain in ``skvo_veb_2``.
+- Proven: ``pytest -q`` → 21 passed; ``examples/basic_workflow.py`` runs
+  (``PYTHONPATH=src``, ``MPLBACKEND=Agg``).
+- Nested ``skvo_veb/volightcurve/`` **still present** (unchanged).
+
+**Exit:** sibling package works in isolation; nested copy still present.
+**Phase 1 status:** **Done**.
+
+#### Phase 2 — Editable install + dual-import safety check — **Done**
+
+- Installed into ``skvo_veb_2`` venv:
+  ``pip install -e /home/voz/projects/UPJS/volightcurve`` (editable;
+  ``direct_url`` shows ``editable=True``).
+- Verified dual imports (safe until Phase 3 retarget):
+  - ``import volightcurve`` →
+    ``…/UPJS/volightcurve/src/volightcurve/__init__.py``
+  - ``import skvo_veb.volightcurve`` → nested app copy (still used by the
+    app; **not** switched in this phase).
+  - Distinct module objects / files (no accidental shadowing of the bare
+    ``volightcurve`` name by the nested package).
+- Documented install: app ``README.md`` Getting Started step 3;
+  comment at end of ``requirements.txt``; committed
+  ``requirements-local.txt.example``; gitignored ``requirements-local.txt``.
+- **Import switch deferred to Phase 3** (Phase 0 preference).
+
+**Exit:** editable install proven; developer can edit sibling in Cursor
+and see changes in the app venv for ``import volightcurve``.
+**Phase 2 status:** **Done**.
+
+#### Phase 3 — Retarget ``skvo_veb_2`` imports — **Done**
+
+- Replaced ``skvo_veb.volightcurve`` → ``volightcurve`` in app consumers:
+  ``skvo_veb/utils/``, ``skvo_veb/lc_providers/``, ``skvo_veb/tests/``,
+  ``scripts/``. Nested ``skvo_veb/volightcurve/`` left in place (unused
+  dead copy until Phase 4).
+- Verified ``lc_bridge`` loads ``VOLightCurve`` from sibling
+  ``…/UPJS/volightcurve/src/volightcurve/lightcurve.py``.
+- Pytest: ``skvo_veb/tests/volightcurve`` + tabular/GP/ASAS-SN/Discovery
+  export/load suites → **91 passed**; provider tests also run.
+- Smoke: ``from skvo_veb import app`` succeeds.
+
+**Exit:** app uses only ``import volightcurve``; nested tree unused but
+may still exist as dead code until Phase 4.
+**Phase 3 status:** **Done**.
+
+#### Phase 4 — Remove nested copy from ``skvo_veb_2`` — **Done**
+
+- Deleted ``skvo_veb/volightcurve/`` from the app tree (no longer
+  importable as ``skvo_veb.volightcurve``).
+- Code/test consumers already use ``import volightcurve`` (Phase 3).
+  Remaining nested-path strings are historical Ticket 9 narrative only.
+- Docs retargeted: ``lightcurve_data_flow.md``, ``structure.md``,
+  ``volightcurve_io_contract.md``, ``dat_lightcurve_comments.md``,
+  GP / provider / Ticket 7–8 pointers.
+- Pytest: sibling pure suite **21 passed**; host
+  ``skvo_veb/tests/volightcurve`` + tabular/GP/ASAS-SN/Discovery suites
+  **91 passed**; ``from skvo_veb import app`` smoke OK.
+
+**Exit:** single source of truth — the sibling package.
+**Phase 4 status:** **Done**.
+
+#### Phase 5 — PhotDM-aligned ``PhotCal`` as sole mag↔flux engine — **Done**
+
+**Locks applied in coding:**
+
+- Nested PhotDM: ``PhotCal`` façade + ``ZeroPoint`` subtypes (``photdm.py``).
+- Pogson live on ``PogsonZeroPoint``; ``AsinhZeroPoint`` /
+  ``LinearFluxZeroPoint`` stubs (Asinh keeps ``softening_parameter``).
+- CurveDash remains single ``metadata['photcal']`` (documented debt).
+- ASAS-SN trees not remediated.
+- Error helpers first-class on ``PhotCal`` façade.
+
+**Package (sibling ``/home/voz/projects/UPJS/volightcurve``):**
+
+- ``src/volightcurve/photdm.py`` — nested types.
+- ``PhotCal`` delegates conversion to ``self.zero_point``; flat ctor still
+  builds ``PogsonZeroPoint``.
+- Exported in ``__all__``; README documents API + IVOA PhotDM client link.
+- Pure tests: ``tests/test_photcal_conversion.py``; example calls
+  ``pc.mag_to_flux`` directly.
+- Sibling pytest: **26 passed**.
+
+**Call-site inventory (non–ASAS-SN):**
+
+| Site | Status |
+|------|--------|
+| ``CurveDash.convert_to_*`` | OK — ``PhotCal`` |
+| ``lc_bridge`` domain-view helpers | OK — ``PhotCal`` |
+| ``gp/flux.py``, ``plot_data.py``, ``manual_detrend.py`` | OK — ``PhotCal`` |
+| Pages (Discovery, Processor, …) | OK — via CurveDash |
+| ``lc_providers/shared/gaia_epoch_mag_error.py`` | **Fixed** — uses ``PhotCal.flux_err_to_mag_err`` |
+| TESS photcal tests | OK — oracle ``-2.5 log10`` in assert only |
+| ASAS-SN | Deferred (out of scope) |
+
+**Debts (follow-up, not Phase 5):**
+
+- Per-column PhotCals on CurveDash (stop collapsing Gaia mag+flux).
+- Implement Asinh / Linear conversion maths.
+- VOTable write/read of ZeroPoint ``dmtype``.
+
+**Phase 5 status:** **Done**.
+
+#### Phase 6 — Optional GitHub remote (developer-driven)
+
+- Developer creates the GitHub repository and pushes the sibling project
+  when ready.
+- Optionally switch ``skvo_veb_2`` dependency from local editable path to
+  ``git+https://…`` **or** keep local ``-e`` for development and document
+  both.
+- Agents must not create remotes, push, or open PRs unless the developer
+  explicitly requests that in this phase.
+
+**Exit:** library has its own remote (if desired); editable local workflow
+still documented as the default for Cursor work.
+
+#### Phase 7 (optional, later) — PyPI
+
+Only if asked: versioning, classifiers, publish workflow. Not required for
+the app to use the package.
+
+### Acceptance
+
+1. ``import volightcurve`` works in the ``skvo_veb_2`` venv from an
+   **editable** local checkout.
+2. Editing the sibling package in Cursor is the normal way to change I/O
+   behaviour; no need to dig in ``site-packages``.
+3. ``skvo_veb_2`` contains **no** nested ``skvo_veb/volightcurve/`` after
+   Phase 4.
+4. Pure tests live with the package; host/bridge/mission tests remain in
+   ``skvo_veb_2``.
+5. No unsolicited GitHub commits/pushes by agents.
+6. Phase 5: ``PhotCal`` is the sole mag↔flux (+ error) engine; API
+   documented/tested; non–ASAS-SN call sites audited; no local formulae;
+   per-column / subclass direction recorded (implementation of subclasses
+   and dual PhotCal may follow).
+
+### Status
+
+**Open.** Phase 0–5 **done**. Library is sibling editable ``volightcurve``
+with PhotDM-nested ``PhotCal`` / ``PogsonZeroPoint``. Optional next:
+**Phase 6** GitHub remote (developer-driven), **Phase 7** PyPI. Follow-ups
+outside those phases: CurveDash per-column photcal; Asinh maths.

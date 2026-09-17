@@ -27,7 +27,7 @@ from skvo_veb.utils.lc_bridge import (
     volc_to_curvedash,
 )
 from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD, VOTABLE_FORMAT_BINARY
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 
 def _minimal_flux_packet(

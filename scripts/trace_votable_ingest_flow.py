@@ -48,9 +48,9 @@ from skvo_veb.utils.lc_bridge import (
     volc_to_curvedash,
 )
 from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import extract_photdm
-from skvo_veb.volightcurve.time_reference import extract_timesys_metadata_from_gavo
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import extract_photdm
+from volightcurve.time_reference import extract_timesys_metadata_from_gavo
 
 DEFAULT_VOTABLE = _REPO_ROOT / "bin.vot"
 

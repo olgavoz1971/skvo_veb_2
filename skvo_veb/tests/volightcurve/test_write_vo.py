@@ -8,7 +8,7 @@ successfully ingested back into a `VOLightCurve` instance.
 import io
 import numpy as np
 from astropy.table import Table
-from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
+from volightcurve import VOLightCurve, write_vo_lightcurve
 
 
 def test_volightcurve_write():

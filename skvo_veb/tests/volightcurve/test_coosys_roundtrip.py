@@ -9,7 +9,7 @@ from astropy.table import Table
 
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import METADATA_KEY_VO_ENVELOPE, VOTABLE_FORMAT_BINARY
-from skvo_veb.volightcurve import VOLightCurve, write_vo_lightcurve
+from volightcurve import VOLightCurve, write_vo_lightcurve
 
 MINIMAL_VOT_WITH_COOSYS = b"""<?xml version="1.0" encoding="utf-8"?>
 <VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" version="1.4">

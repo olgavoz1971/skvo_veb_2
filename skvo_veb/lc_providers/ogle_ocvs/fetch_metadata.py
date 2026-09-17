@@ -6,7 +6,7 @@ import logging
 
 from skvo_veb.lc_providers.ogle_ocvs import config
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

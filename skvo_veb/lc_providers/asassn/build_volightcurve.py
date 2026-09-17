@@ -13,8 +13,8 @@ from astropy.table import Table
 from skvo_veb.lc_providers.asassn import config
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import write_vo_lightcurve
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import write_vo_lightcurve
 
 logger = logging.getLogger(__name__)
 

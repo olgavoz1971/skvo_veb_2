@@ -49,8 +49,8 @@ from skvo_veb.utils.lc_bridge import (
 )
 from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.lc_discovery_load import drop_invalid_photometry_rows
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.lightcurve import extract_photdm
+from volightcurve import VOLightCurve
+from volightcurve.lightcurve import extract_photdm
 
 DEFAULT_OGLE_ACCREF = (
     "https://skvo.science.upjs.sk/ogle/q/sdl/dlget?"

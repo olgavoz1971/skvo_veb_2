@@ -27,7 +27,7 @@ from skvo_veb.utils.lc_config import (
     VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION,
 )
 from skvo_veb.utils.lc_bridge import apply_phot_domain_view
-from skvo_veb.volightcurve.vo_unit_codec import to_internal
+from volightcurve.vo_unit_codec import to_internal
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
 logger = logging.getLogger(__name__)

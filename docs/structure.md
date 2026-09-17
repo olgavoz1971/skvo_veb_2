@@ -3,7 +3,6 @@ skvo_veb/
 ├── components/         # frontend components
 ├── pages/              # frontend (includes lightcurve_discovery.py)
 ├── lc_providers/       # plugin registry: strategy/adapters + shared provider interface (no Dash)
-├── volightcurve/       # IVOA VO lightcurve standard (ingest + write_vo_lightcurve)
 ├── utils/              # backend — no test_*.py files
 │   ├── mission_config/ # static PhotCal + export profiles per mission
 │   ├── lc_bridge.py    # VOLightCurve ↔ CurveDash ↔ export
@@ -17,7 +16,10 @@ skvo_veb/
 └── tests/              # all unit/integration tests
     ├── test_lc_*.py
     ├── test_asassn_export.py
-    └── volightcurve/
+    └── volightcurve/   # host/bridge/mission tests (pure suite lives with sibling package)
+
+**Sibling library (editable install):** ``/home/voz/projects/UPJS/volightcurve``
+(`import volightcurve`). See app README for ``pip install -e ../volightcurve``.
 
 **Architecture docs:**
 - `docs/gp_extrema_modeller.md` — Lightcurve Extrema Modeller page (`/gp`: intervals, GP, MAVKA, parabola ToM, O-C)

@@ -249,7 +249,7 @@ When a VOTable stores `PARAM name="epoch"` without `ref="ts"`, the generic inges
 
 Internally, CurveDash always stores **absolute Julian Date** for folding. On export, both `obs_time` and `epoch` are rewritten consistently for the standard MJD `TIMESYS` (`timeorigin = 2400000.5`), preserving `JD = obs_time + timeorigin`.
 
-Implementation: `skvo_veb/volightcurve/time_reference.py`, wired through `volc_to_curvedash` and `build_votable_kwargs_from_metadata`.
+Implementation: sibling package ``volightcurve.time_reference``, wired through `volc_to_curvedash` and `build_votable_kwargs_from_metadata`.
 
 ---
 

@@ -10,7 +10,7 @@ from skvo_veb.lc_providers.discovery_fetch_context import (
 )
 from skvo_veb.lc_providers.panstarrs1_dr2 import config
 from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 

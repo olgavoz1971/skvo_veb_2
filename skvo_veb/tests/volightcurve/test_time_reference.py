@@ -11,15 +11,15 @@ import pytest
 from skvo_veb.utils.lc_bridge import export_curvedash, pack_volc_to_json, volc_to_curvedash
 from skvo_veb.utils.lc_config import JD_TO_MJD, VOTABLE_FORMAT_BINARY
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
-from skvo_veb.volightcurve.time_reference import (
+from volightcurve import VOLightCurve
+from volightcurve.time_reference import (
     absolute_jd_to_time_offset,
     extract_timesys_metadata_from_gavo,
     extract_timesys_registry_from_gavo,
     normalise_table_epoch_to_absolute_jd,
     time_offset_to_absolute_jd,
 )
-from skvo_veb.volightcurve.lightcurve import _gavo_votable_tree_from_source
+from volightcurve.lightcurve import _gavo_votable_tree_from_source
 
 
 def _gaia_style_votable(*, include_epoch: bool = True, second_time_col: bool = False) -> bytes:

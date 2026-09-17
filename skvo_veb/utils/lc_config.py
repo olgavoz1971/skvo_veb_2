@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import math
 
-from skvo_veb.volightcurve.photcal_defaults import (
+from volightcurve.photcal_defaults import (
     DEFAULT_ZP_FLUX as DEFAULT_ZP_FLUX_DIMENSIONLESS,
     DEFAULT_ZP_MAG as DEFAULT_REFERENCE_MAG,
 )
-from skvo_veb.volightcurve.time_reference import (
+from volightcurve.time_reference import (
     JD_TO_MJD,
     TIME_OFFSET_ABSOLUTE_JD_THRESHOLD,
 )

@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from skvo_veb.volightcurve.io import (
+from volightcurve.io import (
     assemble_volightcurve,
     read_lightcurve,
     write_lightcurve,
 )
-from skvo_veb.volightcurve.io_errors import LightcurveIOError
-from skvo_veb.volightcurve.io_keywords import KEY_PERIOD
+from volightcurve.io_errors import LightcurveIOError
+from volightcurve.io_keywords import KEY_PERIOD
 
 
 def _sample_volc():

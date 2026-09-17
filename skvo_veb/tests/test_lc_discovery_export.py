@@ -12,7 +12,7 @@ from skvo_veb.utils.lc_config import METADATA_KEY_VO_ENVELOPE, VOTABLE_FORMAT_BI
 from skvo_veb.utils.lc_discovery_load import curvedash_from_catalog_row
 from skvo_veb.utils.lc_discovery_search import run_catalog_search
 from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 
 def _register_gaia_debug_for_load_tests(monkeypatch) -> GaiaDr3Provider:

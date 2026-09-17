@@ -15,7 +15,7 @@ from skvo_veb.lc_providers.gaia_debug.debug_catalog import (
     V433_AQL,
 )
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.volightcurve import VOLightCurve
+from volightcurve import VOLightCurve
 
 
 def test_registry_lists_gaia_providers():

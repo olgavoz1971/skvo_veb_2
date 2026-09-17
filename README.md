@@ -27,7 +27,21 @@ The project strictly separates concerns:
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the application in debug mode:
+3. Install the sibling ``volightcurve`` library in **editable** mode (Ticket 9;
+   the app imports ``volightcurve`` directly). Adjust the path if your
+   checkout is not beside this repo:
+
+   ```bash
+   pip install -e ../volightcurve
+   # or absolute:
+   # pip install -e /home/voz/projects/UPJS/volightcurve
+   ```
+
+   Optional local override file (gitignored): copy
+   ``requirements-local.txt.example`` → ``requirements-local.txt`` and
+   ``pip install -r requirements-local.txt``.
+
+4. Run the application in debug mode:
    ```bash
    python main.py
    ```
