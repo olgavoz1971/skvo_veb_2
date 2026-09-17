@@ -2113,7 +2113,5 @@ def main():
 
 
 if __name__ == "__main__":
-    from skvo_veb.logging_config import configure_logging
-
-    configure_logging()
+    logging.basicConfig(level=logging.INFO)
     main()

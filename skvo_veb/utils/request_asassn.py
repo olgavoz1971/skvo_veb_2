@@ -19,6 +19,7 @@ from skvo_veb.utils.mission_config.asassn import (
     ASASSN_PIPELINE,
     MISSION_ID,
     asassn_calibration_catalog,
+    attach_asassn_export_provenance,
     resolve_asassn_photcal,
 )
 from skvo_veb.utils.curve_dash import CurveDash
@@ -195,6 +196,7 @@ def load_asassn_lightcurve(gaia_id: int | None = None, source_id: str | None = N
         lcd.metadata['mission'] = MISSION_ID
         lcd.metadata['calibration_catalog'] = asassn_calibration_catalog(band)
         lcd.metadata['title'] = f'ASAS-SN {lcd.lookup_name or lcd.name} {band}'
+        attach_asassn_export_provenance(lcd)
 
     except DBException:
         raise

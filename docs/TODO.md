@@ -949,7 +949,7 @@ there; do not invent a second calibration object.
 - ``skvo_veb/volightcurve/photcal_defaults.py``
 - ``skvo_veb/utils/photcal_coherence.py`` (``reconcile_*``)
 - ``PhotCal`` raises on invalid units (no silent demotion)
-- ``apply_phot_domain_view`` reconciles then converts; returns warnings
+- ``apply_phot_domain_view`` inspects then converts (no invent); incomplete → raise
 - Processor upload + domain switch alerts
 - GP upload reconcile + ``resolve_gp_photcal`` uses shared policy
 - Discovery: **no** photcal reconcile / **no** photcal warnings on retrieve;
@@ -999,6 +999,21 @@ there; do not invent a second calibration object.
 **Open.** Phase 1: Processor/GP still use shared reconcile helpers. Discovery
 does **not** rewrite or warn on provider photcal (retrieve/mag switch). Phase 2
 next when asked. TESS retrieve/upload still to adopt the helper where appropriate.
+
+### Hazard — invent helpers (track)
+
+**Policy:** invent only on GP upload (`reconcile_photcal_dict` + `status_alert`)
+and Processor form fill/Apply. Domain switch uses `inspect_*` only —
+`apply_phot_domain_view` no longer calls `reconcile_curve_photcal`. Cutout
+has no magnitude switch (uncalibrated flux only).
+
+| Entry | Path | Warnings shown? | Notes |
+| --- | --- | --- | --- |
+| `reconcile_curve_photcal` | unused in production | n/a | Reserved; do not wire into domain switch |
+| `reconcile_photcal_dict` | GP upload (`gp_for_oc`) | **yes** | Intended invent path |
+| `reconcile_photcal_dict` | `gp.flux.resolve_gp_photcal` | logger only | Second-chance after upload |
+| `reconcile_photcal_dict` | Processor form adopt | **yes** (Apply) | Via `photcal_dict_from_form_values` |
+| `apply_phot_domain_view` | TESS archive / ASAS-SN / … | raises | Inspect + refuse; no invent. Cutout has no mag switch |
 
 **Unitless encoding (shared dataflow):** Internal storage uses ``None`` for
 dimensionless units (CurveDash / photcal / PhotCal). File export keeps a present

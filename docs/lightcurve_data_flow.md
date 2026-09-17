@@ -168,19 +168,17 @@ VOTable products take a **single byte read**, then two complementary parsers —
   CurveDash.from_serialized(cache)
                  |
                  v
-         export_curvedash(lcd, format, profile)   ← lc_bridge
+         export_curvedash(lcd, format)   ← lc_bridge
+                 |
+                 v
+         assemble one VOLightCurve (photcal + provenance comments/envelope)
+                 |
+                 v
+         write_lightcurve(volc, format)   ← last file step (format only here)
                  |
        +---------+------------------+
        |                            |
-  VOTable formats            tabular formats
-  (optional profile)         (.dat / CSV / ECSV)
-       |                            |
-       v                            v
-  curvedash_to_table()     assemble_volightcurve()
-  write_vo_lightcurve()    write_lightcurve()   ← last file step
-       |                            |
-       v                            v
-  [ VOTable v1.4 ]         [ # KEY=value + rows / ECSV meta ]
+  VOTable (MJD/phot)         .dat / CSV / ECSV
 ```
 
 Do **not** use ``CurveDash.download`` — it is **retired** (Ticket 8 Phase 3)

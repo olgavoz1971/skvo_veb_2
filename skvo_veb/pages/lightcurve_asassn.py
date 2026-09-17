@@ -42,7 +42,6 @@ from skvo_veb.utils.lc_config import (
     EXPORT_FORMAT_OPTIONS,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
-    is_votable_export_format,
 )
 from skvo_veb.utils.lc_figure import figure_from_serialized
 from skvo_veb.utils.lc_interaction import (
@@ -792,8 +791,7 @@ def download_asassn_lc(n_clicks, user_tab_id, table_format):
     try:
         js_lightcurve = read_serialized_lc(ASASSN_PAGE_NAMESPACE, user_tab_id)
         lcd = CurveDash.from_serialized(js_lightcurve)
-        profile = 'asassn' if is_votable_export_format(table_format) else None
-        file_bstring = export_curvedash(lcd, table_format, profile=profile)
+        file_bstring = export_curvedash(lcd, table_format)
 
         gaia_part = resolve_target_identifier(lcd)
         outfile_base = sanitize_filename(f'lc_asassn_{gaia_part}_{lcd.band}')

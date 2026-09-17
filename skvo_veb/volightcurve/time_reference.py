@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from skvo_veb.utils.lc_config import JD_TO_MJD, TIME_OFFSET_ABSOLUTE_JD_THRESHOLD
+# Julian Date offset for Modified Julian Date: MJD = JD - JD_TO_MJD.
+# Owned here so ``volightcurve`` has no dependency on the Dash app layer.
+JD_TO_MJD = 2400000.5
+
+# Values at or above this threshold are treated as absolute Julian Date on ingest.
+TIME_OFFSET_ABSOLUTE_JD_THRESHOLD = JD_TO_MJD
 
 if TYPE_CHECKING:
     from skvo_veb.volightcurve.lightcurve import TimeSys, VOLightCurve

@@ -106,7 +106,7 @@ def test_votable_export_names_missing_filter_identifier():
 60821.47960 12.980 0.050
 """
     lcd = ingest_lightcurve_file(io.BytesIO(dat), "no_filter.dat")
-    with pytest.raises(PipeException, match="photcal.filter_identifier is missing") as exc_info:
+    with pytest.raises(PipeException, match="filter identifier is missing") as exc_info:
         export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
     assert "archive" not in str(exc_info.value).lower()
     assert "re-load" not in str(exc_info.value).lower()

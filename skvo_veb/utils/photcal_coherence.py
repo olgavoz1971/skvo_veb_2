@@ -7,9 +7,23 @@ Reconciles ``metadata['photcal']`` before mag↔flux conversion:
   that unit into photcal and warn explicitly.
 * Never silently demote invalid units inside ``PhotCal`` without this step.
 
-Pages call :func:`reconcile_curve_photcal` (CurveDash) or
-:func:`reconcile_photcal_dict` (transport ``meta``) and show the returned
-warning strings via ``status_alert``.
+**Dangerous mutators — never call silently.** Both
+:func:`reconcile_curve_photcal` and :func:`reconcile_photcal_dict` **invent**
+missing zero points (``DEFAULT_ZP_FLUX`` / ``DEFAULT_ZP_MAG``) and rewrite
+stored photcal. Callers **must** surface every returned warning to the user
+(``status_alert`` or equivalent). Discarding the warning list is forbidden.
+
+**Allowed invent call sites:**
+
+* :func:`reconcile_photcal_dict` — GP upload (``gp_for_oc`` + ``status_alert``);
+  ``gp.flux.resolve_gp_photcal`` (after upload promote); Processor form Apply
+  (``photcal_dict_from_form_values``).
+* :func:`reconcile_curve_photcal` — reserved for intentional CurveDash promote
+  with a UI warning path; **not** used by domain switch.
+
+**Domain switch** uses :func:`inspect_curve_photcal` /
+:func:`inspect_photcal_dict` only (via ``lc_bridge.apply_phot_domain_view``).
+Incomplete photcal → refuse conversion; do not invent.
 
 Unitless values are stored as ``None`` (see ``vo_unit_codec``); UI messages use
 :func:`to_display` so callers never surface bare ``None``.
@@ -118,6 +132,10 @@ def reconcile_photcal_dict(
 ) -> tuple[dict[str, Any], list[str]]:
     """Promotes/repairs a serialised photcal dict for application use.
 
+    **Do not call silently.** Returned warnings must be shown to the user.
+    Incomplete ZP pairs are filled from ``photcal_defaults`` — that is an
+    invented calibration, not archive truth.
+
     * Incomplete ZP pair → fill application defaults and warn.
     * Invalid ZP flux unit → promote to the **concrete** flux column unit when
       available; otherwise leave the declared text and warn.
@@ -131,6 +149,7 @@ def reconcile_photcal_dict(
 
     Returns:
         tuple: Updated photcal dict and user-facing promotion/warning messages.
+            Callers must not discard the warning list.
     """
     pc: dict[str, Any] = dict(photcal or {})
     warnings: list[str] = []
@@ -232,11 +251,21 @@ def reconcile_photcal_dict(
 def reconcile_curve_photcal(lcd) -> list[str]:
     """Reconciles ``lcd.metadata['photcal']`` using the flux column unit.
 
+    **Forbidden to call silently.** Mutates session photcal and can invent
+    ``ZP_FLUX`` / ``ZP_MAG`` from ``photcal_defaults``. Every non-empty warning
+    **must** be shown in the UI (``status_alert`` or equivalent).
+
+    Domain switch must **not** call this — use :func:`inspect_curve_photcal`
+    and refuse conversion. Production invent paths use
+    :func:`reconcile_photcal_dict` (GP upload, Processor Apply). This CurveDash
+    wrapper is reserved for an explicit promote-with-warning UI only.
+
     Args:
         lcd: ``CurveDash`` instance (mutated in place).
 
     Returns:
-        list[str]: User-facing warning messages (may be empty).
+        list[str]: User-facing warning messages (may be empty). Must be
+            surfaced when non-empty; never discard without UI feedback.
     """
     meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
     flux_unit = to_internal(

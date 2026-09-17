@@ -16,6 +16,8 @@ from astropy import units as u
 
 from skvo_veb.utils.lc_config import (
     JD_TO_MJD,
+    METADATA_KEY_FILE_COMMENTS,
+    METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
     PHOTCAL_KEY_FILTER_IDENTIFIER,
@@ -25,9 +27,11 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_FLUX_UNIT,
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
+    VO_ENVELOPE_KEY_TABLE_DESCRIPTION,
+    VO_ENVELOPE_KEY_TABLE_NAME,
+    VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION,
 )
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
-from skvo_veb.volightcurve.time_reference import export_absolute_jd_as_time_offset
 
 logger = logging.getLogger(__name__)
 
@@ -188,8 +192,44 @@ def resolve_target_identifier(lcd) -> str:
     return "unknown"
 
 
+def attach_asassn_export_provenance(lcd) -> None:
+    """Stores ASAS-SN provenance for all export formats (comments + VO envelope).
+
+    Args:
+        lcd (CurveDash): ASAS-SN lightcurve with band and photcal metadata.
+    """
+    meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
+    lcd.metadata = meta
+    band = getattr(lcd, "band", None) or meta.get("band") or "unknown"
+    target_id = resolve_target_identifier(lcd)
+    if band in ASASSN_BANDS:
+        calibration = meta.get("calibration_catalog") or calibration_catalog(band)
+        wavelength_label = effective_wavelength_display(band)
+    else:
+        calibration = meta.get("calibration_catalog") or "unknown"
+        wavelength_label = "unknown"
+    desc = (
+        f"ASAS-SN Sky Patrol lightcurve for target {target_id}. "
+        f"Filter band: {band}. Effective wavelength: {wavelength_label}. "
+        f"Calibrated against {calibration}. "
+        f"Observation times are Heliocentric Julian Date; "
+        f"``obs_time`` is Modified Julian Date (MJD = JD - {JD_TO_MJD}). "
+    )
+    meta[METADATA_KEY_FILE_COMMENTS] = [desc]
+    meta[METADATA_KEY_VO_ENVELOPE] = {
+        VO_ENVELOPE_KEY_TABLE_NAME: (
+            f"ASASSN_{sanitize_filename(str(target_id))}_{band}"
+        ),
+        VO_ENVELOPE_KEY_TABLE_DESCRIPTION: desc,
+        VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION: desc,
+        "creator": ASASSN_PIPELINE,
+        "refposition": ASASSN_REFPOSITION,
+        "timescale": ASASSN_TIMESCALE,
+    }
+
+
 def build_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for ASAS-SN VOTable export (profile ``asassn``).
+    """Legacy VOTable kwargs helper; attaches provenance then uses metadata export.
 
     Args:
         lcd (CurveDash): ASAS-SN lightcurve with band and photcal metadata.
@@ -197,45 +237,7 @@ def build_votable_kwargs(lcd) -> dict:
     Returns:
         dict: Keyword arguments for ``write_vo_lightcurve``.
     """
-    from skvo_veb.utils.lc_bridge import _photcal_group_to_votable_fields
+    attach_asassn_export_provenance(lcd)
+    from skvo_veb.utils.lc_bridge import build_votable_kwargs_from_metadata
 
-    meta = lcd.metadata or {}
-    band = lcd.band or meta.get("band") or "unknown"
-    target_id = resolve_target_identifier(lcd)
-
-    if band in ASASSN_BANDS:
-        calibration = meta.get("calibration_catalog") or calibration_catalog(band)
-        photcal = meta.get("photcal") or resolve_photcal(band)
-        wavelength_label = effective_wavelength_display(band)
-    else:
-        calibration = meta.get("calibration_catalog") or "unknown"
-        photcal = meta.get("photcal") or {}
-        wavelength_label = "unknown"
-    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=True)
-
-    desc_core = (
-        f"ASAS-SN Sky Patrol lightcurve for target {target_id}. "
-        f"Filter band: {band}. Effective wavelength: {wavelength_label}. "
-        f"Calibrated against {calibration}. "
-        f"Observation times are Heliocentric Julian Date; "
-        f"``obs_time`` is Modified Julian Date (MJD = JD - {JD_TO_MJD}). "
-    )
-
-    return {
-        "table_name": f"ASASSN_{sanitize_filename(str(target_id))}_{band}",
-        "refposition": ASASSN_REFPOSITION,
-        "timescale": ASASSN_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": desc_core,
-        "table_description": desc_core,
-        "creator": ASASSN_PIPELINE,
-        "ra": meta.get("ra"),
-        "dec": meta.get("dec"),
-        "period": meta.get("period"),
-        "epoch": export_absolute_jd_as_time_offset(
-            meta.get("epoch"),
-            timeorigin=JD_TO_MJD,
-        ),
-        "binary": True,
-        **photcal_fields,
-    }
+    return build_votable_kwargs_from_metadata(lcd)

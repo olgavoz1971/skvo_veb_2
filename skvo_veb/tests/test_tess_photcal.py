@@ -171,8 +171,8 @@ def test_qlp_without_tessmag_rejects_magnitude_conversion():
         apply_tess_phot_domain_view(lcd, True)
 
 
-def test_qlp_unit_mismatch_reconciles_to_flux_column_unit():
-    """Incompatible ZP unit is corrected to the flux column unit (Ticket 7)."""
+def test_qlp_unit_mismatch_refuses_magnitude_conversion():
+    """Incompatible ZP / flux-column units refuse conversion (no silent invent)."""
     lcd = _build_archive_lcd(
         [100.0, 200.0],
         [1.0, 2.0],
@@ -180,9 +180,50 @@ def test_qlp_unit_mismatch_reconciles_to_flux_column_unit():
         photcal=resolve_tess_photcal(["QLP"], tess_mag=11.42),
         flux_unit="electron s-1",
     )
-    apply_tess_phot_domain_view(lcd, True)
-    assert lcd.active_domain == DOMAIN_MAG
-    assert lcd.metadata["photcal"][PHOTCAL_KEY_ZP_FLUX_UNIT] == "electron s-1"
+    with pytest.raises(PipeException, match="do not match|Domain switch"):
+        apply_tess_phot_domain_view(lcd, True)
+    assert lcd.active_domain == DOMAIN_FLUX
+    assert lcd.metadata["photcal"].get(PHOTCAL_KEY_ZP_FLUX_UNIT) is None
+
+
+def test_passband_only_flux_view_does_not_invent_zero_points():
+    """Staying in flux with passband-only photcal must not invent ZPs."""
+    from skvo_veb.utils.lc_bridge import apply_phot_domain_view
+    from skvo_veb.utils.mission_config.tess import filter_group_meta
+
+    lcd = _build_archive_lcd(
+        [100.0, 200.0],
+        [1.0, 2.0],
+        authors=["user"],
+        photcal=filter_group_meta(),
+        flux_unit="electron s-1",
+    )
+    apply_phot_domain_view(lcd, False)
+    assert PHOTCAL_KEY_ZP_FLUX not in lcd.metadata["photcal"]
+    assert PHOTCAL_KEY_ZP_MAG not in lcd.metadata["photcal"]
+
+    payload = export_curvedash(lcd, "ascii.commented_header").decode("utf-8")
+    assert "ZP_FLUX" not in payload
+    assert "ZP_MAG" not in payload
+    assert "FILTER" in payload or "TESS/TESS.Red" in payload
+
+
+def test_passband_only_refuses_magnitude_view():
+    """Uncalibrated (passband-only) curves must not invent ZPs to reach mag view."""
+    from skvo_veb.utils.lc_bridge import apply_phot_domain_view
+    from skvo_veb.utils.mission_config.tess import filter_group_meta
+
+    lcd = _build_archive_lcd(
+        [100.0, 200.0],
+        [1.0, 2.0],
+        authors=["user"],
+        photcal=filter_group_meta(),
+        flux_unit="electron s-1",
+    )
+    with pytest.raises(PipeException, match="incomplete|zero point|zp_"):
+        apply_phot_domain_view(lcd, True)
+    assert lcd.active_domain == DOMAIN_FLUX
+    assert PHOTCAL_KEY_ZP_FLUX not in lcd.metadata["photcal"]
 
 
 def test_background_flux_rejects_magnitude_conversion():

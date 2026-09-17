@@ -48,15 +48,12 @@ from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD as jd0,
     DEFAULT_EXPORT_FORMAT,
     DOMAIN_FLUX,
-    DOMAIN_MAG,
     EXPORT_FORMAT_OPTIONS,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
-    is_votable_export_format,
 )
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
-    apply_phot_domain_view,
     export_file_extension,
 )
 from skvo_veb.utils.mission_config.tess import (
@@ -325,17 +322,6 @@ def layout():
                                       id='flatten_switch_label',
                                       style={'font-size': label_font_size}),
                         ], direction='horizontal'),
-                        dbc.Stack([
-                            dbc.Switch(
-                                value=False,
-                                style={'font-size': label_font_size},
-                                id='mag_view_cutout_switch',
-                                persistence=True,
-                            ),
-                            dbc.Label('Magnitude',
-                                      id='mag_view_cutout_switch_label',
-                                      style={'font-size': label_font_size}),
-                        ], direction='horizontal'),
                         dcc.RadioItems(
                             id='time_axis_cutout_switch',
                             options=[
@@ -394,9 +380,6 @@ def layout():
                             dbc.Tooltip('Switch on to remove long-term trends '
                                         'using a Savitzky–Golay filter. Choose the parameters below',
                                         target='flatten_switch_label', placement='bottom'),
-                            dbc.Tooltip('Display photometry as magnitude instead of flux '
-                                        '(applied on rePlot curve)',
-                                        target='mag_view_cutout_switch_label', placement='bottom'),
                             dbc.Tooltip('Length of the filter window '
                                         '(number of data points, must be an odd positive integer). '
                                         'Controls the smoothness of trend removal',
@@ -1295,7 +1278,6 @@ def create_lightcurve_figure(
         flatten_window=State('flatten_window_input', 'value'),
         flatten_break_gap=State('flatten_break_gap_input', 'value'),
         flatten_order=State('flatten_order_input', 'value'),
-        show_magnitude=State('mag_view_cutout_switch', 'value'),
         auto_mask=State('auto_mask_switch', 'value'),
         mask_type=State('mask_type_switch', 'value'),
     ),
@@ -1304,11 +1286,12 @@ def create_lightcurve_figure(
 )
 def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
                       flatten, show_trend, flatten_window, flatten_break_gap, flatten_order,
-                      show_magnitude, auto_mask, mask_type):
+                      auto_mask, mask_type):
     """Computes an uncalibrated cutout lightcurve and stores it in the selected slot.
 
-    Scientific extraction is delegated to ``tess_processor.process_lightcurve_computation``.
-    Metadata for export (source, mask mode, user pipeline tag) is attached via ``lc_bridge``.
+    Cutout fluxes are never calibrated, so results stay in the flux domain with
+    passband-only photcal. Scientific extraction is delegated to
+    ``tess_processor.process_lightcurve_computation``.
 
     Args:
         n_clicks: Plot button click count.
@@ -1321,7 +1304,6 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
         flatten_window: Flattening window length.
         flatten_break_gap: Flattening break tolerance.
         flatten_order: Flattening polynomial order.
-        show_magnitude: When true, convert photometry to magnitude before storing.
         auto_mask: Automatic mask generation toggle.
         mask_type (str): ``'pipeline'`` or ``'threshold'`` when auto mask is enabled.
 
@@ -1365,7 +1347,6 @@ def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
             active_domain=DOMAIN_FLUX,
         )
         enrich_cutout_curvedash(lcd, pixel_metadata, sector, mask_mode, ra=ra_val, dec=dec_val)
-        apply_phot_domain_view(lcd, bool(show_magnitude))
         jsons = lcd.serialize()
 
 
@@ -1985,7 +1966,8 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
                              selection_bounds, lc_metadata, time_axis_mode):
     """Exports the primary cutout lightcurve, clipped to the active selection or zoom.
 
-    VOTable export uses the ``cutout`` profile (uncalibrated; no PhotCal zero points).
+    Provenance and passband photcal are taken from CurveDash metadata (attached at
+    enrich). All formats share the same product; only ``write_lightcurve`` differs.
     The on-screen store retains any prior trims; export further limits output to the
     stored box-selection bounds, or otherwise the visible time axis.
 
@@ -2015,8 +1997,7 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
 
-        profile = 'cutout' if is_votable_export_format(table_format) else None
-        file_bstring = export_curvedash(lcd, table_format, profile=profile)
+        file_bstring = export_curvedash(lcd, table_format)
 
         outfile_base = 'lc_tess_' + sanitize_filename(build_cutout_title(lcd))
         ext = export_file_extension(table_format)

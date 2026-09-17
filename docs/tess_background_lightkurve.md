@@ -196,7 +196,7 @@ Tests: `skvo_veb/tests/test_tess_flux_column_registry.py`.
 **Curve Tools** (not the pixel “Plot options” block):
 
 - **`sub_bkg_switch`** — checklist/switch **Sub bkg** → passes `sub_bkg` into computation.
-- **Flatten**, **Magnitude**, time axis, trim, export format.
+- **Flatten**, time axis, trim, export format.
 - **Plot Options** — **`star_tess_switch`** selects which of three curves is updated (**Curve 1 / 2 / 3**); compare divide/subtract between slots.
 
 There is **no** flux-column radio and **no** `tess_flux_column_registry` integration on this page.
@@ -219,8 +219,8 @@ There is **no** flux-column radio and **no** `tess_flux_column_registry` integra
 #### Storage and plotting
 
 - Three session stores: **`store_tess_cutout_lightcurve`**, **`lc2_store`**, **`lc3_store`** (browser session JSON).
-- **`plot_lightcurve`** deserialises stores and builds figures via **`create_lightcurve_figure`** → **`build_curvedash_scatter_figure`**; y-axis is always the stored **`lcd.flux`** (or magnitude after **`apply_phot_domain_view`**).
-- Export: **`download_tess_lightcurve`** → **`prepare_lcd_for_export`** → **`export_curvedash(..., profile='cutout')`**. Profile **`cutout`** omits archive zero points (uncalibrated user photometry).
+- **`plot_lightcurve`** deserialises stores and builds figures via **`create_lightcurve_figure`** → **`build_curvedash_scatter_figure`**; y-axis is always stored flux (cutout photometry is uncalibrated; no magnitude switch).
+- Export: **`download_tess_lightcurve`** → **`prepare_lcd_for_export`** → **`export_curvedash`**. Provenance and passband photcal live on CurveDash from enrich; all formats share one assembled product (``write_lightcurve``).
 
 #### Pixel display (context only)
 

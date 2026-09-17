@@ -13,12 +13,10 @@ from skvo_veb.volightcurve.photcal_defaults import (
     DEFAULT_ZP_FLUX as DEFAULT_ZP_FLUX_DIMENSIONLESS,
     DEFAULT_ZP_MAG as DEFAULT_REFERENCE_MAG,
 )
-
-# Julian Date offset for Modified Julian Date: MJD = JD - JD_TO_MJD.
-JD_TO_MJD = 2400000.5
-
-# Values below this threshold are treated as TIMESYS-relative offsets on ingest.
-TIME_OFFSET_ABSOLUTE_JD_THRESHOLD = JD_TO_MJD
+from skvo_veb.volightcurve.time_reference import (
+    JD_TO_MJD,
+    TIME_OFFSET_ABSOLUTE_JD_THRESHOLD,
+)
 
 # Display epoch for relative JD axes (jd - DEFAULT_EPOCH_JD).
 DEFAULT_EPOCH_JD = JD_TO_MJD

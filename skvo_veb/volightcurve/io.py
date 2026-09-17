@@ -20,8 +20,12 @@ from skvo_veb.volightcurve.io_meta import (
     calibration_dict_from_volc,
     format_keyword_comment_lines,
     free_text_comments,
+    narrative_file_comments,
 )
 from skvo_veb.volightcurve.lightcurve import VOLightCurve, write_vo_lightcurve
+from skvo_veb.volightcurve.time_reference import JD_TO_MJD
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +344,192 @@ def assemble_volightcurve(
     return VOLightCurve.from_table(tab)
 
 
+def _photometry_columns_for_votable(tab: Table) -> tuple[str, str | None]:
+    """Resolves photometry and error column names for VOTable export.
+
+    Args:
+        tab (Table): Source table (``phot``/``flux``/``mag`` naming).
+
+    Returns:
+        tuple: ``(phot_col, err_col_or_None)``.
+
+    Raises:
+        LightcurveIOError: When no photometry column is present.
+    """
+    if "phot" in tab.colnames:
+        err = "flux_error" if "flux_error" in tab.colnames else None
+        if err is None and "phot_err" in tab.colnames:
+            err = "phot_err"
+        return "phot", err
+    if "mag" in tab.colnames:
+        err = "mag_err" if "mag_err" in tab.colnames else None
+        return "mag", err
+    if "flux" in tab.colnames:
+        err = "flux_err" if "flux_err" in tab.colnames else None
+        return "flux", err
+    raise LightcurveIOError("Cannot export VOTable: no photometry column.")
+
+
+def _table_for_votable_codec(volc: VOLightCurve) -> tuple[Table, float]:
+    """Builds a VOTable-shaped table and TIMESYS timeorigin from a product.
+
+    Canonical assembly uses absolute JD (``JD0 = 0``) with ``jd`` / ``flux|mag``
+    columns. VOTable writing remaps to ``obs_time`` (MJD) and ``phot`` here —
+    the only format-specific table transform, at write time.
+
+    Args:
+        volc (VOLightCurve): Assembled lightcurve (any supported column layout).
+
+    Returns:
+        tuple: ``(table, timeorigin)`` for ``write_vo_lightcurve``.
+
+    Raises:
+        LightcurveIOError: When a time or photometry column is missing.
+    """
+    src = volc.table
+    meta = dict(src.meta or {})
+    stored_origin = 0.0
+    if volc.timesys is not None and volc.timesys.timeorigin is not None:
+        stored_origin = float(volc.timesys.timeorigin)
+
+    if "obs_time" in src.colnames:
+        out = src.copy()
+        out.meta = meta
+        return out, stored_origin
+
+    time_col = None
+    for name in ("jd", "time"):
+        if name in src.colnames:
+            time_col = name
+            break
+    if time_col is None:
+        raise LightcurveIOError("Cannot export VOTable: no time column.")
+
+    phot_col, err_col = _photometry_columns_for_votable(src)
+    times = np.asarray(src[time_col], dtype=float)
+
+    # Absolute JD (JD0 ≈ 0) → MJD column with standard MJD timeorigin.
+    if abs(stored_origin) < 1e-9:
+        obs_time = times - JD_TO_MJD
+        write_origin = float(JD_TO_MJD)
+        if meta.get("epoch") is not None:
+            try:
+                meta["epoch"] = float(meta["epoch"]) - JD_TO_MJD
+            except (TypeError, ValueError):
+                pass
+    else:
+        obs_time = times
+        write_origin = stored_origin
+
+    out = Table()
+    out["obs_time"] = obs_time
+    out["phot"] = np.asarray(src[phot_col], dtype=float)
+    if src[phot_col].unit is not None:
+        out["phot"].unit = src[phot_col].unit
+    if err_col is not None:
+        out["flux_error"] = np.asarray(src[err_col], dtype=float)
+        if src[err_col].unit is not None:
+            out["flux_error"].unit = src[err_col].unit
+    if "label" in src.colnames:
+        out["label"] = src["label"]
+    out.meta = meta
+    return out, write_origin
+
+
+def _votable_kwargs_from_volc(
+    volc: VOLightCurve,
+    calibration: dict[str, Any],
+    table_data: Table,
+    timeorigin: float,
+) -> dict[str, Any]:
+    """Infers ``write_vo_lightcurve`` kwargs from the assembled product only.
+
+    Args:
+        volc (VOLightCurve): Source product.
+        calibration (dict): Keyword map from ``calibration_dict_from_volc``.
+        table_data (Table): VO-shaped table (may carry adjusted epoch).
+        timeorigin (float): TIMESYS time origin for the ``obs_time`` column.
+
+    Returns:
+        dict: Keyword arguments for ``write_vo_lightcurve``.
+    """
+    meta = dict(table_data.meta or {})
+    envelope = dict(meta.get("vo_envelope") or {})
+    comments = narrative_file_comments(meta.get("comments"))
+    description = (
+        envelope.get("votable_description")
+        or envelope.get("table_description")
+        or (" ".join(comments) if comments else None)
+    )
+    table_name = (
+        envelope.get("table_name")
+        or meta.get("name")
+        or meta.get("ID")
+        or "lightcurve"
+    )
+    kwargs: dict[str, Any] = {
+        "table_name": str(table_name),
+        "timeorigin": float(timeorigin),
+    }
+    filt = calibration.get("FILTER")
+    if not filt:
+        raise LightcurveIOError(
+            "Cannot export VOTable: filter identifier is missing."
+        )
+    kwargs["filter_identifier"] = str(filt)
+
+    if envelope.get("refposition"):
+        kwargs["refposition"] = str(envelope["refposition"])
+    elif volc.timesys is not None and volc.timesys.refposition:
+        kwargs["refposition"] = str(volc.timesys.refposition)
+
+    if envelope.get("timescale"):
+        kwargs["timescale"] = str(envelope["timescale"]).upper()
+    elif volc.timesys is not None and volc.timesys.timescale:
+        kwargs["timescale"] = str(volc.timesys.timescale).upper()
+
+    if description:
+        kwargs["votable_description"] = description
+        kwargs["table_description"] = (
+            envelope.get("table_description") or description
+        )
+    if envelope.get("creator"):
+        kwargs["creator"] = str(envelope["creator"])
+    if meta.get("ra") is not None:
+        kwargs["ra"] = meta["ra"]
+    if meta.get("dec") is not None:
+        kwargs["dec"] = meta["dec"]
+    if meta.get("period") is not None:
+        kwargs["period"] = float(meta["period"])
+    if meta.get("epoch") is not None:
+        kwargs["epoch"] = float(meta["epoch"])
+    if calibration.get("FILTER_NAME"):
+        kwargs["filter_name"] = str(calibration["FILTER_NAME"])
+    if "ZP_FLUX" in calibration:
+        kwargs["zero_point_flux"] = calibration["ZP_FLUX"]
+        kwargs["zero_point_flux_unit"] = calibration.get("ZP_FLUX_UNIT")
+    if "ZP_MAG" in calibration:
+        kwargs["zero_point_ref_mag"] = calibration["ZP_MAG"]
+        kwargs["zero_point_ref_mag_unit"] = calibration.get("ZP_MAG_UNIT", "mag")
+    if "MAG_SYS" in calibration:
+        kwargs["magnitude_system"] = calibration["MAG_SYS"]
+    if "EFFECTIVE_WAVELENGTH" in calibration:
+        kwargs["effective_wavelength"] = calibration["EFFECTIVE_WAVELENGTH"]
+        if calibration.get("EFFECTIVE_WAVELENGTH_UNIT"):
+            kwargs["effective_wavelength_unit"] = calibration[
+                "EFFECTIVE_WAVELENGTH_UNIT"
+            ]
+    if envelope.get("publication_id"):
+        kwargs["publication_id"] = str(envelope["publication_id"])
+    if envelope.get("coosys_system"):
+        kwargs["coosys_system"] = envelope["coosys_system"]
+        if envelope.get("coosys_epoch") is not None:
+            kwargs["coosys_epoch"] = envelope["coosys_epoch"]
+        if envelope.get("coosys_id"):
+            kwargs["coosys_id"] = envelope["coosys_id"]
+    return kwargs
+
+
 def write_lightcurve(
     volc: VOLightCurve,
     format: str,
@@ -350,6 +540,10 @@ def write_lightcurve(
 ) -> bytes:
     """Writes a ``VOLightCurve`` to the requested format (last file step).
 
+    Photcal, narrative comments, and provenance envelope must already live on
+    ``volc``. Format branching (VOTable column remap vs ``#`` comments) happens
+    only here.
+
     Args:
         volc (VOLightCurve): Lightcurve to serialise.
         format (str): Format id (``votable_binary``, ``ascii.ecsv``, ``csv``,
@@ -358,9 +552,8 @@ def write_lightcurve(
             returned only.
         binary (bool, optional): Default VOTable encoding when format is generic
             ``votable``.
-        **votable_kwargs: Extra arguments for ``write_vo_lightcurve`` (required
-            fields such as ``table_name`` / ``filter_identifier`` may be inferred
-            from ``volc`` when omitted).
+        **votable_kwargs: Optional overrides for ``write_vo_lightcurve`` (tests /
+            advanced callers). Prefer storing fields on ``volc`` instead.
 
     Returns:
         bytes: Serialised file content (also written to ``destination`` when set).
@@ -376,46 +569,16 @@ def write_lightcurve(
     logger.info("write_lightcurve codec=%s keys=%s", codec, sorted(calibration))
 
     if codec == "votable":
-        kwargs = dict(votable_kwargs)
+        table_data, timeorigin = _table_for_votable_codec(volc)
+        kwargs = _votable_kwargs_from_volc(
+            volc, calibration, table_data, timeorigin
+        )
+        kwargs.update({k: v for k, v in votable_kwargs.items() if v is not None})
         kwargs.setdefault("binary", _votable_binary_flag(format, binary=binary))
-        if "table_name" not in kwargs:
-            meta = volc.table.meta or {}
-            kwargs["table_name"] = str(
-                meta.get("name") or meta.get("ID") or "lightcurve"
-            )
-        if "filter_identifier" not in kwargs:
-            filt = calibration.get("FILTER")
-            if not filt:
-                raise LightcurveIOError(
-                    "Cannot export VOTable: filter identifier is missing."
-                )
-            kwargs["filter_identifier"] = str(filt)
-        if "timeorigin" not in kwargs and volc.timesys is not None:
-            kwargs["timeorigin"] = volc.timesys.timeorigin
-        if "timescale" not in kwargs and volc.timesys is not None and volc.timesys.timescale:
-            kwargs["timescale"] = str(volc.timesys.timescale)
-        if "refposition" not in kwargs and volc.timesys is not None and volc.timesys.refposition:
-            kwargs["refposition"] = str(volc.timesys.refposition)
-        if "period" not in kwargs and (volc.table.meta or {}).get("period") is not None:
-            kwargs["period"] = float(volc.table.meta["period"])
-        if "epoch" not in kwargs and (volc.table.meta or {}).get("epoch") is not None:
-            kwargs["epoch"] = float(volc.table.meta["epoch"])
-        # Map calibration ZPs when not supplied.
-        if "zero_point_flux" not in kwargs and "ZP_FLUX" in calibration:
-            kwargs["zero_point_flux"] = calibration["ZP_FLUX"]
-            kwargs.setdefault("zero_point_flux_unit", calibration.get("ZP_FLUX_UNIT"))
-        if "zero_point_ref_mag" not in kwargs and "ZP_MAG" in calibration:
-            kwargs["zero_point_ref_mag"] = calibration["ZP_MAG"]
-            kwargs.setdefault(
-                "zero_point_ref_mag_unit", calibration.get("ZP_MAG_UNIT", "mag")
-            )
-        if "magnitude_system" not in kwargs and "MAG_SYS" in calibration:
-            kwargs["magnitude_system"] = calibration["MAG_SYS"]
-
         buf = io.BytesIO()
         write_vo_lightcurve(
             output_stream_or_path=buf,
-            table_data=volc.table,
+            table_data=table_data,
             **kwargs,
         )
         payload = buf.getvalue()

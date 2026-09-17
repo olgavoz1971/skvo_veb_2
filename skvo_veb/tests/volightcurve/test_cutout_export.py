@@ -43,7 +43,7 @@ def test_cutout_export_no_zero_points():
         dec=-54.0,
     )
 
-    xml = export_curvedash(lcd, 'votable_binary', profile='cutout').decode('utf-8')
+    xml = export_curvedash(lcd, 'votable_binary').decode('utf-8')
     norm = re.sub(r'\s+', ' ', xml)
     assert 'zeroPointFlux' not in xml
     assert 'zeroPointReferenceMagnitude' not in xml
@@ -56,9 +56,15 @@ def test_cutout_export_no_zero_points():
     assert 'name="label"' in xml
     assert 'timeorigin="2400000.5"' in xml
 
-    volc = VOLightCurve(io.BytesIO(export_curvedash(lcd, 'votable_binary', profile='cutout')))
+    volc = VOLightCurve(io.BytesIO(export_curvedash(lcd, 'votable_binary')))
     assert volc.timesys.jd0 == 2400000.5
     np.testing.assert_allclose(volc['obs_time'], jd - 2400000.5)
+
+    dat = export_curvedash(lcd, 'ascii.commented_header').decode('utf-8')
+    assert 'Data source: TPF' in dat
+    assert 'Aperture mask mode: threshold' in dat
+    assert 'ZP_FLUX' not in dat
+    assert 'FILTER' in dat or 'TESS/TESS.Red' in dat
 
 
 def test_resolve_cutout_mask_mode():

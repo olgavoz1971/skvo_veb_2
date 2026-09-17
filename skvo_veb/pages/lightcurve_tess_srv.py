@@ -61,7 +61,6 @@ from skvo_veb.utils.lc_config import (
     TIME_AXIS_MJD,
     absolute_jd_from_display_epoch,
     display_epoch_offset,
-    is_votable_export_format,
     resolve_catalog_epoch,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
@@ -1545,8 +1544,7 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
             display_epoch=jd0,
             time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
         )
-        profile = 'tess' if is_votable_export_format(table_format) else None
-        file_bstring = export_curvedash(lcd, table_format, profile=profile)
+        file_bstring = export_curvedash(lcd, table_format)
 
         outfile_base = f'lc_tess_' + sanitize_filename(lcd.title)
         ext = export_file_extension(table_format)

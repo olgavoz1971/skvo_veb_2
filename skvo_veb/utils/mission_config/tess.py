@@ -11,7 +11,8 @@ import logging
 from astropy import units as u
 
 from skvo_veb.utils.lc_config import (
-    JD_TO_MJD,
+    METADATA_KEY_FILE_COMMENTS,
+    METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
     PHOTCAL_KEY_FILTER_IDENTIFIER,
@@ -21,9 +22,11 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_FLUX_UNIT,
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
+    VO_ENVELOPE_KEY_TABLE_DESCRIPTION,
+    VO_ENVELOPE_KEY_TABLE_NAME,
+    VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION,
 )
 from skvo_veb.utils.lc_bridge import apply_phot_domain_view
-from skvo_veb.volightcurve.time_reference import export_absolute_jd_as_time_offset
 from skvo_veb.volightcurve.vo_unit_codec import to_internal
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 
@@ -207,9 +210,9 @@ def validate_tess_magnitude_conversion(lcd) -> None:
 def apply_tess_phot_domain_view(lcd, show_magnitude: bool) -> None:
     """Converts a TESS archive lightcurve between flux and magnitude views.
 
-    Uses the shared bridge conversion path after TESS-specific preconditions are met.
-    Magnitude conversion requires a defined, unstitched zero point; incompatible flux
-    and zero-point units raise an error rather than producing silent wrong results.
+    Uses the shared bridge conversion path after TESS-specific preconditions
+    are met. Does not invent photcal; incomplete or incoherent zero points
+    raise rather than filling defaults.
 
     Args:
         lcd (CurveDash): Cached lightcurve to mutate.
@@ -318,7 +321,98 @@ def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, r
     title = build_cutout_title(lcd)
     lcd.title = title
     lcd.metadata["title"] = title
+    attach_cutout_export_provenance(lcd)
     return lcd
+
+
+def attach_cutout_export_provenance(lcd) -> None:
+    """Stores cutout provenance for all export formats (comments + VO envelope).
+
+    Call at enrich time so ``export_curvedash`` / ``write_lightcurve`` never need
+    a VOTable-only profile to recover source, mask, or calibration notes.
+
+    Args:
+        lcd (CurveDash): Cutout lightcurve with cutout metadata already set.
+    """
+    meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
+    lcd.metadata = meta
+    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
+    source = str(meta.get("cutout_source") or meta.get("pixel_type") or "unknown").upper()
+    mask_mode = meta.get("mask_mode", "unknown")
+    from skvo_veb.utils.lc_bridge import _parse_list_meta
+
+    sectors = _parse_list_meta(meta.get("sectors")) or []
+    sectors_str = ", ".join(sectors) if sectors else "unknown"
+    flux_correction = meta.get("flux_correction") or ""
+    processing_note = f" Processing applied: {flux_correction}." if flux_correction else ""
+    calibration_note = (
+        " Photometry is uncalibrated aperture summation; "
+        "photometric zero points are omitted from the PhotCal group."
+    )
+    desc = (
+        f"Uncalibrated TESS cutout lightcurve for target {tic_id}. "
+        f"Data source: {source}. Aperture mask mode: {mask_mode}. "
+        f"Sector: {sectors_str}. Pipeline: {CUTOUT_PIPELINE_AUTHOR}."
+        f"{processing_note}{calibration_note}"
+    )
+    meta[METADATA_KEY_FILE_COMMENTS] = [desc]
+    meta[METADATA_KEY_VO_ENVELOPE] = {
+        VO_ENVELOPE_KEY_TABLE_NAME: f"TESS_cutout_{sanitize_filename(tic_id)}",
+        VO_ENVELOPE_KEY_TABLE_DESCRIPTION: desc,
+        VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION: desc,
+        "creator": f"TESS {CUTOUT_PIPELINE_AUTHOR} cutout",
+        "refposition": TESS_REFPOSITION,
+        "timescale": TESS_TIMESCALE,
+    }
+
+
+def attach_tess_archive_export_provenance(lcd) -> None:
+    """Stores TESS archive provenance for all export formats.
+
+    Args:
+        lcd (CurveDash): Archive lightcurve with authors/sectors/photcal set.
+    """
+    meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
+    lcd.metadata = meta
+    from skvo_veb.utils.lc_bridge import _is_stitched_lightcurve, _parse_list_meta
+
+    authors = meta.get("authors", [])
+    if not authors and meta.get("author"):
+        authors = [meta.get("author")]
+    pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
+    is_stitched = _is_stitched_lightcurve(lcd)
+    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
+    sectors = _parse_list_meta(meta.get("sectors")) or []
+    flux_origins = _parse_list_meta(meta.get("flux_origins")) or []
+    methods_str = ", ".join(dict.fromkeys(flux_origins)) if flux_origins else "unknown"
+    sectors_str = ", ".join(sectors) if sectors else "unknown"
+    calibration_note = (
+        " Photometric zero points are omitted because sector stitching invalidates "
+        "pipeline flux calibration."
+        if is_stitched
+        else ""
+    )
+    votable_description = (
+        f"TESS space telescope lightcurve for target {tic_id}, "
+        f"processed via the {pipeline_str} pipeline. "
+        f"Photometry method(s): {methods_str}."
+        f"{calibration_note}"
+    )
+    table_description = (
+        f"Photometric time-series observations of {tic_id} from the TESS mission. "
+        f"Data produced by the {pipeline_str} pipeline. "
+        f"Sectors: {sectors_str}. Photometry method(s): {methods_str}."
+        f"{calibration_note}"
+    )
+    meta[METADATA_KEY_FILE_COMMENTS] = [table_description]
+    meta[METADATA_KEY_VO_ENVELOPE] = {
+        VO_ENVELOPE_KEY_TABLE_NAME: f"TESS_{sanitize_filename(tic_id)}",
+        VO_ENVELOPE_KEY_TABLE_DESCRIPTION: table_description,
+        VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION: votable_description,
+        "creator": f"TESS {pipeline_str} Pipeline",
+        "refposition": TESS_REFPOSITION,
+        "timescale": TESS_TIMESCALE,
+    }
 
 
 def apply_upload_cutout_metadata(lcd) -> None:
@@ -336,7 +430,7 @@ def apply_upload_cutout_metadata(lcd) -> None:
 
 
 def build_archive_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for TESS archive VOTable export (profile ``tess``).
+    """Legacy VOTable kwargs helper; prefers metadata already attached at build.
 
     Args:
         lcd (CurveDash): Application lightcurve with TESS metadata.
@@ -344,79 +438,14 @@ def build_archive_votable_kwargs(lcd) -> dict:
     Returns:
         dict: Keyword arguments for ``write_vo_lightcurve``.
     """
-    from skvo_veb.utils.lc_bridge import (
-        _is_stitched_lightcurve,
-        _parse_list_meta,
-        _photcal_group_to_votable_fields,
-    )
+    attach_tess_archive_export_provenance(lcd)
+    from skvo_veb.utils.lc_bridge import build_votable_kwargs_from_metadata
 
-    authors = lcd.metadata.get("authors", [])
-    if not authors and lcd.metadata.get("author"):
-        authors = [lcd.metadata.get("author")]
-    pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
-    is_stitched = _is_stitched_lightcurve(lcd)
-    photcal = lcd.metadata.get("photcal") or {}
-    include_zero_points = (
-        photcal.get(PHOTCAL_KEY_ZP_FLUX) is not None
-        and photcal.get(PHOTCAL_KEY_ZP_MAG) is not None
-        and not is_stitched
-    )
-    photcal_fields = _photcal_group_to_votable_fields(
-        photcal, include_zero_points=include_zero_points
-    )
-    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
-
-    sectors = _parse_list_meta(lcd.metadata.get("sectors")) or []
-    flux_origins = _parse_list_meta(lcd.metadata.get("flux_origins")) or []
-    methods_str = ", ".join(dict.fromkeys(flux_origins)) if flux_origins else "unknown"
-    sectors_str = ", ".join(sectors) if sectors else "unknown"
-
-    calibration_note = (
-        " Photometric zero points are omitted because sector stitching invalidates "
-        "pipeline flux calibration."
-        if is_stitched
-        else ""
-    )
-
-    filter_identifier = photcal_fields.get("filter_identifier") or photcal.get(
-        PHOTCAL_KEY_FILTER_IDENTIFIER
-    )
-    if not filter_identifier:
-        filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_NAME) or TESS_FILTER_IDENTIFIER
-
-    return {
-        "table_name": f"TESS_{sanitize_filename(tic_id)}",
-        "filter_identifier": str(filter_identifier),
-        "refposition": TESS_REFPOSITION,
-        "timescale": TESS_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": (
-            f"TESS space telescope lightcurve for target {tic_id}, "
-            f"processed via the {pipeline_str} pipeline. "
-            f"Photometry method(s): {methods_str}."
-            f"{calibration_note}"
-        ),
-        "table_description": (
-            f"Photometric time-series observations of {tic_id} from the TESS mission. "
-            f"Data produced by the {pipeline_str} pipeline. "
-            f"Sectors: {sectors_str}. Photometry method(s): {methods_str}."
-            f"{calibration_note}"
-        ),
-        "creator": f"TESS {pipeline_str} Pipeline",
-        "ra": lcd.metadata.get("ra"),
-        "dec": lcd.metadata.get("dec"),
-        "period": lcd.metadata.get("period"),
-        "epoch": export_absolute_jd_as_time_offset(
-            lcd.metadata.get("epoch"),
-            timeorigin=JD_TO_MJD,
-        ),
-        "binary": True,
-        **photcal_fields,
-    }
+    return build_votable_kwargs_from_metadata(lcd)
 
 
 def build_cutout_votable_kwargs(lcd) -> dict:
-    """Builds keyword arguments for uncalibrated TESS cutout VOTable export (profile ``cutout``).
+    """Legacy VOTable kwargs helper; prefers metadata already attached at enrich.
 
     Args:
         lcd (CurveDash): Cutout lightcurve with ``cutout_source`` and ``mask_mode`` metadata.
@@ -424,46 +453,7 @@ def build_cutout_votable_kwargs(lcd) -> dict:
     Returns:
         dict: Keyword arguments for ``write_vo_lightcurve``.
     """
-    from skvo_veb.utils.lc_bridge import _parse_list_meta, _photcal_group_to_votable_fields
+    attach_cutout_export_provenance(lcd)
+    from skvo_veb.utils.lc_bridge import build_votable_kwargs_from_metadata
 
-    meta = lcd.metadata or {}
-    tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
-    source = str(meta.get("cutout_source") or meta.get("pixel_type") or "unknown").upper()
-    mask_mode = meta.get("mask_mode", "unknown")
-    sectors = _parse_list_meta(meta.get("sectors")) or []
-    sectors_str = ", ".join(sectors) if sectors else "unknown"
-    flux_correction = meta.get("flux_correction") or ""
-    processing_note = f" Processing applied: {flux_correction}." if flux_correction else ""
-
-    calibration_note = (
-        " Photometry is uncalibrated aperture summation; "
-        "photometric zero points are omitted from the PhotCal group."
-    )
-    desc_core = (
-        f"Uncalibrated TESS cutout lightcurve for target {tic_id}. "
-        f"Data source: {source}. Aperture mask mode: {mask_mode}. "
-        f"Sector: {sectors_str}. Pipeline: {CUTOUT_PIPELINE_AUTHOR}."
-        f"{processing_note}"
-    )
-
-    photcal = meta.get("photcal") or {}
-    photcal_fields = _photcal_group_to_votable_fields(photcal, include_zero_points=False)
-
-    return {
-        "table_name": f"TESS_cutout_{sanitize_filename(tic_id)}",
-        "refposition": TESS_REFPOSITION,
-        "timescale": TESS_TIMESCALE,
-        "timeorigin": JD_TO_MJD,
-        "votable_description": desc_core + calibration_note,
-        "table_description": desc_core + calibration_note,
-        "creator": f"TESS {CUTOUT_PIPELINE_AUTHOR} cutout",
-        "ra": meta.get("ra"),
-        "dec": meta.get("dec"),
-        "period": meta.get("period"),
-        "epoch": export_absolute_jd_as_time_offset(
-            meta.get("epoch"),
-            timeorigin=JD_TO_MJD,
-        ),
-        "binary": True,
-        **photcal_fields,
-    }
+    return build_votable_kwargs_from_metadata(lcd)

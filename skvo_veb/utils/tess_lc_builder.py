@@ -15,7 +15,7 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, archive_flux_unit_for_pipeline, resolve_photcal
+from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, archive_flux_unit_for_pipeline, attach_tess_archive_export_provenance, resolve_photcal
 from skvo_veb.utils.tess_flux_column_registry import (
     FLUX_METHOD_DEFAULT,
     apply_flux_column_selection,
@@ -291,6 +291,7 @@ def create_lc_from_selected_rows(
         title = 'Stitched curve ' + title
     lcd.title = title
     lcd.metadata['title'] = title
+    attach_tess_archive_export_provenance(lcd)
 
     return lcd.serialize()
 

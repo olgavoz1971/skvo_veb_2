@@ -1691,25 +1691,47 @@ def curvedash_to_table(lcd) -> Table:
 def apply_phot_domain_view(lcd, show_magnitude: bool) -> list[str]:
     """Converts the stored lightcurve to flux or magnitude view in place.
 
-    Reconciles photcal first (Ticket 7 Phase 1): incomplete defaults and
-    flux-unit-wins corrections are written into ``metadata['photcal']`` and
-    returned as warning strings for the UI.
+    Does **not** invent or rewrite photcal. Uses
+    :func:`~skvo_veb.utils.photcal_coherence.inspect_curve_photcal` and raises
+    :class:`~skvo_veb.utils.my_tools.PipeException` when the ZP pair is missing
+    or units are incoherent. Passband-only / uncalibrated curves stay honest.
+
+    Inventing defaults belongs only in GP upload (``reconcile_photcal_dict`` +
+    UI warning) and Processor form fill/Apply — never here.
 
     Args:
         lcd (CurveDash): Cached lightcurve to mutate.
         show_magnitude (bool): When true, convert to magnitude domain.
 
     Returns:
-        list[str]: Photcal reconciliation warnings (empty when none).
-    """
-    from skvo_veb.utils.photcal_coherence import reconcile_curve_photcal
+        list[str]: Always empty (API compatibility). Failures raise instead of
+            inventing zero points.
 
-    warnings = reconcile_curve_photcal(lcd)
-    if show_magnitude:
+    Raises:
+        PipeException: If conversion is requested but photcal is incomplete or
+            unit-incoherent.
+    """
+    from skvo_veb.utils.photcal_coherence import (
+        format_photcal_warning_message,
+        inspect_curve_photcal,
+    )
+
+    want_mag = bool(show_magnitude)
+    if want_mag and lcd.active_domain == DOMAIN_MAG:
+        return []
+    if not want_mag and lcd.active_domain == DOMAIN_FLUX:
+        return []
+
+    problems = inspect_curve_photcal(lcd)
+    if problems:
+        text = format_photcal_warning_message(problems) or problems[0]
+        raise PipeException(text)
+
+    if want_mag:
         lcd.convert_to_mag()
     else:
         lcd.convert_to_flux()
-    return warnings
+    return []
 
 
 def curvedash_to_tabular_table(lcd) -> Table:
@@ -1990,11 +2012,12 @@ def _votable_kwargs_for_profile(lcd, profile: str | None) -> dict:
     return getattr(mod, func_name)(lcd)
 
 
-def _curvedash_to_tabular_volc(lcd) -> VOLightCurve:
-    """Assembles a ``VOLightCurve`` from CurveDash for non-VOTable export.
+def _curvedash_to_export_volc(lcd) -> VOLightCurve:
+    """Assembles one ``VOLightCurve`` from CurveDash for every export format.
 
-    Tabular export uses absolute JD in the time column with ``JD0 = 0``, so
-    ``epoch`` is written in the same absolute JD system (Ticket 8 time contract).
+    Photcal, narrative ``file_comments``, and ``vo_envelope`` provenance are
+    copied onto the product. Format-specific encoding happens only in
+    ``write_lightcurve``.
 
     Args:
         lcd (CurveDash): Application lightcurve state.
@@ -2004,6 +2027,31 @@ def _curvedash_to_tabular_volc(lcd) -> VOLightCurve:
     """
     tab = curvedash_to_tabular_table(lcd)
     meta = lcd.metadata or {}
+    if tab.meta is None:
+        tab.meta = {}
+    for key in (
+        "ra",
+        "dec",
+        "sectors",
+        "flux_origins",
+        "authors",
+        "name",
+        "cutout_source",
+        "mask_mode",
+        "flux_correction",
+        "title",
+        "stitched",
+    ):
+        if meta.get(key) is not None:
+            tab.meta[key] = meta[key]
+    if lcd.name and tab.meta.get("name") is None:
+        tab.meta["name"] = lcd.name
+    if lcd.title and tab.meta.get("title") is None:
+        tab.meta["title"] = lcd.title
+    envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
+    if envelope:
+        tab.meta["vo_envelope"] = envelope
+
     photcal = meta.get("photcal") or {}
     free_comments = meta.get(METADATA_KEY_FILE_COMMENTS) or None
     period = meta.get("period")
@@ -2016,7 +2064,7 @@ def _curvedash_to_tabular_volc(lcd) -> VOLightCurve:
         and float(epoch) == float(DEFAULT_EPOCH_JD)
     ):
         epoch = None
-    return assemble_volightcurve(
+    volc = assemble_volightcurve(
         tab,
         timeorigin=0.0,
         period=period,
@@ -2029,28 +2077,71 @@ def _curvedash_to_tabular_volc(lcd) -> VOLightCurve:
         zp_mag_unit=photcal.get(PHOTCAL_KEY_ZP_MAG_UNIT),
         mag_sys=photcal.get(PHOTCAL_KEY_MAG_SYS),
         effective_wavelength=photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH),
-        effective_wavelength_unit=photcal.get(PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT),
+        effective_wavelength_unit=photcal.get(
+            PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT
+        ),
         free_comments=free_comments,
     )
+    if volc.timesys is not None:
+        if envelope.get("refposition"):
+            volc.timesys.refposition = str(envelope["refposition"])
+        if envelope.get("timescale"):
+            volc.timesys.timescale = str(envelope["timescale"]).upper()
+        elif meta.get("timescale"):
+            volc.timesys.timescale = str(meta["timescale"]).upper()
+    return volc
+
+
+def _ensure_export_provenance(lcd, profile: str | None) -> None:
+    """Fills missing provenance from mission metadata or a legacy profile name.
+
+    Args:
+        lcd (CurveDash): Lightcurve whose metadata may lack envelope/comments.
+        profile (str, optional): Deprecated export profile (``tess``, ``cutout``,
+            ``asassn``).
+    """
+    meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
+    has_envelope = bool(meta.get(METADATA_KEY_VO_ENVELOPE))
+    has_comments = bool(meta.get(METADATA_KEY_FILE_COMMENTS))
+    if has_envelope and has_comments:
+        return
+    mission = str(meta.get("mission") or profile or "").lower()
+    if mission == "cutout" or profile == "cutout":
+        from skvo_veb.utils.mission_config.tess import attach_cutout_export_provenance
+
+        attach_cutout_export_provenance(lcd)
+    elif mission == "tess" or profile == "tess":
+        from skvo_veb.utils.mission_config.tess import (
+            attach_tess_archive_export_provenance,
+        )
+
+        attach_tess_archive_export_provenance(lcd)
+    elif mission == "asassn" or profile == "asassn":
+        from skvo_veb.utils.mission_config.asassn import (
+            attach_asassn_export_provenance,
+        )
+
+        attach_asassn_export_provenance(lcd)
 
 
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:
     """Exports a CurveDash instance to the requested file format.
 
-    VOTable export uses ``write_vo_lightcurve`` with profile or metadata kwargs.
-    Non-VOTable formats go through ``volightcurve.io.write_lightcurve`` so
-    calibration keywords are preserved (Ticket 8).
+    Assembles one ``VOLightCurve`` from session metadata (photcal + provenance),
+    then calls ``write_lightcurve``. There is no VOTable-vs-tabular policy fork
+    before that codec step. ``profile`` is deprecated and only back-fills missing
+    provenance when callers have not attached it at enrich/build time.
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
         table_format (str): Target format identifier (e.g. ``'votable_binary'``, ``'ascii.ecsv'``).
-        profile (str, optional): Legacy export profile for VOTable. Omit for metadata-driven export.
+        profile (str, optional): Deprecated legacy profile name.
 
     Returns:
         bytes: Serialised file content.
 
     Raises:
-        PipeException: If the format or profile is unsupported.
+        PipeException: If the format is unsupported.
     """
     from skvo_veb.utils.curve_dash import CurveDash
 
@@ -2063,19 +2154,16 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
             f"Supported formats: {', '.join(EXPORT_FORMATS)}"
         )
 
-    if is_votable_export_format(table_format):
-        kwargs = _votable_kwargs_for_profile(lcd, profile)
-        kwargs['binary'] = votable_binary_encoding(table_format)
-        buf = io.BytesIO()
-        write_vo_lightcurve(
-            output_stream_or_path=buf,
-            table_data=curvedash_to_table(lcd),
-            **kwargs,
+    if profile is not None:
+        logger.warning(
+            "export_curvedash profile=%r is deprecated; attach provenance on "
+            "CurveDash at enrich/build time instead.",
+            profile,
         )
-        return buf.getvalue()
+    _ensure_export_provenance(lcd, profile)
 
     try:
-        volc = _curvedash_to_tabular_volc(lcd)
+        volc = _curvedash_to_export_volc(lcd)
         return write_lightcurve(volc, table_format)
     except LightcurveIOError as exc:
         raise _map_io_error(exc) from exc

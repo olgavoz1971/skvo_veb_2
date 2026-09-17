@@ -34,6 +34,7 @@ from .io_keywords import (
     parse_keyword_assignment,
 )
 from .lightcurve import *
+from .time_reference import JD_TO_MJD, TIME_OFFSET_ABSOLUTE_JD_THRESHOLD
 from .vo_unit_codec import (
     VO_DIMENSIONLESS_WIRE,
     to_display,
@@ -59,6 +60,8 @@ __all__ = [
     "to_internal",
     "to_wire",
     "to_display",
+    "JD_TO_MJD",
+    "TIME_OFFSET_ABSOLUTE_JD_THRESHOLD",
     "LightcurveIOError",
     "read_dat_table",
     "read_lightcurve",
