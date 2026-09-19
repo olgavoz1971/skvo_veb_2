@@ -69,13 +69,18 @@ magnitude**. Do not invent a ``DOMAIN=`` comment key. Full rules:
 
 Metadata lines use ``KEY = value``. They must **not** be the only ``#`` line
 before data if you use Astropy’s ``commented_header`` reader; this application
-reads ``.dat`` with all ``#`` lines stored as comments, then:
+reads ``.dat`` with all ``#`` lines stored as comments, then applies the
+package I/O contract §4b (sibling ``volightcurve`` ``docs/io_contract.md``):
 
-1. A comment line whose **number of words equals the number of data columns**,
-   and which is **not** a ``KEY=value`` metadata line, is treated as column
-   names (after stripping ``#``).
-2. Otherwise a positional fallback applies for generic ``col1``… columns:
-   column 1 → ``obs_time``, column 2 → ``mag``, column 3 → ``mag_err``.
+1. Width-matching non-``KEY=value`` comment lines are header candidates.
+2. Prefer the **last role-canonical** candidate (all words except the last are
+   time/mag/flux/error by name sense; the last word may be any label name);
+   otherwise the **last** width-matching candidate.
+3. Validate exactly one time, one mag **or** flux, ≤1 error; on failure,
+   failback to ``jd mag mag_err`` (width 3) or ``jd mag mag_err label``
+   (width 4).
+4. Columns with role ``other`` are free-text strings (not a closed name
+   allowlist). Do not infer type from cell content.
 
 ## Row validation (strict, ``.dat``)
 
@@ -86,11 +91,11 @@ fields:
   its word count matches the data width, that width is required on every row.
 - Otherwise legacy ``.dat`` files must have exactly **three** columns per row
   (no padding).
-- Ragged or non-numeric rows fail ingest with ``PipeException`` and a **line
-  number** (GP/TESS upload ``?`` help shows the message).
-- Columns named ``label``, ``sector``, or ``flag`` may contain arbitrary
-  strings; other columns must be numeric (``NaN`` is allowed for missing
-  photometry errors).
+- Ragged or non-numeric rows (on numeric columns) fail ingest with a line
+  number (GP/TESS upload ``?`` help shows the message).
+- Free-text columns are those classified as role ``other`` after header
+  selection (see I/O contract §4b); other columns must be numeric (``NaN`` is
+  allowed for missing photometry errors).
 
 ## VOTable
 

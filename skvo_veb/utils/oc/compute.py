@@ -64,6 +64,8 @@ def compute_step1_oc(
 
     Returns:
         dict: JSON-safe arrays and ephemeris metadata for plot and export.
+        Non-finite timing σ values are stored as ``None`` (not ``NaN``) so
+        ``dcc.Store`` round-trips safely.
 
     Raises:
         ValueError: If ``p0`` is not positive or ``records`` is empty.
@@ -99,7 +101,10 @@ def compute_step1_oc(
         "OC": [float(value) for value in oc_days],
         "jd_ext": [float(value) for value in jd_ext],
         "jd_calc": [float(value) for value in jd_calc],
-        "sigma_jd": [float(value) for value in sigma_jd],
+        "sigma_jd": [
+            float(value) if math.isfinite(float(value)) else None
+            for value in sigma_jd
+        ],
         "n": int(len(cycle_e)),
         "rms_d": rms,
         "rms_s": rms * SECONDS_PER_DAY,

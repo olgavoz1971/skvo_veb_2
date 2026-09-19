@@ -2580,23 +2580,35 @@ def _build_oc_figure(
     mjd_obs = to_page_time(np.asarray(payload["jd_ext"], dtype=float))
     mjd_calc = to_page_time(np.asarray(payload["jd_calc"], dtype=float))
     sigma_jd = np.asarray(payload["sigma_jd"], dtype=float)
-    custom = np.column_stack(
-        [
-            oc_days * 86400.0,
-            mjd_obs,
-            mjd_calc,
-            sigma_jd,
-            sigma_jd * 86400.0,
-        ]
-    )
     hover = (
         "E: %{x:.0f}<br>"
         "O-C: %{y:.6f} d (%{customdata[0]:.1f} s)<br>"
         f"{page_time_label()} obs: %{{customdata[1]:.6f}}<br>"
         f"{page_time_label()} calc: %{{customdata[2]:.6f}}<br>"
-        "σ: %{customdata[3]:.8f} d (%{customdata[4]:.1f} s)"
+        "σ: %{customdata[3]} d (%{customdata[4]} s)"
         "<extra></extra>"
     )
+    # Hover strings: finite σ as numbers; missing σ as em dash (same fields).
+    hover_custom: list[list] = []
+    for i in range(len(cycle_e)):
+        oc_s = float(oc_days[i] * 86400.0)
+        row = [
+            oc_s,
+            float(mjd_obs[i]),
+            float(mjd_calc[i]),
+        ]
+        if np.isfinite(sigma_jd[i]):
+            row.extend(
+                [
+                    f"{float(sigma_jd[i]):.8f}",
+                    f"{float(sigma_jd[i] * 86400.0):.1f}",
+                ]
+            )
+        else:
+            row.extend(["—", "—"])
+        hover_custom.append(row)
+
+    marker_style = dict(size=8)
     fig = go.Figure()
     finite = np.isfinite(sigma_jd)
     if np.any(finite):
@@ -2605,7 +2617,7 @@ def _build_oc_figure(
                 x=cycle_e[finite],
                 y=oc_days[finite],
                 mode="markers",
-                marker=dict(size=8),
+                marker=marker_style,
                 error_y=dict(
                     type="data",
                     array=sigma_jd[finite],
@@ -2614,9 +2626,10 @@ def _build_oc_figure(
                     width=3,
                     color="grey",
                 ),
-                customdata=custom[finite].tolist(),
+                customdata=[hover_custom[i] for i in np.where(finite)[0]],
                 hovertemplate=hover,
                 name="O-C",
+                legendgroup="oc",
             )
         )
     if np.any(~finite):
@@ -2625,10 +2638,12 @@ def _build_oc_figure(
                 x=cycle_e[~finite],
                 y=oc_days[~finite],
                 mode="markers",
-                marker=dict(size=8, color="#fd7e14"),
-                customdata=custom[~finite].tolist(),
+                marker=marker_style,
+                customdata=[hover_custom[i] for i in np.where(~finite)[0]],
                 hovertemplate=hover,
-                name="O-C (no σ)",
+                name="O-C",
+                legendgroup="oc",
+                showlegend=not np.any(finite),
             )
         )
     fig.add_hline(y=0.0, line_dash="dash", line_color="grey", line_width=1)

@@ -196,8 +196,12 @@ def format_oc_dat(payload: dict[str, Any]) -> str:
     for i in range(n):
         cycle_e = int(round(float(payload["E"][i])))
         oc_days = float(payload["OC"][i])
-        sig = float(payload["sigma_jd"][i])
-        sig_txt = f"{sig:.10e}" if sig == sig else "nan"
+        sig = payload["sigma_jd"][i]
+        if sig is None:
+            sig_txt = "nan"
+        else:
+            sig = float(sig)
+            sig_txt = f"{sig:.10e}" if sig == sig else "nan"
         jd_obs = float(payload["jd_ext"][i])
         lines.append(
             f"{cycle_e}{_SEP}{oc_days:.10e}{_SEP}{sig_txt}{_SEP}{jd_obs:.8f}\n"

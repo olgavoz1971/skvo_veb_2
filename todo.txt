@@ -1,3 +1,6 @@
+============ Publication: add flux_err ref=phtcal_namr
+Ask Markus -- multicolor photomettry!!! O!!!!!
+
 ============ Discovey page:
 
 Add

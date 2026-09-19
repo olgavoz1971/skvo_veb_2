@@ -9,6 +9,29 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _sigma_jd_for_store(value: Any) -> float | None:
+    """Returns a JSON-safe timing uncertainty for ``dcc.Store`` payloads.
+
+    Dash encodes non-finite floats as JSON ``null``. Storing ``None`` up front
+    avoids a round-trip where ``float(None)`` would crash O-C compute.
+
+    Args:
+        value: Raw σ(JD) from a file or review row.
+
+    Returns:
+        float | None: Finite σ in days, or ``None`` when missing / non-finite.
+    """
+    if value is None:
+        return None
+    try:
+        sigma = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(sigma):
+        return None
+    return sigma
+
+
 def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
     """Parses a compact GP, MAVKA, or parabola extrema ``.dat`` body plus ``#`` comments.
 
@@ -17,8 +40,10 @@ def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
 
     Returns:
         tuple: ``(records, metadata_lines)``. Records are ``jd_ext`` / ``sigma_jd``
-        dicts sorted by ``jd_ext``. ``metadata_lines`` are original ``#`` lines
-        (without trailing newlines), in file order.
+        dicts sorted by ``jd_ext``. ``sigma_jd`` is a finite float or ``None``
+        (missing / ``nan`` in the file) so payloads are JSON-safe for Dash stores.
+        ``metadata_lines`` are original ``#`` lines (without trailing newlines),
+        in file order.
 
     Raises:
         ValueError: If there are no usable rows or a data line is malformed.
@@ -41,16 +66,16 @@ def parse_compact_tom_contents(text: str) -> tuple[list[dict], list[str]]:
             )
         try:
             jd_ext = float(parts[0])
-            sigma_jd = float(parts[1])
+            sigma_raw = float(parts[1])
         except ValueError as exc:
             raise ValueError(
                 f"Timing file line {line_no}: not two numbers ({raw!r})."
             ) from exc
         if not math.isfinite(jd_ext):
             raise ValueError(f"Timing file line {line_no}: JD is not finite.")
-        if not math.isfinite(sigma_jd):
-            sigma_jd = float("nan")
-        records.append({"jd_ext": jd_ext, "sigma_jd": sigma_jd})
+        records.append(
+            {"jd_ext": jd_ext, "sigma_jd": _sigma_jd_for_store(sigma_raw)}
+        )
     if not records:
         raise ValueError("Timing file has no ToM data rows.")
     records.sort(key=lambda row: row["jd_ext"])
@@ -69,6 +94,7 @@ def parse_compact_tom_dat(text: str) -> list[dict]:
 
     Returns:
         list[dict]: ``jd_ext`` and ``sigma_jd`` records, sorted by ``jd_ext``.
+        ``sigma_jd`` may be ``None`` when the file has ``nan`` / non-finite σ.
 
     Raises:
         ValueError: If there are no usable rows or a data line is malformed.
@@ -85,6 +111,7 @@ def toms_from_review_store(store: dict | None) -> list[dict]:
 
     Returns:
         list[dict]: ``jd_ext`` and ``sigma_jd`` records, sorted by ``jd_ext``.
+        Missing σ becomes ``None`` (JSON-safe).
 
     Raises:
         ValueError: If the store is missing, empty, or has no kept successes.
@@ -105,9 +132,12 @@ def toms_from_review_store(store: dict | None) -> list[dict]:
         jd_ext = row.get("jd_peak")
         if jd_ext is None:
             raise ValueError("A kept extrema result is missing TOM (jd_peak).")
-        sigma = row.get("jd_peak_std")
-        sigma_jd = float(sigma) if sigma is not None else float("nan")
-        records.append({"jd_ext": float(jd_ext), "sigma_jd": sigma_jd})
+        records.append(
+            {
+                "jd_ext": float(jd_ext),
+                "sigma_jd": _sigma_jd_for_store(row.get("jd_peak_std")),
+            }
+        )
     if not records:
         raise ValueError(
             "No Keep-marked successful extrema. Tick Keep result on the "
@@ -153,8 +183,12 @@ def records_to_arrays(records: list[dict]) -> tuple[Any, Any]:
             ``toms_from_review_store``.
 
     Returns:
-        tuple: ``(jd_ext, sigma_jd)`` as Python lists of float.
+        tuple: ``(jd_ext, sigma_jd)`` as Python lists of float. Missing σ
+        (``None`` or non-finite) becomes ``float('nan')`` for NumPy maths.
     """
     jd_ext = [float(row["jd_ext"]) for row in records]
-    sigma_jd = [float(row["sigma_jd"]) for row in records]
+    sigma_jd: list[float] = []
+    for row in records:
+        stored = _sigma_jd_for_store(row.get("sigma_jd"))
+        sigma_jd.append(float("nan") if stored is None else stored)
     return jd_ext, sigma_jd

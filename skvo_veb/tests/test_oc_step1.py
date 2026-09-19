@@ -64,6 +64,37 @@ def test_parse_compact_tom_dat_rejects_empty_and_bad_line():
         parse_compact_tom_dat("# header\n2458749.7\n")
 
 
+def test_parse_compact_tom_nan_sigma_is_json_safe():
+    """Processor rough ToMs with ``nan`` σ store as ``None`` and survive Plot."""
+    import json
+
+    from dash._utils import to_json
+
+    from skvo_veb.utils.oc.tom_io import records_to_arrays
+
+    text = (
+        "# Rough Maximum times\n"
+        "# JD_Maximum\n"
+        "# JD_Std\n"
+        "2458079.9442799999  nan\n"
+        "2458079.9737935960  nan\n"
+    )
+    records, _meta = parse_compact_tom_contents(text)
+    assert records[0]["sigma_jd"] is None
+    restored = json.loads(to_json({"filename": "rough.dat", "records": records}))
+    assert restored["records"][0]["sigma_jd"] is None
+    _jd, sigma = records_to_arrays(restored["records"])
+    assert sigma[0] != sigma[0]  # NaN for maths
+    payload = compute_step1_oc(
+        restored["records"],
+        t0_jd=2458079.9,
+        p0=0.3,
+        source="upload",
+    )
+    assert payload["sigma_jd"][0] is None
+    assert all(s is None for s in payload["sigma_jd"])
+
+
 def test_toms_from_review_store_keep_marked_only():
     """Unchecked and failed rows are omitted; kept successes are sorted."""
     store = {
