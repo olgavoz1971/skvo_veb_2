@@ -76,6 +76,7 @@ from skvo_veb.utils.lc_config import (
 from skvo_veb.utils.lc_figure import time_axis_xaxis_title
 from skvo_veb.utils.lc_interaction import (
     delete_rows_by_perm_indices,
+    extract_display_x_range_from_selected_data,
     normalize_selected_perm_store,
     plot_x_to_jd,
 )
@@ -93,12 +94,23 @@ from skvo_veb.utils.lc_processor.apply import (
 )
 from skvo_veb.utils.lc_processor.extrema import (
     EXTREMA_BLOB,
+    EXTREMA_DELETE_HIT_FRAC,
     add_manual_extremum,
     extrema_xy_from_payload,
     find_extrema_from_smooth,
     remove_extremum_near_time,
-    format_intervals_from_payload,
     format_rough_toms_download,
+)
+from skvo_veb.utils.lc_processor.intervals import (
+    INTERVALS_BLOB,
+    REF_EXTREMA_BLOB,
+    add_manual_interval,
+    build_processor_interval_pick_payload,
+    empty_intervals_payload,
+    format_cached_intervals_download,
+    generate_intervals_from_extrema,
+    intervals_without_marked_ids,
+    parse_uploaded_extrema_jds,
 )
 from skvo_veb.utils.lc_processor.config import (
     DEFAULT_BIWEIGHT_N_POINTS,
@@ -310,11 +322,12 @@ def _photcal_form_outputs(lcd: CurveDash) -> tuple:
         lcd (CurveDash): Session-cached working curve.
 
     Returns:
-        tuple: ``zp_flux``, ``zp_flux_unit``, ``zp_mag``, ``mag_sys``,
-        ``flux_unit`` for the sidebar inputs.
+        tuple: ``filter_name``, ``zp_flux``, ``zp_flux_unit``, ``zp_mag``,
+        ``mag_sys``, ``flux_unit`` for the sidebar inputs.
     """
     vals = photcal_form_values_from_curvedash(lcd)
     return (
+        vals["filter_name"],
         vals["zp_flux"],
         vals["zp_flux_unit"],
         vals["zp_mag"],
@@ -333,6 +346,7 @@ def _photcal_form_outputs_from_dict(vals: dict) -> tuple:
         tuple: Same order as :func:`_photcal_form_outputs`.
     """
     return (
+        vals["filter_name"],
         vals["zp_flux"],
         vals["zp_flux_unit"],
         vals["zp_mag"],
@@ -342,7 +356,7 @@ def _photcal_form_outputs_from_dict(vals: dict) -> tuple:
 
 
 def _clear_fit_blobs(user_tab_id: str) -> None:
-    """Clears the overlay, residual, and rough extrema (they are no longer valid).
+    """Clears the overlay, residual, rough extrema, and intervals.
 
     Args:
         user_tab_id (str): Session cache key.
@@ -350,6 +364,16 @@ def _clear_fit_blobs(user_tab_id: str) -> None:
     clear_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB)
     clear_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB)
     clear_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
+    clear_page_blob(PAGE_NAMESPACE, user_tab_id, INTERVALS_BLOB)
+
+
+def _clear_reference_extrema(user_tab_id: str) -> None:
+    """Clears uploaded comparison extrema marks.
+
+    Args:
+        user_tab_id (str): Session cache key.
+    """
+    clear_page_blob(PAGE_NAMESPACE, user_tab_id, REF_EXTREMA_BLOB)
 
 
 def _click_help(help_id: str, title: str, body: str, *, placement: str = "right"):
@@ -470,7 +494,7 @@ def _collapsible_drawer_section(
     body_children: list,
     *,
     start_open: bool = False,
-    label_class: str = "lcp-section-label",
+    label_class: str = "lcp-drawer-collapse-title",
 ) -> html.Div:
     """Sidebar block with a chevron toggle and a closed-by-default collapse.
 
@@ -486,7 +510,9 @@ def _collapsible_drawer_section(
         help_body (str): Popover body.
         body_children (list): Controls shown when expanded.
         start_open (bool): Initial collapse state. Defaults to closed.
-        label_class (str): CSS class for the label.
+        label_class (str): CSS class for the collapse title. Defaults to
+            ``lcp-drawer-collapse-title`` (bold). Ordinary field labels use
+            ``lcp-section-label`` instead.
 
     Returns:
         dash.html.Div: Heading row plus ``dbc.Collapse`` body.
@@ -575,18 +601,53 @@ def _lightcurve_drawer() -> list:
     """Builds the Light curve accordion body.
 
     Returns:
-        list: Domain, calibration, crop, ephemeris, and export widgets.
+        list: Plot, calibration, crop, ephemeris, and export widgets.
     """
-    export_help = _heading_with_help(
-        "Export",
-        "export-lc",
-        "Export",
-        "Time crop applies to the plot only. This export writes the whole "
-        "working lightcurve after deleted points. The stem field already "
-        "ends in _lc.",
-    )
     return [
         html.Div(
+            [
+                _control_with_help(
+                    dbc.Switch(
+                        id="lc-processor-points-control",
+                        label="Points control",
+                        value=False,
+                    ),
+                    "points-control",
+                    "Points control",
+                    """Turns on point cleaning on plot 1. Click or lasso to
+                    mark points orange; Delete selected removes them from the
+                    working curve; Unselect clears marks. Turns interval
+                    control, knot tool, and extrema control off.""",
+                ),
+            ],
+            className="lcp-sidebar-block",
+        ),
+        html.Div(
+            [
+                _control_with_help(
+                    dbc.Button(
+                        "Merge sectors",
+                        id="lc-processor-merge-sectors",
+                        color="primary",
+                        size="sm",
+                    ),
+                    "merge-sectors",
+                    "Merge sectors",
+                    "Each distinct label (TESS sector, camera, filter) is "
+                    "drawn in its own colour. Merge sectors clears those "
+                    "labels so the working series is one unlabelled set. "
+                    "Times and photometry are not changed.",
+                ),
+            ],
+            className="lcp-sidebar-block",
+        ),
+        _collapsible_drawer_section(
+            "plot",
+            "Plot",
+            "plot-view",
+            "Plot",
+            "Working domain, time axis, and whether photometry error bars "
+            "are drawn on plots 1 and 2.",
             [
                 html.Label("Working domain", className="lcp-section-label"),
                 dbc.RadioItems(
@@ -614,40 +675,19 @@ def _lightcurve_drawer() -> list:
                     value=False,
                 ),
             ],
-            className="lcp-sidebar-block",
-        ),
+        ), 
         _collapsible_drawer_section(
             "calibration",
             "Calibration",
             "photcal",
             "Calibration",
-            "Zero points and the flux column unit used for magnitude↔flux "
-            "conversion. Filled from the uploaded lightcurve. Fill missing "
-            "defaults only completes empty fields (never overwrites file "
-            "values). Apply calibration writes them into the working "
-            "CurveDash (domain switch and export use that copy).",
+            "Filter label and zero points used for magnitude↔flux conversion. "
+            "Filled from the uploaded lightcurve when present. Fill missing "
+            "defaults only completes empty zero-point fields (never filter "
+            "or overwrites file values). Apply calibration writes them into "
+            "the working CurveDash (domain switch and export use that copy).",
             photcal_editor_body(PHOTCAL_ID_PREFIX),
-        ),
-        html.Div(
-            [
-                _heading_with_help(
-                    "Sectors",
-                    "merge-sectors",
-                    "Sectors",
-                    "Each distinct label (TESS sector, camera, filter) is "
-                    "drawn in its own colour. Merge sectors clears those "
-                    "labels so the working series is one unlabelled set. "
-                    "Times and photometry are not changed.",
-                ),
-                dbc.Button(
-                    "Merge sectors",
-                    id="lc-processor-merge-sectors",
-                    color="primary",
-                    size="sm",
-                ),
-            ],
-            className="lcp-sidebar-block",
-        ),
+        ),     
         _collapsible_drawer_section(
             "time-crop",
             "Time crop (MJD)",
@@ -704,32 +744,42 @@ def _lightcurve_drawer() -> list:
                 ),
             ],
         ),
-        html.Div(
+        _collapsible_drawer_section(
+            "export-lightcurve",
+            "Export",
+            "export-lc",
+            "Export",
+            "Time crop applies to the plot only. This export writes the whole "
+            "working lightcurve after deleted points. The stem field already "
+            "ends in _lc.",
             [
-                export_help,
-                dbc.Select(
-                    options=EXPORT_FORMAT_OPTIONS,  # type: ignore[arg-type]
-                    value=DEFAULT_EXPORT_FORMAT,
-                    id="lc-processor-export-format",
-                    size="sm",
-                ),
-                dbc.Input(
-                    id="lc-processor-export-stem",
-                    placeholder="lightcurve_lc",
-                    type="text",
-                    value="lightcurve_lc",
-                    size="sm",
-                ),
-                dbc.Button(
-                    "Export lightcurve",
-                    id="lc-processor-download-lc-btn",
-                    color="primary",
-                    size="sm",
-                    className="w-100",
-                    disabled=True,
+                html.Div(
+                    [
+                        dbc.Select(
+                            options=EXPORT_FORMAT_OPTIONS,  # type: ignore[arg-type]
+                            value=DEFAULT_EXPORT_FORMAT,
+                            id="lc-processor-export-format",
+                            size="sm",
+                        ),
+                        dbc.Input(
+                            id="lc-processor-export-stem",
+                            placeholder="lightcurve_lc",
+                            type="text",
+                            value="lightcurve_lc",
+                            size="sm",
+                        ),
+                        dbc.Button(
+                            "Export lightcurve",
+                            id="lc-processor-download-lc-btn",
+                            color="primary",
+                            size="sm",
+                            className="w-100",
+                            disabled=True,
+                        ),
+                    ],
+                    className="lcp-sidebar-btn-stack",
                 ),
             ],
-            className="lcp-sidebar-block lcp-sidebar-btn-stack",
         ),
     ]
 
@@ -1189,29 +1239,18 @@ def _extrema_drawer() -> list:
     """Builds the Rough extrema accordion body.
 
     Returns:
-        list: Find-extrema widgets and interval / timing exports.
+        list: Find-extrema, reference upload, interval, and export widgets.
     """
     return [
-        html.Div(
+        _collapsible_drawer_section(
+            "find-extrema",
+            "Extrema",
+            "find-extrema",
+            "Extrema",
+            """Marks minima or maxima on the last Apply-smooth overlay.
+            Only finite trend samples are used; holes and gap splits are not
+            joined. This is a rough finder, not a GP or MAVKA timing.""",
             [
-                _heading_with_help(
-                    "Find extrema",
-                    "find-extrema",
-                    "Find extrema",
-                    "Marks minima or maxima on the last Apply-smooth "
-                    "overlay. Only finite trend samples are used; holes "
-                    "and gap splits are not joined. This is a rough "
-                    "finder, not a GP or MAVKA timing.",
-                ),
-                dbc.Button(
-                    "Find extrema",
-                    id="lc-processor-find-extrema",
-                    color="primary",
-                    size="sm",
-                    className="w-100",
-                    disabled=True,
-                ),
-                html.Label("Extremum", className="lcp-section-label"),
                 dbc.RadioItems(
                     id="lc-processor-extremum-kind",
                     options=[
@@ -1222,30 +1261,12 @@ def _extrema_drawer() -> list:
                     inline=True,
                 ),
                 _heading_with_help(
-                    "Extremum tool",
-                    "extremum-tool",
-                    "Extremum tool",
-                    "Add extremum places a mark at the click. The click "
-                    "time is the ToM; photometry and the overlay are not "
-                    "used. Delete extremum removes the nearest mark. "
-                    "This turns the knot tool off.",
-                ),
-                dbc.RadioItems(
-                    id="lc-processor-extrema-tool",
-                    options=[
-                        {"label": "Off", "value": PLOT_TOOL_OFF},
-                        {"label": "Add extremum", "value": PLOT_TOOL_ADD_EXT},
-                        {"label": "Delete extremum", "value": PLOT_TOOL_DELETE_EXT},
-                    ],
-                    value=PLOT_TOOL_OFF,
-                ),
-                _heading_with_help(
                     "Min. peak distance (days)",
                     "min-peak-distance",
                     "Min. peak distance (days)",
-                    "Minimum separation between neighbouring extrema. "
-                    "When a period is set this starts at 0.7 × period; "
-                    "otherwise the no-period fallback is used.",
+                    """Minimum separation between neighbouring extrema.
+                    When a period is set this starts at 0.7 × period;
+                    otherwise the no-period fallback is used.""",
                 ),
                 dbc.Input(
                     id="lc-processor-min-peak-distance",
@@ -1259,10 +1280,10 @@ def _extrema_drawer() -> list:
                     "Min. points in segment",
                     "min-segment-points",
                     "Min. points in segment",
-                    "A finite overlay run shorter than this is skipped. "
-                    "A peak needs at least three samples; the default is "
-                    "five so a one- to three-point night is not treated "
-                    "as an extremum.",
+                    """A finite overlay run shorter than this is skipped.
+                    A peak needs at least three samples; the default is
+                    five so a one- to three-point night is not treated
+                    as an extremum.""",
                 ),
                 dbc.Input(
                     id="lc-processor-min-segment-points",
@@ -1272,28 +1293,67 @@ def _extrema_drawer() -> list:
                     value=DEFAULT_MIN_EXTREMA_SEGMENT_POINTS,
                     size="sm",
                 ),
+                dbc.Button(
+                    "Find extrema",
+                    id="lc-processor-find-extrema",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+                _control_with_help(
+                    dbc.Switch(
+                        id="lc-processor-extrema-control",
+                        label="Extrema control",
+                        value=False,
+                    ),
+                    "extrema-control",
+                    "Extrema control",
+                    """Turns on manual add and delete of working extrema on
+                    plot 1. Choose Add extremum or Delete extremum above
+                    the plot (one at a time). This turns points control,
+                    interval control, and knot tool off.""",
+                ),
             ],
-            className="lcp-sidebar-block lcp-sidebar-btn-stack",
+            start_open=False,
         ),
-        html.Div(
+
+        _collapsible_drawer_section(
+            "intervals-section",
+            "Intervals",
+            "rough-intervals",
+            "Intervals",
+            """Generate [t − δ, t + δ] around working (found or manually
+            corrected) extrema. Interval control puts Add interval and
+            Mark bands on plot 1. Export writes every surviving interval
+            sorted by start.""",
             [
-                _heading_with_help(
-                    "Export",
-                    "export-extrema",
-                    "Export",
-                    "Intervals use the GP .dat layout and the stem "
-                    "_int. Times use the compact ToM layout (JD and "
-                    "empty σ) and the stem _rough_toms. Both start "
-                    "from the Lightcurve _lc field.",
+                dbc.Switch(
+                    id="lc-processor-show-intervals",
+                    label="Show intervals",
+                    value=False,
+                ),
+                _control_with_help(
+                    dbc.Switch(
+                        id="lc-processor-interval-control",
+                        label="Interval control",
+                        value=False,
+                    ),
+                    "interval-control",
+                    "Interval control",
+                    """Turns on interval editing on plot 1. Box Select
+                    becomes available in the modebar. Add interval, Mark
+                    bands, Remove marked, and Clear marks appear above
+                    the plot. This turns knot control and extremum
+                    control off. While this is on, interval bands are
+                    drawn even if Show intervals is off.""",
                 ),
                 _heading_with_help(
                     "Interval half-width (days)",
                     "interval-delta",
                     "Interval half-width (days)",
-                    "Each exported interval is [t − δ, t + δ]. When a "
-                    "period is set this starts at period / 3; otherwise "
-                    "the no-period fallback is used. You can change this "
-                    "before export without finding again.",
+                    """Half-width δ for Generate intervals. When a period is set
+                    this starts at period / 3; otherwise the no-period fallback is used.""",
                 ),
                 dbc.Input(
                     id="lc-processor-interval-delta",
@@ -1303,7 +1363,27 @@ def _extrema_drawer() -> list:
                     value=DEFAULT_INTERVAL_DELTA_DAYS,
                     size="sm",
                 ),
-                html.Label("Intervals", className="lcp-export-sublabel"),
+                dbc.Button(
+                    "Generate intervals",
+                    id="lc-processor-generate-intervals",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+            ],
+        ),
+        _collapsible_drawer_section(
+            "export-extrema-intervals",
+            "Export",
+            "export-extrema-intervals",
+            "Export",
+            """Export intervals or rough extrema (Times of Minima/Maxima) to a file.
+            Intervals are exported as a list of [start, end] JD pairs.
+            ToMs are exported as a single column of JDs with optional error.
+            Both are sorted by Julian Date before export.""",
+            [
+                html.Label("Intervals file", className="lcp-section-label"),
                 dbc.Input(
                     id="lc-processor-intervals-export-stem",
                     placeholder="lightcurve_int",
@@ -1311,7 +1391,15 @@ def _extrema_drawer() -> list:
                     value="lightcurve_int",
                     size="sm",
                 ),
-                html.Label("Times", className="lcp-export-sublabel"),
+                dbc.Button(
+                    "Export intervals",
+                    id="lc-processor-download-intervals-btn",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
+                ),
+                html.Label("ToMs file", className="lcp-section-label"),
                 dbc.Input(
                     id="lc-processor-toms-export-stem",
                     placeholder="lightcurve_rough_toms",
@@ -1319,29 +1407,54 @@ def _extrema_drawer() -> list:
                     value="lightcurve_rough_toms",
                     size="sm",
                 ),
-                html.Div(
-                    [
-                        dbc.Button(
-                            "Export intervals",
-                            id="lc-processor-download-intervals-btn",
-                            color="primary",
-                            size="sm",
-                            disabled=True,
-                        ),
-                        dbc.Button(
-                            "Export ToMs",
-                            id="lc-processor-download-toms-btn",
-                            color="primary",
-                            size="sm",
-                            disabled=True,
-                        ),
-                    ],
-                    className="lcp-sidebar-btn-row",
+                dbc.Button(
+                    "Export ToMs",
+                    id="lc-processor-download-toms-btn",
+                    color="primary",
+                    size="sm",
+                    className="w-100",
+                    disabled=True,
                 ),
             ],
-            className="lcp-sidebar-block lcp-sidebar-btn-stack",
+        ),
+        _collapsible_drawer_section(
+            "uploaded-extrema",
+            "Upload user ToMs",
+            "upload-ref-extrema",
+            "Upload user ToMs",
+            """First column is Julian Date; any further columns are ignored.
+            Optional # JD0 = … (default 0). Marks only for comparison with
+            found extrema — not used for intervals or export times.""",
+            [
+                html.Div(
+                    [
+                        dcc.Upload(
+                            id="lc-processor-upload-ref-extrema",
+                            children=dbc.Button(
+                                "Load extrema",
+                                color="secondary",
+                                outline=True,
+                                size="sm",
+                            ),
+                            className="lcp-inline-upload",
+                            multiple=False,
+                        ),
+                        html.Span(
+                            id="lc-processor-upload-ref-extrema-text",
+                            className="lcp-upload-filename",
+                        ),
+                    ],
+                    className="lcp-sidebar-btn-stack",
+                ),
+                dbc.Switch(
+                    id="lc-processor-show-ref-extrema",
+                    label="Show uploaded ToMs",
+                    value=False,
+                ),
+            ],
         ),
     ]
+
 
 
 def _sidebar() -> html.Div:
@@ -1408,16 +1521,33 @@ def toggle_lcp_drawer_section(n_clicks, is_open):
 
 
 def _plot_toolbar() -> html.Div:
-    """Cleaning strip above plot 1.
+    """Mode-specific action clusters above plot 1.
 
     Returns:
-        dash.html.Div: Delete / Unselect plus help.
+        dash.html.Div: Points and interval toolbars (hidden until their
+        drawer mode is on).
     """
-    help_btn, help_pop = _click_help(
-        "plot-tools",
+    points_help_btn, points_help_pop = _click_help(
+        "plot-points-tools",
         "Delete selected",
         "Click or lasso on the working plot. Orange marks stay until "
         "Unselect or Delete selected. Clicking empty space does not clear them.",
+        placement="bottom",
+    )
+    interval_help_btn, interval_help_pop = _click_help(
+        "interval-plot-tools",
+        "Interval tools",
+        "The plot starts in zoom. Switch the toolbar to Box Select, drag "
+        "a time range, then press Add interval. To drop intervals, switch "
+        "on Mark bands and click a strip, then Remove marked.",
+        placement="bottom",
+    )
+    extrema_help_btn, extrema_help_pop = _click_help(
+        "extrema-plot-tools",
+        "Extrema tools",
+        "Choose Add extremum or Delete extremum (one at a time), then click "
+        "on plot 1. Add uses the click time as the ToM; delete removes "
+        "the nearest working extremum mark.",
         placement="bottom",
     )
     return html.Div(
@@ -1439,11 +1569,70 @@ def _plot_toolbar() -> html.Div:
                         outline=True,
                         size="sm",
                     ),
+                    html.Div(points_help_btn, className="lcp-field-help"),
+                    points_help_pop,
                 ],
-                className="lcp-plot-toolbar-cluster",
+                id="lc-processor-points-toolbar",
+                className="lcp-plot-toolbar-cluster d-none",
             ),
-            html.Div(help_btn, className="lcp-field-help"),
-            help_pop,
+            html.Div(
+                [
+                    dbc.Button(
+                        "Add interval",
+                        id="lc-processor-add-interval",
+                        color="primary",
+                        size="sm",
+                    ),
+                    html.Div(interval_help_btn, className="lcp-field-help"),
+                    interval_help_pop,
+                    dbc.Switch(
+                        id="lc-processor-interval-mark-bands",
+                        label="Mark bands",
+                        value=False,
+                    ),
+                    dbc.Button(
+                        "Remove marked",
+                        id="lc-processor-remove-marked-intervals",
+                        color="primary",
+                        size="sm",
+                        disabled=True,
+                    ),
+                    dbc.Button(
+                        "Clear marks",
+                        id="lc-processor-clear-interval-marks",
+                        color="secondary",
+                        outline=True,
+                        size="sm",
+                        disabled=True,
+                    ),
+                ],
+                id="lc-processor-interval-toolbar",
+                className="lcp-plot-toolbar-cluster d-none",
+            ),
+            html.Div(
+                [
+                    dbc.RadioItems(
+                        id="lc-processor-extrema-tool",
+                        options=[
+                            {
+                                "label": "Add extremum",
+                                "value": PLOT_TOOL_ADD_EXT,
+                            },
+                            {
+                                "label": "Delete extremum",
+                                "value": PLOT_TOOL_DELETE_EXT,
+                            },
+                        ],
+                        value=PLOT_TOOL_OFF,
+                        inline=True,
+                        className="lcp-plot-toolbar-radios",
+                    ),
+                    html.Div(extrema_help_btn, className="lcp-field-help"),
+                    extrema_help_pop,
+                ],
+                id="lc-processor-extrema-toolbar",
+                className="lcp-plot-toolbar-cluster d-none",
+            ),
         ],
         className="lcp-plot-toolbar",
     )
@@ -1511,6 +1700,14 @@ def layout():
             dcc.Store(id="store-lc-processor-knot-shapes"),
             dcc.Store(id="store-lc-processor-knot-pick"),
             dcc.Store(id="store-lc-processor-extrema-pick"),
+            dcc.Store(
+                id="store-lc-processor-intervals",
+                data=empty_intervals_payload(),
+                **SESSION_STORE,
+            ),
+            dcc.Store(id="store-lc-processor-intervals-marked", data=[]),
+            dcc.Store(id="store-lc-processor-interval-bands"),
+            dcc.Store(id="store-lc-processor-interval-click"),
             dcc.Store(id="store-lc-processor-tilt-click"),
             dcc.Store(id="store-lc-processor-tilt-line"),
             dcc.Store(
@@ -1618,6 +1815,7 @@ register_upload_busy_clientside("lc-processor-upload-lc")
     Output("lc-processor-domain", "value"),
     Output("lc-processor-input-period", "value"),
     Output("lc-processor-input-epoch", "value"),
+    Output(_PHOTCAL_IDS["filter_name"], "value"),
     Output(_PHOTCAL_IDS["zp_flux"], "value"),
     Output(_PHOTCAL_IDS["zp_flux_unit"], "value"),
     Output(_PHOTCAL_IDS["zp_mag"], "value"),
@@ -1628,6 +1826,12 @@ register_upload_busy_clientside("lc-processor-upload-lc")
     Output("store-lc-processor-knots", "data"),
     Output("lc-processor-plot-tool", "value"),
     Output("lc-processor-extrema-tool", "value"),
+    Output("lc-processor-extrema-control", "value"),
+    Output("store-lc-processor-intervals", "data"),
+    Output("store-lc-processor-intervals-marked", "data"),
+    Output("lc-processor-interval-control", "value"),
+    Output("lc-processor-interval-mark-bands", "value"),
+    Output("lc-processor-points-control", "value"),
     Output("store-lc-processor-selected-perm", "data"),
     Output("store-lc-processor-zoom", "data"),
     Input("lc-processor-upload-lc", "contents"),
@@ -1659,6 +1863,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             user_tab_id = generate_user_tab_id()
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         _clear_fit_blobs(user_tab_id)
+        _clear_reference_extrema(user_tab_id)
         native = lcd.active_domain
         domain = native if native in (DOMAIN_FLUX, DOMAIN_MAG) else DOMAIN_FLUX
         epoch_display = _display_epoch_value(lcd)
@@ -1695,7 +1900,12 @@ def upload_lightcurve(contents, filename, user_tab_id):
             None,
             [],
             PLOT_TOOL_OFF,
-            PLOT_TOOL_OFF,
+            False,
+            empty_intervals_payload(),
+            [],
+            False,
+            False,
+            False,
             [],
             None,
         )
@@ -1728,6 +1938,13 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             no_update,
             no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
+            no_update,
         )
 
 
@@ -1735,6 +1952,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
     Output("lc-processor-domain", "value", allow_duplicate=True),
     Output("lc-processor-input-period", "value", allow_duplicate=True),
     Output("lc-processor-input-epoch", "value", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["filter_name"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
@@ -1936,6 +2154,7 @@ def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
 
 
 @callback(
+    Output(_PHOTCAL_IDS["filter_name"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
@@ -1943,6 +2162,7 @@ def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
     Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input(_PHOTCAL_IDS["fill_missing"], "n_clicks"),
+    State(_PHOTCAL_IDS["filter_name"], "value"),
     State(_PHOTCAL_IDS["zp_flux"], "value"),
     State(_PHOTCAL_IDS["zp_flux_unit"], "value"),
     State(_PHOTCAL_IDS["zp_mag"], "value"),
@@ -1952,6 +2172,7 @@ def sync_processor_ephemeris_to_cache(period, epoch, user_tab_id):
 )
 def fill_processor_photcal_missing(
     n_clicks,
+    filter_name,
     zp_flux,
     zp_flux_unit,
     zp_mag,
@@ -1965,6 +2186,7 @@ def fill_processor_photcal_missing(
 
     Args:
         n_clicks: Fill-missing button clicks.
+        filter_name: Current filter label form value.
         zp_flux: Current ZP flux form value.
         zp_flux_unit: Current ZP flux unit form value.
         zp_mag: Current ZP mag form value.
@@ -1977,6 +2199,7 @@ def fill_processor_photcal_missing(
     if not n_clicks:
         raise PreventUpdate
     before = {
+        "filter_name": filter_name if filter_name is not None else "",
         "zp_flux": zp_flux,
         "zp_flux_unit": zp_flux_unit if zp_flux_unit is not None else "",
         "zp_mag": zp_mag,
@@ -2000,6 +2223,7 @@ def fill_processor_photcal_missing(
 
 @callback(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["filter_name"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
@@ -2007,6 +2231,7 @@ def fill_processor_photcal_missing(
     Output(_PHOTCAL_IDS["flux_unit"], "value", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Input(_PHOTCAL_IDS["apply"], "n_clicks"),
+    State(_PHOTCAL_IDS["filter_name"], "value"),
     State(_PHOTCAL_IDS["zp_flux"], "value"),
     State(_PHOTCAL_IDS["zp_flux_unit"], "value"),
     State(_PHOTCAL_IDS["zp_mag"], "value"),
@@ -2017,6 +2242,7 @@ def fill_processor_photcal_missing(
 )
 def apply_processor_photcal(
     n_clicks,
+    filter_name,
     zp_flux,
     zp_flux_unit,
     zp_mag,
@@ -2032,6 +2258,7 @@ def apply_processor_photcal(
 
     Args:
         n_clicks: Apply button clicks.
+        filter_name: Form passband label.
         zp_flux: Form zero-point flux.
         zp_flux_unit: Form ZP flux unit.
         zp_mag: Form zero-point magnitude.
@@ -2052,12 +2279,14 @@ def apply_processor_photcal(
             no_update,
             no_update,
             no_update,
+            no_update,
             status_alert("Load a lightcurve first.", "warning"),
         )
     try:
         lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
         warnings = write_photcal_form_to_curvedash(
             lcd,
+            filter_name=filter_name,
             zp_flux=zp_flux,
             zp_flux_unit=zp_flux_unit,
             zp_mag=zp_mag,
@@ -2082,6 +2311,7 @@ def apply_processor_photcal(
             no_update,
             no_update,
             no_update,
+            no_update,
             status_alert(str(exc), "warning"),
         )
     except Exception as exc:
@@ -2093,7 +2323,8 @@ def apply_processor_photcal(
             no_update,
             no_update,
             no_update,
-            status_alert(str(exc), "danger"),
+            no_update,
+            status_alert(str(exc), "warning"),
         )
 
 
@@ -2101,6 +2332,7 @@ def apply_processor_photcal(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
     Output("lc-processor-domain", "value", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Output(_PHOTCAL_IDS["filter_name"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_flux_unit"], "value", allow_duplicate=True),
     Output(_PHOTCAL_IDS["zp_mag"], "value", allow_duplicate=True),
@@ -2176,6 +2408,7 @@ def apply_working_domain(domain, user_tab_id):
     Output("lc-processor-graph-working", "figure"),
     Output("lc-processor-graph-residual", "figure"),
     Output("lc-processor-plot-alert", "children"),
+    Output("store-lc-processor-interval-bands", "data"),
     Input("store-lc-processor-lc-revision", "data"),
     Input("store-lc-processor-user-tab-id", "data"),
     Input("lc-processor-time-axis", "value"),
@@ -2184,11 +2417,16 @@ def apply_working_domain(domain, user_tab_id):
     Input("lc-processor-t-max", "value"),
     Input("lc-processor-method", "value"),
     Input("store-lc-processor-plot2-window", "data"),
+    Input("lc-processor-show-ref-extrema", "value"),
+    Input("lc-processor-show-intervals", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("store-lc-processor-intervals", "data"),
     State("store-lc-processor-knots", "data"),
     State("store-lc-processor-ui", "data"),
     State("lc-processor-upload-lc", "filename"),
     State("lc-processor-domain", "value"),
     State("store-lc-processor-zoom", "data"),
+    State("store-lc-processor-intervals-marked", "data"),
 )
 def plot_working_and_residual(
     _revision,
@@ -2199,11 +2437,16 @@ def plot_working_and_residual(
     t_max,
     method,
     plot2_window,
+    show_ref_extrema,
+    show_intervals,
+    interval_control,
+    intervals_store,
     knots,
     ui_store,
     upload_filename,
     domain,
     zoom,
+    marked_interval_ids,
 ):
     """Draws plot 1 from the cache (cropped) and plot 2 when seeded.
 
@@ -2215,7 +2458,8 @@ def plot_working_and_residual(
 
     Revision and ``user_tab_id`` are session stores so in-tab navigation
     rehydrates both and replot runs from disk (smooth / detrend / extrema
-    blobs included). Mark and zoom stores stay memory-only.
+    blobs included). Mark and zoom stores stay memory-only. The interval
+    list lives in ``store-lc-processor-intervals``.
 
     Args:
         _revision: Plot revision token.
@@ -2226,15 +2470,21 @@ def plot_working_and_residual(
         t_max: Crop end (display MJD).
         method: Smooth method id.
         plot2_window: Plot-2 working range (Use visible range).
+        show_ref_extrema: Switch; when true, draw uploaded JD as vertical lines.
+        show_intervals: Switch; when true, draw interval bands (mode off).
+        interval_control: Interval-control switch; when true, always draw bands.
+        intervals_store: Intervals Store payload.
         knots: Current knot list.
         ui_store: Session UI chrome (source filename for ``uirevision``).
         upload_filename: Live upload component filename, if any.
         domain: Sidebar photometric domain.
         zoom: Client zoom snapshot for plot 1.
+        marked_interval_ids: Interval ids marked for removal.
 
     Returns:
-        tuple: Working figure, residual figure, and ``no_update`` for
-        the overlay unless plotting itself fails.
+        tuple: Working figure, residual figure, ``no_update`` for the
+        overlay unless plotting itself fails, and interval pick-band
+        metadata for clientside marking.
     """
     filename = _ui_source_filename(ui_store) or upload_filename
     axis = normalize_time_axis_mode(time_axis_mode)
@@ -2243,7 +2493,7 @@ def plot_working_and_residual(
         time_axis_mode=axis, domain=domain_key, filename=filename
     )
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
-        return blank_w, blank_r, no_update
+        return blank_w, blank_r, no_update, no_update
     try:
         lcd = CurveDash.from_serialized(read_serialized_lc(PAGE_NAMESPACE, user_tab_id))
         view = crop_curvedash_copy(
@@ -2280,6 +2530,22 @@ def plot_working_and_residual(
             read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
             domain=view.active_domain or domain_key,
         )
+        ref_jd = None
+        if bool(show_ref_extrema):
+            ref_payload = read_page_blob(
+                PAGE_NAMESPACE, user_tab_id, REF_EXTREMA_BLOB
+            )
+            if ref_payload and ref_payload.get("times_jd"):
+                ref_jd = [float(t) for t in ref_payload["times_jd"]]
+        interval_payload = intervals_store
+        draw_intervals = bool(interval_control) or bool(show_intervals)
+        pick_bands = build_processor_interval_pick_payload(
+            interval_payload,
+            time_axis_mode=axis,
+            display_epoch=DISPLAY_EPOCH_JD,
+            timescale=timescale,
+            enabled=draw_intervals,
+        )
         fig = figure_raw_with_trend(
             times,
             values,
@@ -2302,6 +2568,11 @@ def plot_working_and_residual(
             ),
             extrema_jd=None if extrema_xy is None else extrema_xy[0],
             extrema_y=None if extrema_xy is None else extrema_xy[1],
+            ref_extrema_jd=ref_jd,
+            interval_payload=interval_payload if draw_intervals else None,
+            show_intervals=draw_intervals,
+            marked_interval_ids=marked_interval_ids,
+            horizontal_interval_select=bool(interval_control),
         )
         apply_processor_zoom_store(
             fig,
@@ -2365,13 +2636,14 @@ def plot_working_and_residual(
                 time_axis_mode=axis,
                 x_range_jd=x_range_jd,
             )
-        return fig, residual, no_update
+        return fig, residual, no_update, pick_bands
     except Exception as exc:
         logger.warning("Lightcurve processor plot failed: %s", exc)
         return (
             no_update,
             blank_r,
             status_alert(str(exc), "warning"),
+            no_update,
         )
 
 
@@ -2439,9 +2711,12 @@ def merge_working_sectors(n_clicks, user_tab_id):
     Input("lc-processor-delete-selected", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("store-lc-processor-selected-perm", "data"),
+    State("lc-processor-points-control", "value"),
     prevent_initial_call=True,
 )
-def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
+def delete_working_selected_points(
+    n_clicks, user_tab_id, selected_perm, points_control
+):
     """Removes client-marked rows from the cached working curve.
 
     Orange marks live in ``store-lc-processor-selected-perm``. The figure is
@@ -2451,11 +2726,12 @@ def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
         n_clicks: Button clicks.
         user_tab_id: Session cache key.
         selected_perm: Client list of ``perm_index`` values.
+        points_control: Points-control switch.
 
     Returns:
         tuple: New revision token, optional alert, and a cleared perm store.
     """
-    if not n_clicks or not user_tab_id:
+    if not n_clicks or not user_tab_id or not points_control:
         raise PreventUpdate
     try:
         marked = normalize_selected_perm_store(selected_perm)
@@ -2492,25 +2768,28 @@ def delete_working_selected_points(n_clicks, user_tab_id, selected_perm):
     Output("lc-processor-use-visible-range", "disabled"),
     Output("lc-processor-restore-plot-2", "disabled"),
     Output("lc-processor-find-extrema", "disabled"),
+    Output("lc-processor-generate-intervals", "disabled"),
     Output("lc-processor-download-intervals-btn", "disabled"),
     Output("lc-processor-download-toms-btn", "disabled"),
     Input("store-lc-processor-lc-revision", "data"),
     Input("store-lc-processor-user-tab-id", "data"),
     Input("store-lc-processor-plot2-window", "data"),
+    Input("store-lc-processor-intervals", "data"),
 )
-def gate_lightcurve_actions(_revision, user_tab_id, plot2_window):
+def gate_lightcurve_actions(_revision, user_tab_id, plot2_window, intervals_store):
     """Enables export, detrend, and extrema once the required cache blobs exist.
 
     Args:
         _revision: Plot revision token.
         user_tab_id: Session cache key.
         plot2_window: Plot-2 working range store.
+        intervals_store: Intervals Store payload.
 
     Returns:
         tuple: Disabled flags for LC export, Apply detrend, Copy from
         plot 1, Export detrended, Local tilt, Use visible range,
-        Restore full plot 2, Find extrema, Export intervals, and Export
-        times.
+        Restore full plot 2, Find extrema, Generate intervals, Export
+        intervals, and Export times.
     """
     has_lc = bool(user_tab_id and has_cached_lc(PAGE_NAMESPACE, user_tab_id))
     has_smooth = bool(
@@ -2525,6 +2804,7 @@ def gate_lightcurve_actions(_revision, user_tab_id, plot2_window):
         else None
     )
     has_extrema = bool(extrema_payload and extrema_payload.get("hits"))
+    has_intervals = bool((intervals_store or {}).get("intervals"))
     has_window = normalize_working_window(plot2_window) is not None
     return (
         not has_lc,
@@ -2536,6 +2816,7 @@ def gate_lightcurve_actions(_revision, user_tab_id, plot2_window):
         not has_window,
         not has_smooth,
         not has_extrema,
+        not has_intervals,
         not has_extrema,
     )
 
@@ -2632,7 +2913,7 @@ def download_working_lightcurve(
         return no_update, status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("Lightcurve processor export failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
 
 
 def _cached_lcd(user_tab_id) -> CurveDash:
@@ -2687,34 +2968,51 @@ def toggle_method_params(method: str):
     Output("lc-processor-graph-working", "config"),
     Input("lc-processor-plot-tool", "value"),
     Input("lc-processor-method", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-points-control", "value"),
 )
-def update_working_graph_config(plot_tool, method):
-    """Updates plot config when the knot tool changes.
+def update_working_graph_config(
+    plot_tool, method, interval_control, points_control
+):
+    """Updates plot config when a plot interaction mode changes.
 
     Args:
         plot_tool: ``off``, ``add``, or ``delete``.
         method: Active smooth method id.
+        interval_control: Interval-control switch.
+        points_control: Points-control switch.
 
     Returns:
         dict: Plotly config dictionary.
     """
-    return graph_config(plot_tool=plot_tool or PLOT_TOOL_OFF, method=method)
+    return graph_config(
+        plot_tool=plot_tool or PLOT_TOOL_OFF,
+        method=method,
+        interval_control=bool(interval_control),
+        points_control=bool(points_control),
+    )
 
 
 @callback(
     Output("lc-processor-plot-tool", "value", allow_duplicate=True),
-    Input("lc-processor-extrema-tool", "value"),
+    Input("lc-processor-extrema-control", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-points-control", "value"),
     Input("lc-processor-method", "value"),
     prevent_initial_call=True,
 )
-def clear_knot_tool_when_exclusive(extrema_tool, method):
+def clear_knot_tool_when_exclusive(
+    extrema_control, interval_control, points_control, method
+):
     """Turns the knot radio off when it must not share the click.
 
-    Hidden LSQ tools must not stay on Add/Delete knot. An extremum
-    add/delete likewise forces the knot radio to Off.
+    Hidden LSQ tools must not stay on Add/Delete knot. Another plot mode
+    likewise forces the knot radio to Off.
 
     Args:
-        extrema_tool: Extremum-tool radio value.
+        extrema_control: Extrema-control switch.
+        interval_control: Interval-control switch.
+        points_control: Points-control switch.
         method: Active smooth method id.
 
     Returns:
@@ -2722,7 +3020,7 @@ def clear_knot_tool_when_exclusive(extrema_tool, method):
     """
     if method != "spline_lsq":
         return PLOT_TOOL_OFF
-    if extrema_tool in (PLOT_TOOL_ADD_EXT, PLOT_TOOL_DELETE_EXT):
+    if bool(extrema_control) or bool(interval_control) or bool(points_control):
         return PLOT_TOOL_OFF
     raise PreventUpdate
 
@@ -2730,20 +3028,174 @@ def clear_knot_tool_when_exclusive(extrema_tool, method):
 @callback(
     Output("lc-processor-extrema-tool", "value", allow_duplicate=True),
     Input("lc-processor-plot-tool", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-points-control", "value"),
     prevent_initial_call=True,
 )
-def clear_extrema_tool_when_knot(plot_tool):
-    """Turns the extremum radio off when a knot tool is chosen.
+def clear_extrema_tool_when_exclusive(
+    plot_tool, interval_control, points_control
+):
+    """Turns the extremum plot tool off when another plot mode is on.
 
     Args:
         plot_tool: Knot-tool radio value.
+        interval_control: Interval-control switch.
+        points_control: Points-control switch.
 
     Returns:
         str: ``off``.
     """
     if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
         return PLOT_TOOL_OFF
+    if bool(interval_control) or bool(points_control):
+        return PLOT_TOOL_OFF
     raise PreventUpdate
+
+
+@callback(
+    Output("lc-processor-extrema-control", "value", allow_duplicate=True),
+    Input("lc-processor-plot-tool", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-points-control", "value"),
+    prevent_initial_call=True,
+)
+def clear_extrema_control_when_exclusive(
+    plot_tool, interval_control, points_control
+):
+    """Turns extrema control off when another plot mode is on.
+
+    Args:
+        plot_tool: Knot-tool radio value.
+        interval_control: Interval-control switch.
+        points_control: Points-control switch.
+
+    Returns:
+        bool: ``False``.
+    """
+    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
+        return False
+    if bool(interval_control) or bool(points_control):
+        return False
+    raise PreventUpdate
+
+
+@callback(
+    Output("lc-processor-interval-control", "value", allow_duplicate=True),
+    Input("lc-processor-plot-tool", "value"),
+    Input("lc-processor-extrema-control", "value"),
+    Input("lc-processor-points-control", "value"),
+    prevent_initial_call=True,
+)
+def clear_interval_control_when_exclusive(
+    plot_tool, extrema_control, points_control
+):
+    """Turns interval control off when another plot mode is on.
+
+    Args:
+        plot_tool: Knot-tool radio value.
+        extrema_control: Extrema-control switch.
+        points_control: Points-control switch.
+
+    Returns:
+        bool: ``False``.
+    """
+    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
+        return False
+    if bool(extrema_control) or bool(points_control):
+        return False
+    raise PreventUpdate
+
+
+@callback(
+    Output("lc-processor-points-control", "value", allow_duplicate=True),
+    Input("lc-processor-plot-tool", "value"),
+    Input("lc-processor-extrema-control", "value"),
+    Input("lc-processor-interval-control", "value"),
+    prevent_initial_call=True,
+)
+def clear_points_control_when_exclusive(
+    plot_tool, extrema_control, interval_control
+):
+    """Turns points control off when another plot mode is on.
+
+    Args:
+        plot_tool: Knot-tool radio value.
+        extrema_control: Extrema-control switch.
+        interval_control: Interval-control switch.
+
+    Returns:
+        bool: ``False``.
+    """
+    if plot_tool in (PLOT_TOOL_ADD, PLOT_TOOL_DELETE):
+        return False
+    if bool(extrema_control) or bool(interval_control):
+        return False
+    raise PreventUpdate
+
+
+@callback(
+    Output("lc-processor-points-toolbar", "className"),
+    Input("lc-processor-points-control", "value"),
+)
+def reflect_points_control(points_control):
+    """Shows the plot-1 points cluster only while Points control is on.
+
+    Args:
+        points_control: Points-control switch.
+
+    Returns:
+        str: Toolbar cluster CSS classes.
+    """
+    on = bool(points_control)
+    return (
+        "lcp-plot-toolbar-cluster" if on else "lcp-plot-toolbar-cluster d-none"
+    )
+
+
+@callback(
+    Output("lc-processor-interval-toolbar", "className"),
+    Output("lc-processor-interval-mark-bands", "value", allow_duplicate=True),
+    Input("lc-processor-interval-control", "value"),
+    prevent_initial_call=True,
+)
+def reflect_interval_control(interval_control):
+    """Shows the plot-1 interval cluster only while Interval control is on.
+
+    Args:
+        interval_control: Interval-control switch.
+
+    Returns:
+        tuple: Toolbar class name, and Mark bands off when the mode drops.
+    """
+    on = bool(interval_control)
+    cluster = (
+        "lcp-plot-toolbar-cluster" if on else "lcp-plot-toolbar-cluster d-none"
+    )
+    mark = False if not on else no_update
+    return cluster, mark
+
+
+@callback(
+    Output("lc-processor-extrema-toolbar", "className"),
+    Output("lc-processor-extrema-tool", "value", allow_duplicate=True),
+    Input("lc-processor-extrema-control", "value"),
+    prevent_initial_call=True,
+)
+def reflect_extrema_control(extrema_control):
+    """Shows the plot-1 extremum cluster only while Extrema control is on.
+
+    Args:
+        extrema_control: Extrema-control switch.
+
+    Returns:
+        tuple: Toolbar class name and cleared plot tool when mode is off.
+    """
+    on = bool(extrema_control)
+    cluster = (
+        "lcp-plot-toolbar-cluster" if on else "lcp-plot-toolbar-cluster d-none"
+    )
+    tool = no_update if on else PLOT_TOOL_OFF
+    return cluster, tool
 
 
 @callback(
@@ -2813,7 +3265,7 @@ def place_knots(
         )
     except Exception as exc:
         logger.exception("Could not place knots")
-        return no_update, no_update, status_alert(str(exc), "danger")
+        return no_update, no_update, status_alert(str(exc), "warning")
     had_overlay = read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB) is not None
     had_residual = read_page_blob(PAGE_NAMESPACE, user_tab_id, DETREND_BLOB) is not None
     had_extrema = read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB) is not None
@@ -2962,7 +3414,7 @@ def apply_smooth(
         clear_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB)
     except Exception as exc:
         logger.exception("Smooth fit failed")
-        return no_update, no_update, status_alert(str(exc), "danger")
+        return no_update, no_update, status_alert(str(exc), "warning")
     return payload.get("knots") or list(knots or []), _bump_lc_revision(), None
 
 
@@ -3160,13 +3612,195 @@ def edit_extrema_on_plot(
         if updated is None:
             raise PreventUpdate
         write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, updated)
+    except PreventUpdate:
+        raise
     except Exception as exc:
         logger.exception("Manual rough-extrema edit failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
     n_hit = int(updated.get("n_extrema") or 0)
     return _bump_lc_revision(), status_alert(
         f"{n_hit} rough mark(s).", "info"
     )
+
+
+@callback(
+    Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
+    Output("lc-processor-upload-ref-extrema-text", "children"),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-upload-ref-extrema", "contents"),
+    State("lc-processor-upload-ref-extrema", "filename"),
+    State("store-lc-processor-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def upload_reference_extrema(contents, filename, user_tab_id):
+    """Loads uploaded comparison extrema (JD list; overlay marks only).
+
+    Args:
+        contents: ``dcc.Upload`` payload.
+        filename: Original filename.
+        user_tab_id: Session cache key.
+
+    Returns:
+        tuple: Revision, filename next to the load button, optional alert.
+    """
+    name = (filename or "").strip()
+    if contents is None:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return (
+            no_update,
+            name,
+            status_alert(
+                "Load a light curve before uploading comparison extrema.",
+                "warning",
+            ),
+        )
+    try:
+        _content_type, content_string = contents.split(",", 1)
+        text = base64.b64decode(content_string).decode("utf-8")
+        payload = parse_uploaded_extrema_jds(text)
+        write_page_blob(PAGE_NAMESPACE, user_tab_id, REF_EXTREMA_BLOB, payload)
+        n_hit = len(payload["times_jd"])
+        logger.info(
+            "Lightcurve processor loaded %s reference extrema from %s",
+            n_hit,
+            filename or "upload",
+        )
+        return (
+            _bump_lc_revision(),
+            name or "uploaded",
+            status_alert(f"Loaded {n_hit} uploaded extremum mark(s).", "info"),
+        )
+    except Exception as exc:
+        logger.exception("Reference extrema upload failed")
+        return (
+            no_update,
+            name,
+            status_alert(str(exc), "warning"),
+        )
+
+
+@callback(
+    Output("store-lc-processor-intervals", "data", allow_duplicate=True),
+    Output("store-lc-processor-intervals-marked", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-generate-intervals", "n_clicks"),
+    State("store-lc-processor-user-tab-id", "data"),
+    State("lc-processor-interval-delta", "value"),
+    prevent_initial_call=True,
+)
+def generate_rough_intervals(n_clicks, user_tab_id, interval_delta):
+    """Builds ``[t±δ]`` intervals around working rough extrema.
+
+    Replaces any previous interval list (auto or manual).
+
+    Args:
+        n_clicks: Button clicks.
+        user_tab_id: Session cache key.
+        interval_delta: Half-width in days.
+
+    Returns:
+        tuple: Intervals Store, cleared marks, optional feedback.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
+        return no_update, no_update, status_alert(
+            "Load a light curve first.", "warning"
+        )
+    try:
+        payload = generate_intervals_from_extrema(
+            read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
+            delta_time_d=required_float(interval_delta, "Interval half-width"),
+        )
+    except Exception as exc:
+        logger.exception("Generate intervals failed")
+        return no_update, no_update, status_alert(str(exc), "warning")
+    n_int = len(payload.get("intervals") or [])
+    return payload, [], status_alert(f"Generated {n_int} interval(s).", "info")
+
+
+@callback(
+    Output("store-lc-processor-intervals", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-add-interval", "n_clicks"),
+    State("lc-processor-graph-working", "selectedData"),
+    State("store-lc-processor-intervals", "data"),
+    State("lc-processor-interval-control", "value"),
+    State("lc-processor-time-axis", "value"),
+    prevent_initial_call=True,
+)
+def commit_add_interval(
+    n_clicks,
+    selected_data,
+    intervals_store,
+    interval_control,
+    time_axis_mode,
+):
+    """Appends one interval from the current Box Select x-range.
+
+    Args:
+        n_clicks: Add interval clicks.
+        selected_data: Plotly box ``selectedData``.
+        intervals_store: Current intervals Store payload.
+        interval_control: Interval-control switch.
+        time_axis_mode: ``mjd`` or ``date``.
+
+    Returns:
+        tuple: Updated intervals Store and optional feedback.
+    """
+    if not n_clicks or not interval_control:
+        raise PreventUpdate
+    axis = normalize_time_axis_mode(time_axis_mode)
+    try:
+        x_range = extract_display_x_range_from_selected_data(selected_data)
+        if x_range is None:
+            return no_update, status_alert(
+                "Select a time range with Box Select first.", "warning"
+            )
+        start_jd = plot_x_to_jd(x_range[0], axis, DISPLAY_EPOCH_JD)
+        end_jd = plot_x_to_jd(x_range[1], axis, DISPLAY_EPOCH_JD)
+        updated = add_manual_interval(
+            intervals_store, start_jd=start_jd, end_jd=end_jd
+        )
+    except PreventUpdate:
+        raise
+    except Exception as exc:
+        logger.exception("Add interval failed")
+        return no_update, status_alert(str(exc), "warning")
+    n_int = len(updated.get("intervals") or [])
+    return updated, status_alert(f"{n_int} interval(s).", "info")
+
+
+@callback(
+    Output("store-lc-processor-intervals", "data", allow_duplicate=True),
+    Output("store-lc-processor-intervals-marked", "data", allow_duplicate=True),
+    Output("lc-processor-plot-alert", "children", allow_duplicate=True),
+    Input("lc-processor-remove-marked-intervals", "n_clicks"),
+    State("store-lc-processor-intervals", "data"),
+    State("store-lc-processor-intervals-marked", "data"),
+    prevent_initial_call=True,
+)
+def commit_remove_marked_intervals(n_clicks, intervals_store, marked_ids):
+    """Removes marked intervals in one Store update (one replot).
+
+    Args:
+        n_clicks: Remove marked clicks.
+        intervals_store: Current intervals Store payload.
+        marked_ids: Interval ids marked on plot 1.
+
+    Returns:
+        tuple: Remaining intervals, cleared marks, optional feedback.
+    """
+    if not n_clicks or not marked_ids:
+        raise PreventUpdate
+    try:
+        updated = intervals_without_marked_ids(intervals_store, marked_ids)
+    except Exception as exc:
+        logger.exception("Remove marked intervals failed")
+        return no_update, no_update, status_alert(str(exc), "warning")
+    n_int = len(updated.get("intervals") or [])
+    return updated, [], status_alert(f"{n_int} interval(s).", "info")
 
 
 @callback(
@@ -3228,7 +3862,7 @@ def apply_detrend(
         logger.exception("Detrend failed")
         return (
             no_update,
-            status_alert(str(exc), "danger"),
+            status_alert(str(exc), "warning"),
             no_update,
             no_update,
             no_update,
@@ -3304,7 +3938,7 @@ def copy_plot_1_to_plot_2(n_clicks, user_tab_id, domain, t_min, t_max):
         logger.exception("Copy from plot 1 failed")
         return (
             no_update,
-            status_alert(str(exc), "danger"),
+            status_alert(str(exc), "warning"),
             no_update,
             no_update,
             no_update,
@@ -3372,7 +4006,7 @@ def apply_plot_2_local_tilt(
         logger.exception("Local tilt failed")
         return (
             no_update,
-            status_alert(str(exc), "danger"),
+            status_alert(str(exc), "warning"),
             no_update,
             no_update,
         )
@@ -3606,7 +4240,7 @@ def download_detrended_lightcurve(
         return no_update, status_alert(str(exc), "warning")
     except Exception as exc:
         logger.exception("Lightcurve processor detrend export failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
 
 
 @callback(
@@ -3675,7 +4309,7 @@ def find_rough_extrema(
         write_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB, payload)
     except Exception as exc:
         logger.exception("Rough extrema find failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
     n_hit = int(payload.get("n_extrema") or 0)
     n_skipped = int(payload.get("n_skipped_short") or 0)
     kind = payload.get("kind") or "min"
@@ -3704,23 +4338,25 @@ def find_rough_extrema(
     Input("lc-processor-download-intervals-btn", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-intervals-export-stem", "value"),
-    State("lc-processor-interval-delta", "value"),
     State("store-lc-processor-ui", "data"),
     State("lc-processor-upload-lc", "filename"),
+    State("store-lc-processor-intervals", "data"),
     prevent_initial_call=True,
 )
 def download_rough_intervals(
-    n_clicks, user_tab_id, stem, interval_delta, ui_store, upload_filename
+    n_clicks, user_tab_id, stem, ui_store, upload_filename, intervals_store
 ):
-    """Exports GP-layout intervals centred on the last rough extrema.
+    """Exports surviving stored intervals sorted by start JD.
+
+    Does not regenerate from extrema; exports the interval Store as held.
 
     Args:
         n_clicks: Button clicks.
         user_tab_id: Session cache key.
         stem: Intervals stem (already ``_int`` by default).
-        interval_delta: Half-width in days (current widget).
         ui_store: Session UI chrome (source filename).
         upload_filename: Live upload component filename, if any.
+        intervals_store: Intervals Store payload.
 
     Returns:
         tuple: Download payload and optional alert.
@@ -3729,11 +4365,15 @@ def download_rough_intervals(
         raise PreventUpdate
     filename = _ui_source_filename(ui_store) or upload_filename
     try:
-        content = format_intervals_from_payload(
-            read_page_blob(PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB),
-            delta_time_d=required_float(interval_delta, "Interval half-width"),
+        content = format_cached_intervals_download(
+            intervals_store,
             source_file=filename,
-            smooth_payload=read_page_blob(PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB),
+            smooth_payload=read_page_blob(
+                PAGE_NAMESPACE, user_tab_id, SMOOTH_BLOB
+            ),
+            extrema_payload=read_page_blob(
+                PAGE_NAMESPACE, user_tab_id, EXTREMA_BLOB
+            ),
         )
         outfile = intervals_export_download_name(
             suggested_intervals_export_stem(stem)
@@ -3741,7 +4381,7 @@ def download_rough_intervals(
         return dcc.send_string(content, outfile), None
     except Exception as exc:
         logger.exception("Lightcurve processor intervals export failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
 
 
 @callback(
@@ -3782,7 +4422,7 @@ def download_rough_toms(n_clicks, user_tab_id, stem, ui_store, upload_filename):
         return dcc.send_string(content, outfile), None
     except Exception as exc:
         logger.exception("Lightcurve processor rough ToM export failed")
-        return no_update, status_alert(str(exc), "danger")
+        return no_update, status_alert(str(exc), "warning")
 
 
 clientside_callback(
@@ -3806,6 +4446,9 @@ clientside_callback(
     Input("store-lc-processor-selected-perm", "data"),
     Input("lc-processor-plot-tool", "value"),
     Input("lc-processor-extrema-tool", "value"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-interval-mark-bands", "value"),
+    Input("lc-processor-points-control", "value"),
     prevent_initial_call=True,
 )
 
@@ -3817,6 +4460,9 @@ clientside_callback(
     State("store-lc-processor-selected-perm", "data"),
     State("lc-processor-plot-tool", "value"),
     State("lc-processor-extrema-tool", "value"),
+    State("lc-processor-interval-control", "value"),
+    State("lc-processor-interval-mark-bands", "value"),
+    State("lc-processor-points-control", "value"),
     prevent_initial_call=True,
 )
 
@@ -3859,6 +4505,42 @@ clientside_callback(
     Input("lc-processor-graph-working", "figure"),
     Input("lc-processor-extrema-tool", "value"),
     prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpInterval", function_name="bindGraph"),
+    Output("store-lc-processor-clientside", "data", allow_duplicate=True),
+    Input("lc-processor-graph-working", "figure"),
+    Input("lc-processor-interval-control", "value"),
+    Input("lc-processor-interval-mark-bands", "value"),
+    Input("store-lc-processor-interval-bands", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpInterval", function_name="toggleMarks"),
+    Output("store-lc-processor-intervals-marked", "data", allow_duplicate=True),
+    Input("store-lc-processor-interval-click", "data"),
+    State("store-lc-processor-intervals-marked", "data"),
+    State("store-lc-processor-interval-bands", "data"),
+    State("lc-processor-interval-mark-bands", "value"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpInterval", function_name="clearMarks"),
+    Output("store-lc-processor-intervals-marked", "data", allow_duplicate=True),
+    Input("lc-processor-clear-interval-marks", "n_clicks"),
+    State("store-lc-processor-interval-bands", "data"),
+    State("store-lc-processor-intervals-marked", "data"),
+    prevent_initial_call=True,
+)
+
+clientside_callback(
+    ClientsideFunction(namespace="lcpInterval", function_name="reflectMarkedCount"),
+    Output("lc-processor-remove-marked-intervals", "disabled"),
+    Output("lc-processor-clear-interval-marks", "disabled"),
+    Input("store-lc-processor-intervals-marked", "data"),
 )
 
 clientside_callback(

@@ -55,9 +55,13 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             }
             const update = {};
             for (let i = 0; i < shapes.length; i += 1) {
-                update['shapes[' + i + '].editable'] = !!editable;
+                if (shapes[i] && shapes[i].name === 'lcp-knot') {
+                    update['shapes[' + i + '].editable'] = !!editable;
+                }
             }
-            Plotly.relayout(plotDiv, update);
+            if (Object.keys(update).length) {
+                Plotly.relayout(plotDiv, update);
+            }
         },
 
         _emitKnotPick: function (plotDiv, xy) {
@@ -168,7 +172,13 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             const plotDiv = window.dash_clientside.lcpKnot._rawPlotlyGraphDiv();
             if (plotDiv && typeof Plotly !== 'undefined' && Plotly.relayout) {
                 const next = Array.isArray(shapes) ? shapes : [];
-                Plotly.relayout(plotDiv, {shapes: next}).then(function () {
+                const existing = (plotDiv.layout && plotDiv.layout.shapes)
+                    ? plotDiv.layout.shapes
+                    : [];
+                const kept = existing.filter(function (shape) {
+                    return shape && shape.name !== 'lcp-knot';
+                });
+                Plotly.relayout(plotDiv, {shapes: kept.concat(next)}).then(function () {
                     if (mode === 'add') {
                         window.dash_clientside.lcpKnot._setShapesEditable(plotDiv, true);
                     }
@@ -198,6 +208,11 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             return mode === 'add_ext' || mode === 'delete_ext';
         },
 
+        _anyPickLive: function () {
+            const self = window.dash_clientside.lcpExtrema;
+            return self._live(self._mode);
+        },
+
         _serialiseAxis: function (value) {
             if (value instanceof Date) {
                 return value.getTime();
@@ -205,7 +220,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             return value;
         },
 
-        _emitPick: function (plotDiv, xy) {
+        _emitPick: function (plotDiv, xy, storeId) {
             if (!xy || xy.x === null || xy.x === undefined) {
                 return;
             }
@@ -230,7 +245,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                     x1 = self._serialiseAxis(range[1]);
                 }
             }
-            dash_clientside.set_props('store-lc-processor-extrema-pick', {
+            dash_clientside.set_props(storeId, {
                 data: {
                     x: self._serialiseAxis(xy.x),
                     y: xy.y,
@@ -251,9 +266,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             }
             plotDiv.classList.toggle(
                 'lcp-extrema-pick',
-                window.dash_clientside.lcpExtrema._live(
-                    window.dash_clientside.lcpExtrema._mode
-                )
+                window.dash_clientside.lcpExtrema._anyPickLive()
             );
             if (plotDiv._lcpExtremaPointerBound) {
                 return;
@@ -262,9 +275,7 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             plotDiv._lcpExtremaPointerDown = null;
 
             plotDiv.addEventListener('pointerdown', function (ev) {
-                if (!window.dash_clientside.lcpExtrema._live(
-                    window.dash_clientside.lcpExtrema._mode
-                )) {
+                if (!window.dash_clientside.lcpExtrema._anyPickLive()) {
                     return;
                 }
                 plotDiv._lcpExtremaPointerDown = {
@@ -286,9 +297,8 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                     if (!down || down.id !== ev.pointerId) {
                         return;
                     }
-                    if (!window.dash_clientside.lcpExtrema._live(
-                        window.dash_clientside.lcpExtrema._mode
-                    )) {
+                    const self = window.dash_clientside.lcpExtrema;
+                    if (!self._anyPickLive()) {
                         return;
                     }
                     const dx = ev.clientX - down.x;
@@ -299,7 +309,11 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                     const xy = window.dash_clientside.lcpKnot._domEventToPlotXY(
                         livePlot, ev
                     );
-                    window.dash_clientside.lcpExtrema._emitPick(livePlot, xy);
+                    if (self._live(self._mode)) {
+                        self._emitPick(
+                            livePlot, xy, 'store-lc-processor-extrema-pick'
+                        );
+                    }
                 }, true);
             }
         },
@@ -721,9 +735,19 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         _perm: [],
         _knotMode: 'off',
         _extremaMode: 'off',
+        _intervalControlOn: false,
+        _markBandsOn: false,
+        _pointsControlOn: false,
         _rawPlotDiv: null,
 
+        _switchOn: function (value) {
+            return value === true;
+        },
+
         _selectionBlocked: function () {
+            if (!window.dash_clientside.lcpSelect._pointsControlOn) {
+                return true;
+            }
             const knot = window.dash_clientside.lcpSelect._knotMode;
             const extrema = window.dash_clientside.lcpSelect._extremaMode;
             return (
@@ -731,7 +755,20 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
                 || knot === 'delete'
                 || extrema === 'add_ext'
                 || extrema === 'delete_ext'
+                || window.dash_clientside.lcpSelect._intervalControlOn
+                || window.dash_clientside.lcpSelect._markBandsOn
             );
+        },
+
+        _syncDragmode: function (plotDiv) {
+            if (!plotDiv || typeof Plotly === 'undefined' || !Plotly.relayout) {
+                return;
+            }
+            const intervalOn = window.dash_clientside.lcpSelect._intervalControlOn;
+            const current = plotDiv.layout ? plotDiv.layout.dragmode : undefined;
+            if (!intervalOn && current === 'select') {
+                Plotly.relayout(plotDiv, {dragmode: 'zoom'});
+            }
         },
 
         _serialiseAxisValue: function (value) {
@@ -1036,17 +1073,35 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
             return next;
         },
 
-        bindGraph: function (figure, permList, knotTool, extremaTool) {
+        bindGraph: function (
+            figure,
+            permList,
+            knotTool,
+            extremaTool,
+            intervalControl,
+            markBands,
+            pointsControl
+        ) {
             window.dash_clientside.lcpSelect._knotMode = knotTool || 'off';
             window.dash_clientside.lcpSelect._extremaMode = extremaTool || 'off';
+            window.dash_clientside.lcpSelect._intervalControlOn =
+                window.dash_clientside.lcpSelect._switchOn(intervalControl);
+            window.dash_clientside.lcpSelect._markBandsOn =
+                window.dash_clientside.lcpSelect._switchOn(markBands);
+            window.dash_clientside.lcpSelect._pointsControlOn =
+                window.dash_clientside.lcpSelect._switchOn(pointsControl);
             window.dash_clientside.lcpSelect._perm = Array.isArray(permList)
                 ? permList
                 : [];
             const attach = function () {
                 const plotDiv = window.dash_clientside.lcpKnot._rawPlotlyGraphDiv();
                 window.dash_clientside.lcpSelect._ensureListeners(plotDiv);
+                window.dash_clientside.lcpSelect._syncDragmode(plotDiv);
+                const permForPaint = window.dash_clientside.lcpSelect._pointsControlOn
+                    ? window.dash_clientside.lcpSelect._perm
+                    : [];
                 window.dash_clientside.lcpSelect._paint(
-                    plotDiv, window.dash_clientside.lcpSelect._perm, false
+                    plotDiv, permForPaint, false
                 );
             };
             window.setTimeout(attach, 0);
@@ -1056,10 +1111,23 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
         },
 
         mergeSelection: function (
-            selectedData, clickData, currentPerm, knotTool, extremaTool
+            selectedData,
+            clickData,
+            currentPerm,
+            knotTool,
+            extremaTool,
+            intervalControl,
+            markBands,
+            pointsControl
         ) {
             window.dash_clientside.lcpSelect._knotMode = knotTool || 'off';
             window.dash_clientside.lcpSelect._extremaMode = extremaTool || 'off';
+            window.dash_clientside.lcpSelect._intervalControlOn =
+                window.dash_clientside.lcpSelect._switchOn(intervalControl);
+            window.dash_clientside.lcpSelect._markBandsOn =
+                window.dash_clientside.lcpSelect._switchOn(markBands);
+            window.dash_clientside.lcpSelect._pointsControlOn =
+                window.dash_clientside.lcpSelect._switchOn(pointsControl);
             if (window.dash_clientside.lcpSelect._selectionBlocked()) {
                 return window.dash_clientside.no_update;
             }
@@ -1121,6 +1189,271 @@ window.dash_clientside = Object.assign({}, window.dash_clientside, {
 
         invalidateZoom: function (_timeAxis, _domain) {
             return null;
+        },
+    },
+
+    lcpInterval: {
+        _controlOn: false,
+        _markOn: false,
+        _bands: null,
+        _lastClickTs: 0,
+        _rawPlotDiv: null,
+
+        _switchOn: function (value) {
+            return value === true;
+        },
+
+        _plotXToNumber: function (value, axis) {
+            if (value === null || value === undefined) {
+                return NaN;
+            }
+            if (typeof value === 'number') {
+                return value;
+            }
+            if (value instanceof Date) {
+                return value.getTime();
+            }
+            const text = String(value);
+            if (axis === 'date') {
+                const parsed = Date.parse(text);
+                return Number.isFinite(parsed) ? parsed : NaN;
+            }
+            const n = Number(text);
+            return Number.isFinite(n) ? n : NaN;
+        },
+
+        _idsOverlappingX: function (x, bandsPayload) {
+            if (!bandsPayload || !bandsPayload.bands || !bandsPayload.bands.length) {
+                return [];
+            }
+            if (bandsPayload.enabled === false) {
+                return [];
+            }
+            const axis = bandsPayload.axis || 'mjd';
+            const toNum = window.dash_clientside.lcpInterval._plotXToNumber;
+            const xNum = toNum(x, axis);
+            if (!Number.isFinite(xNum)) {
+                return [];
+            }
+            const hits = [];
+            for (let b = 0; b < bandsPayload.bands.length; b += 1) {
+                const band = bandsPayload.bands[b];
+                let b0 = toNum(band.x0, axis);
+                let b1 = toNum(band.x1, axis);
+                if (!Number.isFinite(b0) || !Number.isFinite(b1)) {
+                    continue;
+                }
+                if (b0 > b1) {
+                    const swap = b0;
+                    b0 = b1;
+                    b1 = swap;
+                }
+                if (xNum >= b0 && xNum <= b1) {
+                    hits.push(String(band.id));
+                }
+            }
+            return hits;
+        },
+
+        _bandShapePositions: function (plotDiv) {
+            const prefix = 'lcp-int-';
+            const positions = {};
+            if (!plotDiv) {
+                return positions;
+            }
+            const namedSources = [];
+            if (plotDiv.layout && plotDiv.layout.shapes) {
+                namedSources.push(plotDiv.layout.shapes);
+            }
+            if (plotDiv._fullLayout && plotDiv._fullLayout.shapes) {
+                namedSources.push(plotDiv._fullLayout.shapes);
+            }
+            for (let src = 0; src < namedSources.length; src += 1) {
+                const shapes = namedSources[src];
+                let found = 0;
+                for (let s = 0; s < shapes.length; s += 1) {
+                    const name = shapes[s] && shapes[s].name;
+                    if (typeof name === 'string' && name.indexOf(prefix) === 0) {
+                        positions[name.slice(prefix.length)] = s;
+                        found += 1;
+                    }
+                }
+                if (found) {
+                    return positions;
+                }
+            }
+            return positions;
+        },
+
+        _relayoutBandMarks: function (changedIds, markedSet, bandsPayload) {
+            const plotDiv = window.dash_clientside.lcpKnot._rawPlotlyGraphDiv();
+            if (!plotDiv || typeof Plotly === 'undefined' || !changedIds.length) {
+                return;
+            }
+            const styles = (bandsPayload && bandsPayload.styles) || null;
+            if (!styles || !styles.plain || !styles.marked) {
+                return;
+            }
+            const positions = window.dash_clientside.lcpInterval._bandShapePositions(
+                plotDiv
+            );
+            const update = {};
+            for (let i = 0; i < changedIds.length; i += 1) {
+                const id = String(changedIds[i]);
+                const pos = positions[id];
+                if (pos === undefined) {
+                    continue;
+                }
+                const style = markedSet.has(id) ? styles.marked : styles.plain;
+                update['shapes[' + pos + '].fillcolor'] = style.fillcolor;
+                update['shapes[' + pos + '].opacity'] = style.opacity;
+                update['shapes[' + pos + '].line'] = style.line;
+            }
+            if (Object.keys(update).length) {
+                Plotly.relayout(plotDiv, update);
+            }
+        },
+
+        _emitClick: function (xy) {
+            if (!xy || xy.x === null || xy.x === undefined) {
+                return;
+            }
+            if (typeof dash_clientside.set_props !== 'function') {
+                return;
+            }
+            const now = Date.now();
+            const self = window.dash_clientside.lcpInterval;
+            if (now - self._lastClickTs < 200) {
+                return;
+            }
+            self._lastClickTs = now;
+            dash_clientside.set_props('store-lc-processor-interval-click', {
+                data: {x: xy.x, ts: now},
+            });
+        },
+
+        _ensurePointerListener: function (plotDiv) {
+            if (!plotDiv) {
+                return;
+            }
+            plotDiv.classList.toggle(
+                'lcp-interval-mark',
+                window.dash_clientside.lcpInterval._markOn
+            );
+            if (window.dash_clientside.lcpInterval._rawPlotDiv !== plotDiv) {
+                window.dash_clientside.lcpInterval._rawPlotDiv = plotDiv;
+                delete plotDiv._lcpIntervalPointerBound;
+            }
+            if (plotDiv._lcpIntervalPointerBound) {
+                return;
+            }
+            plotDiv._lcpIntervalPointerBound = true;
+            plotDiv._lcpIntervalPointerDown = null;
+
+            plotDiv.addEventListener('pointerdown', function (ev) {
+                if (!window.dash_clientside.lcpInterval._markOn) {
+                    return;
+                }
+                plotDiv._lcpIntervalPointerDown = {
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    id: ev.pointerId,
+                };
+            }, true);
+
+            if (!window.dash_clientside.lcpInterval._docPointerBound) {
+                window.dash_clientside.lcpInterval._docPointerBound = true;
+                document.addEventListener('pointerup', function (ev) {
+                    const livePlot =
+                        window.dash_clientside.lcpKnot._rawPlotlyGraphDiv();
+                    if (!livePlot) {
+                        return;
+                    }
+                    const down = livePlot._lcpIntervalPointerDown;
+                    livePlot._lcpIntervalPointerDown = null;
+                    if (!down || down.id !== ev.pointerId) {
+                        return;
+                    }
+                    if (!window.dash_clientside.lcpInterval._markOn) {
+                        return;
+                    }
+                    const dx = ev.clientX - down.x;
+                    const dy = ev.clientY - down.y;
+                    if ((dx * dx + dy * dy) > 64) {
+                        return;
+                    }
+                    const xy = window.dash_clientside.lcpKnot._domEventToPlotXY(
+                        livePlot, ev
+                    );
+                    window.dash_clientside.lcpInterval._emitClick(xy);
+                }, true);
+            }
+        },
+
+        bindGraph: function (figure, intervalControl, markBands, bandsPayload) {
+            window.dash_clientside.lcpInterval._controlOn =
+                window.dash_clientside.lcpInterval._switchOn(intervalControl);
+            window.dash_clientside.lcpInterval._markOn =
+                window.dash_clientside.lcpInterval._controlOn
+                && window.dash_clientside.lcpInterval._switchOn(markBands);
+            window.dash_clientside.lcpInterval._bands = bandsPayload || null;
+            const attach = function () {
+                const plotDiv = window.dash_clientside.lcpKnot._rawPlotlyGraphDiv();
+                window.dash_clientside.lcpInterval._ensurePointerListener(plotDiv);
+            };
+            window.setTimeout(attach, 0);
+            window.setTimeout(attach, 300);
+            return window.dash_clientside.no_update;
+        },
+
+        toggleMarks: function (clickPayload, marked, bandsPayload, markOn) {
+            if (!clickPayload || !window.dash_clientside.lcpInterval._switchOn(markOn)) {
+                return window.dash_clientside.no_update;
+            }
+            const payload = bandsPayload || window.dash_clientside.lcpInterval._bands;
+            const hits = window.dash_clientside.lcpInterval._idsOverlappingX(
+                clickPayload.x, payload
+            );
+            if (!hits.length) {
+                return window.dash_clientside.no_update;
+            }
+            const markedSet = new Set(
+                (Array.isArray(marked) ? marked : []).map(String)
+            );
+            const allMarked = hits.every(function (id) {
+                return markedSet.has(id);
+            });
+            for (let k = 0; k < hits.length; k += 1) {
+                if (allMarked) {
+                    markedSet.delete(hits[k]);
+                } else {
+                    markedSet.add(hits[k]);
+                }
+            }
+            window.dash_clientside.lcpInterval._relayoutBandMarks(
+                hits, markedSet, payload
+            );
+            return Array.from(markedSet);
+        },
+
+        clearMarks: function (nClicks, bandsPayload, marked) {
+            if (!nClicks) {
+                return window.dash_clientside.no_update;
+            }
+            const previous = Array.isArray(marked) ? marked.map(String) : [];
+            if (previous.length) {
+                window.dash_clientside.lcpInterval._relayoutBandMarks(
+                    previous,
+                    new Set(),
+                    bandsPayload || window.dash_clientside.lcpInterval._bands
+                );
+            }
+            return [];
+        },
+
+        reflectMarkedCount: function (marked) {
+            const count = Array.isArray(marked) ? marked.length : 0;
+            return [count === 0, count === 0];
         },
     },
 });

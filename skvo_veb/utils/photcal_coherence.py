@@ -37,6 +37,7 @@ from typing import Any
 import astropy.units as u
 
 from skvo_veb.utils.lc_config import (
+    PHOTCAL_KEY_FILTER_NAME,
     PHOTCAL_KEY_MAG_SYS,
     PHOTCAL_KEY_ZP_FLUX,
     PHOTCAL_KEY_ZP_FLUX_UNIT,
@@ -438,8 +439,8 @@ def photcal_form_values_from_storage(
             dimensionless).
 
     Returns:
-        dict: Keys ``zp_flux``, ``zp_flux_unit``, ``zp_mag``, ``mag_sys``,
-        ``flux_unit`` ready for Dash ``Input`` ``value`` props.
+        dict: Keys ``filter_name``, ``zp_flux``, ``zp_flux_unit``, ``zp_mag``,
+        ``mag_sys``, ``flux_unit`` ready for Dash ``Input`` ``value`` props.
         Dimensionless units are empty strings. ZP mag unit is not editable
         (always ``mag`` on write).
     """
@@ -447,6 +448,7 @@ def photcal_form_values_from_storage(
     zp_flux = pc.get(PHOTCAL_KEY_ZP_FLUX)
     zp_mag = pc.get(PHOTCAL_KEY_ZP_MAG)
     return {
+        "filter_name": str(pc.get(PHOTCAL_KEY_FILTER_NAME) or "").strip(),
         "zp_flux": None if zp_flux is None else float(zp_flux),
         "zp_flux_unit": _form_unit_text(to_internal(pc.get(PHOTCAL_KEY_ZP_FLUX_UNIT))),
         "zp_mag": None if zp_mag is None else float(zp_mag),
@@ -459,8 +461,8 @@ def fill_missing_photcal_form_values(current: dict[str, Any]) -> dict[str, Any]:
     """Fills empty editor fields from application defaults; never overwrites.
 
     Populates only missing ``zp_flux``, ``zp_mag``, and ``mag_sys``. Leaves
-    ``zp_flux_unit`` and ``flux_unit`` unchanged (blank means dimensionless,
-    not “please invent Jy”).
+    ``filter_name``, ``zp_flux_unit``, and ``flux_unit`` unchanged (blank
+    means dimensionless for units, not “please invent Jy”).
 
     Args:
         current (dict): Current form values (may be partial).
@@ -480,6 +482,7 @@ def fill_missing_photcal_form_values(current: dict[str, Any]) -> dict[str, Any]:
 
 def apply_photcal_form_values(
     *,
+    filter_name: Any,
     zp_flux: Any,
     zp_flux_unit: Any,
     zp_mag: Any,
@@ -493,18 +496,24 @@ def apply_photcal_form_values(
     magnitude unit is always ``DEFAULT_ZP_MAG_UNIT`` (``mag``).
 
     Args:
+        filter_name: Form passband label (written to ``filter_name`` metadata).
         zp_flux: Form zero-point flux.
         zp_flux_unit: Form ZP flux unit (blank = dimensionless).
         zp_mag: Form zero-point magnitude.
         mag_sys: Form magnitude system.
         flux_unit: Form flux column unit (blank = dimensionless).
         existing_photcal (dict, optional): Existing photcal to preserve
-            non-editor keys (filter name, wavelength, …).
+            non-editor keys (filter identifier, wavelength, …).
 
     Returns:
         tuple: ``(photcal_dict, flux_unit_internal, warnings)``.
     """
     pc = dict(existing_photcal or {})
+    filter_text = str(filter_name).strip() if filter_name not in (None, "") else ""
+    if filter_text:
+        pc[PHOTCAL_KEY_FILTER_NAME] = filter_text
+    else:
+        pc.pop(PHOTCAL_KEY_FILTER_NAME, None)
     pc[PHOTCAL_KEY_ZP_FLUX] = _parse_optional_float(zp_flux)
     pc[PHOTCAL_KEY_ZP_FLUX_UNIT] = to_internal(zp_flux_unit)
     pc[PHOTCAL_KEY_ZP_MAG] = _parse_optional_float(zp_mag)
@@ -539,6 +548,7 @@ def photcal_form_values_from_curvedash(lcd) -> dict[str, Any]:
 def write_photcal_form_to_curvedash(
     lcd,
     *,
+    filter_name: Any,
     zp_flux: Any,
     zp_flux_unit: Any,
     zp_mag: Any,
@@ -549,6 +559,7 @@ def write_photcal_form_to_curvedash(
 
     Args:
         lcd: ``CurveDash`` instance.
+        filter_name: Form passband label.
         zp_flux: Form zero-point flux.
         zp_flux_unit: Form ZP flux unit.
         zp_mag: Form zero-point magnitude.
@@ -560,6 +571,7 @@ def write_photcal_form_to_curvedash(
     """
     meta = dict(lcd.metadata) if isinstance(getattr(lcd, "metadata", None), dict) else {}
     photcal, flux_internal, warnings = apply_photcal_form_values(
+        filter_name=filter_name,
         zp_flux=zp_flux,
         zp_flux_unit=zp_flux_unit,
         zp_mag=zp_mag,

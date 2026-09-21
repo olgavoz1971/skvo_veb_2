@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 # Stable suffixes appended to the page id prefix.
 PHOTCAL_FIELD_SUFFIXES: dict[str, str] = {
+    "filter_name": "filter-name",
     "zp_flux": "zp-flux",
     "zp_flux_unit": "zp-flux-unit",
     "zp_mag": "zp-mag",
@@ -59,6 +60,17 @@ def photcal_editor_body(id_prefix: str) -> list:
     ids = photcal_field_ids(id_prefix)
     logger.debug("Building photcal editor body prefix=%s", id_prefix)
     return [
+        dbc.InputGroup(
+            [
+                dbc.InputGroupText("Filter"),
+                dbc.Input(
+                    id=ids["filter_name"],
+                    type="text",
+                    placeholder="Passband label",
+                ),
+            ],
+            size="sm",
+        ),
         dbc.InputGroup(
             [
                 dbc.InputGroupText("ZP flux"),

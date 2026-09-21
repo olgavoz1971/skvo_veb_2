@@ -57,7 +57,7 @@
 }
 
 .lcp-section-label {
-    font-weight: 700;
+    font-weight: 400;
 }
 
 .lcp-card-title {
@@ -303,6 +303,14 @@
     gap: var(--lcp-space-xs);
 }
 
+.lcp-plot-toolbar-radios {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--lcp-space-md);
+    font-size: var(--lcp-text-md);
+}
+
 .lcp-plot-column {
     position: relative;
 }
@@ -326,10 +334,20 @@
     pointer-events: auto;
 }
 
-.lcp-export-sublabel {
-    font-weight: 600;
-    font-size: var(--lcp-text-sm);
-    margin-bottom: 0;
+.lcp-drawer-collapse-title {
+    font-weight: 700;
+}
+
+.lcp-upload-filename {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.lcp-inline-upload {
+    flex: 0 0 auto;
+    width: auto;
 }
 
 .lcp-param-block:empty {
@@ -361,6 +379,14 @@
 .js-plotly-plot.lcp-tilt-mode .cursor-crosshair,
 .js-plotly-plot.lcp-tilt-mode .nsewdrag {
     cursor: crosshair !important;
+}
+
+.js-plotly-plot.lcp-interval-mark,
+.js-plotly-plot.lcp-interval-mark .plotly,
+.js-plotly-plot.lcp-interval-mark .cursor-pointer,
+.js-plotly-plot.lcp-interval-mark .cursor-crosshair,
+.js-plotly-plot.lcp-interval-mark .nsewdrag {
+    cursor: pointer !important;
 }
 
 .lcp-graph {

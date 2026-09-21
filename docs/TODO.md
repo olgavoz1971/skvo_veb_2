@@ -20,6 +20,7 @@ give it the next unused ID. When a ticket is done, move its row to
 | 7 | Photcal coherence, domain-switch policy, and shared calibration UI | Open (Phase 1 done; Phase 2 next) |
 | 9 | Extract ``volightcurve`` as a sibling editable Python package | Open (Phase 5 done; Phase 6 optional) |
 | 10 | Extract lightcurve discovery toolkit as a sibling package | Open (Phase 0 next) |
+| 11 | Rough extrema drawer: move intervals (and related state) to client ``dcc.Store`` | Open |
 
 ## Done
 
@@ -1682,3 +1683,111 @@ skill, and drive discovery without opening ``skvo_veb_2``.
 
 **Open.** Phase 0 next (agree name, path, cut line, Ticket 1 ownership,
 plugin registration depth, skill DoD).
+
+---
+
+## Ticket 11 — Rough extrema drawer: intervals on the client (``dcc.Store``)
+
+**Page:** Lightcurve Processor (`/lc_processor`), Rough extrema accordion.
+`skvo_veb/pages/lightcurve_processor.py`,
+`skvo_veb/utils/lc_processor/intervals.py`,
+`skvo_veb/assets/lc_processor_clientside.js` (`lcpSelect` / `lcpExtrema`).
+
+**Related:** [caching_architecture.md](caching_architecture.md) (hybrid
+client–server; Store size limits), AGENTS.md (`dcc.Store` for lightweight
+UI state only; max ~5MB; no large datasets), Ticket 2 (client mark /
+server mutate pattern for intervals on TESS — different page, same
+ownership question).
+
+### Goal
+
+Today rough **intervals** are a **server session blob**
+(`INTERVALS_BLOB` = ``intervals``, key
+``lc_processor_{user_tab_id}_intervals`` via ``write_page_blob``). Manual
+add (box select), delete (pointer pick), Generate, Show, and Export all
+round-trip through that disk cache and a plot revision bump.
+
+Move the **intervals list** (and the related Rough-extrema *interaction*
+state that belongs with it) onto the **client**: ``dcc.Store`` (+
+clientside helpers), so marking / showing / editing intervals does not
+require a server blob write on every drag. Keep heavy photometry and
+working CurveDash on the server cache (unchanged).
+
+### Current state (do not re-derive)
+
+- **Server blobs (processor namespace):** ``EXTREMA_BLOB``,
+  ``INTERVALS_BLOB``, ``REF_EXTREMA_BLOB``, plus smooth / detrend.
+- **Intervals CRUD:** ``edit_intervals_on_plot`` /
+  ``generate_rough_intervals`` → ``write_page_blob(..., INTERVALS_BLOB)``.
+- **Plot 1:** reads intervals from the server blob when Show intervals
+  is on; ``dragmode=select`` for Add interval; zoom via
+  ``uirevision`` + zoom store.
+- **Export intervals:** ``format_cached_intervals_download`` from the
+  server blob (surviving list, sorted by start JD) — not regenerated
+  from extrema at export time.
+- **Client already:** knot / extrema / interval *tool radios*, show
+  toggles, zoom store, extrema/interval *pick* stores (ephemeral),
+  ``lcpSelect`` / ``lcpExtrema`` clientside. The **interval list itself**
+  is not in a Store.
+
+### Locked constraints (draft — confirm before coding)
+
+1. **Do not put the light curve in ``dcc.Store``.** Working photometry
+   stays in the server LC session cache.
+2. Intervals payload stays **small** (list of
+   ``{id, start_jd, end_jd, origin}``). Enforce Store size discipline
+   (AGENTS.md ~5MB); fail fast if an upload/export path would abuse it.
+3. **Export** must still write from the **surviving** interval list
+   (sorted by start JD), whether that list lives in Store or was
+   synced — no silent re-generation from extrema at download time.
+4. Preserve plot-1 zoom when adding/deleting intervals (same spirit as
+   today’s ``uirevision`` / zoom store).
+5. Mutual exclusion of knot / extrema / interval tools stays.
+6. Uploaded **reference** extrema and **working** rough extrema may stay
+   on the server for this ticket unless Phase 0 explicitly expands
+   scope; the primary move is **intervals**.
+7. Fail fast; no invented default intervals. British English UI.
+8. Think / discuss Phase 0 before implementing.
+
+### Proposed direction (when asked to code)
+
+1. **Phase 0 — agree ownership:** which pieces move to client Stores:
+   - intervals list (required);
+   - show-intervals / interval-tool (already client widgets — confirm
+     no server mirror);
+   - whether Generate still writes server-side then copies into Store,
+     or computes client-side from extrema Store / a one-shot callback
+     result;
+   - whether Export reads Store directly (preferred) or a one-time
+     server snapshot.
+2. Add ``dcc.Store`` for intervals (JSON-safe). Wire Add / Delete /
+   Generate / Show / Export to that Store. Drop or stop writing
+   ``INTERVALS_BLOB`` once the client path is authoritative.
+3. Clientside: keep box-select → bounds; prefer updating the Store with
+   minimal or no full figure rebuild where Plotly shapes can be patched
+   clientside (discuss; do not break zoom).
+4. Clear the intervals Store on LC upload / fit-blob clears (same
+   lifetime rules as today’s server clear).
+5. Tests: Store round-trip, export from Store contents, no regression
+   on Generate / manual / sort-by-start.
+
+### Out of scope (unless later asked)
+
+- Moving the full working light curve or smooth overlay into Store.
+- Smooth drawer / knots (still separate).
+- Ticket 2 TESS interval cleaning (different page).
+- Putting intervals back into ``volightcurve``.
+
+### Agent checklist
+
+- [ ] Phase 0 ownership agreed with the developer (what moves, what stays server).
+- [ ] Intervals authoritative in ``dcc.Store``; server ``INTERVALS_BLOB`` retired or read-only bridge removed.
+- [ ] Export uses surviving client list, sorted by start JD.
+- [ ] Zoom and tool mutual exclusion still work.
+- [ ] Tests cover add / delete / generate / export / clear-on-upload.
+- [ ] No code until the developer says go after Phase 0.
+
+### Status
+
+**Open.** Phase 0 next (agree client vs server cut for intervals and
+related Rough-extrema state).

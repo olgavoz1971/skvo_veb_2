@@ -255,6 +255,9 @@ def ingest_lightcurve_file(file_source, filename: str):
     after promotion (VOTable photcal GROUP, or ``# MAG0=`` / ``# FILTER=`` on
     ``.dat``). File extension is not used as a photcal gate.
 
+    Rows are ordered by absolute Julian Date in ``volc_to_curvedash`` (Skvo
+    boundary; ``volightcurve`` itself does not reorder).
+
     ``.dat`` files use strict row validation in ``volightcurve.io_dat`` (fixed
     column count per row; no padding). Failures raise ``PipeException`` with
     line numbers.
@@ -274,6 +277,7 @@ def tabular_table_to_curvedash(table: Table, filename: str):
     """Builds a ``CurveDash`` from a plain Astropy table (CSV/ECSV/DAT upload).
 
     Preserves exported column names and restores ECSV header metadata without PhotCal.
+    Rows are ordered by absolute Julian Date before ``CurveDash`` is built.
 
     Args:
         table (Table): Tabular data read by Astropy.
@@ -324,6 +328,9 @@ def tabular_table_to_curvedash(table: Table, filename: str):
 
     phot_vals = np.asarray(table[phot_col], dtype=float)
     label_vals = np.asarray(table["label"]) if "label" in table.colnames else None
+    jd_vals, phot_vals, err_vals, label_vals = _order_series_by_absolute_jd(
+        jd_vals, phot_vals, err_vals, label_vals
+    )
     target_name = meta.get("name") or Path(filename).stem
     if str(target_name).startswith("TESS_"):
         target_name = str(target_name)[5:]
@@ -1322,6 +1329,69 @@ def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarr
     return jd_vals
 
 
+def _order_series_by_absolute_jd(
+    jd: np.ndarray,
+    *series: np.ndarray | None,
+) -> tuple[np.ndarray, ...]:
+    """Stable-sorts absolute JD and aligned series into increasing time order.
+
+    Skvo ingest boundary only (option B): ``volightcurve`` keeps file order;
+    ``CurveDash`` construction reorders here so every upload / archive load
+    that crosses ``volc_to_curvedash`` is monotonic in time.
+
+    Args:
+        jd (numpy.ndarray): Absolute Julian Dates.
+        *series: Optional parallel arrays (photometry, errors, labels).
+            ``None`` entries are returned as ``None``.
+
+    Returns:
+        tuple: ``(jd_sorted, *series_sorted)``.
+
+    Raises:
+        ValueError: If any JD is non-finite, or a series length mismatches.
+    """
+    jd_arr = np.asarray(jd, dtype=float)
+    if jd_arr.ndim != 1:
+        raise ValueError("Julian Date array must be one-dimensional.")
+    if jd_arr.size == 0:
+        return (jd_arr,) + tuple(series)
+    if not np.all(np.isfinite(jd_arr)):
+        bad = int(np.sum(~np.isfinite(jd_arr)))
+        raise ValueError(
+            f"Cannot sort lightcurve: {bad} non-finite Julian Date value(s)."
+        )
+    for index, arr in enumerate(series):
+        if arr is None:
+            continue
+        other = np.asarray(arr)
+        if other.shape[0] != jd_arr.shape[0]:
+            raise ValueError(
+                f"Series {index} length {other.shape[0]} does not match "
+                f"Julian Date length {jd_arr.shape[0]}."
+            )
+    order = np.argsort(jd_arr, kind="mergesort")
+    ordered_jd = jd_arr[order]
+    ordered_series: list[np.ndarray | None] = []
+    for arr in series:
+        if arr is None:
+            ordered_series.append(None)
+        else:
+            ordered_series.append(np.asarray(arr)[order])
+    if not np.all(np.diff(ordered_jd) >= 0.0):
+        raise ValueError("Internal error: Julian Date sort did not produce order.")
+    if not np.array_equal(order, np.arange(order.size)):
+        logger.info(
+            "Reordered %s lightcurve row(s) by absolute Julian Date",
+            int(ordered_jd.size),
+        )
+    else:
+        logger.debug(
+            "Lightcurve already ordered by Julian Date (%s rows)",
+            int(ordered_jd.size),
+        )
+    return (ordered_jd, *ordered_series)
+
+
 def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     """Finds the primary photometry column in an ingested table.
 
@@ -1423,6 +1493,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     calibration). ECSV header fields are merged afterwards; they do not wipe
     zero points. Stitched products still drop zero points.
 
+    Rows are stable-sorted by absolute Julian Date before ``CurveDash`` is
+    built (Skvo ingest boundary; file order in ``volightcurve`` is unchanged).
+
     Args:
         volc (VOLightCurve): The parsed Virtual Observatory lightcurve.
         filename (str): The name of the uploaded file.
@@ -1490,6 +1563,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
                 label_vals = np.full(len(phot_vals), sector_id, dtype=np.uint8)
             except ValueError:
                 label_vals = None
+    jd_absolute, phot_vals, err_vals, label_vals = _order_series_by_absolute_jd(
+        jd_absolute, phot_vals, err_vals, label_vals
+    )
     target_name = meta.get('name') or Path(filename).stem
     if target_name.startswith("TESS_"):
         target_name = target_name[5:]

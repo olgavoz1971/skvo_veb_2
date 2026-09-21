@@ -365,13 +365,57 @@ def test_lsq_fit_requires_placed_knots():
 
 def test_knot_layout_shapes_are_vertical_lines():
     """Knot edits must be layout shapes, not a new photometry trace."""
-    from skvo_veb.utils.lc_processor.figures import knot_layout_shapes
+    from skvo_veb.utils.lc_processor.figures import (
+        KNOT_SHAPE_NAME,
+        knot_layout_shapes,
+    )
 
     shapes = knot_layout_shapes([2459000.5], time_axis_mode="mjd")
     assert len(shapes) == 1
     assert shapes[0]["type"] == "line"
+    assert shapes[0]["name"] == KNOT_SHAPE_NAME
     assert shapes[0]["x0"] == shapes[0]["x1"]
+    assert shapes[0]["yref"] == "paper"
     assert knot_layout_shapes([], time_axis_mode="mjd") == []
+
+
+def test_ref_extrema_layout_shapes_are_vertical_lines():
+    """Uploaded extrema are full-height JD lines, not photometry markers."""
+    from skvo_veb.utils.lc_processor.figures import (
+        REF_EXTREMA_SHAPE_NAME,
+        figure_raw_with_trend,
+        ref_extrema_layout_shapes,
+    )
+
+    shapes = ref_extrema_layout_shapes([2459000.5], time_axis_mode="mjd")
+    assert len(shapes) == 1
+    assert shapes[0]["type"] == "line"
+    assert shapes[0]["name"] == REF_EXTREMA_SHAPE_NAME
+    assert shapes[0]["x0"] == shapes[0]["x1"]
+    assert shapes[0]["yref"] == "paper"
+    assert shapes[0]["editable"] is False
+    assert shapes[0]["line"]["dash"] == "solid"
+    assert shapes[0]["line"]["color"] == "#808080"
+
+    times = np.array([2459000.0, 2459000.5, 2459001.0])
+    fig = figure_raw_with_trend(
+        times,
+        np.array([1.0, 0.8, 1.0]),
+        None,
+        None,
+        y_label="Flux",
+        invert_y=False,
+        show_errors=False,
+        uirevision="test",
+        ref_extrema_jd=[2459000.5],
+    )
+    names = [trace.name for trace in fig.data]
+    assert "uploaded extrema" not in names
+    ref_shapes = [
+        shape for shape in fig.layout.shapes if shape.name == REF_EXTREMA_SHAPE_NAME
+    ]
+    assert len(ref_shapes) == 1
+    assert ref_shapes[0].yref == "paper"
 
 
 def test_working_figure_uses_gp_scatter_marker():

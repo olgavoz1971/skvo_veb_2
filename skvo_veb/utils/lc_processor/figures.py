@@ -32,6 +32,8 @@ PLOT_TOOL_ADD = "add"
 PLOT_TOOL_DELETE = "delete"
 PLOT_TOOL_ADD_EXT = "add_ext"
 PLOT_TOOL_DELETE_EXT = "delete_ext"
+PLOT_TOOL_ADD_INTERVAL = "add_int"
+PLOT_TOOL_DELETE_INTERVAL = "delete_int"
 DELETE_KNOT_HIT_FRAC = 0.02
 _SHAPE_X0_RE = re.compile(r"^shapes\[(\d+)\]\.x0$")
 
@@ -47,6 +49,9 @@ EXTREMA_MARKER = dict(
     color="lightgreen",
     opacity=1.0,
 )
+KNOT_SHAPE_NAME = "lcp-knot"
+REF_EXTREMA_SHAPE_NAME = "lcp-ref-ext"
+REF_EXTREMA_LINE = dict(color="#808080", width=0.5, dash="solid")
 _ERROR_STYLE = dict(
     type="data",
     visible=True,
@@ -98,21 +103,35 @@ _PLOT_MARGIN = dict(l=10, r=10, t=20, b=40)
 _PLOT_MARGIN_LEGEND = dict(l=10, r=140, t=20, b=40)
 
 
-def graph_config(*, plot_tool: str = PLOT_TOOL_OFF, method: str | None = None) -> dict:
-    """Returns the Plotly config for the current knot tool.
+def graph_config(
+    *,
+    plot_tool: str = PLOT_TOOL_OFF,
+    method: str | None = None,
+    interval_control: bool = False,
+    points_control: bool = False,
+) -> dict:
+    """Returns the Plotly config for the current knot / interval / points mode.
 
     Args:
         plot_tool (str): ``off``, ``add``, or ``delete``.
         method (str | None): Active smooth method id.
+        interval_control (bool): When true, Box Select is available.
+        points_control (bool): When true, lasso select is available for cleaning.
 
     Returns:
         dict: ``dcc.Graph`` config (logo off, scroll zoom on).
     """
     knots_editable = plot_tool == PLOT_TOOL_ADD and method == "spline_lsq"
+    if interval_control:
+        remove = ["lasso2d"]
+    elif points_control:
+        remove = ["select2d"]
+    else:
+        remove = ["select2d", "lasso2d"]
     config = {
         "displaylogo": False,
         "scrollZoom": True,
-        "modeBarButtonsToRemove": [],
+        "modeBarButtonsToRemove": remove,
         "editable": knots_editable,
     }
     if knots_editable:
@@ -231,6 +250,7 @@ def _add_photometry_traces(
     source_index: np.ndarray | None,
     show_errors: bool,
     default_name: str,
+    horizontal_box_select: bool = False,
 ) -> bool:
     """Adds photometry markers, coloured by label when labels are present.
 
@@ -248,6 +268,8 @@ def _add_photometry_traces(
         source_index (numpy.ndarray | None): Permanent indices for clicks.
         show_errors (bool): Draw error bars when uncertainties exist.
         default_name (str): Trace name for unlabelled points.
+        horizontal_box_select (bool): GP-style horizontal strip selection
+            (green selected, dim unselected) instead of orange cleaning marks.
 
     Returns:
         bool: ``True`` if a legend should be shown.
@@ -284,6 +306,12 @@ def _add_photometry_traces(
             return
         err_slice = None if obs_err is None else np.asarray(obs_err)[mask]
         perm = np.asarray(src[mask], dtype=int)
+        if horizontal_box_select:
+            selected = {"marker": {"opacity": 1.0, "color": "green"}}
+            unselected = {"marker": {"opacity": 0.7, "color": color}}
+        else:
+            selected = {"marker": {"color": "orange", "size": 6, "opacity": 1.0}}
+            unselected = {"marker": {"opacity": 0.7}}
         fig.add_trace(
             go.Scattergl(
                 x=x_arr[mask],
@@ -294,8 +322,8 @@ def _add_photometry_traces(
                 hoverinfo="none",
                 customdata=np.column_stack([perm]),
                 ids=perm.astype(str).tolist(),
-                selected={"marker": {"color": "orange", "size": 6, "opacity": 1.0}},
-                unselected={"marker": {"opacity": 0.7}},
+                selected=selected,
+                unselected=unselected,
                 showlegend=in_legend,
                 name=name,
             )
@@ -540,22 +568,93 @@ def knot_layout_shapes(
     Returns:
         list[dict]: Vertical dashed lines, or an empty list.
     """
-    if not knots:
+    return _paper_vline_shapes(
+        knots,
+        time_axis_mode=time_axis_mode,
+        display_epoch=display_epoch,
+        color="#2b8a3e",
+        dash="dot",
+        width=1.5,
+        editable=editable,
+        name=KNOT_SHAPE_NAME,
+    )
+
+
+def ref_extrema_layout_shapes(
+    times_jd: list[float] | np.ndarray | None,
+    *,
+    time_axis_mode: str,
+    display_epoch: float = DEFAULT_EPOCH_JD,
+) -> list[dict]:
+    """Builds full-height vertical lines at uploaded reference JD.
+
+    These marks are times only. They are not placed on photometry.
+
+    Args:
+        times_jd: Absolute Julian Dates.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        display_epoch (float): MJD display origin.
+
+    Returns:
+        list[dict]: Vertical dotted lines, or an empty list.
+    """
+    if times_jd is None:
+        return []
+    return _paper_vline_shapes(
+        [float(t) for t in times_jd],
+        time_axis_mode=time_axis_mode,
+        display_epoch=display_epoch,
+        color=str(REF_EXTREMA_LINE["color"]),
+        dash=str(REF_EXTREMA_LINE["dash"]),
+        width=float(REF_EXTREMA_LINE["width"]),
+        editable=False,
+        name=REF_EXTREMA_SHAPE_NAME,
+    )
+
+
+def _paper_vline_shapes(
+    times_jd: list[float] | None,
+    *,
+    time_axis_mode: str,
+    display_epoch: float,
+    color: str,
+    dash: str,
+    width: float,
+    editable: bool,
+    name: str,
+) -> list[dict]:
+    """Builds ``yref='paper'`` vertical lines at the given absolute JD.
+
+    Args:
+        times_jd: Absolute Julian Dates.
+        time_axis_mode (str): ``mjd`` or ``date``.
+        display_epoch (float): MJD display origin.
+        color (str): Line colour.
+        dash (str): Plotly dash style.
+        width (float): Line width.
+        editable (bool): Whether the lines can be dragged.
+        name (str): Plotly shape ``name``.
+
+    Returns:
+        list[dict]: Shape dicts, or an empty list.
+    """
+    if not times_jd:
         return []
     axis = normalize_time_axis_mode(time_axis_mode)
     shapes = []
-    for knot in knots:
-        knot_x = _jd_to_plot_x(knot, axis, display_epoch)
+    for time_jd in times_jd:
+        mark_x = _jd_to_plot_x(time_jd, axis, display_epoch)
         shapes.append(
             dict(
                 type="line",
-                x0=knot_x,
-                x1=knot_x,
+                name=name,
+                x0=mark_x,
+                x1=mark_x,
                 y0=0,
                 y1=1,
                 yref="paper",
                 editable=bool(editable),
-                line=dict(color="#2b8a3e", width=1.5, dash="dot"),
+                line=dict(color=color, width=width, dash=dash),
             )
         )
     return shapes
@@ -658,6 +757,12 @@ def figure_raw_with_trend(
     break_tolerance: float | None = None,
     extrema_jd: np.ndarray | None = None,
     extrema_y: np.ndarray | None = None,
+    ref_extrema_jd: list[float] | np.ndarray | None = None,
+    interval_payload: dict | None = None,
+    show_intervals: bool = False,
+    marked_interval_ids: list | None = None,
+    horizontal_interval_select: bool = False,
+    dragmode: str | None = None,
 ) -> go.Figure:
     """Builds the observed (plus optional trend) figure.
 
@@ -686,6 +791,15 @@ def figure_raw_with_trend(
             insert extra line breaks.
         extrema_jd (numpy.ndarray | None): Rough-extremum times (absolute JD).
         extrema_y (numpy.ndarray | None): Overlay photometry at those times.
+        ref_extrema_jd: Uploaded reference times (absolute JD); drawn as
+            vertical lines, not photometry markers.
+        interval_payload (dict | None): Intervals Store payload.
+        show_intervals (bool): Draw interval bands when the payload has rows.
+        marked_interval_ids (list | None): Interval ids marked for removal.
+        horizontal_interval_select (bool): GP prep-style horizontal box
+            select (``selectdirection='h'``) for interval control.
+        dragmode (str | None): Plotly ``dragmode``. Omit to leave zoom/pan
+            as the user left them.
 
     Returns:
         plotly.graph_objects.Figure: Working photometry plot.
@@ -713,6 +827,7 @@ def figure_raw_with_trend(
         source_index=source_index,
         show_errors=show_errors,
         default_name="observed",
+        horizontal_box_select=horizontal_interval_select,
     )
     if trend is not None:
         t_trend, y_trend = trend_xy_with_gap_breaks(times, trend, break_tolerance)
@@ -758,7 +873,22 @@ def figure_raw_with_trend(
         display_epoch=display_epoch,
         editable=knots_editable,
     )
-    fig.update_layout(
+    if ref_extrema_jd is not None and int(np.asarray(ref_extrema_jd).size) > 0:
+        shapes = list(shapes) + ref_extrema_layout_shapes(
+            ref_extrema_jd,
+            time_axis_mode=axis,
+            display_epoch=display_epoch,
+        )
+    if show_intervals and interval_payload:
+        from skvo_veb.utils.lc_processor.intervals import processor_interval_band_shapes
+
+        shapes = list(shapes) + processor_interval_band_shapes(
+            interval_payload,
+            time_axis_mode=axis,
+            display_epoch=display_epoch,
+            marked_ids=marked_interval_ids,
+        )
+    layout = dict(
         xaxis_title=xaxis_title,
         yaxis_title=y_label,
         template="plotly_white",
@@ -766,14 +896,19 @@ def figure_raw_with_trend(
         margin=_PLOT_MARGIN,
         uirevision=uirevision,
         shapes=shapes,
-        dragmode="zoom",
         clickmode="event+select",
         hovermode="closest",
     )
+    if horizontal_interval_select:
+        layout["selectdirection"] = "h"
+    if dragmode in ("zoom", "select", "pan"):
+        layout["dragmode"] = dragmode
+    fig.update_layout(**layout)
     _apply_label_legend(fig, show=show_legend)
     apply_time_xaxis_format(fig, phase_view=False, time_axis_mode=axis)
     _apply_y_axis_direction(fig, invert_y=invert_y)
-    apply_selectedpoints_to_figure(fig, selected_perm_indices)
+    if not horizontal_interval_select:
+        apply_selectedpoints_to_figure(fig, selected_perm_indices)
     return fig
 
 
