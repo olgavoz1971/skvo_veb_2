@@ -201,6 +201,7 @@ ACCORDION_LC_ITEM_ID = "lc-processor-accordion-lc"
 ACCORDION_SMOOTH_ITEM_ID = "lc-processor-accordion-smooth"
 ACCORDION_DETREND_ITEM_ID = "lc-processor-accordion-detrend"
 ACCORDION_EXTREMA_ITEM_ID = "lc-processor-accordion-extrema"
+ACCORDION_PLOT2_ITEM_ID = "lc-processor-accordion-plot2"
 PHOTCAL_ID_PREFIX = "lc-processor-photcal"
 _PHOTCAL_IDS = photcal_field_ids(PHOTCAL_ID_PREFIX)
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
@@ -1324,9 +1325,9 @@ def _extrema_drawer() -> list:
             "rough-intervals",
             "Intervals",
             """Generate [t − δ, t + δ] around working (found or manually
-            corrected) extrema. Interval control puts Add interval and
-            Mark bands on plot 1. Export writes every surviving interval
-            sorted by start.""",
+            corrected) extrema. Interval control puts Add interval, Mark
+            bands, Remove marked, Clear marks, and Clear all intervals on plot 1.
+            Export writes every surviving interval sorted by start.""",
             [
                 dbc.Switch(
                     id="lc-processor-show-intervals",
@@ -1343,10 +1344,10 @@ def _extrema_drawer() -> list:
                     "Interval control",
                     """Turns on interval editing on plot 1. Box Select
                     becomes available in the modebar. Add interval, Mark
-                    bands, Remove marked, and Clear marks appear above
-                    the plot. This turns knot control and extremum
-                    control off. While this is on, interval bands are
-                    drawn even if Show intervals is off.""",
+                    bands, Remove marked, Clear marks, and Clear all intervals
+                    appear above the plot. This turns knot control and
+                    extremum control off. While this is on, interval
+                    bands are drawn even if Show intervals is off.""",
                 ),
                 _heading_with_help(
                     "Interval half-width (days)",
@@ -1538,8 +1539,9 @@ def _plot_toolbar() -> html.Div:
         "interval-plot-tools",
         "Interval tools",
         "The plot starts in zoom. Switch the toolbar to Box Select, drag "
-        "a time range, then press Add interval. To drop intervals, switch "
-        "on Mark bands and click a strip, then Remove marked.",
+        "a time range, then press Add interval. To drop some intervals, "
+        "switch on Mark bands and click a strip, then Remove marked. "
+        "Clear all intervals removes every interval.",
         placement="bottom",
     )
     extrema_help_btn, extrema_help_pop = _click_help(
@@ -1604,6 +1606,14 @@ def _plot_toolbar() -> html.Div:
                         outline=True,
                         size="sm",
                         disabled=True,
+                    ),
+                    dbc.Button(
+                        "Clear all intervals",
+                        id="lc-processor-clear-all-intervals",
+                        color="link",
+                        size="sm",
+                        disabled=True,
+                        className="lcp-registry-action text-danger",
                     ),
                 ],
                 id="lc-processor-interval-toolbar",
@@ -1754,15 +1764,26 @@ def layout():
                                     id="lc-processor-graph-working-shell",
                                     className="lcp-graph-shell",
                                 ),
-                                html.Div(
-                                    dcc.Graph(
-                                        id="lc-processor-graph-residual",
-                                        figure=_initial_residual,
-                                        className="lcp-graph",
-                                        config=residual_graph_config(),
-                                    ),
-                                    id="lc-processor-graph-residual-shell",
-                                    className="lcp-graph-shell",
+                                dbc.Accordion(
+                                    [
+                                        dbc.AccordionItem(
+                                            html.Div(
+                                                dcc.Graph(
+                                                    id="lc-processor-graph-residual",
+                                                    figure=_initial_residual,
+                                                    className="lcp-graph",
+                                                    config=residual_graph_config(),
+                                                ),
+                                                id="lc-processor-graph-residual-shell",
+                                                className="lcp-graph-shell",
+                                            ),
+                                            title="Plot 2",
+                                            item_id=ACCORDION_PLOT2_ITEM_ID,
+                                        ),
+                                    ],
+                                    id="lc-processor-plot2-accordion",
+                                    active_item=None,
+                                    className="lcp-workflow-accordion lcp-plot2-accordion",
                                 ),
                             ],
                             className="lcp-plot-stack lcp-plot-column",
@@ -1900,6 +1921,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             None,
             [],
             PLOT_TOOL_OFF,
+            False,
             False,
             empty_intervals_payload(),
             [],
@@ -3804,11 +3826,49 @@ def commit_remove_marked_intervals(n_clicks, intervals_store, marked_ids):
 
 
 @callback(
+    Output("lc-processor-clear-all-intervals", "disabled"),
+    Input("store-lc-processor-intervals", "data"),
+)
+def gate_clear_all_intervals(intervals_store):
+    """Disables Clear all intervals until at least one interval exists.
+
+    Args:
+        intervals_store: Intervals Store payload.
+
+    Returns:
+        bool: ``True`` when the button should stay disabled.
+    """
+    count = len((intervals_store or {}).get("intervals") or [])
+    return count == 0
+
+
+@callback(
+    Output("store-lc-processor-intervals", "data", allow_duplicate=True),
+    Output("store-lc-processor-intervals-marked", "data", allow_duplicate=True),
+    Input("lc-processor-clear-all-intervals", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_all_processor_intervals(n_clicks):
+    """Removes every interval from the session Store (marks cleared too).
+
+    Args:
+        n_clicks: Clear all intervals button clicks.
+
+    Returns:
+        tuple: Empty intervals payload and empty marked-id list.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    return empty_intervals_payload(), []
+
+
+@callback(
     Output("store-lc-processor-lc-revision", "data", allow_duplicate=True),
     Output("lc-processor-plot-alert", "children", allow_duplicate=True),
     Output("store-lc-processor-tilt-line", "data", allow_duplicate=True),
     Output("lc-processor-local-tilt", "value", allow_duplicate=True),
     Output("store-lc-processor-plot2-window", "data", allow_duplicate=True),
+    Output("lc-processor-plot2-accordion", "active_item", allow_duplicate=True),
     Input("lc-processor-apply-detrend", "n_clicks"),
     State("store-lc-processor-user-tab-id", "data"),
     State("lc-processor-method", "value"),
@@ -3839,14 +3899,15 @@ def apply_detrend(
         t_max: Crop end (display MJD).
 
     Returns:
-        tuple: Revision token, feedback, cleared tilt line, switch off.
+        tuple: Revision token, feedback, cleared tilt line, switch off,
+        cleared plot-2 window, and Plot 2 accordion ``active_item`` on success.
     """
     if not n_clicks:
         raise PreventUpdate
     if not user_tab_id or not has_cached_lc(PAGE_NAMESPACE, user_tab_id):
         return no_update, status_alert(
             "Load a lightcurve first.", "warning"
-        ), no_update, no_update, no_update
+        ), no_update, no_update, no_update, no_update
     try:
         lcd = _cached_lcd(user_tab_id)
         payload = apply_detrend_from_smooth(
@@ -3863,6 +3924,7 @@ def apply_detrend(
         return (
             no_update,
             status_alert(str(exc), "warning"),
+            no_update,
             no_update,
             no_update,
             no_update,
@@ -3893,7 +3955,14 @@ def apply_detrend(
             + ".",
             "info",
         )
-    return _bump_lc_revision(), note, None, False, dict(WORKING_WINDOW_DISABLED)
+    return (
+        _bump_lc_revision(),
+        note,
+        None,
+        False,
+        dict(WORKING_WINDOW_DISABLED),
+        ACCORDION_PLOT2_ITEM_ID,
+    )
 
 
 @callback(
