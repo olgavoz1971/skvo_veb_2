@@ -130,6 +130,21 @@ def test_votable_export_keeps_label_column_name():
     assert restored.table["authorrr"].info.meta["ucd"] == "meta.id"
 
 
+def test_all_nan_magnitude_yields_to_finite_flux():
+    """Host series selection uses flux when magnitude is entirely NaN."""
+    import numpy as np
+    from astropy.table import Table
+    from volightcurve import VOLightCurve
+    from skvo_veb.utils.lc_bridge import _resolve_photometry_column
+
+    table = Table()
+    table["jd"] = [2459000.0, 2459001.0]
+    table["mag"] = [np.nan, np.nan]
+    table["flux"] = [1.0, 2.0]
+    volc = VOLightCurve.from_table(table)
+    assert _resolve_photometry_column(volc) == "flux"
+
+
 def test_dat_mag0_reaches_curvedash_photcal():
     """``# MAG0=`` on a ``.dat`` file must survive ``ingest_lightcurve_file``."""
     from skvo_veb.utils.lc_bridge import photcal_from_metadata

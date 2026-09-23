@@ -1913,10 +1913,9 @@ Choose validator entry point (``PhotCal`` factory from metadata vs dedicated
 ``lc_bridge``. **Do not** duplicate this policy in ``lc_bridge`` unless the
 developer explicitly agrees a thin error-mapping wrapper only.
 
-**Related:** ``volightcurve/docs/io_contract.md`` (new **§8** prose),
-Ticket 8 (I/O ownership), Ticket 12 Phase 0 (time **column name** policy;
-**not** part of this ticket’s locked ingest rules except “one time column,
-leftmost time role”).
+**Related:** ``volightcurve/docs/io_contract.md`` **§9** (cells and
+``SENTINEL``; §8 is export). Ticket 14: the library does not drop extra
+science columns. A single plotted series is a host (``CurveDash``) copy.
 
 ### Goal
 
@@ -1931,39 +1930,23 @@ pipelines. Product behaviour must **not** depend on which source codec ran.
 Ingest may succeed with **incomplete photcal** (ZP / filter). That is
 Ticket 12, not §8.
 
-### Locked ingest rules (discussion frozen — write into ``io_contract`` §8)
+### Locked ingest rules (revised — see ``io_contract`` §9)
 
-**Structural**
+**Library.** Do **not** drop extra time, magnitude, flux, or error columns.
+Do **not** rename columns to ``jd``.
 
-1. Exactly **one** time column in the canonical product table (after
-   validation). Among columns with **time** role (§4b / UCD after
-   promotion), keep the **leftmost**; drop other time-role columns (Option A
-   column pruning). Classify auxiliary date strings (e.g. ``UT Date``) as
-   **other**, not a second time column.
-2. Exactly **one** photometry domain column: **mag** **or** **flux** (not
-   both in the issued product).
-3. **0–1** error column aligned with the selected photometry column.
+**Cells (volightcurve, when implemented).** Finite floats stay. ``nan`` and
+empty numeric fields become NaN. ``<`` / ``>`` tokens fail ingest. Optional
+repeated ``SENTINEL=<float>`` lists values that become NaN. Compare with a
+close test (absolute tolerance), not ``==``. Undeclared numbers such as
+``99.990`` stay numbers. The list is stored and written back on non-VO
+formats. Incomplete photcal does not fail ingest. An all-NaN magnitude
+column does not fail the file when flux still has finite values.
 
-**Mag + flux both present before selection** (tie-break when all four or a
-subset exist):
-
-| Present columns | Selected photometry | Selected error |
-|-----------------|---------------------|----------------|
-| mag, flux, mag_err, flux_err | mag | mag_err |
-| mag, flux, mag_err | mag | mag_err |
-| mag, flux, flux_err | flux | flux_err |
-| mag, flux only | mag | none |
-
-**Option A canonical table:** drop non-selected mag/flux/err columns; keep
-**other** columns (Camera, Filter, …).
-
-**Cells**
-
-- Accept: finite float; ``nan`` / ``NaN``; **empty field → NaN**.
-- Reject: censored tokens (``<`` / ``>`` prefixes such as ``>16.766``).
-- **No** sentinel remapping (e.g. ``99.990`` stays numeric).
-- After coercion: **fail ingest** if the adopted photometry column has **no
-  finite** value.
+**Host.** ``CurveDash`` keeps one series. If magnitude is all NaN and flux
+has finite values, select flux. Extra columns never enter that object, so
+an app download will not contain them. That loss is the host boundary, not
+a volightcurve round-trip.
 
 **Hooks (implementation placement when asked to code)**
 
@@ -1981,21 +1964,22 @@ subset exist):
 
 ### Phases
 
-#### Phase 0 — Agree §8 contract text (discussion)
+#### Phase 0 — Contract — **drafted**
 
-Draft **§8 Product validation (read)** in ``volightcurve/docs/io_contract.md``
-from the locked rules above. Confirm Ticket 12 Phase 0 outcome does not
-contradict §8 structural time rules.
+``io_contract`` §4 ``SENTINEL`` and §9 (keep all columns; cell rules).
+Still open: whether “no finite photometry” is checked in the library or
+only when the host builds one series.
 
-#### Phase 1 — Implement shared finalize + tests (when asked to code)
+#### Phase 1 — Cells and ``SENTINEL`` — **Done**
 
-Sibling package only; codec-agnostic tests (CSV censored mag, four-column
-pick, leftmost time, empty cells).
+Repeated ``SENTINEL`` values become NaN via ``np.isclose`` (absolute
+tolerance ``1e-5``), not ``==``. ``<`` / ``>`` tokens fail ``.dat`` ingest.
+Columns are not dropped.
 
-#### Phase 2 — Host smoke (when asked)
+#### Phase 2 — Host series pick — **Done**
 
-Ensure ``ingest_volightcurve_file`` surfaces ``LightcurveIOError`` to upload
-UI; remove any duplicate ingest coercion in ``lc_bridge`` if present.
+``_resolve_photometry_column`` keeps magnitude when it has a finite value.
+If magnitude is all NaN and flux is not, the series uses flux.
 
 ### Agent checklist
 
@@ -2009,8 +1993,8 @@ UI; remove any duplicate ingest coercion in ``lc_bridge`` if present.
 
 ### Status
 
-**Open.** Phase 0 next (§8 contract prose; coordinate with Ticket 12 Phase 0
-on time column **names** only).
+**Open.** Phases 0–2 done for cells, sentinels, and host series pick.
+Library still keeps every column.
 
 ---
 

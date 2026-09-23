@@ -1394,11 +1394,25 @@ def _order_series_by_absolute_jd(
     return (ordered_jd, *ordered_series)
 
 
+def _column_has_finite_value(volc: VOLightCurve, name: str) -> bool:
+    """Returns whether a photometry column contains at least one finite value.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve.
+        name (str): Column name.
+
+    Returns:
+        bool: True when any cell is finite.
+    """
+    values = np.asarray(volc.table[name], dtype=float)
+    return bool(np.isfinite(values).any())
+
+
 def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     """Finds the primary photometry column in an ingested table.
 
-    Prefers explicit ``mag`` / ``flux`` names over generic ``phot`` (Ticket 8
-    Phase 2b), then photcal-linked columns, then UCD-based detection.
+    Prefers a magnitude column that still has a finite value. If magnitude is
+    entirely NaN and flux is not, flux is selected.
 
     Args:
         volc (VOLightCurve): Parsed lightcurve container.
@@ -1406,28 +1420,33 @@ def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     Returns:
         str or None: Column name for flux or magnitude values.
     """
-    colnames = set(volc.table.colnames)
-    if "mag" in colnames:
-        return "mag"
-    if "flux" in colnames:
-        return "flux"
-    if "phot" in colnames:
+    mag_cols = []
+    if "mag" in volc.table.colnames:
+        mag_cols.append("mag")
+    for name in get_mag_colnames(volc.table):
+        if name not in mag_cols:
+            mag_cols.append(name)
+    flux_cols = []
+    if "flux" in volc.table.colnames:
+        flux_cols.append("flux")
+    for name in get_flux_colnames(volc.table):
+        if name not in flux_cols:
+            flux_cols.append(name)
+
+    finite_mag = [name for name in mag_cols if _column_has_finite_value(volc, name)]
+    finite_flux = [name for name in flux_cols if _column_has_finite_value(volc, name)]
+    if finite_mag:
+        return finite_mag[0]
+    if finite_flux:
+        return finite_flux[0]
+    if "phot" in volc.table.colnames and _column_has_finite_value(volc, "phot"):
         return "phot"
-
-    mag_cols = get_mag_colnames(volc.table)
-    flux_cols = get_flux_colnames(volc.table)
-    photdms = getattr(volc, "photdms", {}) or {}
-
-    for col in mag_cols:
-        if col in photdms:
-            return col
-    for col in flux_cols:
-        if col in photdms:
-            return col
     if mag_cols:
         return mag_cols[0]
     if flux_cols:
         return flux_cols[0]
+    if "phot" in volc.table.colnames:
+        return "phot"
     return None
 
 
