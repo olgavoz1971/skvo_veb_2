@@ -68,6 +68,8 @@ from skvo_veb.utils.lc_config import (
     DOMAIN_FLUX,
     DOMAIN_MAG,
     EXPORT_FORMAT_OPTIONS,
+    PHOTCAL_KEY_FILTER_IDENTIFIER,
+    PHOTCAL_KEY_FILTER_NAME,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
     display_epoch_offset,
@@ -354,6 +356,29 @@ def _photcal_form_outputs_from_dict(vals: dict) -> tuple:
         vals["mag_sys"],
         vals["flux_unit"],
     )
+
+
+def _promote_processor_filter_label_to_identifier(lcd: CurveDash) -> None:
+    """Maps Calibration ``Filter`` to VOTable ``filter_identifier`` when needed.
+
+    The editor writes ``metadata['photcal']['filter_name']`` (passband label).
+    VOTable export requires ``filter_identifier`` (IVOA PhotDM id or the same
+    token used in ``# FILTER=`` on ``.dat`` files). When ingest left no id but
+    the user applied a label, copy the label so export can proceed.
+
+    Args:
+        lcd (CurveDash): Session working curve (mutated in place).
+    """
+    meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
+    photcal = dict(meta.get("photcal") or {})
+    label = str(photcal.get(PHOTCAL_KEY_FILTER_NAME) or "").strip()
+    if not label:
+        return
+    if photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER):
+        return
+    photcal[PHOTCAL_KEY_FILTER_IDENTIFIER] = label
+    meta["photcal"] = photcal
+    lcd.metadata = meta
 
 
 def _clear_fit_blobs(user_tab_id: str) -> None:
@@ -2315,6 +2340,7 @@ def apply_processor_photcal(
             mag_sys=mag_sys,
             flux_unit=flux_unit,
         )
+        _promote_processor_filter_label_to_identifier(lcd)
         write_serialized_lc(PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         photcal_text = format_photcal_warning_message(warnings)
         alert = (
@@ -2927,6 +2953,7 @@ def download_working_lightcurve(
         apply_export_ephemeris(
             lcd, period, epoch, display_epoch=DISPLAY_EPOCH_JD
         )
+        _promote_processor_filter_label_to_identifier(lcd)
         fmt = table_format or DEFAULT_EXPORT_FORMAT
         outfile = lc_export_download_name(stem, fmt)
         blob = export_curvedash(lcd, fmt)

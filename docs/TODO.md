@@ -21,6 +21,9 @@ give it the next unused ID. When a ticket is done, move its row to
 | 9 | Extract ``volightcurve`` as a sibling editable Python package | Open (Phase 5 done; Phase 6 optional) |
 | 10 | Extract lightcurve discovery toolkit as a sibling package | Open (Phase 0 next) |
 | 11 | Rough extrema drawer: move intervals (and related state) to client ``dcc.Store`` | Open |
+| 12 | volightcurve: photometric calibration validation for domain conversion | Open |
+| 13 | volightcurve: §8 product validation on ingest (structure + cells) | Open |
+| 14 | volightcurve: preserve VO column names; UCD-aware export; label/sector ingest | Open |
 
 ## Done
 
@@ -1791,3 +1794,395 @@ working CurveDash on the server cache (unchanged).
 
 **Open.** Phase 0 next (agree client vs server cut for intervals and
 related Rough-extrema state).
+
+---
+
+## Ticket 12 — volightcurve: photometric calibration validation for domain conversion
+
+**Package:** sibling ``volightcurve`` (``PhotCal`` / PhotDM live here).
+**Consumers:** ``skvo_veb`` ``CurveDash.convert_to_mag`` /
+``convert_to_flux``, ``lc_bridge.photcal_from_metadata``,
+``photcal_coherence.inspect_*``, GP flux helpers — must not duplicate
+conversion-readiness rules long term.
+
+**Related:** ``volightcurve/docs/io_contract.md`` §4 (keywords),
+``photcal_defaults.py`` (defaults are for **host apps only**, not silent
+library promotion), Ticket 7 (skvo photcal coherence / Processor Apply),
+Ticket 13 (§8 ingest validation; separate from conversion readiness).
+
+### Goal
+
+Shift **calibration readiness for mag↔flux conversion** into
+``volightcurve``: one transparent, fail-fast check before calling
+``PhotCal.mag_to_flux`` / ``flux_to_mag`` (and error helpers). Ingest may
+succeed with incomplete ``FILTER`` / ZP; conversion must raise a clear
+library exception — not invent zero points, not fill columns with NaN.
+
+``PhotCal`` **is** part of volightcurve (``volightcurve.lightcurve.PhotCal``
+→ ``photdm.PogsonZeroPoint``). Validation should live next to that API,
+not only in ``skvo_veb``.
+
+### Current state (locked findings — do not re-derive)
+
+| Layer | What happens today |
+|-------|-------------------|
+| **`PhotCal(...)` constructor** | Defaults ``zp_flux=1.0``, ``zp_mag=0.0`` if caller omits args — **not** fail-fast. |
+| **`photcal_from_metadata` (skvo ``lc_bridge``)** | ``ValueError`` if ``zp_flux`` or ``zp_mag`` missing — **skvo**, not volightcurve. |
+| **`inspect_photcal_dict` (skvo ``photcal_coherence``)** | Returns problem **strings**; UI blocks domain switch without throwing. |
+| **`CurveDash.convert_to_*`** | Builds ``PhotCal`` via ``photcal_from_metadata``, then **does** call ``photcal.mag_to_flux`` / ``flux_to_mag`` (volightcurve maths). Wraps ``UnitsError`` / ``ValueError`` as ``PipeException``. |
+| **`PogsonZeroPoint` conversion** | ``UnitsError`` when column units ≠ ZP units; can still run with numeric ZPs that are merely incomplete scientifically. |
+| **`VOLightCurve` column helpers** (e.g. add flux from mag) | If no PhotDM for column: **logs warning**, fills new column with **NaN** — opposite of fail-fast (legacy; not the same as NaN **cells** in uploaded tables). |
+
+There is **no** single volightcurve API today that means “safe to convert
+domain” with a stable exception type.
+
+### Phases
+
+#### Phase 0 — Discuss time columns renaming case (discussion only)
+
+**Not** ingest cell validation (Ticket 13). Settle how **time** is named and
+represented in the **``VOLightCurve.table`` product** vs host ``CurveDash``
+(``jd`` absolute Julian date) vs VOTable wire (``obs_time`` + TIMESYS /
+timeorigin).
+
+**Rejected (do not propose again without explicit developer ask):** forcing
+every codec to **rename** the product time column to ``jd`` on ingest
+(VOTable ``obs_time`` → values converted then column renamed ``jd``; CSV
+``JD`` → ``jd``; export still maps back). That conflates wire names, internal
+table names, and host DataFrame conventions.
+
+**Discuss instead:** keep wire-appropriate names on ``volc.table`` where
+the contract already allows; document where absolute JD is computed; how
+``lc_bridge.volc_to_curvedash`` resolves time without a global rename;
+whether any rename belongs only at the host edge or in write codecs only.
+
+**Exit:** written decision in this ticket (or cross-link to ``io_contract``)
+before Ticket 13 implementation assumes a time **column name** beyond
+“exactly one time-role column” (leftmost — Ticket 13).
+
+#### Phase 1 — Conversion validator API (discussion)
+
+Choose validator entry point (``PhotCal`` factory from metadata vs dedicated
+``validate_photcal_for_conversion``).
+
+#### Phase 2 — Implement and wire (when asked to code)
+
+### Locked direction (when asked to code, after Phase 0–1)
+
+1. Add volightcurve validation for **conversion readiness** (exact API from
+   Phase 1).
+2. Exception: transparent message (missing ZP pair, bad units, flux column
+   unit vs ZP flux unit mismatch). Prefer reusing or extending
+   ``LightcurveIOError`` / a dedicated ``PhotCalError`` — one style for
+   hosts to map to UI.
+3. **Do not** use ``photcal_defaults`` inside volightcurve conversion paths
+   (defaults remain for explicit host fill + warning only).
+4. Skvo may thin-wrap volightcurve validator in ``inspect_photcal_dict`` /
+   ``photcal_from_metadata`` over time; avoid two divergent rule sets.
+5. Revisit ``VOLightCurve`` NaN-fill helpers: align with fail-fast or mark
+   deprecated for scientific pipelines (separate from §8 cell NaN rules).
+
+### Out of scope
+
+- §8 table structure / censored ``>mag`` / column selection (separate contract work).
+- Inventing ZP on Processor Apply (Ticket 7 / skvo policy).
+- VOTable export ``filter_identifier`` (skvo export gate).
+
+### Agent checklist
+
+- [ ] Phase 0: time column naming / renaming policy agreed (no silent ``jd`` mandate).
+- [ ] Phase 1: choose validator entry point (``PhotCal`` vs free function).
+- [ ] Phase 2: implement in ``volightcurve`` with tests.
+- [ ] Wire ``CurveDash.convert_to_*`` to volightcurve validator + ``PhotCal`` only.
+- [ ] Reduce duplication in ``photcal_coherence.inspect_*`` where safe.
+- [ ] No code until the developer says go after Phase 0–1.
+
+### Status
+
+**Open.** Phase 0 next (discuss time columns renaming case).
+
+---
+
+## Ticket 13 — volightcurve: §8 product validation on ingest (structure + cells)
+
+**Package:** sibling ``volightcurve`` (``read_lightcurve``, ``VOLightCurve``,
+``apply_non_votable_heuristics``, VOTable promote path).
+
+**Consumers:** every host that calls ``read_lightcurve`` / ``from_table`` /
+``_ingest`` — including ``skvo_veb`` ``ingest_volightcurve_file`` /
+``lc_bridge``. **Do not** duplicate this policy in ``lc_bridge`` unless the
+developer explicitly agrees a thin error-mapping wrapper only.
+
+**Related:** ``volightcurve/docs/io_contract.md`` (new **§8** prose),
+Ticket 8 (I/O ownership), Ticket 12 Phase 0 (time **column name** policy;
+**not** part of this ticket’s locked ingest rules except “one time column,
+leftmost time role”).
+
+### Goal
+
+One **format-agnostic** validation bottleneck **after** normalisation
+(``apply_non_votable_heuristics`` / VOTable column promotion) and **before**
+the issued ``VOLightCurve`` is considered valid for plotting and science
+pipelines. Product behaviour must **not** depend on which source codec ran.
+
+**Fail only** (``LightcurveIOError`` or agreed subtype); no warnings on
+``VOLightCurve`` for ingest validation.
+
+Ingest may succeed with **incomplete photcal** (ZP / filter). That is
+Ticket 12, not §8.
+
+### Locked ingest rules (discussion frozen — write into ``io_contract`` §8)
+
+**Structural**
+
+1. Exactly **one** time column in the canonical product table (after
+   validation). Among columns with **time** role (§4b / UCD after
+   promotion), keep the **leftmost**; drop other time-role columns (Option A
+   column pruning). Classify auxiliary date strings (e.g. ``UT Date``) as
+   **other**, not a second time column.
+2. Exactly **one** photometry domain column: **mag** **or** **flux** (not
+   both in the issued product).
+3. **0–1** error column aligned with the selected photometry column.
+
+**Mag + flux both present before selection** (tie-break when all four or a
+subset exist):
+
+| Present columns | Selected photometry | Selected error |
+|-----------------|---------------------|----------------|
+| mag, flux, mag_err, flux_err | mag | mag_err |
+| mag, flux, mag_err | mag | mag_err |
+| mag, flux, flux_err | flux | flux_err |
+| mag, flux only | mag | none |
+
+**Option A canonical table:** drop non-selected mag/flux/err columns; keep
+**other** columns (Camera, Filter, …).
+
+**Cells**
+
+- Accept: finite float; ``nan`` / ``NaN``; **empty field → NaN**.
+- Reject: censored tokens (``<`` / ``>`` prefixes such as ``>16.766``).
+- **No** sentinel remapping (e.g. ``99.990`` stays numeric).
+- After coercion: **fail ingest** if the adopted photometry column has **no
+  finite** value.
+
+**Hooks (implementation placement when asked to code)**
+
+- End of ``from_table``; ``_ingest_votable``; non-VOTable ``_ingest`` after
+  heuristics — shared ``finalize`` helper, one rule set.
+
+### Explicitly out of scope / rejected for §8
+
+- **Renaming** the product time column to ``jd`` (or any single global time
+  name) on ingest for all codecs. Time **naming** is **Ticket 12 Phase 0**.
+- Photometric calibration completeness at ingest (Ticket 12).
+- Host ``photcal_defaults`` / Processor Apply inventing ZP (Ticket 7).
+- ``VOLightCurve`` legacy helpers that fill whole columns with NaN when
+  PhotCal is missing (Ticket 12; agreed separate from cell-level NaN).
+
+### Phases
+
+#### Phase 0 — Agree §8 contract text (discussion)
+
+Draft **§8 Product validation (read)** in ``volightcurve/docs/io_contract.md``
+from the locked rules above. Confirm Ticket 12 Phase 0 outcome does not
+contradict §8 structural time rules.
+
+#### Phase 1 — Implement shared finalize + tests (when asked to code)
+
+Sibling package only; codec-agnostic tests (CSV censored mag, four-column
+pick, leftmost time, empty cells).
+
+#### Phase 2 — Host smoke (when asked)
+
+Ensure ``ingest_volightcurve_file`` surfaces ``LightcurveIOError`` to upload
+UI; remove any duplicate ingest coercion in ``lc_bridge`` if present.
+
+### Agent checklist
+
+- [ ] §8 drafted in ``io_contract.md`` (no ``jd`` rename mandate).
+- [ ] Ticket 12 Phase 0 time naming decided or explicitly deferred with
+  documented interim behaviour.
+- [ ] Shared finalize in volightcurve; tests green in sibling + host volightcurve tests.
+- [ ] No ``lc_bridge`` validation policy fork.
+- [ ] No code until the developer says go after Phase 0 (and time naming if
+  required for tests).
+
+### Status
+
+**Open.** Phase 0 next (§8 contract prose; coordinate with Ticket 12 Phase 0
+on time column **names** only).
+
+---
+
+## Ticket 14 — volightcurve: preserve VO column names; UCD-aware export; label/sector ingest
+
+**Package:** sibling ``volightcurve`` (``io.py``, ``lightcurve.py`` /
+``write_vo_lightcurve``, ``read_lightcurve``, ``.dat`` codec).
+
+**Related:** sibling ``volightcurve/README.md`` (in-memory product, UCD vs
+names); Ticket 12 Phase 0 (no product-wide
+rename); Ticket 13 (§8); ``docs/io_contract.md`` §5 (non-VO write names);
+``skvo_veb`` ``lc_bridge.volc_to_curvedash`` (label resolution by name only).
+
+**Audience:** agents. **Think first; implement only when the developer asks.**
+
+### Goal
+
+1. **VOTable-shaped products:** When columns already carry **UCDs** (and units)
+   that define roles, **do not rename** those columns on ingest or on
+   VOTable export merely to match ``obs_time`` / ``phot`` / ``flux_error``
+   spellings. Roles live in metadata; names may stay archive-native.
+2. **Export remapping:** Where a wire layout is still required (MJD
+   ``obs_time``, FIELD UCDs on write), resolve source columns with the
+   **same UCD discovery API** as ingest (`get_time_colnames`, ``get_mag_*``,
+   ``get_flux_*``, error helpers) — not hard-coded name lists alone.
+3. **Per-epoch labels / sectors:** Audit and fix how string identifier columns
+   round-trip through volightcurve so users do not **lose labels** when the
+   column is not literally named ``label``, ``sector``, or ``flag``.
+
+### Current state (locked findings — do not re-derive)
+
+**In-memory product (intended):** Column **names** vary by format; **UCDs** on
+``table[col].info.meta`` express time / mag / flux / error roles (see package
+README).
+
+**VOTable export — two behaviours today:**
+
+| Situation | What happens |
+|-----------|----------------|
+| ``volc.table`` already has ``obs_time`` | ``_table_for_votable_codec`` copies table **unchanged** (Path 1). |
+| No ``obs_time`` but ``jd`` / ``time`` + ``phot``/``mag``/``flux`` names | Builds a **new** table; renames to ``obs_time``, ``phot``, ``flux_error`` (Path 2). Uses ``_photometry_columns_for_votable`` — **name literals only**, not UCD discovery. |
+
+**``write_vo_lightcurve``** (low-level writer) always runs a **rename block**
+toward ``obs_time`` / ``phot`` / ``flux_error`` / ``label`` (and renames
+``sector`` → ``label``), plus positional fallbacks — even when the input
+table already had valid VO FIELD names and UCDs.
+
+**Non-VOTable export:** CSV / ``.dat`` write ``volc.table`` colnames as-is
+(UCDs not on wire; §5 contract expects canonical ``jd``/``mag``/… at write —
+separate from this ticket’s VOTable preservation rule).
+
+**Labels / sectors:**
+
+| Layer | Behaviour |
+|-------|-----------|
+| **``.dat`` ingest** | Role ``other`` columns keep **header names** (``label``, ``Observ``, custom text). Values stay strings. Contract: no closed allowlist of free-text names. |
+| **VOTable ingest** | Columns keep file names + UCDs; no volightcurve helper like ``get_label_colnames`` from UCD (e.g. ``meta.id``, ``meta.dataset``). |
+| **`_table_for_votable_codec` Path 2** | Copies only a column named ``label`` into output; ignores other string columns. |
+| **`write_vo_lightcurve``** | Only ``label`` / ``sector`` (sector renamed to ``label``) in the slim output table; other annotation columns dropped from ``t_out``. |
+| **`lc_bridge.volc_to_curvedash``** | Sets ``CurveDash.label`` only if a column is named ``label``, ``sector``, or ``flag`` — **not** UCD-based. |
+
+**Symptom:** A valid VO or ``.dat`` file with a per-epoch ID column under
+another name (or VO UCD but not ``label``) can ingest into ``volc.table`` yet
+**hosts see no labels** after bridge/export.
+
+### Locked export policy (Phase 0 — developer, 2026-09-23)
+
+1. **UCD is the first source of truth** for column roles on the product
+   (assigned and promoted at **ingest**, not at export).
+2. **Export does not add validation.** Do not refuse a VOTable (or any
+   format) because the table has several time, mag, flux, or error columns,
+   missing photcal, or a layout the writer would prefer. Multiple science
+   columns are **allowed** (IVOA-compatible). PhotCals, when present, stay
+   bound to the columns they belong to on ``volc.photdms``.
+3. **Export describes what the product already holds:**
+   - **UCD-capable wire (VOTable):** write the table **as stored** — column
+     **names preserved**, **UCDs** (and units) written on FIELDs. Do not
+     force a rename to ``obs_time`` / ``phot`` / ``flux_error`` when UCDs
+     already mark roles.
+   - **Non-UCD wire (CSV, ``.dat``, …):** write the data we have; encode
+     roles of the **main** columns (time, mag, flux, errors) in **column
+     names** per the I/O contract. Do not invent UCDs at write time.
+4. **Ingest** owns structural checks, name→UCD promotion, and standards
+   alignment. Export must not repeat that burden.
+5. Multi-column ingest is **not** required to finish this ticket’s export
+   rules; the writer must not assume a single time or single photometry
+   column forever.
+
+### Decisions (Phase 0 — agreed, written in volightcurve ``docs/io_contract.md`` §8)
+
+1. **Label:** leftmost column whose UCD matches the label-role list
+   (``meta.code``, ``meta.id``; list may grow). If none, leftmost column
+   that is not time / flux / mag / error. All columns are still exported.
+2. **Non-VO names:** do not drop columns. One column per role keeps
+   ``jd`` / ``mag`` / ``flux`` / ``mag_err`` / ``flux_err``. Several of one
+   role: ``mag-1``, ``mag-2``, and the same pattern for the other roles.
+3. **VOTable time values:** may convert to MJD and set TIMESYS (``JD0``
+   sense). Field name and UCD stay.
+4. **``write_vo_lightcurve``:** retire rename-and-keep-only
+   ``obs_time`` / ``phot`` / ``flux_error`` / ``label``. Write the product
+   table plus its metadata.
+
+### Locked direction (when asked to code)
+
+1. Remove export-time **forced renames** and **name-only** column picking
+   that drop or relabel VO-annotated columns (``_table_for_votable_codec``
+   Path 2, ``write_vo_lightcurve`` rename / slim ``t_out``).
+2. VOTable write: serialise existing colnames, UCDs, units, and
+   ``photdms`` links; no extra schema gate.
+3. Non-VO write: map roles → contract column names from **existing** UCDs
+   (ingest already set them); do not re-validate.
+4. Label/sector: keep columns through export; add discovery once item 1
+   above is agreed; ``lc_bridge`` stays a thin caller.
+5. Do not fail export solely because more than one time or photometry
+   column is present.
+
+### Out of scope
+
+- Ticket 13 §8 structural validation (finite photometry, censored cells).
+- Ticket 12 PhotCal conversion readiness.
+- Renaming every ingest path to a single global time column name on the
+  product (rejected in Ticket 12 Phase 0).
+
+### Phases
+
+#### Phase 0 — Agree policy (discussion)
+
+Export philosophy is **locked** (see above). Remainder: label discovery,
+non-VO multi-column names, optional JD→MJD value remap, retire legacy writer
+renames. Then write the policy into ``io_contract`` + README.
+
+#### Phase 1 — VOTable export / writer — **Done**
+
+``write_vo_lightcurve`` and ``_table_for_votable_codec`` keep column names
+and extra columns. Absolute JD time columns are written as MJD with TIMESYS
+when ``JD0`` is zero. Existing UCDs are written through. No export-time
+schema gate.
+
+#### Phase 2 — Label discovery, non-VO names, bridge — **Done**
+
+``get_label_colnames`` (UCD ``meta.code`` / ``meta.id``, else leftmost
+non-science column). CSV / ``.dat`` / ECSV export renames main-role columns
+to ``jd`` / ``mag`` / ``flux`` / ``*_err``, numbering repeats as ``mag-1``.
+``volc_to_curvedash`` uses ``get_label_colnames``. Discovery does **not**
+write a label UCD onto the column.
+
+#### Phase 3 — No strong validation on export — **Done**
+
+VOTable export no longer refuses a missing filter identifier. The
+``filterIdentifier`` PARAM is omitted when the product has none. Host
+``build_votable_kwargs_from_metadata`` no longer raises for that case.
+
+#### Phase 4 — Store a label-role UCD at ingest — **Done**
+
+``assign_label_column_ucd`` runs at the end of non-VO heuristics and after
+VOTable promotion. The designated label column receives ``meta.id`` when it
+has no ``meta.code`` / ``meta.id`` UCD. The column name is unchanged. An
+existing label-role UCD is kept.
+
+#### Phase 5 — VOTable export of the label column — **Done**
+
+``volc_to_curvedash`` stores ``label_column_name`` and ``label_column_ucd``.
+Export writes that name (not a forced ``label``) and that UCD. The working
+``CurveDash`` column stays ``label``.
+
+### Agent checklist
+
+- [x] Phase 0 policy written (``io_contract`` §8 + README pointer).
+- [x] VOTable export preserves VO-annotated column names; value-only time remap where required.
+- [x] ``get_label_colnames`` covers per-epoch label/sector columns.
+- [x] Tests for label UCD, non-science fallback, and ``mag-1`` / ``mag-2`` CSV names.
+
+### Status
+
+**Open.** Phases 0–5 **done**.

@@ -43,6 +43,8 @@ from volightcurve import (
     get_flux_colnames,
     get_mag_colnames,
     get_error_colnames,
+    get_label_colnames,
+    DEFAULT_LABEL_UCD,
     is_mag_column,
     is_magnitude_phot_column,
     write_vo_lightcurve,
@@ -1545,11 +1547,12 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     else:
         err_vals = np.zeros_like(phot_vals)
 
-    label_col = None
-    for name in ['label', 'sector', 'flag']:
-        if name in volc.table.colnames:
-            label_col = name
-            break
+    label_cols = get_label_colnames(volc.table)
+    label_col = label_cols[0] if label_cols else None
+    label_ucd = None
+    if label_col:
+        label_meta = volc.table[label_col].info.meta or {}
+        label_ucd = label_meta.get("ucd") or DEFAULT_LABEL_UCD
     if label_col:
         label_vals = volc[label_col]
         if hasattr(label_vals, 'value'):
@@ -1612,6 +1615,9 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
             active_domain=DOMAIN_FLUX,
         )
 
+    if label_col:
+        lcd.metadata["label_column_name"] = label_col
+        lcd.metadata["label_column_ucd"] = label_ucd or DEFAULT_LABEL_UCD
     lcd.metadata['ra'] = meta.get('ra')
     lcd.metadata['dec'] = meta.get('dec')
     for key in ("facility_name", "instrument_name", "lookup_name", "ztf_oid", "user_search_target"):
@@ -1691,6 +1697,29 @@ def valid_photometry_row_mask(lcd) -> np.ndarray:
     return (~array_mask) & np.isfinite(numeric)
 
 
+def _append_export_label_column(tab: Table, lcd, values) -> None:
+    """Adds per-epoch label values under the source column name.
+
+    ``CurveDash`` stores the values in a column called ``label``. Export uses
+    ``metadata['label_column_name']`` so a file column such as ``authorrr``
+    is not renamed, and writes the stored label UCD.
+
+    Args:
+        tab (astropy.table.Table): Export table being built.
+        lcd: CurveDash with optional label-column metadata.
+        values: Label cells aligned with the kept rows.
+    """
+    meta = lcd.metadata or {}
+    name = meta.get("label_column_name") or "label"
+    if name in tab.colnames:
+        return
+    tab[name] = values
+    ucd = meta.get("label_column_ucd") or DEFAULT_LABEL_UCD
+    if tab[name].info.meta is None:
+        tab[name].info.meta = {}
+    tab[name].info.meta["ucd"] = str(ucd)
+
+
 def curvedash_to_table(lcd) -> Table:
     """Extracts a standards-oriented Astropy Table from a CurveDash instance.
 
@@ -1722,8 +1751,8 @@ def curvedash_to_table(lcd) -> Table:
     if lcd.phot_err is not None:
         t_out['flux_error'] = lcd.phot_err.values[keep]
 
-    if lcd.label is not None and 'label' in lcd.lightcurve.columns:
-        t_out['label'] = lcd.lightcurve['label'].values[keep]
+    if lcd.label is not None and "label" in lcd.lightcurve.columns:
+        _append_export_label_column(t_out, lcd, lcd.lightcurve["label"].values[keep])
 
     phot_unit = lcd.phot_unit
     if phot_unit:
@@ -1860,7 +1889,7 @@ def curvedash_to_tabular_table(lcd) -> Table:
             v is not None and str(v).strip() and str(v).lower() != "none"
             for v in labels
         ):
-            tab["label"] = labels
+            _append_export_label_column(tab, lcd, labels)
 
     assign_photometry_column_semantics(
         tab,
@@ -1975,19 +2004,14 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         dict: Keyword arguments for ``write_vo_lightcurve``.
 
     Raises:
-        PipeException: When ``photcal.filter_identifier`` is missing
-            (required by ``write_vo_lightcurve``). Table/VOTable descriptions
-            are optional and omitted when absent.
+        PipeException: When the CurveDash cannot be serialised. A missing
+            ``photcal.filter_identifier`` is omitted, not rejected.
     """
     meta = lcd.metadata or {}
     envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
     photcal = meta.get("photcal") or {}
 
-    filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER)
-    if not filter_identifier:
-        raise PipeException(
-            "Cannot export VOTable: photcal.filter_identifier is missing."
-        )
+    filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER) or None
 
     is_stitched = _is_stitched_lightcurve(lcd)
     include_zero_points = (

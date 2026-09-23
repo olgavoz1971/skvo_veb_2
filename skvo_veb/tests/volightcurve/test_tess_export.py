@@ -127,10 +127,10 @@ def test_tess_export():
     lc = VOLightCurve(buf_spoc)
     assert len(lc) == 3
     assert lc.timesys.jd0 == 2400000.5
-    np.testing.assert_allclose(lc['obs_time'], jd - 2400000.5)
-    assert 'obs_time' in lc.colnames
-    assert 'phot' in lc.colnames
-    assert 'flux_error' in lc.colnames
+    np.testing.assert_allclose(lc["jd"], jd - 2400000.5)
+    assert "jd" in lc.colnames
+    assert "flux" in lc.colnames
+    assert "flux_err" in lc.colnames
 
 
 if __name__ == "__main__":

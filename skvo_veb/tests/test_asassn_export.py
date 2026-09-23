@@ -60,8 +60,8 @@ def test_asassn_votable_export_g_band():
     buf = io.BytesIO(export_curvedash(lcd, "votable_binary", profile="asassn"))
     lc = VOLightCurve(buf)
     assert len(lc) == 3
-    assert "obs_time" in lc.colnames
-    assert "phot" in lc.colnames
+    assert "jd" in lc.colnames
+    assert "flux" in lc.colnames
 
 
 def test_asassn_votable_export_v_band():

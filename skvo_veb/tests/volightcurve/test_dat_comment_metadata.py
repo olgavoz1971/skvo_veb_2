@@ -95,21 +95,39 @@ def test_dat_votable_export_without_table_description():
     assert b"V" in payload
 
 
-def test_votable_export_names_missing_filter_identifier():
-    """VOTable export failure names the missing photcal field, not an archive reload."""
+def test_votable_export_omits_missing_filter_identifier():
+    """VOTable export writes the curve when the filter identifier is absent."""
     from skvo_veb.utils.lc_bridge import export_curvedash
     from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
-    from skvo_veb.utils.my_tools import PipeException
 
     dat = b"""# JD0=2400000
 # jd mag mag_err
 60821.47960 12.980 0.050
 """
     lcd = ingest_lightcurve_file(io.BytesIO(dat), "no_filter.dat")
-    with pytest.raises(PipeException, match="filter identifier is missing") as exc_info:
-        export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
-    assert "archive" not in str(exc_info.value).lower()
-    assert "re-load" not in str(exc_info.value).lower()
+    payload = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    assert b"filterIdentifier" not in payload
+    assert b"jd" in payload or b"mag" in payload
+
+
+def test_votable_export_keeps_label_column_name():
+    """A non-standard label column keeps its name and UCD on VOTable export."""
+    from skvo_veb.utils.lc_bridge import export_curvedash
+    from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
+    from volightcurve import VOLightCurve
+
+    dat = b"""# JD0 = 2400000.5
+# jd mag mag_err authorrr
+58000.1 12.1 0.01 SHU
+58000.2 12.2 0.02 SKV
+"""
+    lcd = ingest_lightcurve_file(io.BytesIO(dat), "R.dat")
+    assert lcd.metadata.get("label_column_name") == "authorrr"
+    payload = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
+    restored = VOLightCurve(io.BytesIO(payload))
+    assert "authorrr" in restored.table.colnames
+    assert "label" not in restored.table.colnames
+    assert restored.table["authorrr"].info.meta["ucd"] == "meta.id"
 
 
 def test_dat_mag0_reaches_curvedash_photcal():
