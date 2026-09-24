@@ -10,6 +10,9 @@ from astropy import units as u
 from astropy.table import Table
 
 from skvo_veb.lc_providers.gaia_dr3_aip import config
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import extract_band_lightcurve
 from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import load_epoch_photometry
 from skvo_veb.utils.lc_config import JD_TO_MJD
@@ -138,4 +141,5 @@ def build_volightcurve_from_prefetch(
         band.band_code,
         len(volc),
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

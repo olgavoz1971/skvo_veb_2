@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 
 from skvo_veb.lc_providers.gaia_dr3_veb import config
+from skvo_veb.lc_providers.shared.filter_zp_mag import replace_zero_points
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
 
@@ -60,6 +64,15 @@ def enrich_fetched_volightcurve(
     meta["lightcurve_title"] = title
     meta["facility_name"] = config.FACILITY_NAME
     meta["instrument_name"] = config.INSTRUMENT_NAME
+    replace_zero_points(
+        volc,
+        display_name=config.DISPLAY_NAME,
+        zp_mag_by_filter_identifier=config.GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER,
+        zp_mag_unit=config.GAIA_DR3_ZP_MAG_UNIT,
+        zp_flux=config.GAIA_DR3_ZP_FLUX,
+        zp_flux_unit=config.GAIA_DR3_ZP_FLUX_UNIT,
+        source=config.GAIA_DR3_ZP_SOURCE,
+    )
 
     logger.debug(
         "%s metadata enriched title=%s publication_id=%s",
@@ -67,4 +80,5 @@ def enrich_fetched_volightcurve(
         title,
         meta.get("bibcode") or meta.get("publication_id"),
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

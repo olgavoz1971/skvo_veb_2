@@ -62,6 +62,26 @@ def _minimal_veb_like_volc(
     return VOLightCurve(io.BytesIO(vot_bytes))
 
 
+def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
+    """Gaia DR3 VEB discards the Jy flux zero point on the real products."""
+    from pathlib import Path
+
+    expected = {
+        Path("/home/voz/projects/UPJS/tmp/g.xml"): ("GAIA/GAIA3.Gbp", 25.3385),
+        Path("/home/voz/projects/UPJS/tmp/gg.xml"): ("GAIA/GAIA3.G", 25.6874),
+    }
+    for path, (filter_id, zp_mag) in expected.items():
+        assert path.is_file(), path
+        volc = VOLightCurve(path)
+        enrich_fetched_volightcurve(volc, filter_name=filter_id)
+        photcal = volc.photdms["phot"].photcal
+        assert volc.photdms["phot"].filter.filter_id == filter_id
+        assert float(photcal.zp_flux.value) == 1.0
+        assert photcal._zp_flux_unit_text == "s**-1"
+        assert float(photcal.zp_mag.value) == zp_mag
+        assert volc.photdms["flux_error"].photcal is photcal
+
+
 def test_enrich_fetched_volightcurve_appends_filter_to_title():
     """VEB enrich adds the passband to the archive TABLE name for captions."""
     volc = _minimal_veb_like_volc()

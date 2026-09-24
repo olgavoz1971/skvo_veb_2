@@ -15,6 +15,19 @@ SSA_TABLE = "gaiadr3_eb.ts_ssa"
 FACILITY_NAME = "Gaia"
 INSTRUMENT_NAME = "Gaia"
 
+# Flux is in electron/s (unit s**-1). The archive flux zero point is in Jy
+# and is discarded for these filters. Magnitude zero points: Riello et al.
+# 2021, A&A 649, A3.
+GAIA_DR3_ZP_FLUX = 1.0
+GAIA_DR3_ZP_FLUX_UNIT = "s**-1"
+GAIA_DR3_ZP_MAG_UNIT = "mag"
+GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER = {
+    "GAIA/GAIA3.G": 25.6874,
+    "GAIA/GAIA3.Gbp": 25.3385,
+    "GAIA/GAIA3.Grp": 24.7479,
+}
+GAIA_DR3_ZP_SOURCE = "Riello et al. 2021, A&A 649, A3"
+
 SSA_SELECT_COLUMNS = (
     "accref",
     "ssa_bandpass",

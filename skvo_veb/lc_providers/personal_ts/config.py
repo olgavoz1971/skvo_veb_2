@@ -13,6 +13,19 @@ MAX_DISCOVERY_SEARCH_RADIUS_DEG = 30.0
 SSA_TABLE = "personal.ts_ssa"
 OBJECTS_TABLE = "personal.objects"
 
+# Magnitude zero point by photDM:PhotometryFilter.identifier.
+# Applied to every product of this provider when that identifier is listed
+# and the file has no magnitude zero point. The flux zero point stays as published.
+ZP_MAG_BY_FILTER_IDENTIFIER = {
+    "Generic/Bessell.U": 0.0,
+    "Generic/Bessell.B": 0.0,
+    "Generic/Bessell.V": 0.0,
+    "Generic/Bessell.R": 0.0,
+    "Generic/Bessell.I": 0.0,
+    "Palomar/Arp1961.103aO_atm": 0.0,
+}
+ZP_MAG_UNIT = "mag"
+
 SSA_SELECT_COLUMNS = (
     "object_id",
     "accref",

@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 
 from skvo_veb.lc_providers.asassn import config
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
 
@@ -60,4 +63,5 @@ def enrich_fetched_volightcurve(
         band.band_code,
         len(volc),
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

@@ -9,6 +9,9 @@ from skvo_veb.lc_providers.discovery_fetch_context import (
     effective_lookup_association_arcsec as _shared_effective_lookup_association_arcsec,
     resolve_lookup_name_for_discovery_fetch,
 )
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.lc_providers.ztf import config
 from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
@@ -101,4 +104,5 @@ def enrich_fetched_volightcurve(
         lookup_name,
         len(volc),
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

@@ -110,3 +110,35 @@ def test_personal_search_catalog_by_object_id(monkeypatch):
     assert "object_id = 'AY_Lac'" in captured["adql"]
     assert len(catalog) == 2
     assert catalog["object_class"][0] == "CV*"
+
+
+def test_personal_sets_magnitude_zero_point_for_arp_filter():
+    """Personal collections set zp_mag 0 for Palomar/Arp1961.103aO_atm when the file has none."""
+    import io
+
+    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_fetched_volightcurve
+    from volightcurve import VOLightCurve
+
+    xml = """<?xml version="1.0"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE>
+<TABLE name="star">
+<DESCRIPTION>Personal series</DESCRIPTION>
+<GROUP name="photcal">
+<PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="Palomar/Arp1961.103aO_atm"/>
+<PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="2500" unit="Jy"/>
+<FIELDref ref="mag"/>
+</GROUP>
+<FIELD name="jd" ID="jd" datatype="double" ucd="time.epoch"/>
+<FIELD name="mag" ID="mag" datatype="double" ucd="phot.mag" unit="mag"/>
+<FIELD name="mag_err" ID="mag_err" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>
+<DATA><TABLEDATA><TR><TD>2459000</TD><TD>12.2</TD><TD>0.01</TD></TR></TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>"""
+    volc = VOLightCurve(io.BytesIO(xml.encode()))
+    enrich_fetched_volightcurve(volc, filter_name="pg", object_id="1")
+    photcal = volc.photdms["mag"].photcal
+    assert float(photcal.zp_mag.value) == 0.0
+    assert float(photcal.zp_flux.value) == 2500.0
+    assert volc.photdms["mag_err"].photcal is photcal

@@ -402,6 +402,11 @@ class GaiaDr3DebugProvider(MissionLightcurveProvider):
             len(volc),
             force_refresh,
         )
+        from skvo_veb.lc_providers.shared.photcal_error_link import (
+            share_photcal_with_unlinked_errors,
+        )
+
+        share_photcal_with_unlinked_errors(volc)
         return volc
 
 

@@ -7,6 +7,9 @@ import logging
 from astropy import units as u
 
 from skvo_veb.lc_providers.gaia_dr3_ari import config
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import format_gaia_source_name
 from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import mag_error_from_flux_over_error
 from skvo_veb.utils.my_tools import PipeException
@@ -164,4 +167,5 @@ def enrich_fetched_volightcurve(
         meta.get("period"),
         config.GAIA_ARI_ZERO_POINT_REFERENCE_MAGNITUDE,
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

@@ -160,9 +160,22 @@ def test_ogle_fetch_lightcurve_from_accref(monkeypatch):
                     }
                 },
             )()
+            self.photdms = {}
 
         def __len__(self):
             return 2312
+
+        def get_mag_colnames(self):
+            return []
+
+        def get_mag_error_colnames(self):
+            return []
+
+        def get_flux_colnames(self):
+            return []
+
+        def get_flux_error_colnames(self):
+            return []
 
     def _fake_fetch(accref, **kwargs):
         assert accref.startswith("https://")
@@ -174,3 +187,53 @@ def test_ogle_fetch_lightcurve_from_accref(monkeypatch):
     )
     volc = provider.fetch_lightcurve(lc_key)
     assert volc.table.meta["lightcurve_title"] == "OGLE-SMC-ECL-05425 in OGLE I filter"
+
+
+def _ogle_votable(*, filter_id: str) -> bytes:
+    """Minimal OGLE-like VOTable: flux zero point, no magnitude zero point."""
+    xml = f"""<?xml version="1.0"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE>
+<TABLE name="OGLE-SMC-RRLYR-3931">
+<DESCRIPTION>The OGLE lightcurve</DESCRIPTION>
+<GROUP name="photcal">
+<PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="{filter_id}"/>
+<PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="3630.2172842325" unit="Jy"/>
+<PARAM name="magnitudeSystem" datatype="char" arraysize="*" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+<FIELDref ref="phot"/>
+</GROUP>
+<FIELD name="obs_time" ID="obs_time" datatype="double" ucd="time.epoch" unit="d"/>
+<FIELD name="phot" ID="phot" datatype="double" ucd="phot.mag" unit="mag"/>
+<FIELD name="mag_err" ID="mag_err" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>
+<DATA><TABLEDATA><TR><TD>55999</TD><TD>18.1</TD><TD>0.02</TD></TR></TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>"""
+    return xml.encode()
+
+
+def test_ogle_sets_magnitude_zero_point_for_bessell_v():
+    """Every OGLE product with filter identifier Generic/Bessell.V gets zp_mag 0."""
+    import io
+
+    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(_ogle_votable(filter_id="Generic/Bessell.V")))
+    enrich_fetched_volightcurve(volc, filter_name="OGLE V", object_id="OGLE-SMC-RRLYR-3931")
+    photcal = volc.photdms["phot"].photcal
+    assert float(photcal.zp_mag.value) == 0.0
+    assert float(photcal.zp_flux.value) == 3630.2172842325
+    assert volc.photdms["mag_err"].photcal is photcal
+
+
+def test_ogle_leaves_unlisted_filter_identifier_unchanged():
+    """A filter identifier with no config row does not receive a magnitude zero point."""
+    import io
+
+    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(_ogle_votable(filter_id="Generic/Unknown.X")))
+    enrich_fetched_volightcurve(volc, filter_name="OGLE X", object_id="OGLE-SMC-RRLYR-3931")
+    assert volc.photdms["phot"].photcal.zp_mag is None

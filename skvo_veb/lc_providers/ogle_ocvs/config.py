@@ -15,6 +15,19 @@ SSA_TABLE = "ogle.ts_ssa"
 FACILITY_NAME = "Las Campanas"
 INSTRUMENT_NAME = "Warsaw 1.3m Telescope"
 
+# Magnitude zero point by photDM:PhotometryFilter.identifier.
+# Applied to every product of this provider when that identifier is listed
+# and the file has no magnitude zero point. The flux zero point stays as published.
+# 0.0 mag is the value assigned for these OGLE filters, not a value for other providers.
+ZP_MAG_BY_FILTER_IDENTIFIER = {
+    "Generic/Bessell.U": 0.0,
+    "Generic/Bessell.B": 0.0,
+    "Generic/Bessell.V": 0.0,
+    "Generic/Bessell.R": 0.0,
+    "Generic/Bessell.I": 0.0,
+}
+ZP_MAG_UNIT = "mag"
+
 SSA_SELECT_COLUMNS = (
     "object_id",
     "accref",

@@ -535,7 +535,19 @@ Fetch cache should store VOTable bytes so multiple users and notebooks share the
 
 ---
 
-## 13. ASAS-SN adapter (implemented)
+## 13. Provider product notes
+
+Per-mission discovery, retrieval, and any calibration this code adds:
+
+- [UPJŠ time series](providers/upjs_ts.md)
+- [Gaia DR3 VEB](providers/gaia_dr3_veb.md)
+
+After each fetch, an error column with no photcal of its own is linked to
+the photcal of the single matching magnitude or flux column
+(``share_photcal_with_unlinked_errors``). An error column the archive
+already linked is not changed. Several calibrated parents are left alone.
+
+## 14. ASAS-SN adapter (implemented)
 
 Package: `skvo_veb/lc_providers/asassn/` (`AsassnProvider`, registered as `asassn`).
 
@@ -552,7 +564,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 
 ---
 
-## 14. Implementation order (for agents)
+## 15. Implementation order (for agents)
 
 **Done:**
 1. `lc_providers/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
@@ -569,7 +581,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 
 ---
 
-## 15. Error handling
+## 16. Error handling
 
 - User-visible errors: `PipeException` (existing pattern)
 - Providers wrap remote failures with mission context: `"ASAS-SN: source not in Sky Patrol"`
@@ -579,7 +591,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 
 ---
 
-## 16. Resolved design decisions
+## 17. Resolved design decisions
 
 | Topic | Decision |
 |-------|----------|
@@ -595,7 +607,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 
 ---
 
-## 17. Summary for agents
+## 18. Summary for agents
 
 | Question | Answer |
 |----------|--------|

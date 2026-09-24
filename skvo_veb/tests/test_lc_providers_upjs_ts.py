@@ -1,5 +1,7 @@
 """Tests for the UPJŠ time-series TAP provider."""
 
+import io
+
 import numpy as np
 from astropy.table import Table
 
@@ -123,3 +125,56 @@ def test_upjs_search_catalog_by_gaia_name(monkeypatch):
     lc_key = catalog["lc_key"][0]
     payload = decode_lc_key(lc_key)["payload"]
     assert payload["object_id"] == "3716"
+
+
+def _upjs_votable(*, zp_mag: str | None, filter_id: str = "Generic/Bessell.V") -> bytes:
+    """Minimal UPJŠ-like VOTable with an optional published magnitude zero point."""
+    zp = ""
+    if zp_mag is not None:
+        zp = (
+            '<PARAM name="zeroPointReferenceMagnitude" datatype="double" '
+            'utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" '
+            f'value="{zp_mag}" unit="mag"/>'
+        )
+    xml = f"""<?xml version="1.0"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE>
+<TABLE name="star">
+<DESCRIPTION>UPJS series</DESCRIPTION>
+<GROUP name="photcal">
+<PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="{filter_id}"/>
+<PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="3631" unit="Jy"/>
+{zp}
+<FIELDref ref="mag"/>
+</GROUP>
+<FIELD name="jd" ID="jd" datatype="double" ucd="time.epoch"/>
+<FIELD name="mag" ID="mag" datatype="double" ucd="phot.mag" unit="mag"/>
+<FIELD name="mag_err" ID="mag_err" datatype="double" ucd="stat.error;phot.mag" unit="mag"/>
+<DATA><TABLEDATA><TR><TD>2459000</TD><TD>12.2</TD><TD>0.01</TD></TR></TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>"""
+    return xml.encode()
+
+
+def test_upjs_sets_magnitude_zero_point_for_bessell_v():
+    """UPJŠ Bessell V with no magnitude zero point receives 0 mag; flux zero point stays."""
+    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(_upjs_votable(zp_mag=None)))
+    enrich_fetched_volightcurve(volc, filter_name="V", object_id="3716")
+    photcal = volc.photdms["mag"].photcal
+    assert float(photcal.zp_mag.value) == 0.0
+    assert float(photcal.zp_flux.value) == 3631.0
+    assert volc.photdms["mag_err"].photcal is photcal
+
+
+def test_upjs_sets_magnitude_zero_point_for_sdss_g():
+    """UPJŠ SDSS g with no magnitude zero point receives 0 mag."""
+    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(_upjs_votable(zp_mag=None, filter_id="SLOAN/SDSS.g")))
+    enrich_fetched_volightcurve(volc, filter_name="g", object_id="3716")
+    assert float(volc.photdms["mag"].photcal.zp_mag.value) == 0.0

@@ -9,6 +9,9 @@ from skvo_veb.lc_providers.discovery_fetch_context import (
     resolve_lookup_name_for_discovery_fetch,
 )
 from skvo_veb.lc_providers.panstarrs1_dr2 import config
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name
 from volightcurve import VOLightCurve
 
@@ -90,4 +93,5 @@ def enrich_fetched_volightcurve(
         title,
         len(volc),
     )
+    share_photcal_with_unlinked_errors(volc)
     return volc

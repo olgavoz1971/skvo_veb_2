@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import logging
 
+from skvo_veb.lc_providers.shared.filter_zp_mag import assign_magnitude_zero_point
+from skvo_veb.lc_providers.shared.photcal_error_link import (
+    share_photcal_with_unlinked_errors,
+)
 from skvo_veb.lc_providers.upjs_ts import config
 from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
@@ -56,6 +60,13 @@ def enrich_fetched_volightcurve(
     title = f"{str(base_name).strip()} in {filter_label} filter"
     meta["name"] = title
     meta["lightcurve_title"] = title
+    assign_magnitude_zero_point(
+        volc,
+        display_name=config.DISPLAY_NAME,
+        zp_mag_by_filter_identifier=config.ZP_MAG_BY_FILTER_IDENTIFIER,
+        zp_mag_unit=config.ZP_MAG_UNIT,
+    )
+    share_photcal_with_unlinked_errors(volc)
 
     logger.debug("%s metadata enriched title=%s", config.DISPLAY_NAME, title)
     return volc

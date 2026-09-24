@@ -1554,8 +1554,12 @@ volc = fetch_lightcurve(lc_key)   # -> VOLightCurve
 
 - Moving ``CurveDash``, ``lc_bridge``, Dash page, CSS, Aladin, AgGrid, or
   plot tools into the package.
-- Rewriting mission science / archive adapters (behaviour-preserving move).
-- Implementing Ticket 1 shared fetch cache unless Phase 0 parks it here.
+- Freezing today's fetch products and moving them unchanged. Before the
+  package exists, providers keep every science column (magnitude and flux
+  together when the file has both) and attach only calibration that is
+  researched and documented. See Phase 0.
+- Leaving Discovery export and the shared fetch cache as they are today.
+  Both are in scope below.
 - PyPI / agent-owned GitHub remotes (optional late phases, developer-driven).
 - Merging this package into ``volightcurve`` (keep I/O vs discovery separate).
 
@@ -1566,12 +1570,83 @@ volc = fetch_lightcurve(lc_key)   # -> VOLightCurve
 - Registry is a static dict in ``lc_providers/registry.py`` (edit to add a
   mission); not setuptools entry points yet.
 - ``gaia_debug`` exists for tests and is unregistered.
-- Shared archive fetch cache for Discovery is still **deferred** (Ticket 1).
+- Shared archive fetch cache for Discovery is still missing. It is in
+  scope for this ticket, for all providers (Ticket 1).
 - Host couples providers to ``PipeException``, ``lc_config``, Simbad types.
 
 ### Phases (stop and discuss before each)
 
-#### Phase 0 — Agree packaging shape and cut line (discussion only)
+#### Phase 0 — Retrieved product vs the volightcurve contract (discussion, then fixes)
+
+Do this in ``skvo_veb/lc_providers/`` **before** any file move. One fetch
+is still one catalogue row (one passband). Multi-column means that product
+keeps time, magnitude, flux, both errors, and labels when the file has
+them. It does not mean merging every filter into one table. The app may
+still copy one series into ``CurveDash``. The provider must not drop the
+other photometry column first.
+
+Calibration on a discovery product is **not** the volightcurve ingest
+rule. The provider's job is a complete description of the retrieved
+series. When the archive omits or mis-states a zero point, unit, filter,
+or another photcal field, the provider may correct it from published
+instrument knowledge (the developer's own reduction and the literature).
+That assignment is research, not a silent default.
+
+The correction is the same shape for **all** providers. It is not a
+constant on a service, and it is not keyed by an SSA collection name.
+Each provider has its own config. A correction applies to every product
+of that provider. The zero point is chosen by
+``photDM:PhotometryFilter.identifier`` on the product. Magnitude and flux
+stay separate when the file has both. One ``PhotCal`` is not pasted onto
+every column.
+
+After the archive product is parsed, and before the error-column link:
+
+1. Keep every photcal field as the file published it.
+2. Look up a correction for this provider and this filter identifier. No
+   matching row means change nothing.
+3. Apply only the fields that row names (fill a gap, or replace a wrong
+   value). Do not use ``photcal_defaults`` (``zp_flux=1``, ``zp_mag=20``)
+   and do not fill ``zp_flux=1`` / ``zp_mag=0`` just so conversion runs.
+4. Record each applied change: provider, filter identifier, column, field,
+   value, unit, and source (paper, instrument handbook, or this project's
+   reduction).
+5. Then link an unlinked error column to the single corrected parent.
+   An error column the archive already linked is left as it is.
+
+A correction row lives in that provider's config. The numbers are
+supplied per filter identifier; they are not invented here.
+
+A service-wide magnitude zero point, and a zero point keyed by an
+invented collection name, are the wrong grain and are withdrawn.
+
+**Discovery page export.** Export from the Discovery page keeps the
+original column names and every column of the retrieved table, including
+a multi-column table (time, magnitude, flux, both errors, labels). It
+does not rewrite the series into ``jd`` / ``flux`` / ``flux_err`` or
+``mag`` / ``mag_err``, and it does not drop columns that were not chosen
+as the plotted series.
+
+**Fetch cache.** All providers use one shared archive fetch cache.
+A second retrieve of the same product reads the cache. ``force_refresh``
+bypasses it and replaces the stored product. The session cache of the
+working ``CurveDash`` stays separate.
+
+**Exit:** the correction table (provider, filter identifier, column,
+field, value, unit, source) agreed here. Code of the fixes waits until
+the developer says go. No package tree yet.
+
+**Decisions (Phase 0):**
+
+- Calibration corrections apply to all products of a provider.
+- The zero point is keyed by ``photDM:PhotometryFilter.identifier``.
+- A missing lookup row leaves the published photcal unchanged.
+- Each row names the fields it sets or replaces, and the source.
+- Magnitude and flux calibrations are independent.
+- The earlier service-wide ``zp_mag = 0.0`` is withdrawn.
+- An SSA collection name is not a calibration key.
+
+#### Phase 1 — Agree packaging shape and cut line (discussion only)
 
 Decide and record in this ticket:
 
@@ -1601,9 +1676,9 @@ Decide and record in this ticket:
 
 **Exit:** written decisions below. No file moves yet.
 
-**Decisions (Phase 0):** _(fill when agreed)_
+**Decisions (Phase 1):** _(fill when agreed)_
 
-#### Phase 1 — Scaffold sibling package (local only)
+#### Phase 2 — Scaffold sibling package (local only)
 
 - Create sibling tree (``pyproject.toml``, README, docs pointers,
   ``examples/``, empty or copied provider tree).
@@ -1611,29 +1686,29 @@ Decide and record in this ticket:
 - Pure smoke: import package; list registered missions; one offline or
   mocked search/fetch path if feasible.
 - Nested ``skvo_veb/lc_providers/`` still present and authoritative for the
-  running app.
+  running app until Phase 5.
 
 **Exit:** sibling imports in isolation; app unchanged.
 
-#### Phase 2 — Editable install + dual-import safety
+#### Phase 3 — Editable install + dual-import safety
 
 - ``pip install -e`` into ``skvo_veb_2`` venv (and a scratch notebook venv).
 - Prove ``import <name>`` vs ``import skvo_veb.lc_providers`` do not
-  accidentally shadow until Phase 3.
+  accidentally shadow until Phase 4.
 - Document install steps (app README + local requirements example).
 
 **Exit:** editable link proven; import switch still deferred.
 
-#### Phase 3 — Retarget ``skvo_veb_2`` imports
+#### Phase 4 — Retarget ``skvo_veb_2`` imports
 
 - Point Discovery search/load and any other consumers at the sibling
-  package; leave nested tree as dead copy until Phase 4.
+  package; leave nested tree as dead copy until Phase 5.
 - Host keeps ``volc_to_curvedash`` at the edge.
 - Pytest: provider / Discovery load-export suites green; app smoke import.
 
 **Exit:** app uses sibling for discovery VO path; nested tree unused.
 
-#### Phase 4 — Remove nested ``skvo_veb/lc_providers/`` (and moved utils)
+#### Phase 5 — Remove nested ``skvo_veb/lc_providers/`` (and moved utils)
 
 - Delete moved modules from the app; fix docs that still say nested paths.
 - Retarget [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md)
@@ -1642,7 +1717,7 @@ Decide and record in this ticket:
 
 **Exit:** single source of truth for providers.
 
-#### Phase 5 — Public notebook API + Cursor Agent skill
+#### Phase 6 — Public notebook API + Cursor Agent skill
 
 - Document and export a small public surface (list / search / fetch /
   register as agreed).
@@ -1659,15 +1734,15 @@ Decide and record in this ticket:
 **Exit:** a fresh project can ``pip install -e`` both packages, copy the
 skill, and drive discovery without opening ``skvo_veb_2``.
 
-#### Phase 6 — Optional GitHub remote (developer-driven)
+#### Phase 7 — Optional GitHub remote (developer-driven)
 
 - Developer creates remote / tags; agents do not push unless ordered.
 - Optionally document ``git+https://…`` install beside local ``-e``.
 
-#### Phase 7 (optional) — Stronger plugins / shared fetch cache
+#### Phase 8 (optional) — Stronger plugins / shared fetch cache
 
 - Entry points or documented third-party ``register()``.
-- Ticket 1 archive fetch cache if Phase 0 parked it here.
+- Ticket 1 archive fetch cache if Phase 1 parked it here.
 - PyPI only if asked.
 
 ### Acceptance
@@ -1675,7 +1750,7 @@ skill, and drive discovery without opening ``skvo_veb_2``.
 1. Editable sibling package provides mission search/fetch →
    ``VOLightCurve`` without importing ``skvo_veb``.
 2. ``skvo_veb_2`` Discovery page still works via bridge + session cache;
-   no nested provider tree after Phase 4.
+   no nested provider tree after Phase 5.
 3. Package depends on ``volightcurve``; no duplicate mag↔flux / I/O stack.
 4. Cursor skill ships with the package and is documented for consumers.
 5. Pure tests live with the package; Dash / CurveDash tests stay in
@@ -1684,8 +1759,8 @@ skill, and drive discovery without opening ``skvo_veb_2``.
 
 ### Status
 
-**Open.** Phase 0 next (agree name, path, cut line, Ticket 1 ownership,
-plugin registration depth, skill DoD).
+**Open.** Phase 0 in discussion (keep every science column; supply missing
+calibration only from documented research). Packaging is Phase 1.
 
 ---
 
