@@ -180,7 +180,7 @@ def test_qlp_unit_mismatch_refuses_magnitude_conversion():
         photcal=resolve_tess_photcal(["QLP"], tess_mag=11.42),
         flux_unit="electron s-1",
     )
-    with pytest.raises(PipeException, match="do not match|Domain switch"):
+    with pytest.raises(PipeException, match="not equivalent"):
         apply_tess_phot_domain_view(lcd, True)
     assert lcd.active_domain == DOMAIN_FLUX
     assert lcd.metadata["photcal"].get(PHOTCAL_KEY_ZP_FLUX_UNIT) is None

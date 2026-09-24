@@ -1838,32 +1838,42 @@ domain” with a stable exception type.
 
 ### Phases
 
-#### Phase 0 — Discuss time columns renaming case (discussion only)
+#### Phase 0 — Time column names — **Done**
 
-**Not** ingest cell validation (Ticket 13). Settle how **time** is named and
-represented in the **``VOLightCurve.table`` product** vs host ``CurveDash``
-(``jd`` absolute Julian date) vs VOTable wire (``obs_time`` + TIMESYS /
-timeorigin).
+The product table keeps the names it was given. Roles come from UCDs
+(``time.epoch``), not from a column called ``jd``. Absolute JD is a value
+plus a time origin. VOTable write may shift those values to MJD and set
+TIMESYS; the field name stays. Non-VO write encodes the time role as
+``jd`` only on the way out. ``CurveDash`` stores one absolute-JD series in
+its own column ``jd`` at the host edge.
 
-**Rejected (do not propose again without explicit developer ask):** forcing
-every codec to **rename** the product time column to ``jd`` on ingest
-(VOTable ``obs_time`` → values converted then column renamed ``jd``; CSV
-``JD`` → ``jd``; export still maps back). That conflates wire names, internal
-table names, and host DataFrame conventions.
+**Rejected:** forcing every ingest path to rename the product time column
+to ``jd``.
 
-**Discuss instead:** keep wire-appropriate names on ``volc.table`` where
-the contract already allows; document where absolute JD is computed; how
-``lc_bridge.volc_to_curvedash`` resolves time without a global rename;
-whether any rename belongs only at the host edge or in write codecs only.
+#### Phase 1 — Conversion, inspect, recovery — **locked, not coded**
 
-**Exit:** written decision in this ticket (or cross-link to ``io_contract``)
-before Ticket 13 implementation assumes a time **column name** beyond
-“exactly one time-role column” (leftmost — Ticket 13).
-
-#### Phase 1 — Conversion validator API (discussion)
-
-Choose validator entry point (``PhotCal`` factory from metadata vs dedicated
-``validate_photcal_for_conversion``).
+1. **Constructor.** ``PhotCal()`` with no arguments must store a calibration
+   that domain conversion refuses. It must not store a usable pair
+   (``zp_flux=1``, ``zp_mag=0``). The constructor does not raise.
+2. **Inspect.** One library call returns a list of specific problems
+   (missing zero point, unit that is not a unit, flux-column unit not
+   equivalent to the zero-point flux unit). It does not write defaults.
+   Domain switch must call this library inspect. A second rule set in
+   ``inspect_photcal_dict`` is not allowed once the library call exists.
+3. **Recovery.** Suggested constants stay in
+   ``volightcurve.photcal_defaults``. The only writer is
+   ``reconcile_photcal_dict``. Pages call it through one ``CurveDash``
+   method and must show every returned warning. ``lc_bridge`` does not
+   gain a filler. Domain switch does not call recovery.
+   ``gp.flux.resolve_gp_photcal`` must not invent calibration in the log.
+   On the GP page, every touch of calibration warns the user.
+   Keeping calibration correct when the page transforms the light curve
+   (detrend, fold, and the rest, except cleaning) is **Ticket 15**.
+4. **Conversion.** ``flux_to_mag``, ``mag_to_flux``, and the error helpers
+   are the only maths, inside volightcurve. They raise with the same
+   reasons inspect returns, before the arithmetic. No Dash or Plotly
+   wording in the exception. The app catches it, keeps the scientific
+   sentence, and adds the screen hint.
 
 #### Phase 2 — Implement and wire (when asked to code)
 
@@ -1890,16 +1900,22 @@ Choose validator entry point (``PhotCal`` factory from metadata vs dedicated
 
 ### Agent checklist
 
-- [ ] Phase 0: time column naming / renaming policy agreed (no silent ``jd`` mandate).
-- [ ] Phase 1: choose validator entry point (``PhotCal`` vs free function).
-- [ ] Phase 2: implement in ``volightcurve`` with tests.
-- [ ] Wire ``CurveDash.convert_to_*`` to volightcurve validator + ``PhotCal`` only.
-- [ ] Reduce duplication in ``photcal_coherence.inspect_*`` where safe.
-- [ ] No code until the developer says go after Phase 0–1.
+- [x] Phase 0: time column naming agreed (no product-wide ``jd`` rename).
+- [x] Phase 1: constructor refuses nothing; inspect is a library report;
+  recovery is ``reconcile_photcal_dict`` via ``CurveDash``; conversion
+  raises in volightcurve. Domain switch must not keep a second inspect.
+- [x] Phase 2: ``inspect_conversion_photcal`` and ``PhotCalError`` in volightcurve, with tests.
+- [x] ``CurveDash.convert_to_*`` uses ``PhotCal`` conversion and surfaces ``PhotCalError``.
+- [x] ``inspect_photcal_dict`` calls the library inspect. No second rule set.
+- [x] Code written after the developer said go. ``VOLightCurve`` NaN-fill helpers were not part of this pass.
 
 ### Status
 
-**Open.** Phase 0 next (discuss time columns renaming case).
+**Done** for the locked Phase 1 scope. Empty ``PhotCal`` does not carry a
+usable zero point. ``inspect_conversion_photcal`` is the only inspect.
+``reconcile_photcal_dict`` remains the only writer; ``CurveDash.reconcile_photcal``
+is the session entry. GP flux conversion no longer fills calibration quietly.
+Ticket 15 still owns calibration updates when a page rewrites the curve.
 
 ---
 
@@ -1935,13 +1951,24 @@ Ticket 12, not §8.
 **Library.** Do **not** drop extra time, magnitude, flux, or error columns.
 Do **not** rename columns to ``jd``.
 
-**Cells (volightcurve, when implemented).** Finite floats stay. ``nan`` and
-empty numeric fields become NaN. ``<`` / ``>`` tokens fail ingest. Optional
-repeated ``SENTINEL=<float>`` lists values that become NaN. Compare with a
-close test (absolute tolerance), not ``==``. Undeclared numbers such as
+**Cells (non-VO only).** Finite floats stay. ``nan`` and empty numeric
+fields become NaN. A leading ``<`` / ``>`` in an otherwise numeric column
+becomes NaN and does not fail the file. Optional repeated
+``SENTINEL=<float>`` lists values that become NaN. Compare with a close
+test (absolute tolerance), not ``==``. Undeclared numbers such as
 ``99.990`` stay numbers. The list is stored and written back on non-VO
 formats. Incomplete photcal does not fail ingest. An all-NaN magnitude
 column does not fail the file when flux still has finite values.
+
+**VOTable cells.** Do **not** apply ``SENTINEL`` or the ``<`` / ``>`` rule.
+Those keywords are a non-VO comment convention; inventing a VOTable
+equivalent is out of scope. Astropy's VOTable reader already turns an empty
+``<TD>`` and the text ``NaN`` into a masked numeric cell. A declared number
+such as ``99.99`` stays that number. No second pass in ``_ingest_votable``.
+
+**No finite photometry.** Out of scope for this package. Whether an empty
+magnitude or flux column is usable is the host's working-domain choice
+(magnitude versus flux), already above ``read_lightcurve``.
 
 **Host.** ``CurveDash`` keeps one series. If magnitude is all NaN and flux
 has finite values, select flux. Extra columns never enter that object, so
@@ -1964,17 +1991,18 @@ a volightcurve round-trip.
 
 ### Phases
 
-#### Phase 0 — Contract — **drafted**
+#### Phase 0 — Contract — **Done**
 
-``io_contract`` §4 ``SENTINEL`` and §9 (keep all columns; cell rules).
-Still open: whether “no finite photometry” is checked in the library or
-only when the host builds one series.
+``io_contract`` §4 ``SENTINEL`` and §9 (keep all columns; cell rules on
+non-VO). VOTable nulls stay with the VOTable reader (see locked rules).
+“No finite photometry” is host scope, not a library check.
 
 #### Phase 1 — Cells and ``SENTINEL`` — **Done**
 
-Repeated ``SENTINEL`` values become NaN via ``np.isclose`` (absolute
-tolerance ``1e-5``), not ``==``. ``<`` / ``>`` tokens fail ``.dat`` ingest.
-Columns are not dropped.
+Non-VO only. Repeated ``SENTINEL`` values become NaN via ``np.isclose``
+(absolute tolerance ``1e-5``), not ``==``. A leading ``<`` / ``>`` in an
+otherwise numeric column becomes NaN and does not fail the file. Columns
+are not dropped. VOTable ingest does not run this pass.
 
 #### Phase 2 — Host series pick — **Done**
 
@@ -1983,18 +2011,22 @@ If magnitude is all NaN and flux is not, the series uses flux.
 
 ### Agent checklist
 
-- [ ] §8 drafted in ``io_contract.md`` (no ``jd`` rename mandate).
-- [ ] Ticket 12 Phase 0 time naming decided or explicitly deferred with
-  documented interim behaviour.
-- [ ] Shared finalize in volightcurve; tests green in sibling + host volightcurve tests.
-- [ ] No ``lc_bridge`` validation policy fork.
-- [ ] No code until the developer says go after Phase 0 (and time naming if
-  required for tests).
+- [x] Cell rules drafted in ``io_contract.md`` §9 (no ``jd`` rename mandate).
+  Export naming stays in §8.
+- [x] Ticket 12 Phase 0 time naming deferred: the product time column is
+  not renamed. Further naming stays on Ticket 12.
+- [x] Non-VO cell pass lives in ``apply_non_votable_heuristics``. VOTable
+  is excluded on purpose (no invented sentinel vocabulary). “No finite
+  photometry” is not a library failure.
+- [x] No ``lc_bridge`` cell-validation fork. The host only chooses the
+  working photometry column for one series.
+- [x] Code was written only after the developer said go.
 
 ### Status
 
-**Open.** Phases 0–2 done for cells, sentinels, and host series pick.
-Library still keeps every column.
+**Done** for the revised scope. Non-VO cells, sentinels, and the host
+series pick are in place. VOTable nulls are left to the VOTable reader.
+An all-empty photometry column is the application's decision.
 
 ---
 
@@ -2170,3 +2202,60 @@ Export writes that name (not a forced ``label``) and that UCD. The working
 ### Status
 
 **Open.** Phases 0–5 **done**.
+
+---
+
+## Ticket 15 — Calibration stays correct when a page changes the light curve
+
+**Package:** ``skvo_veb`` pages that transform a loaded curve (GP for O-C,
+Lightcurve Processor, and any later page that rewrites photometry).
+
+**Related:** Ticket 7 (photcal coherence), Ticket 12 (conversion readiness;
+does not cover this). Cleaning points (drop rows, interval trim) is out of
+scope: the calibration of the remaining points does not change.
+
+### Goal
+
+Every operation that changes the light curve, other than cleaning, must
+update photometric calibration to match the new numbers, or refuse to run
+until the user has set that calibration. The same curve must not be treated
+as calibrated on one page and broken on the next.
+
+### Why this ticket exists
+
+GP upload already warns when it fills missing zero points
+(``reconcile_photcal_dict`` → ``gp-lc-photcal-alert``). The flux fit then
+calls ``gp.flux.resolve_gp_photcal``, which can fill calibration again and
+write the warning only to the log. That second fill is a sign that a page
+tool changed the curve (or its units) without a matching calibration
+update. Ticket 12 only requires the GP page to **show** a warning whenever
+it touches calibration. This ticket is the work that stops the calibration
+going stale in the first place.
+
+### Locked direction (when asked to code)
+
+1. List every page action that rewrites time or photometry (detrend, fold,
+   normalise, domain view, manual edit). Cleaning is excluded.
+2. For each action, record what must happen to ``metadata['photcal']`` and
+   ``flux_unit`` (scale zero points with the data, clear them, or block).
+3. One shared updater. Pages must not each invent a private repair.
+4. If the updater changes calibration, the page shows the warning. A log
+   line is not enough.
+
+### Out of scope
+
+- Ticket 12 conversion validator, constructor defaults, and the library
+  inspect.
+- Inventing zero points inside ``flux_to_mag`` / ``mag_to_flux``.
+- Row cleaning and interval trimming.
+
+### Agent checklist
+
+- [ ] Inventory of curve-changing actions and the calibration each one needs.
+- [ ] Shared updater; GP flux fit no longer repairs calibration in the log.
+- [ ] UI warning whenever that updater writes.
+- [ ] No code until the developer says go after the inventory is agreed.
+
+### Status
+
+**Open.** Inventory first. No code.

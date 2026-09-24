@@ -10,10 +10,21 @@ import astropy.units as u
 
 from volightcurve import PhotCal
 
-# Pogson σ_m / (σ_F/F) factor from PhotCal (not a hand-rolled constant).
-_PC = PhotCal(zp_flux=1.0, zp_flux_unit=None, zp_mag=0.0, mag_sys="Vega")
+def _pogson_error_photcal() -> PhotCal:
+    """Builds the arguments ``flux_err_to_mag_err`` needs for an SNR ratio.
+
+    Pogson gives ``σ_m = (2.5/ln(10)) * (σ_F/F)``. The zero-point flux and
+    the reference magnitude cancel, so the numbers below are not a Gaia
+    catalogue calibration and are not written onto a light curve.
+
+    Returns:
+        PhotCal: Calibration used only inside this module.
+    """
+    return PhotCal(zp_flux=1.0, zp_mag=0.0)
+
+
 MAG_ERR_FROM_SNR_FACTOR = float(
-    _PC.flux_err_to_mag_err(
+    _pogson_error_photcal().flux_err_to_mag_err(
         1.0 * u.dimensionless_unscaled,
         1.0 * u.dimensionless_unscaled,
     ).to_value(u.mag)
@@ -40,6 +51,6 @@ def mag_error_from_flux_over_error(snr_values) -> np.ndarray:
     n = int(np.count_nonzero(valid))
     flux = np.ones(n, dtype=float) * u.dimensionless_unscaled
     flux_err = (1.0 / snr[valid]) * u.dimensionless_unscaled
-    result = _PC.flux_err_to_mag_err(flux, flux_err)
+    result = _pogson_error_photcal().flux_err_to_mag_err(flux, flux_err)
     mag_err[valid] = np.asarray(result.to_value(u.mag), dtype=float)
     return mag_err

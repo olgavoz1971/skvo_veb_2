@@ -10,38 +10,40 @@ import numpy as np
 import pandas as pd
 
 from skvo_veb.utils.lc_bridge import photcal_from_metadata, unpack_json_for_plotly
-from skvo_veb.utils.photcal_coherence import reconcile_photcal_dict
 from volightcurve.lightcurve import PhotCal
+from volightcurve.photcal_check import PhotCalError
 
 logger = logging.getLogger(__name__)
+
+_GP_CALIBRATION_HINT = (
+    "Set the photometric zero points for this light curve before converting "
+    "or fitting. The upload warning lists any values that were only suggested."
+)
 
 
 def resolve_gp_photcal(meta: dict) -> PhotCal:
     """Build a ``PhotCal`` for mag-to-flux conversion.
 
-    Uses transport photcal after upload-time promotion. Reconcile is applied
-    again only when inspection still reports problems (idempotent if upload
-    already promoted).
+    Uses the calibration already stored on the packet. It does not fill
+    missing zero points. Upload is the place that may suggest defaults, and
+    that path shows a warning.
 
     Args:
-        meta (dict): Transport packet ``meta`` block (may be mutated).
+        meta (dict): Transport packet ``meta`` block.
 
     Returns:
         PhotCal: Calibration for monotonic mag-to-flux conversion before GP
         normalisation.
+
+    Raises:
+        PhotCalError: When the stored calibration cannot convert.
     """
     from skvo_veb.utils.photcal_coherence import inspect_photcal_dict
 
     flux_unit = meta.get("flux_unit")
     problems = inspect_photcal_dict(meta.get("photcal"), flux_unit=flux_unit)
     if problems:
-        photcal, warnings = reconcile_photcal_dict(
-            meta.get("photcal"),
-            flux_unit=flux_unit,
-        )
-        meta["photcal"] = photcal
-        for message in warnings:
-            logger.warning("GP photcal promote: %s", message)
+        raise PhotCalError([*problems, _GP_CALIBRATION_HINT])
     return photcal_from_metadata(meta.get("photcal") or {})
 
 

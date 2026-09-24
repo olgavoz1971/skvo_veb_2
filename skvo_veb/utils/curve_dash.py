@@ -698,6 +698,19 @@ class CurveDash:
             return {}
         return self.metadata.get('photcal', {})
 
+    def reconcile_photcal(self) -> list[str]:
+        """Fills missing zero points from the shared suggested constants.
+
+        This is the session entry for recovery. Callers must show every
+        returned warning. Domain conversion does not call this.
+
+        Returns:
+            list[str]: Warnings describing each invented or rewritten field.
+        """
+        from skvo_veb.utils.photcal_coherence import reconcile_curve_photcal
+
+        return reconcile_curve_photcal(self)
+
     def _resolve_photcal(self):
         """Builds a ``PhotCal`` instance from stored metadata.
 
@@ -738,7 +751,7 @@ class CurveDash:
             logger.critical("PhotCal mag_to_flux failed: %s", exc)
             raise PipeException(
                 "Cannot convert to flux: "
-                f"{exc}. Check the photometric calibration zero points."
+                f"{exc}\n\nOpen the Calibration section, correct the fields, and apply."
             ) from exc
         flux_vals = np.array(flux_quantity.value, dtype=float)
         flux_unit_str = to_internal(flux_quantity.unit)
@@ -793,7 +806,7 @@ class CurveDash:
             logger.critical("PhotCal flux_to_mag failed: %s", exc)
             raise PipeException(
                 "Cannot convert to magnitude: "
-                f"{exc}. Flux column and zero-point flux units must match."
+                f"{exc}\n\nOpen the Calibration section, correct the fields, and apply."
             ) from exc
         if flux_err_col is not None:
             flux_vals = flux_col.values.astype(float)

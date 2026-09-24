@@ -16,8 +16,8 @@ stored photcal. Callers **must** surface every returned warning to the user
 **Allowed invent call sites:**
 
 * :func:`reconcile_photcal_dict` — GP upload (``gp_for_oc`` + ``status_alert``);
-  ``gp.flux.resolve_gp_photcal`` (after upload promote); Processor form Apply
-  (``photcal_dict_from_form_values``).
+  Processor form Apply (``photcal_dict_from_form_values``).
+  ``gp.flux.resolve_gp_photcal`` does not call it.
 * :func:`reconcile_curve_photcal` — reserved for intentional CurveDash promote
   with a UI warning path; **not** used by domain switch.
 
@@ -302,70 +302,19 @@ def inspect_photcal_dict(
     Returns:
         list[str]: Problem messages (empty when photcal looks usable for switch).
     """
+    from volightcurve.photcal_check import inspect_conversion_photcal
+
     source = dict(photcal or {})
-    warnings: list[str] = []
-
-    zp_flux = source.get(PHOTCAL_KEY_ZP_FLUX)
-    zp_mag = source.get(PHOTCAL_KEY_ZP_MAG)
-    if zp_flux is None or zp_mag is None:
-        warnings.append(
-            "Photometric calibration is incomplete (missing zp_flux and/or "
-            "zp_mag). Domain switch was not applied."
-        )
-
-    zp_flux_unit = to_internal(source.get(PHOTCAL_KEY_ZP_FLUX_UNIT))
-    concrete_flux_unit = to_internal(flux_unit)
-
-    if zp_flux_unit is not None:
-        try:
-            u.Unit(zp_flux_unit)
-        except (ValueError, TypeError, u.UnitsError, u.UnitTypeError):
-            warnings.append(
-                f"Zeropoint flux unit ({_unit_label(zp_flux_unit)}) is not a "
-                "valid Astropy unit. Domain switch was not applied."
-            )
-
-    if concrete_flux_unit is not None and zp_flux_unit is not None:
-        try:
-            ua = u.Unit(zp_flux_unit)
-            ub = u.Unit(concrete_flux_unit)
-            if not ua.is_equivalent(ub):
-                warnings.append(
-                    f"Flux column unit ({_unit_label(concrete_flux_unit)}) and "
-                    f"zeropoint flux unit ({_unit_label(zp_flux_unit)}) do not "
-                    "match. Domain switch was not applied."
-                )
-        except (ValueError, TypeError, u.UnitsError, u.UnitTypeError):
-            pass
-    elif concrete_flux_unit is not None and zp_flux_unit is None:
-        # Dimensionless ZP vs concrete flux column.
-        try:
-            if not u.dimensionless_unscaled.is_equivalent(u.Unit(concrete_flux_unit)):
-                warnings.append(
-                    f"Flux column unit ({_unit_label(concrete_flux_unit)}) and "
-                    "zeropoint flux unit (dimensionless) do not match. "
-                    "Domain switch was not applied."
-                )
-        except (ValueError, TypeError, u.UnitsError, u.UnitTypeError):
-            warnings.append(
-                f"Flux column unit ({_unit_label(concrete_flux_unit)}) cannot be "
-                "compared with a dimensionless zeropoint. Domain switch was not "
-                "applied."
-            )
-
-    zp_mag_unit = source.get(PHOTCAL_KEY_ZP_MAG_UNIT)
-    if zp_mag_unit not in (None, ""):
-        try:
-            u.Unit(str(zp_mag_unit).strip())
-        except (ValueError, TypeError, u.UnitsError, u.UnitTypeError):
-            warnings.append(
-                f"Zeropoint magnitude unit ({zp_mag_unit}) is not a valid "
-                "Astropy unit. Domain switch was not applied."
-            )
-
-    for message in warnings:
+    problems = inspect_conversion_photcal(
+        zp_flux=source.get(PHOTCAL_KEY_ZP_FLUX),
+        zp_mag=source.get(PHOTCAL_KEY_ZP_MAG),
+        zp_flux_unit=to_internal(source.get(PHOTCAL_KEY_ZP_FLUX_UNIT)),
+        zp_mag_unit=source.get(PHOTCAL_KEY_ZP_MAG_UNIT),
+        flux_unit=to_internal(flux_unit),
+    )
+    for message in problems:
         logger.warning("%s", message)
-    return warnings
+    return problems
 
 
 def inspect_curve_photcal(lcd) -> list[str]:

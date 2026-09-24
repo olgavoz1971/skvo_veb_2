@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_photcal(meta: dict):
-    """Returns ``PhotCal`` from transport meta, with GP fallback when incomplete."""
+    """Returns ``PhotCal`` from transport meta.
+
+    Does not invent zero points when the stored calibration is incomplete.
+    """
     try:
         return photcal_from_metadata(meta.get("photcal"))
     except ValueError:

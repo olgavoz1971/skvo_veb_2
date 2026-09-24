@@ -147,8 +147,6 @@ def test_all_nan_magnitude_yields_to_finite_flux():
 
 def test_dat_mag0_reaches_curvedash_photcal():
     """``# MAG0=`` on a ``.dat`` file must survive ``ingest_lightcurve_file``."""
-    from skvo_veb.utils.lc_bridge import photcal_from_metadata
-
     dat = b"""# JD0=2400000
 # MAG0=10.0
 # jd mag mag_err
@@ -158,6 +156,4 @@ def test_dat_mag0_reaches_curvedash_photcal():
     lcd = ingest_lightcurve_file(io.BytesIO(dat), "curve.dat")
     photcal = lcd.metadata.get("photcal") or {}
     assert photcal.get(PHOTCAL_KEY_ZP_MAG) == pytest.approx(10.0)
-    assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(1.0)
-    pc = photcal_from_metadata(photcal)
-    assert float(pc.zp_mag.value) == pytest.approx(10.0)
+    assert PHOTCAL_KEY_ZP_FLUX not in photcal

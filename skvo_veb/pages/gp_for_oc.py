@@ -249,7 +249,7 @@ For **`.dat` files only**, you may include metadata in ``#`` comment lines (case
 | Pattern | Meaning |
 |---------|---------|
 | ``JD0 = <value>`` | Time origin added to the time column to obtain absolute Julian Date (default **0** if omitted). |
-| ``MAG0 = <value>`` | Reference magnitude for photometric calibration of this lightcurve (paired with a dimensionless instrumental zero point). Shared by prep and all timers. |
+| ``MAG0 = <value>`` | Reference magnitude for this lightcurve. A missing flux zero point stays missing. Shared by prep and all timers. |
 | ``PERIOD = <value>`` | Folding period in days (populates the **P** field after upload). |
 | ``EPOCH = <value>`` | Reference epoch in the same units and scale as the time column (populates **__PAGE_EPOCH_ADDON__**; combined with ``JD0`` when forming absolute JD). |
 | ``FILTER=`` / ``BAND=`` | Filter or band label stored in metadata. |
@@ -4596,7 +4596,11 @@ def update_GP_scale(trigger_clicks, intervals, user_tab_id):
     # df_lc = pd.DataFrame(data=di['data'], columns=di['columns'])
 
     # Search for the first interval that actually contains enough data points
-    lc_arrays = decode_gp_flux_arrays(lc_json_string)
+    try:
+        lc_arrays = decode_gp_flux_arrays(lc_json_string)
+    except (ValueError, PipeException):
+        logger.warning("GP length-scale guess skipped: calibration cannot convert")
+        return dash.no_update, dash.no_update, dash.no_update
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
         frag = slice_gp_flux_arrays(lc_arrays, jd_min, jd_max)
@@ -5134,7 +5138,11 @@ def run_gp(set_progress, n_clicks, user_tab_id, intervals, guess_sigma, extrema_
 
     # Decode the light curve once, then slice per interval: decoding is the
     # expensive half and does not depend on the interval.
-    lc_arrays = decode_gp_flux_arrays(lc_json_string)
+    try:
+        lc_arrays = decode_gp_flux_arrays(lc_json_string)
+    except (ValueError, PipeException) as exc:
+        error_alert = status_alert(str(exc), "warning")
+        return error_alert, "FINISHED", None, "", no_update
     work_items = []
     for piece in intervals:
         jd_min, jd_max = piece[0], piece[1]
