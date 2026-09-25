@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import urllib.error
 import urllib.request
 
 from skvo_veb.utils.my_tools import PipeException
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SEC = 120
 
 
-def fetch_volightcurve_from_accref(
+def fetch_votable_bytes(
     accref: str,
     *,
     timeout_sec: float = _DEFAULT_TIMEOUT_SEC,
-) -> VOLightCurve:
+) -> bytes:
     """Downloads one lightcurve VOTable from an SSA ``accref`` URL.
 
     Args:
@@ -27,10 +25,10 @@ def fetch_volightcurve_from_accref(
         timeout_sec (float): Network read timeout in seconds.
 
     Returns:
-        VOLightCurve: Parsed VO-standard lightcurve.
+        bytes: Archive VOTable, before enrichment.
 
     Raises:
-        PipeException: When the URL is missing or the download/parse fails.
+        PipeException: When the URL is missing or the download fails.
     """
     url = str(accref or "").strip()
     if not url:
@@ -44,11 +42,5 @@ def fetch_volightcurve_from_accref(
         logger.warning("accref download failed url=%s: %s", url, exc)
         raise PipeException(f"Failed to download lightcurve from accref: {exc}") from exc
 
-    try:
-        volc = VOLightCurve(io.BytesIO(payload))
-    except Exception as exc:
-        logger.warning("accref VOTable parse failed url=%s: %s", url, exc)
-        raise PipeException(f"Downloaded accref is not a valid lightcurve: {exc}") from exc
-
-    logger.info("Fetched lightcurve from accref url=%s n_points=%s", url, len(volc))
-    return volc
+    logger.info("Fetched lightcurve VOTable from accref url=%s nbytes=%s", url, len(payload))
+    return payload

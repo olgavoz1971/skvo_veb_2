@@ -26,7 +26,17 @@ OBS_COLLECTION = "gaiadr3"
 DATA_PRODUCT_TYPE = "timeseries"
 
 # Archive photcal GROUPs provide zeroPointFlux (Jy) but omit zeroPointReferenceMagnitude.
+# Magnitude columns receive 0 mag. Flux columns discard the Jy zero point.
+# Flux magnitude zero points: Riello et al. 2021, A&A 649, A3.
 GAIA_ARI_ZERO_POINT_REFERENCE_MAGNITUDE = 0.0
+GAIA_ARI_ZP_FLUX = 1.0
+GAIA_ARI_ZP_MAG_UNIT = "mag"
+GAIA_ARI_ZP_MAG_FOR_FLUX_BY_FILTER_IDENTIFIER = {
+    "GAIADR3.G": 25.6874,
+    "GAIADR3.Gbp": 25.3385,
+    "GAIADR3.Grp": 24.7479,
+}
+GAIA_ARI_ZP_SOURCE = "Riello et al. 2021, A&A 649, A3"
 
 OBSCORE_SELECT_COLUMNS = (
     "s_ra",

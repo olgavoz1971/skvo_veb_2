@@ -3,82 +3,151 @@
 from __future__ import annotations
 
 import logging
+import xml.etree.ElementTree as ET
 
 from skvo_veb.lc_providers.gaia_dr3_veb import config
-from skvo_veb.lc_providers.shared.filter_zp_mag import replace_zero_points
-from skvo_veb.lc_providers.shared.photcal_error_link import (
-    share_photcal_with_unlinked_errors,
-)
 from skvo_veb.utils.my_tools import PipeException
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
 
+_VOTABLE_NS = "http://www.ivoa.net/xml/VOTable/v1.3"
 
-def enrich_fetched_volightcurve(
-    volc: VOLightCurve,
-    *,
-    filter_name: str,
-) -> VOLightCurve:
-    """Normalises title and description on a VEB ``accref`` lightcurve product.
 
-    The archive TABLE ``name`` often omits the passband; this helper appends the
-    filter label for plot captions and export. Description must already be present
-    on the downloaded VOTable (``TABLE/DESCRIPTION``).
+def _local(tag: str) -> str:
+    """Returns an XML tag without its namespace.
 
     Args:
-        volc (VOLightCurve): Parsed product from ``fetch_volightcurve_from_accref``.
-        filter_name (str): Human-readable filter label from the catalogue row.
+        tag (str): Element tag.
 
     Returns:
-        VOLightCurve: The same instance with updated ``table.meta``.
+        str: Local name.
+    """
+    return tag.rsplit("}", 1)[-1]
+
+
+def _param(parent: ET.Element, name: str) -> ET.Element | None:
+    """Finds a direct child PARAM by name.
+
+    Args:
+        parent (xml.etree.ElementTree.Element): Parent element.
+        name (str): PARAM ``name``.
+
+    Returns:
+        xml.etree.ElementTree.Element or None: Matching PARAM.
+    """
+    for child in list(parent):
+        if _local(child.tag) == "PARAM" and child.get("name") == name:
+            return child
+    return None
+
+
+def _ensure_param(parent: ET.Element, name: str, value: str) -> None:
+    """Sets a char PARAM on a parent, adding it when absent.
+
+    Args:
+        parent (xml.etree.ElementTree.Element): Parent element.
+        name (str): PARAM ``name``.
+        value (str): PARAM ``value``.
+    """
+    found = _param(parent, name)
+    if found is None:
+        tag = f"{{{_VOTABLE_NS}}}PARAM" if parent.tag.startswith("{") else "PARAM"
+        found = ET.Element(tag)
+        found.set("name", name)
+        found.set("datatype", "char")
+        found.set("arraysize", "*")
+        parent.insert(0, found)
+    found.set("value", value)
+
+
+def enrich_votable(payload: bytes) -> bytes:
+    """Applies the documented Gaia DR3 VEB corrections to a VOTable.
+
+    The archive table name, description, and column names are kept. The
+    flux zero point and its unit are replaced for the three Gaia filters.
+    Facility and instrument are set to ``Gaia``.
+
+    Args:
+        payload (bytes): Downloaded ``accref`` VOTable.
+
+    Returns:
+        bytes: Enriched VOTable.
 
     Raises:
-        PipeException: When filter name or table description is missing.
+        PipeException: When the document has no TABLE description, or is not XML.
     """
-    filter_label = str(filter_name or "").strip()
-    if not filter_label:
-        raise PipeException(
-            f"{config.DISPLAY_NAME}: filter name is required for lightcurve metadata."
-        )
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise PipeException(f"{config.DISPLAY_NAME}: downloaded accref is not XML: {exc}") from exc
 
-    meta = volc.table.meta
-    if meta is None:
-        volc.table.meta = {}
-        meta = volc.table.meta
-
-    description = meta.get("description")
-    if not description or not str(description).strip():
+    tables = [element for element in root.iter() if _local(element.tag) == "TABLE"]
+    if not tables:
+        raise PipeException(f"{config.DISPLAY_NAME}: retrieved lightcurve has no TABLE.")
+    table = tables[0]
+    description = ""
+    for child in list(table):
+        if _local(child.tag) == "DESCRIPTION" and child.text:
+            description = child.text.strip()
+            break
+    if not description:
         raise PipeException(
             f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE description metadata."
         )
 
-    base_name = meta.get("name") or meta.get("ID")
-    if not base_name or not str(base_name).strip():
-        raise PipeException(
-            f"{config.DISPLAY_NAME}: retrieved lightcurve is missing TABLE name metadata."
+    _ensure_param(table, "facility_name", config.FACILITY_NAME)
+    _ensure_param(table, "instrument_name", config.INSTRUMENT_NAME)
+
+    for group in root.iter():
+        if _local(group.tag) != "GROUP" or group.get("name") != "photcal":
+            continue
+        filter_param = _param(group, "filterIdentifier")
+        if filter_param is None:
+            continue
+        filter_id = str(filter_param.get("value") or "").strip()
+        if filter_id not in config.GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER:
+            continue
+        flux = _param(group, "zeroPointFlux")
+        if flux is None:
+            tag = f"{{{_VOTABLE_NS}}}PARAM" if group.tag.startswith("{") else "PARAM"
+            flux = ET.SubElement(group, tag)
+            flux.set("name", "zeroPointFlux")
+            flux.set("datatype", "double")
+        flux.set("value", str(config.GAIA_DR3_ZP_FLUX))
+        flux.set("unit", config.GAIA_DR3_ZP_FLUX_UNIT)
+        mag = _param(group, "zeroPointReferenceMagnitude")
+        if mag is None:
+            tag = f"{{{_VOTABLE_NS}}}PARAM" if group.tag.startswith("{") else "PARAM"
+            mag = ET.SubElement(group, tag)
+            mag.set("name", "zeroPointReferenceMagnitude")
+            mag.set("datatype", "double")
+        mag.set("value", str(config.GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER[filter_id]))
+        mag.set("unit", config.GAIA_DR3_ZP_MAG_UNIT)
+        mag.set("utype", "photDM:PhotCal.zeroPoint.referenceMagnitude.value")
+        logger.info(
+            "%s replaced zero points filter=%s zp_flux=%s %s zp_mag=%s %s (%s)",
+            config.DISPLAY_NAME,
+            filter_id,
+            config.GAIA_DR3_ZP_FLUX,
+            config.GAIA_DR3_ZP_FLUX_UNIT,
+            config.GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER[filter_id],
+            config.GAIA_DR3_ZP_MAG_UNIT,
+            config.GAIA_DR3_ZP_SOURCE,
         )
 
-    title = f"{str(base_name).strip()} in {filter_label} filter"
-    meta["name"] = title
-    meta["lightcurve_title"] = title
-    meta["facility_name"] = config.FACILITY_NAME
-    meta["instrument_name"] = config.INSTRUMENT_NAME
-    replace_zero_points(
-        volc,
-        display_name=config.DISPLAY_NAME,
-        zp_mag_by_filter_identifier=config.GAIA_DR3_ZP_MAG_BY_FILTER_IDENTIFIER,
-        zp_mag_unit=config.GAIA_DR3_ZP_MAG_UNIT,
-        zp_flux=config.GAIA_DR3_ZP_FLUX,
-        zp_flux_unit=config.GAIA_DR3_ZP_FLUX_UNIT,
-        source=config.GAIA_DR3_ZP_SOURCE,
-    )
+    group_id = None
+    for group in root.iter():
+        if _local(group.tag) == "GROUP" and group.get("name") == "photcal" and group.get("ID"):
+            group_id = group.get("ID")
+            break
+    if group_id:
+        for field in table.iter():
+            if _local(field.tag) != "FIELD":
+                continue
+            ucd = field.get("ucd") or ""
+            if "stat.error" in ucd and not field.get("ref"):
+                field.set("ref", group_id)
 
-    logger.debug(
-        "%s metadata enriched title=%s publication_id=%s",
-        config.DISPLAY_NAME,
-        title,
-        meta.get("bibcode") or meta.get("publication_id"),
-    )
-    share_photcal_with_unlinked_errors(volc)
-    return volc
+    if root.tag.startswith("{"):
+        ET.register_namespace("", _VOTABLE_NS)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)

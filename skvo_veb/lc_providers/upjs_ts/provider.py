@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
@@ -13,7 +15,7 @@ from skvo_veb.lc_providers.base import (
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_volightcurve_from_accref
+from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_votable_bytes
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
     format_gaia_source_name,
     parse_gaia_source_id,
@@ -21,14 +23,32 @@ from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
 )
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.lc_providers.upjs_ts import config
-from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
 from skvo_veb.lc_providers.upjs_ts.resolve_target import resolve_upjs_target_name
 from skvo_veb.lc_providers.upjs_ts.ssa_catalog import map_ssa_table_to_catalog
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the enriched VOTable where it leaves this plugin.
+
+    Files are ``lc_tmp_1.vot``, ``lc_tmp_2.vot``, and so on, in a temporary
+    directory for this plugin only.
+
+    Args:
+        payload (bytes): Enriched VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class UpjsTsProvider(MissionLightcurveProvider):
@@ -183,15 +203,15 @@ class UpjsTsProvider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context=None,
-    ) -> VOLightCurve:
-        """Downloads one lightcurve from the SSA row ``accref`` URL.
+    ) -> bytes:
+        """Downloads one lightcurve and returns the enriched VOTable.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
             force_refresh (bool): Accepted for API compatibility; no cache yet.
 
         Returns:
-            VOLightCurve: VO-standard lightcurve from the remote product URL.
+            bytes: Enriched VOTable. The Dash application parses it after this return.
 
         Raises:
             PipeException: When the key is invalid or download fails.
@@ -204,25 +224,15 @@ class UpjsTsProvider(MissionLightcurveProvider):
         if not accref:
             raise PipeException(f"{self.display_name}: lc_key payload missing accref.")
 
-        filter_name = payload.get("filter_name")
-        if not filter_name:
-            raise PipeException(f"{self.display_name}: lc_key payload missing filter_name.")
-
         logger.info(
             "%s fetch accref=%s force_refresh=%s",
             self.display_name,
             str(accref)[:64],
             force_refresh,
         )
-        volc = fetch_volightcurve_from_accref(
-            str(accref),
-            provider_label=self.display_name,
-        )
-        return enrich_fetched_volightcurve(
-            volc,
-            filter_name=str(filter_name),
-            object_id=payload.get("object_id"),
-        )
+        enriched = enrich_votable(fetch_votable_bytes(str(accref)))
+        _save_debug_votable(enriched)
+        return enriched
 
     def _catalog_by_ssa_targname(
         self,

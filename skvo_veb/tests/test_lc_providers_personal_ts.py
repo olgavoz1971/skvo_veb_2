@@ -116,7 +116,7 @@ def test_personal_sets_magnitude_zero_point_for_arp_filter():
     """Personal collections set zp_mag 0 for Palomar/Arp1961.103aO_atm when the file has none."""
     import io
 
-    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_fetched_volightcurve
+    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_votable
     from volightcurve import VOLightCurve
 
     xml = """<?xml version="1.0"?>
@@ -136,9 +136,27 @@ def test_personal_sets_magnitude_zero_point_for_arp_filter():
 </TABLE>
 </RESOURCE>
 </VOTABLE>"""
-    volc = VOLightCurve(io.BytesIO(xml.encode()))
-    enrich_fetched_volightcurve(volc, filter_name="pg", object_id="1")
+    volc = VOLightCurve(io.BytesIO(enrich_votable(xml.encode())))
     photcal = volc.photdms["mag"].photcal
     assert float(photcal.zp_mag.value) == 0.0
     assert float(photcal.zp_flux.value) == 2500.0
+    assert volc.table.meta["name"] == "star"
     assert volc.photdms["mag_err"].photcal is photcal
+
+
+def test_personal_raw_file_sets_bessell_v_magnitude_zero_point():
+    """The published personal series keeps its flux zero point and table name."""
+    import io
+    from pathlib import Path
+
+    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_votable
+    from volightcurve import VOLightCurve
+
+    raw = Path("/home/voz/projects/UPJS/tmp/p.xml").read_bytes()
+    volc = VOLightCurve(io.BytesIO(enrich_votable(raw)))
+    photdm = volc.photdms["phot"]
+    assert photdm.filter.filter_id == "Generic/Bessell.V"
+    assert float(photdm.photcal.zp_mag.value) == 0.0
+    assert float(photdm.photcal.zp_flux.value) == 3630.2172842325
+    assert volc.table.meta["name"] == "MO_Psc"
+    assert volc.photdms["mag_err"].photcal is photdm.photcal

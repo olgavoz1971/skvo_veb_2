@@ -157,24 +157,44 @@ def _upjs_votable(*, zp_mag: str | None, filter_id: str = "Generic/Bessell.V") -
     return xml.encode()
 
 
-def test_upjs_sets_magnitude_zero_point_for_bessell_v():
-    """UPJŠ Bessell V with no magnitude zero point receives 0 mag; flux zero point stays."""
-    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
+def _parse(payload: bytes):
+    """Parses enriched bytes the way Discovery does after the plugin returns."""
     from volightcurve import VOLightCurve
 
-    volc = VOLightCurve(io.BytesIO(_upjs_votable(zp_mag=None)))
-    enrich_fetched_volightcurve(volc, filter_name="V", object_id="3716")
+    return VOLightCurve(io.BytesIO(payload))
+
+
+def test_upjs_sets_magnitude_zero_point_for_bessell_v():
+    """UPJŠ Bessell V with no magnitude zero point receives 0 mag; flux zero point stays."""
+    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
+
+    volc = _parse(enrich_votable(_upjs_votable(zp_mag=None)))
     photcal = volc.photdms["mag"].photcal
     assert float(photcal.zp_mag.value) == 0.0
     assert float(photcal.zp_flux.value) == 3631.0
+    assert volc.table.meta["name"] == "star"
     assert volc.photdms["mag_err"].photcal is photcal
 
 
 def test_upjs_sets_magnitude_zero_point_for_sdss_g():
     """UPJŠ SDSS g with no magnitude zero point receives 0 mag."""
-    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_fetched_volightcurve
-    from volightcurve import VOLightCurve
+    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
 
-    volc = VOLightCurve(io.BytesIO(_upjs_votable(zp_mag=None, filter_id="SLOAN/SDSS.g")))
-    enrich_fetched_volightcurve(volc, filter_name="g", object_id="3716")
+    volc = _parse(enrich_votable(_upjs_votable(zp_mag=None, filter_id="SLOAN/SDSS.g")))
     assert float(volc.photdms["mag"].photcal.zp_mag.value) == 0.0
+
+
+def test_upjs_raw_file_sets_bessell_v_magnitude_zero_point():
+    """The published UPJŠ series keeps its flux zero point and table name."""
+    from pathlib import Path
+
+    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
+
+    raw = Path("/home/voz/projects/UPJS/tmp/t.xml").read_bytes()
+    volc = _parse(enrich_votable(raw))
+    photdm = volc.photdms["phot"]
+    assert photdm.filter.filter_id == "Generic/Bessell.V"
+    assert float(photdm.photcal.zp_mag.value) == 0.0
+    assert float(photdm.photcal.zp_flux.value) == 3630.2172842325
+    assert volc.table.meta["name"] == "Gaia DR3 1866731501415519488"
+    assert volc.photdms["mag_err"].photcal is photdm.photcal

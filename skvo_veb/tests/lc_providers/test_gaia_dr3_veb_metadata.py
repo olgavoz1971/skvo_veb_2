@@ -6,7 +6,7 @@ import io
 
 import pytest
 
-from skvo_veb.lc_providers.gaia_dr3_veb.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.gaia_dr3_veb.fetch_metadata import enrich_votable
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import (
     METADATA_KEY_VO_ENVELOPE,
@@ -19,13 +19,12 @@ from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
 
 
-def _minimal_veb_like_volc(
+def _minimal_veb_bytes(
     *,
     table_name: str = "Gaia DR3 1936512041221649536",
     description: str = "Gaia DR3 epoch photometry from UPJS VEB archive.",
     bibcode: str | None = "2023A&amp;A...674A...1G",
-) -> VOLightCurve:
-    """Builds a minimal VOTable-shaped VOLightCurve for metadata unit tests."""
+) -> bytes:
     bib_param = ""
     if bibcode:
         bib_param = (
@@ -59,7 +58,19 @@ def _minimal_veb_like_volc(
   </RESOURCE>
 </VOTABLE>
 """.encode()
-    return VOLightCurve(io.BytesIO(vot_bytes))
+    return vot_bytes
+
+
+def _parse(payload: bytes) -> VOLightCurve:
+    """Parses an enriched VOTable the way the Dash side does.
+
+    Args:
+        payload (bytes): Enriched VOTable.
+
+    Returns:
+        VOLightCurve: Parsed product.
+    """
+    return VOLightCurve(io.BytesIO(payload))
 
 
 def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
@@ -72,8 +83,8 @@ def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
     }
     for path, (filter_id, zp_mag) in expected.items():
         assert path.is_file(), path
-        volc = VOLightCurve(path)
-        enrich_fetched_volightcurve(volc, filter_name=filter_id)
+        payload = enrich_votable(path.read_bytes())
+        volc = _parse(payload)
         photcal = volc.photdms["phot"].photcal
         assert volc.photdms["phot"].filter.filter_id == filter_id
         assert float(photcal.zp_flux.value) == 1.0
@@ -82,29 +93,31 @@ def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
         assert volc.photdms["flux_error"].photcal is photcal
 
 
-def test_enrich_fetched_volightcurve_appends_filter_to_title():
-    """VEB enrich adds the passband to the archive TABLE name for captions."""
-    volc = _minimal_veb_like_volc()
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
-    assert volc.table.meta["name"] == "Gaia DR3 1936512041221649536 in Gaia G filter"
-    assert volc.table.meta["lightcurve_title"] == volc.table.meta["name"]
+def test_enrich_fetched_volightcurve_keeps_archive_table_name():
+    """VEB enrich does not rewrite the archive TABLE name."""
+    volc = _parse(enrich_votable(_minimal_veb_bytes()))
+    assert volc.table.meta["name"] == "Gaia DR3 1936512041221649536"
+    assert "lightcurve_title" not in volc.table.meta
+    assert volc.table.meta["facility_name"] == "Gaia"
+    assert volc.table.meta["instrument_name"] == "Gaia"
 
 
 def test_enrich_raises_when_description_missing():
     """Provider enrichment requires TABLE description from the archive product."""
-    volc = _minimal_veb_like_volc()
-    del volc.table.meta["description"]
+    payload = _minimal_veb_bytes().replace(
+        b"<DESCRIPTION>Gaia DR3 epoch photometry from UPJS VEB archive.</DESCRIPTION>",
+        b"",
+    )
     with pytest.raises(PipeException, match="missing TABLE description"):
-        enrich_fetched_volightcurve(volc, filter_name="Gaia G")
+        enrich_votable(payload)
 
 
 def test_veb_metadata_survives_curvedash_plot_title_and_export():
     """Enriched title, description, and bibcode round-trip through CurveDash export."""
-    volc = _minimal_veb_like_volc()
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
+    volc = _parse(enrich_votable(_minimal_veb_bytes()))
 
     lcd = volc_to_curvedash(volc, "veb_g.vot")
-    assert lcd.title == "Gaia DR3 1936512041221649536 in Gaia G filter"
+    assert lcd.title == "Gaia DR3 1936512041221649536"
 
     envelope = lcd.metadata.get(METADATA_KEY_VO_ENVELOPE) or {}
     assert envelope.get(VO_ENVELOPE_KEY_LIGHTCURVE_TITLE) == lcd.title
@@ -113,7 +126,7 @@ def test_veb_metadata_survives_curvedash_plot_title_and_export():
 
     exported = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
     xml = exported.decode("utf-8", errors="ignore")
-    assert 'name="Gaia DR3 1936512041221649536 in Gaia G filter"' in xml
+    assert 'name="Gaia DR3 1936512041221649536"' in xml
     assert "Gaia DR3 epoch photometry from UPJS VEB archive." in xml
     assert 'name="bibcode"' in xml
     assert "2023A&amp;A...674A...1G" in xml or "2023A&A...674A...1G" in xml

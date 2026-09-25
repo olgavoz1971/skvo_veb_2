@@ -16,6 +16,39 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SEC = 120
 
 
+def fetch_votable_bytes(
+    access_url: str,
+    *,
+    timeout_sec: float = _DEFAULT_TIMEOUT_SEC,
+) -> bytes:
+    """Downloads one bundled Gaia DR3 VOTable.
+
+    Args:
+        access_url (str): Absolute HTTP(S) URL of the timeseries product.
+        timeout_sec (float): Network read timeout in seconds.
+
+    Returns:
+        bytes: Archive VOTable, before enrichment.
+
+    Raises:
+        PipeException: When the URL is missing or the download fails.
+    """
+    url = str(access_url or "").strip()
+    if not url:
+        raise PipeException("Lightcurve access_url is empty.")
+
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "skvo_veb/lc_providers"})
+        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
+            payload = response.read()
+    except urllib.error.URLError as exc:
+        logger.warning("access_url download failed url=%s: %s", url, exc)
+        raise PipeException(f"Failed to download lightcurve from access_url: {exc}") from exc
+
+    logger.info("Fetched Gaia DR3 ARI VOTable url=%s nbytes=%s", url, len(payload))
+    return payload
+
+
 def fetch_volightcurve_from_access_url(
     access_url: str,
     *,
@@ -36,17 +69,7 @@ def fetch_volightcurve_from_access_url(
         PipeException: When the URL is missing or the download/parse fails.
     """
     url = str(access_url or "").strip()
-    if not url:
-        raise PipeException("Lightcurve access_url is empty.")
-
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "skvo_veb/lc_providers"})
-        with urllib.request.urlopen(request, timeout=timeout_sec) as response:
-            payload = response.read()
-    except urllib.error.URLError as exc:
-        logger.warning("access_url download failed url=%s: %s", url, exc)
-        raise PipeException(f"Failed to download lightcurve from access_url: {exc}") from exc
-
+    payload = fetch_votable_bytes(url, timeout_sec=timeout_sec)
     try:
         volc = VOLightCurve(io.BytesIO(payload), table_id=int(table_id))
     except Exception as exc:

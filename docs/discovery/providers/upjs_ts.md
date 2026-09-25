@@ -1,5 +1,7 @@
 # UPJŠ time series (`upjs_ts`)
 
+Expands [schema.md](../schema.md).
+
 ## 1. Discovery
 
 TAP `https://skvo.science.upjs.sk/tap`, ADQL 2.1, table `upjs_ts.ts_ssa`.
@@ -29,11 +31,12 @@ the file has none and `photDM:PhotometryFilter.identifier` is one of
 `Generic/Bessell.U`, `Generic/Bessell.B`, `Generic/Bessell.V`,
 `Generic/Bessell.R`, `Generic/Bessell.I`, `SLOAN/SDSS.g`, `SLOAN/SDSS.r`,
 `SLOAN/SDSS.i`. Any other
-identifier is left unchanged. The flux zero point stays as published.
+identifier is left unchanged. A magnitude zero point the archive already
+published is left as it is. The flux zero point stays as published. The
+archive table name, description, and column names are kept.
 
-The TABLE title is rewritten to `<archive name> in <filter> filter`.
-
-An error column that does not already reference a photcal receives the
-photcal of the single magnitude or flux column that has one. An error
-column the archive already linked is left as it is. The same step runs
-for the other discovery providers.
+When the product has one photcal group, an error column that does not
+already reference a photcal receives that group's id. If the group has no
+id, the id `photcal` is set so the reference can be written. An error
+column the archive already linked is left as it is. Several photcal groups
+are left unlinked.

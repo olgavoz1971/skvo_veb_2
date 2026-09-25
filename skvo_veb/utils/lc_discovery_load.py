@@ -99,6 +99,12 @@ def fetch_discovery_volightcurve(
         force_refresh=force_refresh,
         discovery_context=discovery_context,
     )
+    if isinstance(volc, (bytes, bytearray)):
+        import io
+
+        from volightcurve import VOLightCurve
+
+        volc = VOLightCurve(io.BytesIO(volc))
     logger.info(
         'Discovery fetch mission=%s lc_key=%s n_points=%s force_refresh=%s',
         mission_id,

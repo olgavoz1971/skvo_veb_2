@@ -148,45 +148,18 @@ def test_ogle_fetch_lightcurve_from_accref(monkeypatch):
     )
     lc_key = catalog["lc_key"][0]
 
-    class _FakeVolc:
-        def __init__(self):
-            self.table = type(
-                "T",
-                (),
-                {
-                    "meta": {
-                        "name": "OGLE-SMC-ECL-05425",
-                        "description": "OGLE I-band lightcurve.",
-                    }
-                },
-            )()
-            self.photdms = {}
-
-        def __len__(self):
-            return 2312
-
-        def get_mag_colnames(self):
-            return []
-
-        def get_mag_error_colnames(self):
-            return []
-
-        def get_flux_colnames(self):
-            return []
-
-        def get_flux_error_colnames(self):
-            return []
-
     def _fake_fetch(accref, **kwargs):
         assert accref.startswith("https://")
-        return _FakeVolc()
+        return _ogle_votable(filter_id="Generic/Bessell.I")
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ogle_ocvs.provider.fetch_volightcurve_from_accref",
+        "skvo_veb.lc_providers.ogle_ocvs.provider.fetch_votable_bytes",
         _fake_fetch,
     )
-    volc = provider.fetch_lightcurve(lc_key)
-    assert volc.table.meta["lightcurve_title"] == "OGLE-SMC-ECL-05425 in OGLE I filter"
+    payload = provider.fetch_lightcurve(lc_key)
+    text = payload.decode()
+    assert 'name="OGLE-SMC-RRLYR-3931"' in text
+    assert "in OGLE I filter" not in text
 
 
 def _ogle_votable(*, filter_id: str) -> bytes:
@@ -212,28 +185,59 @@ def _ogle_votable(*, filter_id: str) -> bytes:
     return xml.encode()
 
 
-def test_ogle_sets_magnitude_zero_point_for_bessell_v():
-    """Every OGLE product with filter identifier Generic/Bessell.V gets zp_mag 0."""
+def _parse(payload: bytes):
+    """Parses enriched bytes the way Discovery does after the plugin returns."""
     import io
 
-    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
     from volightcurve import VOLightCurve
 
-    volc = VOLightCurve(io.BytesIO(_ogle_votable(filter_id="Generic/Bessell.V")))
-    enrich_fetched_volightcurve(volc, filter_name="OGLE V", object_id="OGLE-SMC-RRLYR-3931")
+    return VOLightCurve(io.BytesIO(payload))
+
+
+def test_ogle_sets_magnitude_zero_point_for_bessell_v():
+    """Every OGLE product with filter identifier Generic/Bessell.V gets zp_mag 0."""
+    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
+
+    volc = _parse(enrich_votable(_ogle_votable(filter_id="Generic/Bessell.V")))
     photcal = volc.photdms["phot"].photcal
     assert float(photcal.zp_mag.value) == 0.0
     assert float(photcal.zp_flux.value) == 3630.2172842325
+    assert volc.table.meta["facility_name"] == "Las Campanas"
+    assert volc.table.meta["name"] == "OGLE-SMC-RRLYR-3931"
     assert volc.photdms["mag_err"].photcal is photcal
+
+
+def test_ogle_paramref_filter_identifier_sets_magnitude_zero_point():
+    """A Bessell identifier published via PARAMref still receives zp_mag 0."""
+    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
+
+    xml = """<?xml version="1.0"?>
+<VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE>
+<TABLE name="OGLE-SMC-RRLYR-3931">
+<DESCRIPTION>The OGLE lightcurve</DESCRIPTION>
+<PARAM ID="fps_filter_id" name="fps_filter_id" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="Generic/Bessell.V"/>
+<PARAM ID="zeropoint" name="zeropoint" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="3630.2172842325" unit="Jy"/>
+<GROUP name="photcal">
+<PARAMref ref="fps_filter_id"/>
+<PARAMref ref="zeropoint"/>
+<FIELDref ref="phot"/>
+</GROUP>
+<FIELD name="obs_time" ID="obs_time" datatype="double" ucd="time.epoch" unit="d"/>
+<FIELD name="phot" ID="phot" datatype="double" ucd="phot.mag" unit="mag"/>
+<DATA><TABLEDATA><TR><TD>55999</TD><TD>18.1</TD></TR></TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>"""
+    volc = _parse(enrich_votable(xml.encode()))
+    photcal = volc.photdms["phot"].photcal
+    assert float(photcal.zp_mag.value) == 0.0
+    assert float(photcal.zp_flux.value) == 3630.2172842325
 
 
 def test_ogle_leaves_unlisted_filter_identifier_unchanged():
     """A filter identifier with no config row does not receive a magnitude zero point."""
-    import io
+    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
 
-    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
-    from volightcurve import VOLightCurve
-
-    volc = VOLightCurve(io.BytesIO(_ogle_votable(filter_id="Generic/Unknown.X")))
-    enrich_fetched_volightcurve(volc, filter_name="OGLE X", object_id="OGLE-SMC-RRLYR-3931")
+    volc = _parse(enrich_votable(_ogle_votable(filter_id="Generic/Unknown.X")))
     assert volc.photdms["phot"].photcal.zp_mag is None

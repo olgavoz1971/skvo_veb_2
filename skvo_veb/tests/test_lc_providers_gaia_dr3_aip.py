@@ -347,18 +347,63 @@ def test_aip_fetch_lightcurve_from_prefetch(
         provider_id=config.PROVIDER_ID,
     )
     g_row = catalog[catalog["filter_name"] == "Gaia G"][0]
-    volc = provider.fetch_lightcurve(g_row["lc_key"])
-    assert len(volc) == band_point_count(gaia_aip_epoch_payload, band_code="G")
-    phot_col = "mag" if "mag" in volc.photdms else "phot"
-    assert volc.photdms[phot_col].filter.filter_id == "GAIADR3.G"
+    payload_out = provider.fetch_lightcurve(g_row["lc_key"])
+    import io
+
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(payload_out))
+    assert "transit_mag" in volc.table.colnames
+    assert volc.photdms["transit_mag"].filter.filter_id == "GAIA/GAIA3.G"
     assert volc.table.meta.get("period") is None
     assert volc.table.meta.get("object_class") is None
 
     lcd = volc_to_curvedash(volc, "gaia_aip_G.vot")
     assert lcd.active_domain == DOMAIN_MAG
     photcal = lcd.metadata.get("photcal") or {}
-    assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(3296.2)
+    assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(3228.75)
     assert photcal.get(PHOTCAL_KEY_ZP_MAG) == pytest.approx(0.0)
+
+
+def test_aip_raw_file_expands_g_band():
+    """The TAP epoch row becomes one G light curve with the short Jy zero point."""
+    import io
+    from pathlib import Path
+
+    from skvo_veb.lc_providers.gaia_dr3_aip.fetch_metadata import enrich_votable
+    from volightcurve import VOLightCurve
+
+    raw = Path("/home/voz/projects/UPJS/tmp/g_aip.xml").read_bytes()
+    volc = VOLightCurve(io.BytesIO(enrich_votable(raw, band_code="G")))
+    assert volc.table.meta["name"] == "Gaia DR3 1704795806820110080 GAIA/GAIA3.G"
+    assert volc.table.meta["source_id"] == 1704795806820110080
+    assert "source_id" not in volc.table.colnames
+    assert list(volc.table.colnames) == [
+        "transit_time",
+        "transit_mag",
+        "mag_error",
+        "transit_flux_over",
+        "transit_n_obs",
+    ]
+    photcal = volc.photdms["transit_mag"].photcal
+    assert float(photcal.zp_flux.value) == pytest.approx(3228.75)
+    assert float(photcal.zp_mag.value) == pytest.approx(0.0)
+    assert volc.photdms["mag_error"].photcal is photcal
+    assert len(volc) == 34
+
+
+def test_aip_raw_file_drops_bp_rows_with_nan_time_or_mag():
+    """BP epochs with a NaN time or magnitude are removed."""
+    import io
+    from pathlib import Path
+
+    from skvo_veb.lc_providers.gaia_dr3_aip.fetch_metadata import enrich_votable
+    from volightcurve import VOLightCurve
+
+    raw = Path("/home/voz/projects/UPJS/tmp/g_aip.xml").read_bytes()
+    volc = VOLightCurve(io.BytesIO(enrich_votable(raw, band_code="BP")))
+    assert len(volc) < 34
+    assert len(volc) == 32
 
 
 def test_aip_discovery_rejects_time_window_filter():

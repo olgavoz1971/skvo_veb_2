@@ -4,6 +4,8 @@
 
 **Human-readable how-to:** [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md) — shorter checklist for plugging in a new provider (including TAP).
 
+**Discovery schema and provider notes:** [README.md](README.md).
+
 **Status:** Implemented for Discovery (2026-07-30). `lc_providers/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Retrieve on `/lc_discovery`. Legacy `/asassn` page remains until retired.
 
 **Related docs:**
@@ -539,8 +541,7 @@ Fetch cache should store VOTable bytes so multiple users and notebooks share the
 
 Per-mission discovery, retrieval, and any calibration this code adds:
 
-- [UPJŠ time series](providers/upjs_ts.md)
-- [Gaia DR3 VEB](providers/gaia_dr3_veb.md)
+- [Index](README.md)
 
 After each fetch, an error column with no photcal of its own is linked to
 the photcal of the single matching magnitude or flux column

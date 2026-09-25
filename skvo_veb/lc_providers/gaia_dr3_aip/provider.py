@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
@@ -13,12 +15,13 @@ from skvo_veb.lc_providers.base import (
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.gaia_dr3_aip import config
-from skvo_veb.lc_providers.gaia_dr3_aip.build_volightcurve import build_volightcurve_from_prefetch
+from skvo_veb.lc_providers.gaia_dr3_aip.fetch_metadata import votable_from_cached_epoch
 from skvo_veb.lc_providers.gaia_dr3_aip.catalog import map_source_table_to_catalog
 from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import cache_dict_from_tap_table
 from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import (
     clear_epoch_photometry,
     epoch_photometry_is_cached,
+    load_epoch_photometry,
     store_epoch_photometry,
 )
 from skvo_veb.lc_providers.lc_key import decode_lc_key
@@ -30,9 +33,27 @@ from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the enriched VOTable where it leaves this plugin.
+
+    Files are ``lc_tmp_1.vot``, ``lc_tmp_2.vot``, and so on, in a temporary
+    directory for this plugin only.
+
+    Args:
+        payload (bytes): Enriched VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class GaiaDr3AipProvider(MissionLightcurveProvider):
@@ -187,15 +208,15 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context=None,
-    ) -> VOLightCurve:
-        """Builds one passband lightcurve, fetching epoch photometry on demand.
+    ) -> bytes:
+        """Downloads epoch photometry and returns one band as a VOTable.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
             force_refresh (bool): When true, re-query epoch photometry from TAP.
 
         Returns:
-            VOLightCurve: VO-standard single-band lightcurve.
+            bytes: Enriched VOTable. The Dash application parses it after this return.
 
         Raises:
             PipeException: When the key is invalid or fetch fails validation.
@@ -230,13 +251,9 @@ class GaiaDr3AipProvider(MissionLightcurveProvider):
             band,
             force_refresh,
         )
-        return build_volightcurve_from_prefetch(
-            source_id=source_id,
-            band_code=str(band),
-            ra_deg=float(ra_deg),
-            dec_deg=float(dec_deg),
-            filter_name=str(filter_name),
-        )
+        enriched = votable_from_cached_epoch(load_epoch_photometry(source_id), band_code=str(band))
+        _save_debug_votable(enriched)
+        return enriched
 
     def _query_gaia_source_by_id(self, source_id: int) -> Table:
         """Runs the Gaia source lookup ADQL query.

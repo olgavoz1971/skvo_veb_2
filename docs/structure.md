@@ -30,8 +30,7 @@ skvo_veb/
 - `docs/TODO.md` — Project-wide backlog (tickets; do not start from chat history)
 - Scientific knobs: `skvo_veb/utils/lc_processor/config.py`
 - Local parabola ToM on the extrema modeller page: `skvo_veb/utils/parabola_tom/` (not the processor running-parabola smooth)
-- `docs/adding_a_lightcurve_provider.md` — step-by-step guide to plug in a new provider (includes TAP section)
-- `docs/mission_lightcurve_providers.md` — full multi-mission LC architecture, search orchestration (§9), and provider API
+- `docs/discovery/` — discovery schema, provider notes, and the architecture guides
 - `docs/lc_discovery_messages.md` — Search / Plot tab alerts and status lifetimes on Lightcurve Discovery
 - `docs/lc_discovery_css.md` — CSS tuning for the Discovery page layout
 - `docs/asassn_skypatrol_lookup_cone_zero_coords.md` — Hawaii `lookup_cone` HTTP 500 at RA/Dec = 0 and client workaround

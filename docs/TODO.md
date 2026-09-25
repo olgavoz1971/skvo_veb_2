@@ -42,7 +42,7 @@ give it the next unused ID. When a ticket is done, move its row to
 **Page:** Lightcurve Discovery (`/lc_discovery`).
 
 **Related:** [caching_architecture.md](caching_architecture.md),
-[mission_lightcurve_providers.md](mission_lightcurve_providers.md) (§4.4
+[mission_lightcurve_providers.md](discovery/mission_lightcurve_providers.md) (§4.4
 `cache_key`), `skvo_veb/pages/lightcurve_discovery.py`
 (`fetch_lc_discovery_lightcurve`), `skvo_veb/utils/lc_discovery_load.py`,
 `skvo_veb/utils/lc_session_cache.py`.
@@ -1475,8 +1475,8 @@ and stops for agreement before coding the next phase.
 
 - Page entry: ``skvo_veb/pages/lightcurve_discovery.py`` (UI only; calls
   into utils + providers)
-- Docs: [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md),
-  [mission_lightcurve_providers.md](mission_lightcurve_providers.md),
+- Docs: [adding_a_lightcurve_provider.md](discovery/adding_a_lightcurve_provider.md),
+  [mission_lightcurve_providers.md](discovery/mission_lightcurve_providers.md),
   [lightcurve_data_flow.md](lightcurve_data_flow.md),
   [lc_discovery_css.md](lc_discovery_css.md) / [lc_discovery_messages.md](lc_discovery_messages.md)
   (UI-only; stay with the app),
@@ -1711,8 +1711,8 @@ Decide and record in this ticket:
 #### Phase 5 — Remove nested ``skvo_veb/lc_providers/`` (and moved utils)
 
 - Delete moved modules from the app; fix docs that still say nested paths.
-- Retarget [adding_a_lightcurve_provider.md](adding_a_lightcurve_provider.md)
-  and [mission_lightcurve_providers.md](mission_lightcurve_providers.md) to
+- Retarget [adding_a_lightcurve_provider.md](discovery/adding_a_lightcurve_provider.md)
+  and [mission_lightcurve_providers.md](discovery/mission_lightcurve_providers.md) to
   the sibling package as the home for new missions.
 
 **Exit:** single source of truth for providers.

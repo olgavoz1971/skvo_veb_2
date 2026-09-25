@@ -5,12 +5,8 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from skvo_veb.lc_providers.shared.gaia_epoch_mag_error import MAG_ERR_FROM_SNR_FACTOR
-from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
-from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
 from volightcurve import VOLightCurve
 from volightcurve.lightcurve import _gavo_votable_metadata_tree, extract_photdm
 
@@ -46,82 +42,55 @@ def test_volightcurve_g_band_ingest(gaia_ari_payload):
     assert volc.photdms["mag"].filter.filter_id == "GAIADR3.G"
 
 
-def test_gaia_ari_enrich_uses_source_id_for_title(gaia_ari_payload):
-    """ARI titles ignore verbose archive TABLE names and use source_id instead."""
-    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
+def _enriched(payload: bytes, table_id: int = 0):
+    """Enriches one band and parses it the way Discovery does."""
+    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_votable
 
-    volc = VOLightCurve(io.BytesIO(gaia_ari_payload), table_id=0)
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
-    assert volc.table.meta["lightcurve_title"] == (
-        "Gaia DR3 4090664085620846720 in Gaia G filter"
-    )
-    assert volc.table.meta["name"] == volc.table.meta["lightcurve_title"]
+    return VOLightCurve(io.BytesIO(enrich_votable(payload, table_id=table_id)))
 
 
-def test_gaia_ari_mag_err_from_flux_over_error(gaia_ari_payload):
-    """ARI enrichment derives mag-native uncertainties and drops archive flux_error."""
-    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
-
-    volc = VOLightCurve(io.BytesIO(gaia_ari_payload), table_id=0)
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
-    assert "mag_err" in volc.table.colnames
-    assert "flux_error" not in volc.table.colnames
-
-    snr = volc.table["flux_over_error"]
-    if hasattr(snr, "value"):
-        snr = snr.value
-    expected = MAG_ERR_FROM_SNR_FACTOR / np.asarray(snr, dtype=float)
-    mag_err = volc.table["mag_err"]
-    if hasattr(mag_err, "value"):
-        mag_err = mag_err.value
-    np.testing.assert_allclose(mag_err, expected, rtol=1e-12)
-
-    lcd = volc_to_curvedash(volc, "gaia_ari_G.vot")
-    assert lcd.active_domain == DOMAIN_MAG
-    np.testing.assert_allclose(lcd.mag_err.values, expected, rtol=1e-12)
-    assert np.all(lcd.mag_err.values < 1.0)
+def test_gaia_ari_keeps_archive_table_name(gaia_ari_payload):
+    """The selected table keeps its archive name."""
+    volc = _enriched(gaia_ari_payload)
+    assert volc.table.meta["name"].endswith("G band time series")
+    assert "lightcurve_title" not in volc.table.meta
 
 
-def test_gaia_ari_mag_to_jy_roundtrip(gaia_ari_payload):
-    """Mag-first ingest converts to Jy flux and back using anchored photcal."""
-    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
-
-    volc = VOLightCurve(io.BytesIO(gaia_ari_payload), table_id=0)
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
-
-    lcd = volc_to_curvedash(volc, "gaia_ari_G.vot")
-    assert lcd.active_domain == DOMAIN_MAG
-
-    photcal = lcd.metadata.get("photcal") or {}
-    assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(3296.2)
-    assert photcal.get(PHOTCAL_KEY_ZP_MAG) == pytest.approx(0.0)
-    assert lcd.metadata.get("period") == pytest.approx(1.7217551595287013)
-
-    original_mag = lcd.mag.copy()
-    lcd.convert_to_flux()
-    assert lcd.active_domain == DOMAIN_FLUX
-    assert str(lcd.flux_unit).strip() in {"Jy", "jy"}
-
-    lcd.convert_to_mag()
-    assert lcd.active_domain == DOMAIN_MAG
-    np.testing.assert_allclose(lcd.mag.values, original_mag.values, rtol=1e-12)
-
-    original_mag_err = lcd.mag_err.copy()
-    lcd.convert_to_flux()
-    lcd.convert_to_mag()
-    np.testing.assert_allclose(lcd.mag_err.values, original_mag_err.values, rtol=1e-10)
+def test_gaia_ari_drops_repeated_columns_and_keeps_photometry(gaia_ari_payload):
+    """Repeated columns go. Time, magnitude, flux, and flux error stay."""
+    volc = _enriched(gaia_ari_payload)
+    assert "band" not in volc.table.colnames
+    assert "source_id" not in volc.table.colnames
+    assert "pf" not in volc.table.colnames
+    assert "mag_err" not in volc.table.colnames
+    for name in ("time", "mag", "flux", "flux_error", "flux_over_error"):
+        assert name in volc.table.colnames
+    assert volc.table.meta["period"] == pytest.approx(1.7217551595287013)
 
 
-def test_gaia_ari_export_includes_both_zero_points(gaia_ari_payload):
-    """Discovery export writes anchored photcal with flux and reference mag ZPs."""
-    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
+def test_gaia_ari_splits_mag_and_flux_photcal(gaia_ari_payload):
+    """Magnitude keeps the Jy zero point. Flux uses 1 in the flux column unit."""
+    volc = _enriched(gaia_ari_payload)
+    mag = volc.photdms["mag"].photcal
+    flux = volc.photdms["flux"].photcal
+    assert float(mag.zp_flux.value) == pytest.approx(3296.2)
+    assert float(mag.zp_mag.value) == pytest.approx(0.0)
+    assert float(flux.zp_flux.value) == pytest.approx(1.0)
+    assert str(flux.zp_flux.unit) in {"1 / s", "s**-1"}
+    assert float(flux.zp_mag.value) == pytest.approx(25.6874)
+    assert volc.photdms["flux_error"].photcal is flux
+    assert "flux_over_error" not in volc.photdms or volc.photdms["flux_over_error"].photcal is None
 
-    volc = VOLightCurve(io.BytesIO(gaia_ari_payload), table_id=0)
-    enrich_fetched_volightcurve(volc, filter_name="Gaia G")
-    lcd = volc_to_curvedash(volc, "gaia_ari_G.vot")
 
-    votable_bytes = export_curvedash(lcd, "votable", profile=None)
-    exported = votable_bytes.decode("utf-8", errors="replace")
-    assert "zeroPointFlux" in exported or "zeroPoint.flux" in exported
-    assert "zeroPointReferenceMagnitude" in exported or "referenceMagnitude" in exported
-    assert "GAIADR3.G" in exported
+def test_gaia_ari_raw_file_issues_one_g_band_table():
+    """The ARI download keeps one band and the G photcal split."""
+    from pathlib import Path
+
+    raw = Path("/home/voz/projects/UPJS/tmp/g_ari.xml").read_bytes()
+    volc = _enriched(raw, table_id=0)
+    assert volc.table.meta["name"] == "Gaia DR3 1704795806820110080 - G band time series"
+    assert "BP band" not in volc.table.meta["name"]
+    assert volc.photdms["mag"].filter.filter_id == "GAIADR3.G"
+    assert float(volc.photdms["flux"].photcal.zp_mag.value) == pytest.approx(25.6874)
+    assert "source_id" not in volc.table.colnames
+    assert volc.table.meta["period"] == pytest.approx(0.32540451593736336)

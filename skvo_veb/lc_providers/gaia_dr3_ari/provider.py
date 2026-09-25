@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
@@ -13,11 +15,8 @@ from skvo_veb.lc_providers.base import (
 )
 from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.gaia_dr3_ari import config
-from skvo_veb.lc_providers.gaia_dr3_ari.fetch_access_url import (
-    fetch_volightcurve_from_access_url,
-    fetch_volightcurve_from_timeseries_datalink,
-)
-from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.gaia_dr3_ari.fetch_access_url import fetch_votable_bytes
+from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_votable
 from skvo_veb.lc_providers.gaia_dr3_ari.source_catalog import map_source_table_to_catalog
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
@@ -27,10 +26,29 @@ from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
 )
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
+from skvo_veb.lc_providers.gaia_dr3_ari.datalink import build_timeseries_datalink_url
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the enriched VOTable where it leaves this plugin.
+
+    Files are ``lc_tmp_1.vot``, ``lc_tmp_2.vot``, and so on, in a temporary
+    directory for this plugin only.
+
+    Args:
+        payload (bytes): Enriched VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class GaiaDr3AriProvider(MissionLightcurveProvider):
@@ -198,15 +216,15 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context=None,
-    ) -> VOLightCurve:
-        """Downloads one band from the ARI timeseries datalink VOTable product.
+    ) -> bytes:
+        """Downloads one band and returns the enriched VOTable.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
             force_refresh (bool): Accepted for API compatibility; no cache yet.
 
         Returns:
-            VOLightCurve: VO-standard single-band lightcurve.
+            bytes: Enriched single-band VOTable. The Dash application parses it after this return.
 
         Raises:
             PipeException: When the key is invalid or download fails.
@@ -218,40 +236,26 @@ class GaiaDr3AriProvider(MissionLightcurveProvider):
         source_id = payload.get("source_id")
         access_url = payload.get("access_url")
         table_id = payload.get("table_id")
-        filter_name = payload.get("filter_name")
         if table_id is None:
             raise PipeException(f"{self.display_name}: lc_key payload missing table_id.")
-        if not filter_name:
-            raise PipeException(f"{self.display_name}: lc_key payload missing filter_name.")
 
         if source_id:
-            logger.info(
-                "%s fetch source_id=%s table_id=%s force_refresh=%s",
-                self.display_name,
-                source_id,
-                table_id,
-                force_refresh,
-            )
-            volc = fetch_volightcurve_from_timeseries_datalink(
-                source_id,
-                table_id=int(table_id),
-            )
+            url = build_timeseries_datalink_url(source_id)
         elif access_url:
-            logger.info(
-                "%s fetch access_url=%s table_id=%s force_refresh=%s",
-                self.display_name,
-                str(access_url)[:64],
-                table_id,
-                force_refresh,
-            )
-            volc = fetch_volightcurve_from_access_url(
-                str(access_url),
-                table_id=int(table_id),
-            )
+            url = str(access_url)
         else:
             raise PipeException(f"{self.display_name}: lc_key payload missing source_id.")
 
-        return enrich_fetched_volightcurve(volc, filter_name=str(filter_name))
+        logger.info(
+            "%s fetch url=%s table_id=%s force_refresh=%s",
+            self.display_name,
+            url[:64],
+            table_id,
+            force_refresh,
+        )
+        enriched = enrich_votable(fetch_votable_bytes(url), table_id=int(table_id))
+        _save_debug_votable(enriched)
+        return enriched
 
     @staticmethod
     def _resolve_source_id(

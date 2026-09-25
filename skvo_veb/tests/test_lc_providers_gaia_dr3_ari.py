@@ -160,8 +160,13 @@ def test_ari_fetch_lightcurve_local_sample(monkeypatch):
         provider_id=config.PROVIDER_ID,
     )
     lc_key = catalog["lc_key"][0]
-    volc = provider.fetch_lightcurve(lc_key)
+    payload_out = provider.fetch_lightcurve(lc_key)
     assert requested_url == [build_timeseries_datalink_url(AA_AND.source_id)]
+    import io
+
+    from volightcurve import VOLightCurve
+
+    volc = VOLightCurve(io.BytesIO(payload_out))
     assert len(volc) == 20
     assert volc.photdms["mag"].filter.filter_id == "GAIADR3.G"
     assert float(volc.photdms["mag"].photcal.zp_mag.value) == 0.0
