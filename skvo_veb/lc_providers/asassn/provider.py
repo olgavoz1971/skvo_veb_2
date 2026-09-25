@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
 from skvo_veb.lc_providers.asassn import config
-from skvo_veb.lc_providers.asassn.build_volightcurve import build_volightcurve_from_band_table
 from skvo_veb.lc_providers.asassn.catalog import map_metadata_table_to_catalog
-from skvo_veb.lc_providers.asassn.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.asassn.fetch_metadata import votable_from_band_table
 from skvo_veb.lc_providers.asassn.skypatrol_fetch import (
     fetch_discovery_by_asas_sn_id,
     fetch_discovery_by_gaia_id,
@@ -33,9 +34,27 @@ from skvo_veb.lc_providers.shared.gaia_dr3_source_id import (
 )
 from skvo_veb.utils.my_tools import PipeException
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the issued VOTable where it leaves this plugin.
+
+    Files are ``lc_tmp_1.vot``, ``lc_tmp_2.vot``, and so on, in a temporary
+    directory for this plugin only.
+
+    Args:
+        payload (bytes): Issued VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class AsassnProvider(MissionLightcurveProvider):
@@ -187,7 +206,7 @@ class AsassnProvider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context=None,
-    ) -> VOLightCurve:
+    ) -> bytes:
         """Downloads one candidate band for an ASAS-SN ``asas_sn_id``.
 
         Args:
@@ -195,7 +214,7 @@ class AsassnProvider(MissionLightcurveProvider):
             force_refresh (bool): Accepted for API compatibility; always remote fetch.
 
         Returns:
-            VOLightCurve: VO-standard flux-native lightcurve.
+            bytes: Calibrated VOTable for that band.
 
         Raises:
             PipeException: When the key is invalid or the band has no data.
@@ -236,7 +255,7 @@ class AsassnProvider(MissionLightcurveProvider):
             except (TypeError, ValueError, KeyError):
                 ra_deg = dec_deg = None
 
-        volc = build_volightcurve_from_band_table(
+        payload = votable_from_band_table(
             band_table,
             asas_sn_id=asas_sn_id,
             band_code=str(band),
@@ -245,11 +264,8 @@ class AsassnProvider(MissionLightcurveProvider):
             epoch_jd=epoch_jd,
             period_days=period_days,
         )
-        return enrich_fetched_volightcurve(
-            volc,
-            band_code=str(band),
-            asas_sn_id=asas_sn_id,
-        )
+        _save_debug_votable(payload)
+        return payload
 
     @staticmethod
     def _resolve_gaia_id(

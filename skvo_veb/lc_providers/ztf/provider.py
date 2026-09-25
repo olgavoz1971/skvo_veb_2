@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
@@ -11,19 +13,33 @@ from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.discovery_fetch_context import DiscoveryFetchContext
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.ztf import config
-from skvo_veb.lc_providers.ztf.build_volightcurve import build_volightcurve_from_epochs
 from skvo_veb.lc_providers.ztf.catalog import (
     filter_discovery_frame_with_epochs,
     map_discovery_frame_to_catalog,
 )
-from skvo_veb.lc_providers.ztf.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.ztf.fetch_metadata import votable_from_epochs
 from skvo_veb.lc_providers.ztf.oid import mission_archive_match_for_oid, parse_ztf_oid
 from skvo_veb.lc_providers.ztf.tap_discovery import query_objects_by_oid, query_objects_cone
 from skvo_veb.lc_providers.ztf.ztf_fetch import fetch_photometry_by_oid
 from skvo_veb.utils.my_tools import PipeException
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the issued VOTable where it leaves this plugin.
+
+    Args:
+        payload (bytes): Issued VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class ZtfDr24Provider(MissionLightcurveProvider):
@@ -161,7 +177,7 @@ class ZtfDr24Provider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context: DiscoveryFetchContext | None = None,
-    ) -> VOLightCurve:
+    ) -> bytes:
         """Downloads epoch photometry for one ZTF OID.
 
         Args:
@@ -171,7 +187,7 @@ class ZtfDr24Provider(MissionLightcurveProvider):
                 metadata for lookup-aware titles.
 
         Returns:
-            VOLightCurve: VO-standard magnitude-native lightcurve.
+            bytes: Calibrated VOTable for that OID.
 
         Raises:
             PipeException: When the key is invalid or fetch fails.
@@ -214,19 +230,14 @@ class ZtfDr24Provider(MissionLightcurveProvider):
             )
 
         epochs = fetch_photometry_by_oid(oid_raw, fetch_quality=fetch_quality)
-        volc = build_volightcurve_from_epochs(
+        payload = votable_from_epochs(
             epochs,
-            oid=oid_raw,
             filtercode=str(filtercode),
             ra_deg=ra_deg,
             dec_deg=dec_deg,
         )
-        return enrich_fetched_volightcurve(
-            volc,
-            oid=oid_raw,
-            filtercode=str(filtercode),
-            discovery_context=discovery_context,
-        )
+        _save_debug_votable(payload)
+        return payload
 
     @staticmethod
     def _resolve_oid(

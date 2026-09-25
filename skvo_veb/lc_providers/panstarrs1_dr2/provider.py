@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+from pathlib import Path
 
 from astropy.table import Table
 
@@ -15,20 +17,36 @@ from skvo_veb.lc_providers.catalog_schema import empty_catalog_table
 from skvo_veb.lc_providers.discovery_fetch_context import DiscoveryFetchContext
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.panstarrs1_dr2 import config
-from skvo_veb.lc_providers.panstarrs1_dr2.build_volightcurve import build_volightcurve_from_detections
-from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import enrich_fetched_volightcurve
+from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import votable_from_detections
 from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_catalog import map_mean_object_table_to_catalog
 from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import (
-    format_ps1_object_name,
     mission_archive_match_for_obj_id,
     parse_ps1_obj_id,
 )
 from skvo_veb.lc_providers.panstarrs1_dr2.tap_detection import fetch_detection_table
 from skvo_veb.lc_providers.tap.client import run_tap_sync_query
 from skvo_veb.utils.my_tools import PipeException
-from volightcurve import VOLightCurve
 
 logger = logging.getLogger(__name__)
+
+
+def _save_debug_votable(payload: bytes) -> None:
+    """Writes the issued VOTable where it leaves this plugin.
+
+    Files are ``lc_tmp_1.vot``, ``lc_tmp_2.vot``, and so on, in a temporary
+    directory for this plugin only.
+
+    Args:
+        payload (bytes): Issued VOTable.
+    """
+    folder = Path(tempfile.gettempdir()) / config.PROVIDER_ID
+    folder.mkdir(parents=True, exist_ok=True)
+    number = 1
+    while (folder / f"lc_tmp_{number}.vot").exists():
+        number += 1
+    path = folder / f"lc_tmp_{number}.vot"
+    path.write_bytes(payload)
+    logger.info("%s debug VOTable %s", config.DISPLAY_NAME, path)
 
 
 class Panstarrs1Dr2Provider(MissionLightcurveProvider):
@@ -170,16 +188,16 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
         *,
         force_refresh: bool = False,
         discovery_context: DiscoveryFetchContext | None = None,
-    ) -> VOLightCurve:
+    ) -> bytes:
         """Downloads detection epochs for one object and filter.
 
         Args:
             lc_key (str): Serialised fetch handle from a catalog row.
             force_refresh (bool): Accepted for API compatibility; always remote fetch.
-            discovery_context (DiscoveryFetchContext, optional): Discovery session metadata.
+            discovery_context (DiscoveryFetchContext, optional): Accepted for API compatibility.
 
         Returns:
-            VOLightCurve: VO-standard flux-native lightcurve.
+            bytes: Calibrated VOTable for that filter.
 
         Raises:
             PipeException: When the key is invalid or fetch fails.
@@ -200,7 +218,6 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
 
         ra_deg = float(payload["ra_deg"])
         dec_deg = float(payload["dec_deg"])
-        object_name = str(payload.get("object_name") or format_ps1_object_name(obj_id))
 
         logger.info(
             "%s fetch obj_id=%s filter=%s force_refresh=%s",
@@ -214,18 +231,12 @@ class Panstarrs1Dr2Provider(MissionLightcurveProvider):
             obj_id=obj_id,
             filter_name=str(filter_name),
         )
-        volc = build_volightcurve_from_detections(
+        payload = votable_from_detections(
             detection_table,
             obj_id=obj_id,
             filter_name=str(filter_name),
             ra_deg=ra_deg,
             dec_deg=dec_deg,
-            object_name=object_name,
         )
-        return enrich_fetched_volightcurve(
-            volc,
-            obj_id=obj_id,
-            filter_name=str(filter_name),
-            object_name=object_name,
-            discovery_context=discovery_context,
-        )
+        _save_debug_votable(payload)
+        return payload

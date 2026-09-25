@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from astropy.table import Table
 
+from volightcurve import VOLightCurve
+
 from skvo_veb.lc_providers.lc_key import decode_lc_key
 from skvo_veb.lc_providers.panstarrs1_dr2 import config
-from skvo_veb.lc_providers.panstarrs1_dr2.build_volightcurve import build_volightcurve_from_detections
+from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import votable_from_detections
 from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_catalog import map_mean_object_table_to_catalog
 from skvo_veb.lc_providers.panstarrs1_dr2.provider import Panstarrs1Dr2Provider
-from skvo_veb.lc_providers.discovery_fetch_context import (
-    DiscoveryFetchContext,
-    SEARCH_MODE_SIMBAD_CONE,
-)
-from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import enrich_fetched_volightcurve
 from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name, parse_ps1_obj_id
 
 
@@ -117,33 +116,35 @@ def test_adql_detection_joins_mean_object_for_epoch():
     assert "m.objID" in adql or "d.objID = m.objID" in adql
 
 
-def test_build_volightcurve_from_detections():
-    """Detection table builds flux-native VOLightCurve."""
+def test_votable_from_detections_keeps_missing_flux_error():
+    """A missing flux error stays; a missing time or flux removes the row."""
     from astropy.time import Time
 
     epoch_mean_mjd = 58000.0
     expected_coosys = round(Time(epoch_mean_mjd, format="mjd").decimalyear, 1)
     det = Table(
         {
-            "obsTime": [58000.1, 58001.2],
-            "psfFlux": [1e-3, 1.1e-3],
-            "psfFluxErr": [1e-4, 1.2e-4],
-            "psfQfPerfect": [0.95, 0.99],
-            "epochMean": [epoch_mean_mjd, epoch_mean_mjd],
+            "obsTime": [58000.1, 58001.2, float("nan")],
+            "psfFlux": [1e-3, 1.1e-3, 1e-3],
+            "psfFluxErr": [1e-4, float("nan"), 1e-4],
+            "psfQfPerfect": [0.95, 0.99, 0.95],
+            "epochMean": [epoch_mean_mjd, epoch_mean_mjd, epoch_mean_mjd],
         }
     )
-    volc = build_volightcurve_from_detections(
+    payload = votable_from_detections(
         det,
         obj_id=999,
         filter_name="r",
         ra_deg=10.0,
         dec_deg=20.0,
-        object_name="999",
     )
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 2
-    assert "phot" in volc.colnames
-    assert "label" not in volc.colnames
-    assert volc.table.meta["coosys_epoch"] == pytest.approx(expected_coosys)
+    assert "psf_flux" in volc.colnames
+    assert volc.table.meta["name"] == "PS1 999 r"
+    assert volc.table.meta["facility_name"] == config.FACILITY_NAME
+    assert volc.coosys.epoch == pytest.approx(expected_coosys)
+    assert volc.photdms["psf_flux_error"].photcal is volc.photdms["psf_flux"].photcal
 
 
 def test_resolve_target_name_long_obj_id(provider):
@@ -274,9 +275,11 @@ def test_fetch_lightcurve_mocked(monkeypatch, provider):
         lambda **_kwargs: det,
     )
 
-    volc = provider.fetch_lightcurve(key)
+    payload = provider.fetch_lightcurve(key)
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 1
-    assert volc.table.meta.get("mission") == config.PROVIDER_ID
+    assert volc.table.meta["name"] == "PS1 100 g"
+    assert float(volc.photdms["psf_flux"].photcal.zp_flux.value) == pytest.approx(3631.0)
 
 
 def test_detection_description_uses_psf_and_obj_id_only():
@@ -289,8 +292,8 @@ def test_detection_description_uses_psf_and_obj_id_only():
     assert "(objID=" not in text
 
 
-def test_enrich_applies_simbad_lookup_within_tau():
-    """Simbad cone rows within tau inherit lookup name on title and description."""
+def test_issued_title_is_object_label_and_filter():
+    """The table name is the object label and the filter."""
     det = Table(
         {
             "obsTime": [58000.5],
@@ -300,27 +303,13 @@ def test_enrich_applies_simbad_lookup_within_tau():
             "epochMean": [57123.45],
         }
     )
-    volc = build_volightcurve_from_detections(
+    payload = votable_from_detections(
         det,
         obj_id=165243463579570976,
         filter_name="i",
         ra_deg=10.0,
         dec_deg=20.0,
     )
-    ctx = DiscoveryFetchContext(
-        search_mode=SEARCH_MODE_SIMBAD_CONE,
-        user_target="AA And",
-        simbad_main_id="AA And",
-        radius_arcsec=30.0,
-        distance_arcsec=2.0,
-    )
-    enrich_fetched_volightcurve(
-        volc,
-        obj_id=165243463579570976,
-        filter_name="i",
-        discovery_context=ctx,
-    )
-    meta = volc.table.meta
-    assert meta["lookup_name"] == "AA And"
-    assert meta["lightcurve_title"].startswith("AA And - PS1 165243463579570976 filter=i")
-    assert "Associated with lookup name AA And" in meta["description"]
+    volc = VOLightCurve(io.BytesIO(payload))
+    assert volc.table.meta["name"] == "PS1 165243463579570976 i"
+    assert "objID 165243463579570976" in volc.table.meta["description"]

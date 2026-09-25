@@ -344,7 +344,8 @@ def slice_band_photometry(
 
     Returns:
         pandas.DataFrame: Columns ``jd``, ``flux``, ``flux_err``, and optionally
-        ``camera`` when present in the download.
+        ``camera`` when present in the download. Rows with missing ``jd`` or
+        ``flux`` are removed. A missing ``flux_err`` is kept.
 
     Raises:
         PipeException: When the band has no rows or columns are missing.
@@ -364,7 +365,7 @@ def slice_band_photometry(
     keep_cols = list(required)
     if "camera" in subset.columns:
         keep_cols.append("camera")
-    band_df = subset[keep_cols].dropna(subset=["flux"])
+    band_df = subset[keep_cols].dropna(subset=["jd", "flux"])
     if band_df.empty:
         raise PipeException(
             f"{config.DISPLAY_NAME}: asas_sn_id {asas_sn_id} has no observations "

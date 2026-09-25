@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pandas as pd
+import requests
 
 from skvo_veb.lc_providers.ztf import config
 from skvo_veb.utils.my_tools import PipeException
@@ -51,8 +53,10 @@ def fetch_photometry_by_oid(
         quality,
     )
     try:
-        lcq = lightcurve.LCQuery.from_id(str(oid_int), cookies={})
-        frame = lcq.data
+        url = lightcurve.build_url(ID=str(oid_int), FORMAT="votable")
+        response = requests.get(url, cookies={}, timeout=120)
+        response.raise_for_status()
+        frame = _frame_from_irsa_votable(response.content)
     except Exception as exc:
         raise PipeException(
             f"{config.DISPLAY_NAME}: lightcurve download failed for oid={oid_int}: {exc}"
@@ -71,6 +75,76 @@ def fetch_photometry_by_oid(
             f"{config.DISPLAY_NAME}: no epochs remain after quality filtering "
             f"for oid={oid_int} (quality={quality!r})."
         )
+    return frame
+
+
+def _local(tag: str) -> str:
+    """Returns an XML tag without its namespace.
+
+    Args:
+        tag (str): Element tag.
+
+    Returns:
+        str: Local name.
+    """
+    return tag.rsplit("}", 1)[-1]
+
+
+def _frame_from_irsa_votable(payload: bytes) -> pd.DataFrame:
+    """Reads an IRSA light-curve VOTable into a table plus its FIELD metadata.
+
+    UCD, unit, datatype, and description are taken from each FIELD and stored
+    on ``frame.attrs['irsa_fields']``.
+
+    Args:
+        payload (bytes): IRSA ``FORMAT=votable`` response.
+
+    Returns:
+        pandas.DataFrame: One row per epoch.
+
+    Raises:
+        PipeException: When the document is not a TABLEDATA VOTable.
+    """
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError as exc:
+        raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve is not XML: {exc}") from exc
+    tables = [element for element in root.iter() if _local(element.tag) == "TABLE"]
+    if not tables:
+        raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve VOTable has no TABLE.")
+    table = tables[0]
+    fields = [element for element in list(table) if _local(element.tag) == "FIELD"]
+    if not fields:
+        raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve VOTable has no FIELD.")
+    meta: dict[str, dict[str, str]] = {}
+    names: list[str] = []
+    for field in fields:
+        name = field.get("name")
+        if not name:
+            raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve FIELD has no name.")
+        names.append(name)
+        entry: dict[str, str] = {}
+        for key in ("ucd", "unit", "datatype"):
+            value = field.get(key)
+            if value:
+                entry[key] = value
+        for child in list(field):
+            if _local(child.tag) == "DESCRIPTION" and child.text and child.text.strip():
+                entry["description"] = child.text.strip()
+        meta[name] = entry
+    data_nodes = [element for element in table.iter() if _local(element.tag) == "TABLEDATA"]
+    if not data_nodes:
+        raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve VOTable is not TABLEDATA.")
+    rows: list[list[str]] = []
+    for tr in data_nodes[0]:
+        if _local(tr.tag) != "TR":
+            continue
+        cells = [child.text or "" for child in list(tr) if _local(child.tag) == "TD"]
+        if len(cells) != len(names):
+            raise PipeException(f"{config.DISPLAY_NAME}: IRSA lightcurve row does not match its fields.")
+        rows.append(cells)
+    frame = pd.DataFrame(rows, columns=names)
+    frame.attrs["irsa_fields"] = meta
     return frame
 
 

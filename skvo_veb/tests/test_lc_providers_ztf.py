@@ -155,9 +155,17 @@ def test_fetch_lightcurve_builds_mag_native_volc(monkeypatch, provider):
     )
     epochs = pd.DataFrame(
         {
+            "oid": [oid, oid],
             "hjd": [2458000.1, 2458001.2],
             "mag": [14.1, 14.2],
-            "magerr": [0.05, 0.04],
+            "magerr": [0.05, float("nan")],
+            "catflags": [0, 0],
+            "chi": [1.1, 1.2],
+            "sharp": [0.01, 0.02],
+            "field": [596, 596],
+            "ccdid": [1, 1],
+            "qid": [2, 2],
+            "limitmag": [20.5, 20.4],
         }
     )
     monkeypatch.setattr(
@@ -168,7 +176,15 @@ def test_fetch_lightcurve_builds_mag_native_volc(monkeypatch, provider):
         "skvo_veb.lc_providers.ztf.provider.fetch_photometry_by_oid",
         lambda oid_arg, fetch_quality=config.FETCH_QUALITY_RAW: epochs,
     )
-    volc = provider.fetch_lightcurve(lc_key)
+    import io
+
+    from volightcurve import VOLightCurve
+
+    payload = provider.fetch_lightcurve(lc_key)
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 2
-    assert volc.table.meta.get("ztf_oid") == oid
-    assert list(volc.table["label"]) == [str(oid), str(oid)]
+    assert "hjd" in volc.colnames
+    assert "mag_err" in volc.colnames
+    assert "catflag" in volc.colnames
+    assert list(volc.table["oid"]) == [oid, oid]
+    assert volc.photdms["mag_err"].photcal is volc.photdms["mag"].photcal

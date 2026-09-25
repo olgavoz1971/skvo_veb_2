@@ -216,7 +216,7 @@ def test_fetch_lightcurve_empty_band(monkeypatch):
 
 
 def test_fetch_lightcurve_builds_volc(monkeypatch):
-    """Fetch downloads photometry, builds VOLightCurve, and enriches metadata."""
+    """Fetch downloads photometry and returns a calibrated VOTable."""
     provider = AsassnProvider()
     catalog = map_metadata_table_to_catalog(
         _sample_metadata_df(),
@@ -247,11 +247,16 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
         lambda _sid: _sample_metadata_df(),
     )
 
-    volc = provider.fetch_lightcurve(g_key)
+    payload = provider.fetch_lightcurve(g_key)
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 2
-    assert volc.table.meta.get("mission") == config.PROVIDER_ID
     assert volc.table.meta.get("period") == pytest.approx(0.46)
-    assert list(volc["label"]) == ["bs", "br"]
+    assert list(volc["camera"]) == ["bs", "br"]
+    assert volc["flux"][0] == pytest.approx(0.12)
+    assert volc.photdms["flux"].filter.filter_id == config.ASASSN_G_FILTER_IDENTIFIER
+    assert float(volc.photdms["flux"].photcal.zp_flux.value) == pytest.approx(3631.0)
+    assert volc.photdms["flux_err"].photcal is volc.photdms["flux"].photcal
+    assert b'name="epoch" datatype="double" value="2459000.0" unit="d" ucd="time.epoch" ref="ts"' in payload
 
 
 def test_fetch_discovery_cone_maps_http_error_to_pipe_exception():

@@ -148,6 +148,10 @@ def enrich_votable(payload: bytes) -> bytes:
             if "stat.error" in ucd and not field.get("ref"):
                 field.set("ref", group_id)
 
+    epoch = _param(table, "epoch")
+    if epoch is not None:
+        epoch.set("ref", "ts")
+
     if root.tag.startswith("{"):
         ET.register_namespace("", _VOTABLE_NS)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)

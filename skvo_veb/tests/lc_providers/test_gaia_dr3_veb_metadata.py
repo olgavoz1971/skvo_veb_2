@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -91,6 +92,12 @@ def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
         assert photcal._zp_flux_unit_text == "s**-1"
         assert float(photcal.zp_mag.value) == zp_mag
         assert volc.photdms["flux_error"].photcal is photcal
+        epoch = [
+            element
+            for element in ET.fromstring(payload).iter()
+            if element.tag.rsplit("}", 1)[-1] == "PARAM" and element.get("name") == "epoch"
+        ]
+        assert epoch and epoch[0].get("ref") == "ts"
 
 
 def test_enrich_fetched_volightcurve_keeps_archive_table_name():
