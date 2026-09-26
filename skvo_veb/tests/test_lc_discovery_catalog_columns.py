@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from skvo_veb.lc_providers.base import MissionCapabilities
-from skvo_veb.lc_providers.registry import get_provider
+from lc_discovery.base import MissionCapabilities
+from lc_discovery.registry import get_provider
 from skvo_veb.utils.lc_discovery_catalog_columns import (
     catalog_column_defs_for_capabilities,
     catalog_column_defs_for_mission,

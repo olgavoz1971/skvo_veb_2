@@ -5,13 +5,13 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from skvo_veb.lc_providers.discovery_fetch_context import DiscoveryFetchContext
-from skvo_veb.lc_providers.lc_key import encode_lc_key
-from skvo_veb.lc_providers.ztf import config
-from skvo_veb.lc_providers.ztf.fetch_metadata import resolve_lookup_name_for_fetch
-from skvo_veb.lc_providers.ztf.oid import parse_ztf_oid
-from skvo_veb.lc_providers.ztf.provider import ZtfDr24Provider
-from skvo_veb.lc_providers.discovery_fetch_context import SEARCH_MODE_SIMBAD_CONE
+from lc_discovery.discovery_fetch_context import DiscoveryFetchContext
+from lc_discovery.lc_key import encode_lc_key
+from lc_discovery.providers.ztf import config
+from lc_discovery.providers.ztf.fetch_metadata import resolve_lookup_name_for_fetch
+from lc_discovery.providers.ztf.oid import parse_ztf_oid
+from lc_discovery.providers.ztf.provider import ZtfDr24Provider
+from lc_discovery.discovery_fetch_context import SEARCH_MODE_SIMBAD_CONE
 
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def test_search_catalog_maps_oid_row(monkeypatch, provider):
         ]
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ztf.provider.query_objects_by_oid",
+        "lc_discovery.providers.ztf.provider.query_objects_by_oid",
         lambda oid: frame,
     )
     catalog = provider.search_catalog(archive_id="123456789012")
@@ -104,7 +104,7 @@ def test_search_catalog_excludes_zero_nobsrel(monkeypatch, provider):
         ]
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ztf.provider.query_objects_cone",
+        "lc_discovery.providers.ztf.provider.query_objects_cone",
         lambda **kwargs: frame,
     )
     catalog = provider.search_catalog(ra_deg=316.01, dec_deg=46.52, radius_arcsec=60.0)
@@ -128,7 +128,7 @@ def test_search_catalog_cone_truncates_and_sorts(monkeypatch, provider):
         )
     frame = pd.DataFrame(rows)
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ztf.provider.query_objects_cone",
+        "lc_discovery.providers.ztf.provider.query_objects_cone",
         lambda **kwargs: frame,
     )
     catalog = provider.search_catalog(ra_deg=316.01, dec_deg=46.52, radius_arcsec=60.0)
@@ -169,11 +169,11 @@ def test_fetch_lightcurve_builds_mag_native_volc(monkeypatch, provider):
         }
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ztf.provider.query_objects_by_oid",
+        "lc_discovery.providers.ztf.provider.query_objects_by_oid",
         lambda oid_arg: meta,
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ztf.provider.fetch_photometry_by_oid",
+        "lc_discovery.providers.ztf.provider.fetch_photometry_by_oid",
         lambda oid_arg, fetch_quality=config.FETCH_QUALITY_RAW: epochs,
     )
     import io

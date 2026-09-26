@@ -44,18 +44,18 @@ Gather this information from the archive documentation or a TAP service descript
 | Cone search supported? | Yes (on `ssa_location`) |
 | Direct id lookup supported? | Yes (`source_id`) |
 
-**Naming rule:** one provider = one archive/product line. Do not mix “debug mock”, “DR3 VEB”, and future “DR4 ESA” in one folder — use separate packages (see `gaia_debug/` vs `gaia_dr3_veb/`).
+**Naming rule:** one provider = one archive/product line. Do not mix “debug mock”, “DR3 VEB”, and future “DR4 ESA” in one folder — use separate packages (see `lc_discovery/providers/gaia_dr3_veb/`).
 
 ---
 
 ## Obligatory pieces (every provider)
 
-### 1. One package folder under `skvo_veb/lc_providers/`
+### 1. One package folder under `lc_discovery/`
 
 Use a **specific** name, not a vague mission umbrella:
 
 ```text
-skvo_veb/lc_providers/my_survey_dr1/
+lc_discovery/my_survey_dr1/
 ├── __init__.py      # exports YourProvider class
 └── provider.py      # the adapter class (minimum)
 ```
@@ -64,7 +64,7 @@ Extra files (`config.py`, mappers, fetch helpers) are **your choice** — they k
 
 ### 2. The provider class (`provider.py`)
 
-Subclass `MissionLightcurveProvider` from `lc_providers/base.py`.
+Subclass `MissionLightcurveProvider` from `lc_discovery/base.py`.
 
 **Class attributes (required):**
 
@@ -110,7 +110,7 @@ classification or object type column (SSA ``dataproduct_type``, Gaia variability
 Set `discovery_catalog_includes_n_points=True` when the discovery catalogue includes per-row
 epoch counts (``ssa_length``, ``nobsrel``, detection counts, etc.).
 
-Use helpers from `lc_providers/catalog_schema.py`:
+Use helpers from `lc_discovery/catalog_schema.py`:
 
 - `empty_catalog_table()` — no matches
 - `validate_catalog_table(table)` — before returning
@@ -123,7 +123,7 @@ Each `lc_key` is a small JSON string:
 
 Build it with `encode_lc_key(mission_id, payload)`. Only your provider reads `payload` in `fetch_lightcurve`.
 
-### 4. Register in `lc_providers/registry.py`
+### 4. Register in `lc_discovery/registry.py`
 
 Registration is the **only** switch that exposes a provider on Lightcurve Discovery.
 There is no separate “enabled” flag or page-level filter.
@@ -143,7 +143,7 @@ After this, the new mission appears in the Discovery dropdown automatically.
 
 To remove a mission from the Discovery UI (and from `get_provider` / `list_missions`):
 
-1. Delete its import and entry from `PROVIDERS` in `lc_providers/registry.py`.
+1. Delete its import and entry from `PROVIDERS` in `lc_discovery/registry.py`.
 2. Update tests that assert the mission appears in `list_missions()` or call
    `get_provider("<mission_id>")`.
 3. Update docs that list the mission as a live Discovery option.
@@ -152,11 +152,11 @@ To remove a mission from the Discovery UI (and from `get_provider` / `list_missi
 
 | Situation | Action |
 |-----------|--------|
-| Development / test-only provider (e.g. synthetic catalogue, VOLightCurve format experiments) | **Keep** `lc_providers/<provider>/`. Tests import the class directly (`GaiaDr3Provider()`), not via the registry. |
-| Retired production provider, code still useful as reference | Move to `lc_providers/obsolete/<provider>/` (must not be imported by production code). |
-| Retired provider, no remaining imports | Delete `lc_providers/<provider>/`. |
+| Development / test-only provider (e.g. synthetic catalogue, VOLightCurve format experiments) | **Keep** `lc_discovery/<provider>/`. Tests import the class directly (`GaiaDr3Provider()`), not via the registry. |
+| Retired production provider, code still useful as reference | Move to `lc_discovery/obsolete/<provider>/` (must not be imported by production code). |
+| Retired provider, no remaining imports | Delete `lc_discovery/<provider>/`. |
 
-Example: `lc_providers/gaia_debug/` remains in the tree for unit tests but is **not**
+Example: the debug mock has been removed.
 registered — it does not appear on `/lc_discovery`.
 
 If a mission is not in `PROVIDERS`, it is unavailable to Discovery and
@@ -189,7 +189,7 @@ Discuss with maintainers before changing shared orchestration or the base provid
 
 ## Step-by-step checklist (any provider)
 
-1. Create `lc_providers/<your_provider>/` with `provider.py` and `__init__.py`.
+1. Create `lc_discovery/<your_provider>/` with `provider.py` and `__init__.py`.
 2. Set `mission_id`, `display_name`, `capabilities`, `is_mock`.
 3. Implement `search_catalog`:
    - Accept `ra_deg` / `dec_deg` / `radius_arcsec` for cone mode when supported.
@@ -241,7 +241,7 @@ Discovery export (utils/lc_bridge.py)
 
 **Do not** put provider-specific title/description logic in `pages/` or `lc_bridge.py`. Gaia DR3 VEB example: archive `TABLE/@name` omits the passband, so `enrich_fetched_volightcurve` appends `" in {filter_name} filter"` using the catalogue row’s `filter_name`.
 
-Reference: `skvo_veb/lc_providers/gaia_dr3_veb/fetch_metadata.py`, keys in `utils/lc_config.py` (`VO_ENVELOPE_KEY_*`).
+Reference: `lc_discovery/providers/gaia_dr3_veb/fetch_metadata.py`, keys in `utils/lc_config.py` (`VO_ENVELOPE_KEY_*`).
 
 ### Folding epoch and TIMESYS
 
@@ -257,7 +257,7 @@ Implementation: sibling package ``volightcurve.time_reference``, wired through `
 
 Many archives expose a **Table Access Protocol (TAP)** service. Discovery TAP providers follow the same provider contract; they differ in **how** search and fetch are wired.
 
-**Reference implementation:** `skvo_veb/lc_providers/gaia_dr3_veb/`
+**Reference implementation:** `lc_discovery/providers/gaia_dr3_veb/`
 
 ### How a TAP provider is usually split
 
@@ -360,8 +360,8 @@ gaia_dr3_veb/
 
 Shared utilities used but **not** part of this package:
 
-- `lc_providers/tap/` — generic TAP execution + dialect enum
-- `lc_providers/shared/gaia_dr3_source_id.py` — DR3 id parsing (DR4 would get its own module)
+- `lc_discovery/tap/` — generic TAP execution + dialect enum
+- `lc_discovery/shared/gaia_dr3_source_id.py` — DR3 id parsing (DR4 would get its own module)
 
 ---
 
@@ -384,7 +384,7 @@ Discovery orchestration uses these flags to choose Simbad fallbacks (see [§9 in
 
 | Mistake | Fix |
 |---------|-----|
-| Putting math, ADQL, or HTTP in `pages/` | Keep all archive logic in `lc_providers/` |
+| Putting math, ADQL, or HTTP in `pages/` | Keep all archive logic in `lc_discovery/` |
 | One folder for unrelated missions (“all Gaia”) | Separate package per product line |
 | Returning `CurveDash` from fetch | Return `VOLightCurve`; bridge happens in `lc_discovery_load` |
 | Storing large arrays in `lc_key` | Only small fetch handles (ids, URLs, band codes) |
@@ -400,8 +400,7 @@ Discovery orchestration uses these flags to choose Simbad fallbacks (see [§9 in
 
 - **Architecture and search flows:** [mission_lightcurve_providers.md](mission_lightcurve_providers.md)
 - **Repository layout:** [structure.md](structure.md)
-- **Working TAP example:** `skvo_veb/lc_providers/gaia_dr3_veb/`
-- **Non-TAP / Sky Patrol example:** `skvo_veb/lc_providers/asassn/` (cone + `query_list` on `stellar_main`, candidate band rows)
-- **Synthetic/debug example:** `skvo_veb/lc_providers/gaia_debug/`
+- **Working TAP example:** `lc_discovery/providers/gaia_dr3_veb/`
+- **Non-TAP / Sky Patrol example:** `lc_discovery/providers/asassn/` (cone + `query_list` on `stellar_main`, candidate band rows)
 
 When adding a provider that needs a new search strategy or changes to shared code, agree the design with maintainers first (project rule).

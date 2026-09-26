@@ -1,4 +1,5 @@
 # Local / machine-specific deps (not committed as requirements-local.txt).
-# Ticket 9: editable volightcurve sibling. Use a relative path when the
-# library checkout sits beside skvo_veb_2:
+# Ticket 9: editable volightcurve sibling. Ticket 10: editable lc_discovery
+# sibling. Use a relative path when the checkouts sit beside skvo_veb_2:
 -e ../volightcurve
+-e ../lc_discovery

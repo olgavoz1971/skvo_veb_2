@@ -5,13 +5,13 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from skvo_veb.lc_providers.catalog_schema import (
+from lc_discovery.catalog_schema import (
     catalog_row_to_aggrid_dict,
     catalog_table_to_row_dicts,
     empty_catalog_table,
     validate_catalog_table,
 )
-from skvo_veb.lc_providers.lc_key import encode_lc_key
+from lc_discovery.lc_key import encode_lc_key
 
 
 def _sample_catalog_row() -> dict:

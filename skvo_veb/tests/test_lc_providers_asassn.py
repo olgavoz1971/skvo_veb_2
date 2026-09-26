@@ -10,16 +10,15 @@ import pytest
 import requests
 from astropy.table import Table
 
-from skvo_veb.lc_providers.asassn import config
-from skvo_veb.lc_providers.asassn.build_volightcurve import build_volightcurve_from_band_table
-from skvo_veb.lc_providers.asassn.catalog import map_metadata_table_to_catalog
-from skvo_veb.lc_providers.asassn.provider import AsassnProvider
-from skvo_veb.lc_providers.asassn.skypatrol_fetch import fetch_discovery_cone
-from skvo_veb.lc_providers.catalog_schema import read_discovery_truncation_meta
-from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
-from skvo_veb.lc_providers.lc_key import decode_lc_key
+from lc_discovery.providers.asassn import config
+from lc_discovery.providers.asassn.fetch_metadata import votable_from_band_table
+from lc_discovery.providers.asassn.catalog import map_metadata_table_to_catalog
+from lc_discovery.providers.asassn.provider import AsassnProvider
+from lc_discovery.providers.asassn.skypatrol_fetch import fetch_discovery_cone
+from lc_discovery.catalog_schema import read_discovery_truncation_meta
+from skvo_veb.tests.sample_sources import AA_AND
+from lc_discovery.lc_key import decode_lc_key
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
-from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
 
 
@@ -61,8 +60,8 @@ def test_catalog_lc_key_payload():
     assert payload == {"asas_sn_id": "85900701048", "band": "g"}
 
 
-def test_build_volightcurve_from_band_table():
-    """Band slice builds a flux-native VOLightCurve with photometry columns."""
+def test_votable_from_band_table_keeps_camera():
+    """Band slice writes a calibrated VOTable and keeps the camera column."""
     band_df = pd.DataFrame(
         {
             "jd": [2459000.5, 2459001.5],
@@ -71,21 +70,22 @@ def test_build_volightcurve_from_band_table():
             "camera": ["bs", "br"],
         }
     )
-    volc = build_volightcurve_from_band_table(
+    payload = votable_from_band_table(
         band_df,
         asas_sn_id=85900701048,
         band_code="g",
         ra_deg=AA_AND.ra_deg,
         dec_deg=AA_AND.dec_deg,
+        epoch_jd=None,
+        period_days=None,
     )
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 2
-    assert "phot" in volc.colnames
-    assert "label" in volc.colnames
-    assert list(volc["label"]) == ["bs", "br"]
+    assert list(volc["camera"]) == ["bs", "br"]
 
 
-def test_build_volightcurve_without_camera_omits_label():
-    """Photometry build succeeds when Sky Patrol omits the auxiliary camera column."""
+def test_votable_from_band_table_without_camera():
+    """The issued VOTable omits camera when Sky Patrol omits that column."""
     band_df = pd.DataFrame(
         {
             "jd": [2459000.5, 2459001.5],
@@ -93,18 +93,22 @@ def test_build_volightcurve_without_camera_omits_label():
             "flux_err": [0.3, 0.4],
         }
     )
-    volc = build_volightcurve_from_band_table(
+    payload = votable_from_band_table(
         band_df,
         asas_sn_id=85900701048,
         band_code="g",
+        ra_deg=None,
+        dec_deg=None,
+        epoch_jd=None,
+        period_days=None,
     )
+    volc = VOLightCurve(io.BytesIO(payload))
     assert len(volc) == 2
-    assert "phot" in volc.colnames
-    assert "label" not in volc.colnames
+    assert "camera" not in volc.colnames
 
 
-def test_asassn_camera_label_survives_export_roundtrip():
-    """Per-epoch camera codes remain in VOTable label through CurveDash export."""
+def test_asassn_camera_survives_export_roundtrip():
+    """Per-epoch camera codes remain in the issued VOTable through CurveDash export."""
     band_df = pd.DataFrame(
         {
             "jd": [2459000.5, 2459001.5],
@@ -113,18 +117,23 @@ def test_asassn_camera_label_survives_export_roundtrip():
             "camera": ["bs", "br"],
         }
     )
-    volc = build_volightcurve_from_band_table(
+    payload = votable_from_band_table(
         band_df,
         asas_sn_id=85900701048,
         band_code="g",
+        ra_deg=None,
+        dec_deg=None,
+        epoch_jd=None,
+        period_days=None,
     )
+    volc = VOLightCurve(io.BytesIO(payload))
     lcd = volc_to_curvedash(volc, "asassn_g.vot")
-    assert list(lcd.lightcurve["label"]) == ["bs", "br"]
+    assert list(volc["camera"]) == ["bs", "br"]
 
     buf = io.BytesIO(export_curvedash(lcd, "votable_binary", profile="asassn"))
     exported = VOLightCurve(buf)
-    assert "label" in exported.colnames
-    assert list(exported["label"]) == ["bs", "br"]
+    assert "camera" in exported.colnames
+    assert list(exported["camera"]) == ["bs", "br"]
 
 
 def test_search_catalog_by_gaia_id(monkeypatch):
@@ -135,7 +144,7 @@ def test_search_catalog_by_gaia_id(monkeypatch):
         return _sample_metadata_df()
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_discovery_by_gaia_id",
+        "lc_discovery.providers.asassn.provider.fetch_discovery_by_gaia_id",
         _fake_gaia,
     )
 
@@ -161,7 +170,7 @@ def test_search_catalog_cone_truncation_hint(monkeypatch):
         return pd.DataFrame(rows)
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_discovery_cone",
+        "lc_discovery.providers.asassn.provider.fetch_discovery_cone",
         _fake_cone,
     )
 
@@ -197,21 +206,19 @@ def test_fetch_lightcurve_empty_band(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_photometry_by_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_photometry_by_asas_sn_id",
         lambda _sid: photometry,
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_epoch_period_for_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_epoch_period_for_asas_sn_id",
         lambda _sid: (None, None),
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_discovery_by_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_discovery_by_asas_sn_id",
         lambda _sid: _sample_metadata_df(),
     )
 
-    from skvo_veb.utils.my_tools import PipeException
-
-    with pytest.raises(PipeException, match="no observations"):
+    with pytest.raises(ValueError, match="no observations"):
         provider.fetch_lightcurve(v_key)
 
 
@@ -235,15 +242,15 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
     )
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_photometry_by_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_photometry_by_asas_sn_id",
         lambda _sid: photometry,
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_epoch_period_for_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_epoch_period_for_asas_sn_id",
         lambda _sid: (2459000.0, 0.46),
     )
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.asassn.provider.fetch_discovery_by_asas_sn_id",
+        "lc_discovery.providers.asassn.provider.fetch_discovery_by_asas_sn_id",
         lambda _sid: _sample_metadata_df(),
     )
 
@@ -260,7 +267,7 @@ def test_fetch_lightcurve_builds_volc(monkeypatch):
 
 
 def test_fetch_discovery_cone_maps_http_error_to_pipe_exception():
-    """Sky Patrol HTTP failures surface as PipeException for the Discovery UI."""
+    """Sky Patrol HTTP failures surface as ValueError."""
 
     class _FailingClient:
         def cone_search(self, *args, **kwargs):
@@ -271,7 +278,7 @@ def test_fetch_discovery_cone_maps_http_error_to_pipe_exception():
                 response=response,
             )
 
-    with pytest.raises(PipeException, match="HTTP 500"):
+    with pytest.raises(ValueError, match="HTTP 500"):
         fetch_discovery_cone(
             ra_deg=1.0,
             dec_deg=0.0,

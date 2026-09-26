@@ -27,14 +27,14 @@ The project strictly separates concerns:
    ```bash
    pip install -r requirements.txt
    ```
-3. Install the sibling ``volightcurve`` library in **editable** mode (Ticket 9;
-   the app imports ``volightcurve`` directly). Adjust the path if your
-   checkout is not beside this repo:
+3. Install the sibling libraries in **editable** mode. The app imports
+   ``volightcurve`` directly (Ticket 9). ``lc_discovery`` is installed beside
+   it (Ticket 10) and is not yet what the running app imports. Adjust the
+   paths if your checkouts are not beside this repo:
 
    ```bash
    pip install -e ../volightcurve
-   # or absolute:
-   # pip install -e /home/voz/projects/UPJS/volightcurve
+   pip install -e ../lc_discovery
    ```
 
    Optional local override file (gitignored): copy

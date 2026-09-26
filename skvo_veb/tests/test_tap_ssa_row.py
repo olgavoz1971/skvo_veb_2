@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from skvo_veb.lc_providers.shared.tap_ssa_row import (
+from lc_discovery.shared.tap_ssa_row import (
     object_class_from_ssa_row,
     parse_ssa_location,
 )

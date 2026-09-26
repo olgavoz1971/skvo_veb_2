@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from skvo_veb.lc_providers.base import MissionCapabilities
-from skvo_veb.lc_providers.registry import get_provider
+from lc_discovery.base import MissionCapabilities
+from lc_discovery.registry import get_provider
 
 _LC_DISCOVERY_CELL_CLASS = "lc-discovery-catalog-cell"
 _LC_DISCOVERY_NUMERIC_CELL_CLASS = "lc-discovery-catalog-cell-numeric"

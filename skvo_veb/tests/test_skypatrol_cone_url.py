@@ -5,10 +5,10 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from skvo_veb.lc_providers.asassn.skypatrol_cone_url import (
+from lc_discovery.providers.asassn.skypatrol_cone_url import (
     skypatrol_cone_centre_for_lookup_url,
 )
-from skvo_veb.lc_providers.asassn.skypatrol_fetch import fetch_discovery_cone
+from lc_discovery.providers.asassn.skypatrol_fetch import fetch_discovery_cone
 
 
 def test_skypatrol_cone_centre_nudges_exact_zero_ra_and_dec():

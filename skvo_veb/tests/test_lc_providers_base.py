@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import pytest
 
-from skvo_veb.lc_providers.base import (
+from lc_discovery.base import (
     DEFAULT_MAX_DISCOVERY_CATALOG_ROWS,
     DEFAULT_MAX_DISCOVERY_SEARCH_RADIUS_DEG,
 )
-from skvo_veb.lc_providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
-from skvo_veb.lc_providers.gaia_dr3_ari.provider import GaiaDr3AriProvider
-from skvo_veb.lc_providers.ogle_ocvs.provider import OgleOcvsProvider
-from skvo_veb.lc_providers.catalog_schema import (
+from lc_discovery.providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
+from lc_discovery.providers.gaia_dr3_ari.provider import GaiaDr3AriProvider
+from lc_discovery.providers.ogle_ocvs.provider import OgleOcvsProvider
+from lc_discovery.catalog_schema import (
     empty_catalog_table,
     read_discovery_truncation_meta,
 )
-from skvo_veb.lc_providers.registry import PROVIDERS
-from skvo_veb.lc_providers.tap.adql import adql_top_limit_clause
+from lc_discovery.registry import PROVIDERS
+from lc_discovery.tap.adql import adql_top_limit_clause
 from skvo_veb.utils.my_tools import PipeException
 
 
@@ -53,7 +53,7 @@ def test_registered_provider_search_radius_caps():
 def test_require_cone_search_rejects_radius_above_mission_max():
     """Cone validation rejects radii above the provider maximum."""
     provider = GaiaDr3AipProvider()
-    with pytest.raises(PipeException, match="exceeds the mission maximum"):
+    with pytest.raises(ValueError, match="exceeds the mission maximum"):
         provider._require_cone_search(
             ra_deg=346.0,
             dec_deg=47.0,

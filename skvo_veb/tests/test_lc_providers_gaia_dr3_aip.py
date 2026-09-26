@@ -8,19 +8,19 @@ import numpy as np
 import pytest
 from astropy.table import Table
 
-from skvo_veb.lc_providers.gaia_dr3_aip import config
-from skvo_veb.lc_providers.gaia_dr3_aip.catalog import (
+from lc_discovery.providers.gaia_dr3_aip import config
+from lc_discovery.providers.gaia_dr3_aip.catalog import (
     map_prefetched_sources_to_catalog,
     map_source_table_to_catalog,
 )
-from skvo_veb.lc_providers.gaia_dr3_aip.epoch_photometry import (
+from lc_discovery.providers.gaia_dr3_aip.epoch_photometry import (
     band_point_count,
     band_time_bounds,
     cache_dict_from_tap_table,
     extract_band_lightcurve,
 )
-from skvo_veb.lc_providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
-from skvo_veb.lc_providers.gaia_dr3_aip.vari_metadata import (
+from lc_discovery.providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
+from lc_discovery.providers.gaia_dr3_aip.vari_metadata import (
     PeriodKind,
     VARI_SUMMARY_ROUTES,
     period_days_from_value,
@@ -28,15 +28,17 @@ from skvo_veb.lc_providers.gaia_dr3_aip.vari_metadata import (
     pick_vari_route,
     route_sources_by_vari_table,
 )
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.tap.dialect import TapQueryDialect
 from skvo_veb.utils.lc_bridge import volc_to_curvedash
 from skvo_veb.utils.lc_config import DOMAIN_MAG, PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
 from skvo_veb.utils.lc_discovery_search import run_catalog_search_for_mission
 from skvo_veb.utils.my_tools import PipeException
 
-GAIA_AIP_VOT = Path(__file__).resolve().parents[2] / "data" / "gaia_aip.vot"
+GAIA_AIP_VOT = (
+    Path(__file__).resolve().parents[2] / "data" / "gaia_aip.vot"
+)
 SAMPLE_SOURCE_ID = 10655814178816
 
 
@@ -62,7 +64,7 @@ def prefetch_cache_tmp(tmp_path, monkeypatch):
 def test_aip_adql_source_by_id():
     """Direct source lookup joins classifier result and filters epoch photometry."""
     adql = config.adql_gaia_source_by_id(SAMPLE_SOURCE_ID)
-    assert "FROM gaiadr3.gaia_source AS gs" in adql
+    assert "FROM gaiadr3.gaia_source_lite AS gs" in adql
     assert "LEFT JOIN gaiadr3.vari_classifier_result AS vcr" in adql
     assert "vcr.best_class_name" in adql
     assert f"gs.source_id = {SAMPLE_SOURCE_ID}" in adql
@@ -72,7 +74,7 @@ def test_aip_adql_source_by_id():
 def test_aip_adql_cone_query():
     """Cone search filters epoch photometry, geometry, and orders by random_index."""
     adql = config.adql_gaia_source_cone(ra_deg=274.587, dec_deg=-21.707, radius_arcsec=180.0)
-    assert "FROM gaiadr3.gaia_source AS gs" in adql
+    assert "FROM gaiadr3.gaia_source_lite AS gs" in adql
     assert "LEFT JOIN gaiadr3.vari_classifier_result AS vcr" in adql
     assert "gs.has_epoch_photometry = 'True'" in adql
     assert "CONTAINS(POINT('ICRS', gs.ra, gs.dec), CIRCLE('ICRS'" in adql
@@ -271,7 +273,7 @@ def test_aip_search_catalog_runs_gaia_source_query_only(monkeypatch, prefetch_ca
         raise AssertionError(f"Unexpected TAP query during discovery: {adql[:120]}")
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.gaia_dr3_aip.provider.run_tap_sync_query",
+        "lc_discovery.providers.gaia_dr3_aip.provider.run_tap_sync_query",
         _fake_tap,
     )
 
@@ -299,7 +301,7 @@ def test_aip_fetch_lightcurve_queries_epoch_on_cache_miss(
         raise AssertionError(f"Unexpected TAP query on load: {adql[:120]}")
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.gaia_dr3_aip.provider.run_tap_sync_query",
+        "lc_discovery.providers.gaia_dr3_aip.provider.run_tap_sync_query",
         _fake_tap,
     )
 
@@ -328,7 +330,7 @@ def test_aip_fetch_lightcurve_from_prefetch(
     gaia_aip_epoch_payload,
 ):
     """fetch_lightcurve builds a magnitude-native curve from prefetched arrays."""
-    from skvo_veb.lc_providers.gaia_dr3_aip.prefetch_store import store_epoch_photometry
+    from lc_discovery.providers.gaia_dr3_aip.prefetch_store import store_epoch_photometry
 
     provider = GaiaDr3AipProvider()
     store_epoch_photometry(SAMPLE_SOURCE_ID, gaia_aip_epoch_payload)
@@ -370,7 +372,7 @@ def test_aip_raw_file_expands_g_band():
     import io
     from pathlib import Path
 
-    from skvo_veb.lc_providers.gaia_dr3_aip.fetch_metadata import enrich_votable
+    from lc_discovery.providers.gaia_dr3_aip.fetch_metadata import enrich_votable
     from volightcurve import VOLightCurve
 
     raw = Path("/home/voz/projects/UPJS/tmp/g_aip.xml").read_bytes()
@@ -397,7 +399,7 @@ def test_aip_raw_file_drops_bp_rows_with_nan_time_or_mag():
     import io
     from pathlib import Path
 
-    from skvo_veb.lc_providers.gaia_dr3_aip.fetch_metadata import enrich_votable
+    from lc_discovery.providers.gaia_dr3_aip.fetch_metadata import enrich_votable
     from volightcurve import VOLightCurve
 
     raw = Path("/home/voz/projects/UPJS/tmp/g_aip.xml").read_bytes()

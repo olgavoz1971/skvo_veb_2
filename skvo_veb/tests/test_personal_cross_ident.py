@@ -2,12 +2,12 @@
 
 from astropy.table import Table
 
-from skvo_veb.lc_providers.personal_ts.cross_ident import (
+from lc_discovery.providers.personal_ts.cross_ident import (
     alias_matches_identifiers,
     identifier_tokens,
     lookup_object_id_by_alias,
 )
-from skvo_veb.lc_providers.personal_ts.resolve_target import (
+from lc_discovery.providers.personal_ts.resolve_target import (
     resolve_personal_target_name,
     target_name_candidates,
 )
@@ -49,7 +49,7 @@ def test_resolve_personal_target_name_uses_cross_ident_table(monkeypatch):
         return Table(names=["object_id", "identifiers"])
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.personal_ts.cross_ident.run_tap_sync_query",
+        "lc_discovery.providers.personal_ts.cross_ident.run_tap_sync_query",
         fake_tap,
     )
 
@@ -73,7 +73,7 @@ def test_lookup_object_id_by_alias_verifies_exact_token(monkeypatch):
         return objects_table
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.personal_ts.cross_ident.run_tap_sync_query",
+        "lc_discovery.providers.personal_ts.cross_ident.run_tap_sync_query",
         fake_tap,
     )
 

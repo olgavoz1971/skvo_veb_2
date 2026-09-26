@@ -3,15 +3,15 @@
 import numpy as np
 from astropy.table import Table
 
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.personal_ts import config
-from skvo_veb.lc_providers.personal_ts.object_id import (
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.providers.personal_ts import config
+from lc_discovery.providers.personal_ts.object_id import (
     normalize_personal_object_id,
     pick_personal_archive_id_from_simbad,
 )
-from skvo_veb.lc_providers.personal_ts.provider import PersonalTsProvider
-from skvo_veb.lc_providers.personal_ts.ssa_catalog import map_ssa_table_to_catalog
-from skvo_veb.lc_providers.registry import get_provider, list_missions
+from lc_discovery.providers.personal_ts.provider import PersonalTsProvider
+from lc_discovery.providers.personal_ts.ssa_catalog import map_ssa_table_to_catalog
+from lc_discovery.registry import get_provider, list_missions
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 
 
@@ -102,7 +102,7 @@ def test_personal_search_catalog_by_object_id(monkeypatch):
         return _sample_personal_ssa_table()
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.personal_ts.provider.run_tap_sync_query",
+        "lc_discovery.providers.personal_ts.provider.run_tap_sync_query",
         fake_tap,
     )
 
@@ -116,7 +116,7 @@ def test_personal_sets_magnitude_zero_point_for_arp_filter():
     """Personal collections set zp_mag 0 for Palomar/Arp1961.103aO_atm when the file has none."""
     import io
 
-    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_votable
+    from lc_discovery.providers.personal_ts.fetch_metadata import enrich_votable
     from volightcurve import VOLightCurve
 
     xml = """<?xml version="1.0"?>
@@ -149,7 +149,7 @@ def test_personal_raw_file_sets_bessell_v_magnitude_zero_point():
     import io
     from pathlib import Path
 
-    from skvo_veb.lc_providers.personal_ts.fetch_metadata import enrich_votable
+    from lc_discovery.providers.personal_ts.fetch_metadata import enrich_votable
     from volightcurve import VOLightCurve
 
     raw = Path("/home/voz/projects/UPJS/tmp/p.xml").read_bytes()

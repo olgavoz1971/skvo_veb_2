@@ -19,7 +19,7 @@ give it the next unused ID. When a ticket is done, move its row to
 | 2 | TESS time-interval cleaning (client mark, server trim, keep zoom) | Open |
 | 7 | Photcal coherence, domain-switch policy, and shared calibration UI | Open (Phase 1 done; Phase 2 next) |
 | 9 | Extract ``volightcurve`` as a sibling editable Python package | Open (Phase 5 done; Phase 6 optional) |
-| 10 | Extract lightcurve discovery toolkit as a sibling package | Open (Phase 0 next) |
+| 10 | Extract lightcurve discovery toolkit as a sibling package | Open (editable install done; app still on nested providers) |
 | 11 | Rough extrema drawer: move intervals (and related state) to client ``dcc.Store`` | Open |
 | 12 | volightcurve: photometric calibration validation for domain conversion | Open |
 | 13 | volightcurve: §8 product validation on ingest (structure + cells) | Open |
@@ -1465,9 +1465,11 @@ and stops for agreement before coding the next phase.
   editable install into consumer venvs (``pip install -e``). Do **not** treat
   a plain ``site-packages`` install as the normal workflow.
 - PyPI upload is **out of scope** until the developer asks.
-- Package product is **VO / archive only**: ``search`` / ``fetch`` →
-  ``VOLightCurve``. Do **not** move Dash pages, AgGrid, Aladin, Plotly,
-  ``CurveDash``, or ``lc_bridge`` into the new package.
+- Package product is **VO / archive only**: ``search`` returns the
+  catalogue table; ``fetch`` returns calibrated VOTable **bytes**. Do
+  **not** move Dash pages, AgGrid, Aladin, Plotly, ``CurveDash``, or
+  ``lc_bridge`` into the new package. ``VOLightCurve`` is built in the
+  app, in ``lc_discovery_load``, after ``fetch``.
 - Must depend on sibling **``volightcurve``** (Ticket 9). Do not reimplement
   PhotCal / I/O / column discovery inside providers.
 
@@ -1496,9 +1498,9 @@ and stops for agreement before coding the next phase.
 
 1. Lightcurve **discovery toolkit** becomes an independent Python package
    usable from notebooks and other apps (not only ``skvo_veb_2``).
-2. Public contract (sketch; refine in Phase 0): list missions, search
-   catalogue, fetch by opaque ``lc_key`` → ``VOLightCurve``; providers
-   remain pluggable.
+2. Public contract: ``list_missions``, ``search``, ``fetch``. ``fetch``
+   returns calibrated VOTable bytes. Providers remain pluggable behind
+   that surface.
 3. ``skvo_veb_2`` Lightcurve Discovery page becomes a **consumer**: UI +
    ``volc_to_curvedash`` + session cache stay in the app; science fetch
    imports the sibling package.
@@ -1545,10 +1547,15 @@ pip install -e /path/to/<discovery-package>
 ```
 
 ```text
-# after (sketch)
-from <import_name> import list_missions, search_catalog, fetch_lightcurve
-volc = fetch_lightcurve(lc_key)   # -> VOLightCurve
+from lc_discovery import list_missions, search, fetch
+missions = list_missions()
+catalog = search(...)          # astropy Table, one row per light curve, opaque lc_key
+payload = fetch(lc_key)        # bytes: calibrated VOTable
 ```
+
+The Dash app keeps ``lc_discovery_load``: those bytes become a
+``VOLightCurve``, then ``volc_to_curvedash``. A notebook that wants a
+``VOLightCurve`` uses ``volightcurve`` on the same bytes.
 
 ### Non-goals (unless later asked)
 
@@ -1565,8 +1572,10 @@ volc = fetch_lightcurve(lc_key)   # -> VOLightCurve
 
 ### Current state (do not re-derive)
 
-- Providers already return ``VOLightCurve``; page converts via
-  ``lc_discovery_load`` → ``volc_to_curvedash``.
+- Reviewed plugins return calibrated VOTable bytes. ``lc_discovery_load``
+  parses those bytes into a ``VOLightCurve``, then ``volc_to_curvedash``.
+  The ABC annotation on ``fetch_lightcurve`` still says ``VOLightCurve``;
+  that annotation is behind the code.
 - Registry is a static dict in ``lc_providers/registry.py`` (edit to add a
   mission); not setuptools entry points yet.
 - ``gaia_debug`` exists for tests and is unregistered.
@@ -1676,7 +1685,52 @@ Decide and record in this ticket:
 
 **Exit:** written decisions below. No file moves yet.
 
-**Decisions (Phase 1):** _(fill when agreed)_
+**Decisions (Phase 1):**
+
+1. Package and import name: ``lc_discovery``.
+2. Local path: ``/home/voz/projects/UPJS/lc_discovery``, beside
+   ``skvo_veb_2`` and ``volightcurve``.
+3. First cut moves ``skvo_veb/lc_providers/`` (ABC, registry, catalogue
+   schema, ``lc_key``, TAP, registered missions) and the search
+   orchestration a notebook needs (``lc_discovery_search`` target
+   resolution, time bounds, Simbad, coordinates). Status sentences,
+   AgGrid row conversion, and page markdown stay in the app.
+4. The app keeps the page, CSS, messages, Aladin, AgGrid,
+   ``lc_discovery_load``, ``lc_bridge``, ``CurveDash``, session cache,
+   and figures.
+5. Public surface is only ``list_missions()``, ``search(...)``, and
+   ``fetch(lc_key) -> bytes``. ``DiscoveryFetchContext`` does not cross
+   this surface. A mission option such as ZTF quality, if it remains,
+   is an argument of ``fetch`` or ``search``, not a Dash context.
+6. Static registry for the first cut. ``register()`` waits until a
+   third party must add a mission without editing the package.
+7. Shared fetch cache stays out of this extraction (Ticket 1).
+   ``force_refresh`` may remain on ``fetch`` as a flag with no cache
+   behind it yet.
+8. Editable install, same as Ticket 9: ``pip install -e`` the sibling;
+   document it in the app README and ``requirements-local.txt.example``.
+   No machine path in committed ``requirements.txt``.
+9. A Cursor skill ships with the package, after the import cut, same
+   as ``volightcurve``.
+
+**Extraction, same path as ``volightcurve`` (Ticket 9). No file moves
+until the developer says go.**
+
+1. Scaffold ``/home/voz/projects/UPJS/lc_discovery`` with ``pyproject.toml``
+   (src layout), README, and ``src/lc_discovery/``. Copy the provider
+   tree. Internal imports become ``lc_discovery.*``. Depend on sibling
+   ``volightcurve``. Nested ``skvo_veb/lc_providers/`` stays and remains
+   what the app runs.
+2. ``pip install -e /home/voz/projects/UPJS/lc_discovery`` into the app
+   venv. Prove ``import lc_discovery`` loads the sibling and
+   ``import skvo_veb.lc_providers`` still loads the nested copy. Do not
+   switch the app in this step.
+3. Retarget app imports from ``skvo_veb.lc_providers`` to ``lc_discovery``.
+   Leave the nested tree as a dead copy. ``lc_discovery_load`` still
+   parses ``fetch`` bytes into ``VOLightCurve``.
+4. Delete ``skvo_veb/lc_providers/`` and retarget the discovery docs to
+   the sibling. Pure provider tests move with the package. Dash and
+   ``CurveDash`` tests stay in ``skvo_veb_2``.
 
 #### Phase 2 — Scaffold sibling package (local only)
 
@@ -1721,8 +1775,8 @@ Decide and record in this ticket:
 
 - Document and export a small public surface (list / search / fetch /
   register as agreed).
-- Example notebook or script: resolve target → catalogue row →
-  ``VOLightCurve`` → optional ``volightcurve`` write.
+- Example notebook or script: ``list_missions`` → ``search`` → ``fetch``
+  bytes → optional ``VOLightCurve`` via ``volightcurve``.
 - Add ``.cursor/skills/<name>/`` with ``SKILL.md`` + ``references/``
   (self-contained; no ``../../../`` into the package root). Skill must
   teach: use package + ``volightcurve``; discover columns via
@@ -1745,13 +1799,22 @@ skill, and drive discovery without opening ``skvo_veb_2``.
 - Ticket 1 archive fetch cache if Phase 1 parked it here.
 - PyPI only if asked.
 
+#### Phase 9 — Discovery VOTable export button
+
+- Remove the debug write of the issued VOTable under the system
+  temporary directory (``lc_tmp_N.vot`` per mission).
+- Add a Discovery-page button that downloads that same calibrated
+  VOTable. The button is the export; the temporary file is not.
+
 ### Acceptance
 
-1. Editable sibling package provides mission search/fetch →
-   ``VOLightCurve`` without importing ``skvo_veb``.
+1. Editable sibling package provides ``list_missions``, ``search``, and
+   ``fetch`` → calibrated VOTable bytes, without importing ``skvo_veb``.
 2. ``skvo_veb_2`` Discovery page still works via bridge + session cache;
    no nested provider tree after Phase 5.
-3. Package depends on ``volightcurve``; no duplicate mag↔flux / I/O stack.
+3. ``lc_discovery`` does not depend on ``volightcurve``. The Dash app
+   still parses ``fetch`` bytes with ``volightcurve``. The AIP magnitude
+   error is the Pogson line ``(2.5 / ln(10)) / SNR``.
 4. Cursor skill ships with the package and is documented for consumers.
 5. Pure tests live with the package; Dash / CurveDash tests stay in
    ``skvo_veb_2``.
@@ -1759,8 +1822,15 @@ skill, and drive discovery without opening ``skvo_veb_2``.
 
 ### Status
 
-**Open.** Phase 0 in discussion (keep every science column; supply missing
-calibration only from documented research). Packaging is Phase 1.
+**Open.** Sibling no longer imports ``skvo_veb``. ``PipeException``,
+photcal keys, ``JD_TO_MJD``, and the Simbad result type live in
+``lc_discovery``. Unused ``VOLightCurve`` builders are removed.
+``JD_TO_MJD`` is the constant ``2400000.5`` inside the package.
+``skvo_veb/lc_providers/`` is deleted. The app imports ``lc_discovery``.
+Discovery docs in the app and in the sibling name ``lc_discovery/providers/``.
+Package regression tests live in ``lc_discovery/tests`` and import only ``lc_discovery``. Aladin, search chrome, session cache, and CurveDash tests stay in ``skvo_veb/tests``. Phase 9 (drop ``/tmp``
+VOTable debug, add an export button) is written and not started.
+Shared fetch cache stays in Ticket 1.
 
 ---
 

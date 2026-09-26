@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from skvo_veb.lc_providers.gaia_dr3_veb.fetch_metadata import enrich_votable
+from lc_discovery.providers.gaia_dr3_veb.fetch_metadata import enrich_votable
 from skvo_veb.utils.lc_bridge import export_curvedash, volc_to_curvedash
 from skvo_veb.utils.lc_config import (
     METADATA_KEY_VO_ENVELOPE,
@@ -16,7 +16,6 @@ from skvo_veb.utils.lc_config import (
     VO_ENVELOPE_KEY_TABLE_DESCRIPTION,
     VOTABLE_FORMAT_BINARY,
 )
-from skvo_veb.utils.my_tools import PipeException
 from volightcurve import VOLightCurve
 
 
@@ -115,7 +114,7 @@ def test_enrich_raises_when_description_missing():
         b"<DESCRIPTION>Gaia DR3 epoch photometry from UPJS VEB archive.</DESCRIPTION>",
         b"",
     )
-    with pytest.raises(PipeException, match="missing TABLE description"):
+    with pytest.raises(ValueError, match="missing TABLE description"):
         enrich_votable(payload)
 
 

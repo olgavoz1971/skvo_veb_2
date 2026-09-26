@@ -6,11 +6,10 @@ import pytest
 from astropy.table import Table
 from astropy.time import Time
 
-from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_epoch import (
+from lc_discovery.providers.panstarrs1_dr2.mean_object_epoch import (
     coosys_epoch_year_from_detection_table,
     coosys_epoch_year_from_epoch_mean_mjd,
 )
-from skvo_veb.utils.my_tools import PipeException
 
 
 def test_coosys_epoch_year_from_epoch_mean_mjd():
@@ -32,5 +31,5 @@ def test_coosys_epoch_year_from_detection_table_first_finite_row():
 def test_coosys_epoch_year_from_detection_table_missing_column():
     """Missing epochMean fails fast."""
     table = Table({"obsTime": [58000.0]})
-    with pytest.raises(PipeException, match="epochMean"):
+    with pytest.raises(ValueError, match="epochMean"):
         coosys_epoch_year_from_detection_table(table, column_map={"obstime": "obsTime"})

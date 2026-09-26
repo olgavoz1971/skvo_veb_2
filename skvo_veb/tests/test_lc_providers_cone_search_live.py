@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from skvo_veb.lc_providers.registry import PROVIDERS, get_provider
+from lc_discovery.registry import PROVIDERS, get_provider
 
 CONE_RA_DEG = 346.34517
 CONE_DEC_DEG = 47.67631

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skvo_veb.lc_providers.tap.adql import adql_icrs_ra_dec_box_clauses
+from lc_discovery.tap.adql import adql_icrs_ra_dec_box_clauses
 
 
 def test_adql_icrs_ra_dec_box_clauses_uses_qualified_columns():

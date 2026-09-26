@@ -104,7 +104,8 @@ setuptools~=70.1.1
 dill~=0.3.9
 celery~=5.4.0
 diskcache~=5.6.3
-# Ticket 9 — volightcurve is a sibling editable package (not pinned here).
+# Ticket 9 / 10 — sibling editable packages (not pinned here).
 # After ``pip install -r requirements.txt``, also:
 #   pip install -e ../volightcurve
+#   pip install -e ../lc_discovery
 # or: pip install -r requirements-local.txt  (see requirements-local.txt.example)

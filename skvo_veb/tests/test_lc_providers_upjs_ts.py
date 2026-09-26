@@ -5,12 +5,12 @@ import io
 import numpy as np
 from astropy.table import Table
 
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.registry import get_provider, list_missions
-from skvo_veb.lc_providers.upjs_ts import config
-from skvo_veb.lc_providers.upjs_ts.provider import UpjsTsProvider
-from skvo_veb.lc_providers.upjs_ts.resolve_target import resolve_upjs_target_name
-from skvo_veb.lc_providers.upjs_ts.ssa_catalog import map_ssa_table_to_catalog
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.registry import get_provider, list_missions
+from lc_discovery.providers.upjs_ts import config
+from lc_discovery.providers.upjs_ts.provider import UpjsTsProvider
+from lc_discovery.providers.upjs_ts.resolve_target import resolve_upjs_target_name
+from lc_discovery.providers.upjs_ts.ssa_catalog import map_ssa_table_to_catalog
 
 
 def _sample_upjs_ssa_table() -> Table:
@@ -86,7 +86,7 @@ def test_resolve_upjs_target_name_uses_objects_table(monkeypatch):
         return Table(names=["object_id", "gaia_name", "simbad_name", "vsx_name"])
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.upjs_ts.cross_ident.run_tap_sync_query",
+        "lc_discovery.providers.upjs_ts.cross_ident.run_tap_sync_query",
         fake_tap,
     )
 
@@ -114,7 +114,7 @@ def test_upjs_search_catalog_by_gaia_name(monkeypatch):
         return _sample_upjs_ssa_table()
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.upjs_ts.provider.run_tap_sync_query",
+        "lc_discovery.providers.upjs_ts.provider.run_tap_sync_query",
         fake_tap,
     )
 
@@ -166,7 +166,7 @@ def _parse(payload: bytes):
 
 def test_upjs_sets_magnitude_zero_point_for_bessell_v():
     """UPJŠ Bessell V with no magnitude zero point receives 0 mag; flux zero point stays."""
-    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
+    from lc_discovery.providers.upjs_ts.fetch_metadata import enrich_votable
 
     volc = _parse(enrich_votable(_upjs_votable(zp_mag=None)))
     photcal = volc.photdms["mag"].photcal
@@ -178,7 +178,7 @@ def test_upjs_sets_magnitude_zero_point_for_bessell_v():
 
 def test_upjs_sets_magnitude_zero_point_for_sdss_g():
     """UPJŠ SDSS g with no magnitude zero point receives 0 mag."""
-    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
+    from lc_discovery.providers.upjs_ts.fetch_metadata import enrich_votable
 
     volc = _parse(enrich_votable(_upjs_votable(zp_mag=None, filter_id="SLOAN/SDSS.g")))
     assert float(volc.photdms["mag"].photcal.zp_mag.value) == 0.0
@@ -188,7 +188,7 @@ def test_upjs_raw_file_sets_bessell_v_magnitude_zero_point():
     """The published UPJŠ series keeps its flux zero point and table name."""
     from pathlib import Path
 
-    from skvo_veb.lc_providers.upjs_ts.fetch_metadata import enrich_votable
+    from lc_discovery.providers.upjs_ts.fetch_metadata import enrich_votable
 
     raw = Path("/home/voz/projects/UPJS/tmp/t.xml").read_bytes()
     volc = _parse(enrich_votable(raw))

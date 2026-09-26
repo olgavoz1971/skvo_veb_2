@@ -6,7 +6,7 @@
 
 **Discovery schema and provider notes:** [README.md](README.md).
 
-**Status:** Implemented for Discovery (2026-07-30). `lc_providers/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Retrieve on `/lc_discovery`. Legacy `/asassn` page remains until retired.
+**Status:** Implemented for Discovery (2026-07-30). `lc_discovery/` registry, Gaia DR3 AIP/ARI/VEB, **ASAS-SN** (`lc_discovery/providers/asassn/`), search orchestration (`utils/lc_discovery_search.py`), Submit + Retrieve on `/lc_discovery`. Legacy `/asassn` page remains until retired.
 
 **Related docs:**
 - [lightcurve_data_flow.md](lightcurve_data_flow.md) — existing layer boundaries (`VOLightCurve` ↔ `CurveDash` ↔ export)
@@ -53,7 +53,7 @@ Export:                    export_curvedash() → VOTable / ECSV / CSV
 
 | Layer | Module | Responsibility |
 |-------|--------|----------------|
-| Mission adapters | `lc_providers/` | Remote query + normalisation to VO |
+| Mission adapters | `lc_discovery/` | Remote query + normalisation to VO |
 | Search orchestration | `utils/lc_discovery_search.py` *(planned)* | Parse coords vs name; Simbad once; call provider; build markdown summary |
 | Simbad (shared) | `utils/` *(e.g. coord / ask_simbad)* | Generic name resolution; **does not** parse Gaia/TIC IDs |
 | VO standard | `volightcurve/` | Ingest, validate, `write_vo_lightcurve` |
@@ -102,7 +102,7 @@ See [lightcurve_data_flow.md](lightcurve_data_flow.md) for the existing VO ↔ C
 
 ## 4. Mission provider API (ABC / Protocol)
 
-Location: **`skvo_veb/lc_providers/`** (uses the sibling ``volightcurve`` package; reusable outside Dash).
+Location: **`lc_discovery/`** (uses the sibling ``volightcurve`` package; reusable outside Dash).
 
 Architecturally this is **a registry of strategy/adapters implementing a shared provider interface** — often shortened to **plugin registry** or **provider registry**. Each mission file is an *adapter* (archive API → standard catalog + `VOLightCurve`); the *registry* picks which adapter runs; new missions extend the system without changing the Discovery page (open/closed principle).
 
@@ -151,11 +151,11 @@ search_catalog(
 | `object_name` | Generic orchestrator (Target is not coordinates) | **Mission file** parses name/ID (`Gaia DR3 123…`, TIC, ASAS-SN name, …) and queries archive **without** converting IDs to cone search |
 | `archive_id` (+ optional `object_name` for display) | Generic orchestrator after Simbad + `pick_archive_id_from_simbad` | Direct ID lookup — **no coordinates** |
 
-The generic layer **must not** parse `Gaia DR3 …`, `TIC …`, or other mission-specific formats. That logic lives only in `lc_providers/<mission>.py` (and future TESS/Kepler adapters the same way).
+The generic layer **must not** parse `Gaia DR3 …`, `TIC …`, or other mission-specific formats. That logic lives only in `lc_discovery/<mission>.py` (and future TESS/Kepler adapters the same way).
 
 **ASAS-SN note:** No true cone search — lookup is by source name or Gaia ID. Returns a **degenerate catalog** (0–2 rows, one per filter band).
 
-**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside the relevant registered `lc_providers/gaia_dr3_*` package). The unregistered `gaia_debug/` mock exists for tests only.
+**Gaia note:** User may enter decimal coordinates (cone) **or** a Gaia `source_id` / `Gaia DR3 …` string (direct lookup inside the relevant registered `lc_discovery/providers/gaia_dr3_*` package).
 
 #### `fetch_lightcurve(lc_key: str, *, force_refresh: bool = False) -> VOLightCurve`
 
@@ -227,7 +227,7 @@ The **generic orchestrator** must not parse mission-specific ID formats (Gaia DR
 
 **One row = one plottable lightcurve** (not one row per source). Example: ASAS-SN same target in `V` and `g` → two rows.
 
-Implement as Astropy `Table` or pandas DataFrame with **enforced column names**. Provide helpers in `lc_providers/catalog_schema.py`:
+Implement as Astropy `Table` or pandas DataFrame with **enforced column names**. Provide helpers in `lc_discovery/catalog_schema.py`:
 
 - `empty_catalog_table()`
 - `validate_catalog_table(t)`
@@ -343,7 +343,7 @@ Only the owning provider parses `payload`.
 The **provider registry** (`registry.py`) maps `mission_id` → provider instance. It is the single discovery point for the UI and for notebooks/CLI callers.
 
 ```python
-# skvo_veb/lc_providers/registry.py
+# lc_discovery/registry.py
 
 PROVIDERS: dict[str, MissionLightcurveProvider]
 
@@ -352,7 +352,7 @@ def list_missions() -> list[MissionDescriptor]: ...
 ```
 
 Adding a mission:
-1. Implement provider in `lc_providers/<mission>.py`
+1. Implement provider in `lc_discovery/<mission>.py`
 2. Add/export profile in `utils/mission_config/<mission>.py` if not present
 3. Register in `registry.py`
 4. Add tests under `tests/` (catalog schema, `lc_key` round-trip, fetch → VO compliance)
@@ -527,7 +527,7 @@ Fetch cache should store VOTable bytes so multiple users and notebooks share the
 | Existing module | Role in new architecture |
 |-----------------|--------------------------|
 | `pages/lightcurve_asassn.py` | Reference UI; to be superseded by generic page |
-| `utils/request_asassn.py` | Becomes internals of `lc_providers/asassn.py`; output refactored to `VOLightCurve` |
+| `utils/request_asassn.py` | Becomes internals of `lc_discovery/providers/asassn.py`; output refactored to `VOLightCurve` |
 | `utils/mission_config/asassn.py` | PhotCal + export profile; used when **building** fetch output |
 | `utils/lc_bridge.py` | `volc_to_curvedash` at app boundary; export unchanged |
 | `volightcurve/` | Source of truth for VO-LC profile |
@@ -550,7 +550,7 @@ already linked is not changed. Several calibrated parents are left alone.
 
 ## 14. ASAS-SN adapter (implemented)
 
-Package: `skvo_veb/lc_providers/asassn/` (`AsassnProvider`, registered as `asassn`).
+Package: `lc_discovery/providers/asassn/` (`AsassnProvider`, registered as `asassn`).
 
 | Area | Behaviour |
 |------|-----------|
@@ -568,10 +568,9 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 ## 15. Implementation order (for agents)
 
 **Done:**
-1. `lc_providers/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
-2. `lc_providers/gaia_debug/` (test-only mock; not registered on Discovery)
+1. `lc_discovery/catalog_schema.py`, `lc_key.py`, `base.py` (`MissionArchiveMatch`), `registry.py`
 3. Gaia DR3 AIP, ARI, VEB TAP providers
-4. **`lc_providers/asassn/`** — Sky Patrol discovery + fetch → `VOLightCurve`
+4. **`lc_discovery/providers/asassn/`** — Sky Patrol discovery + fetch → `VOLightCurve`
 5. `utils/simbad_resolver.py`, `utils/lc_discovery_search.py` (Discovery orchestration)
 6. Discovery UI + Submit/Retrieve + truncation notices
 7. Tests: `test_lc_providers_*`, `test_lc_discovery_search.py`, `test_lc_providers_asassn.py`
@@ -613,7 +612,7 @@ Tests: `tests/test_lc_providers_asassn.py` (mocked Sky Patrol); `tests/test_asas
 | Question | Answer |
 |----------|--------|
 | What is this architecture called? | **Plugin registry** / **provider registry** (§4) |
-| Where do missions live? | `lc_providers/` |
+| Where do missions live? | `lc_discovery/` |
 | Where is search logic orchestrated? | `utils/lc_discovery_search.py` (§9) |
 | Three search strategies? | Cone (coords), direct (mission ID/name in provider), Simbad-assisted (§9.1) |
 | Gaia ID lookup | Direct archive query in the provider — **not** ID → coords → cone |

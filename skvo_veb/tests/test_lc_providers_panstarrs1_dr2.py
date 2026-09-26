@@ -9,12 +9,12 @@ from astropy.table import Table
 
 from volightcurve import VOLightCurve
 
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.panstarrs1_dr2 import config
-from skvo_veb.lc_providers.panstarrs1_dr2.fetch_metadata import votable_from_detections
-from skvo_veb.lc_providers.panstarrs1_dr2.mean_object_catalog import map_mean_object_table_to_catalog
-from skvo_veb.lc_providers.panstarrs1_dr2.provider import Panstarrs1Dr2Provider
-from skvo_veb.lc_providers.panstarrs1_dr2.ps1_names import format_ps1_object_name, parse_ps1_obj_id
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.providers.panstarrs1_dr2 import config
+from lc_discovery.providers.panstarrs1_dr2.fetch_metadata import votable_from_detections
+from lc_discovery.providers.panstarrs1_dr2.mean_object_catalog import map_mean_object_table_to_catalog
+from lc_discovery.providers.panstarrs1_dr2.provider import Panstarrs1Dr2Provider
+from lc_discovery.providers.panstarrs1_dr2.ps1_names import format_ps1_object_name, parse_ps1_obj_id
 
 
 @pytest.fixture
@@ -181,7 +181,7 @@ def test_search_catalog_by_obj_id_object_name(monkeypatch, provider):
         return mean
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.panstarrs1_dr2.provider.run_tap_sync_query",
+        "lc_discovery.providers.panstarrs1_dr2.provider.run_tap_sync_query",
         _fake_tap,
     )
     catalog = provider.search_catalog(object_name="608067000000000000")
@@ -206,7 +206,7 @@ def test_search_catalog_cone_sorted_by_separation(monkeypatch, provider):
     )
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.panstarrs1_dr2.provider.run_tap_sync_query",
+        "lc_discovery.providers.panstarrs1_dr2.provider.run_tap_sync_query",
         lambda *_args, **_kwargs: mean,
     )
 
@@ -232,7 +232,7 @@ def test_search_catalog_cone_mocked(monkeypatch, provider):
     )
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.panstarrs1_dr2.provider.run_tap_sync_query",
+        "lc_discovery.providers.panstarrs1_dr2.provider.run_tap_sync_query",
         lambda *_args, **_kwargs: mean,
     )
 
@@ -271,7 +271,7 @@ def test_fetch_lightcurve_mocked(monkeypatch, provider):
     )["lc_key"][0]
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.panstarrs1_dr2.provider.fetch_detection_table",
+        "lc_discovery.providers.panstarrs1_dr2.provider.fetch_detection_table",
         lambda **_kwargs: det,
     )
 

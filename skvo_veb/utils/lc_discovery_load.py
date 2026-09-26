@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.registry import get_provider
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.registry import get_provider
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import valid_photometry_row_mask, volc_to_curvedash
 from skvo_veb.utils.lc_config import JD_TO_MJD

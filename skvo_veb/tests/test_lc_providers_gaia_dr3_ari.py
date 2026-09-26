@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from astropy.table import Table
 
-from skvo_veb.lc_providers.gaia_dr3_ari import config
-from skvo_veb.lc_providers.gaia_dr3_ari.datalink import build_timeseries_datalink_url
-from skvo_veb.lc_providers.gaia_dr3_ari.provider import GaiaDr3AriProvider
-from skvo_veb.lc_providers.gaia_dr3_ari.source_catalog import map_source_table_to_catalog
-from skvo_veb.lc_providers.gaia_debug.debug_catalog import AA_AND
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
+from lc_discovery.providers.gaia_dr3_ari import config
+from lc_discovery.providers.gaia_dr3_ari.datalink import build_timeseries_datalink_url
+from lc_discovery.providers.gaia_dr3_ari.provider import GaiaDr3AriProvider
+from lc_discovery.providers.gaia_dr3_ari.source_catalog import map_source_table_to_catalog
+from skvo_veb.tests.sample_sources import AA_AND
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.tap.dialect import TapQueryDialect
 
 
 def _sample_source_table() -> Table:
@@ -118,7 +118,7 @@ def test_ari_search_catalog_by_source_id(monkeypatch):
         return _sample_source_table()
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.gaia_dr3_ari.provider.run_tap_sync_query",
+        "lc_discovery.providers.gaia_dr3_ari.provider.run_tap_sync_query",
         _fake_tap,
     )
 
@@ -131,7 +131,9 @@ def test_ari_search_catalog_by_source_id(monkeypatch):
 def test_ari_fetch_lightcurve_local_sample(monkeypatch):
     """fetch_lightcurve downloads one band via the timeseries datalink URL."""
     provider = GaiaDr3AriProvider()
-    sample_path = Path(__file__).resolve().parents[2] / "data" / "gaia_ari.vot"
+    sample_path = (
+        Path(__file__).resolve().parents[2] / "data" / "gaia_ari.vot"
+    )
     payload = sample_path.read_bytes()
     requested_url: list[str] = []
 

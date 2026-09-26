@@ -10,9 +10,9 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
-from skvo_veb.lc_providers.base import MissionArchiveMatch, MissionLightcurveProvider
-from skvo_veb.lc_providers.catalog_schema import catalog_table_to_row_dicts, read_discovery_truncation_meta
-from skvo_veb.lc_providers.registry import get_provider
+from lc_discovery.base import MissionArchiveMatch, MissionLightcurveProvider
+from lc_discovery.catalog_schema import catalog_table_to_row_dicts, read_discovery_truncation_meta
+from lc_discovery.registry import get_provider
 from skvo_veb.utils.coord import parse_coord_to_skycoord, skycoord_to_hms_dms
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
 from skvo_veb.utils.my_tools import PipeException, safe_float

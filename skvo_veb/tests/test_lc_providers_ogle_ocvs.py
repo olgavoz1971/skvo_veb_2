@@ -2,17 +2,17 @@
 
 from astropy.table import Table
 
-from skvo_veb.lc_providers.lc_key import decode_lc_key
-from skvo_veb.lc_providers.ogle_ocvs import config
-from skvo_veb.lc_providers.ogle_ocvs.object_id import (
+from lc_discovery.lc_key import decode_lc_key
+from lc_discovery.providers.ogle_ocvs import config
+from lc_discovery.providers.ogle_ocvs.object_id import (
     normalize_ogle_object_id,
     pick_ogle_archive_id_from_simbad,
 )
-from skvo_veb.lc_providers.ogle_ocvs.provider import OgleOcvsProvider
-from skvo_veb.lc_providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
-from skvo_veb.lc_providers.shared.tap_ssa_row import parse_ssa_location
-from skvo_veb.lc_providers.registry import get_provider, list_missions
-from skvo_veb.lc_providers.tap.dialect import TapQueryDialect
+from lc_discovery.providers.ogle_ocvs.provider import OgleOcvsProvider
+from lc_discovery.providers.ogle_ocvs.ssa_catalog import map_ssa_table_to_catalog
+from lc_discovery.shared.tap_ssa_row import parse_ssa_location
+from lc_discovery.registry import get_provider, list_missions
+from lc_discovery.tap.dialect import TapQueryDialect
 from skvo_veb.utils.simbad_resolver import SimbadResolveResult
 
 
@@ -129,7 +129,7 @@ def test_ogle_search_catalog_by_object_id(monkeypatch):
         return _sample_ssa_table()
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ogle_ocvs.provider.run_tap_sync_query",
+        "lc_discovery.providers.ogle_ocvs.provider.run_tap_sync_query",
         _fake_tap,
     )
 
@@ -153,7 +153,7 @@ def test_ogle_fetch_lightcurve_from_accref(monkeypatch):
         return _ogle_votable(filter_id="Generic/Bessell.I")
 
     monkeypatch.setattr(
-        "skvo_veb.lc_providers.ogle_ocvs.provider.fetch_votable_bytes",
+        "lc_discovery.providers.ogle_ocvs.provider.fetch_votable_bytes",
         _fake_fetch,
     )
     payload = provider.fetch_lightcurve(lc_key)
@@ -196,7 +196,7 @@ def _parse(payload: bytes):
 
 def test_ogle_sets_magnitude_zero_point_for_bessell_v():
     """Every OGLE product with filter identifier Generic/Bessell.V gets zp_mag 0."""
-    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
+    from lc_discovery.providers.ogle_ocvs.fetch_metadata import enrich_votable
 
     volc = _parse(enrich_votable(_ogle_votable(filter_id="Generic/Bessell.V")))
     photcal = volc.photdms["phot"].photcal
@@ -209,7 +209,7 @@ def test_ogle_sets_magnitude_zero_point_for_bessell_v():
 
 def test_ogle_paramref_filter_identifier_sets_magnitude_zero_point():
     """A Bessell identifier published via PARAMref still receives zp_mag 0."""
-    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
+    from lc_discovery.providers.ogle_ocvs.fetch_metadata import enrich_votable
 
     xml = """<?xml version="1.0"?>
 <VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
@@ -237,7 +237,7 @@ def test_ogle_paramref_filter_identifier_sets_magnitude_zero_point():
 
 def test_ogle_leaves_unlisted_filter_identifier_unchanged():
     """A filter identifier with no config row does not receive a magnitude zero point."""
-    from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_votable
+    from lc_discovery.providers.ogle_ocvs.fetch_metadata import enrich_votable
 
     volc = _parse(enrich_votable(_ogle_votable(filter_id="Generic/Unknown.X")))
     assert volc.photdms["phot"].photcal.zp_mag is None

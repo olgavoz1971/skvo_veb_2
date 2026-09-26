@@ -44,7 +44,7 @@ def test_volightcurve_g_band_ingest(gaia_ari_payload):
 
 def _enriched(payload: bytes, table_id: int = 0):
     """Enriches one band and parses it the way Discovery does."""
-    from skvo_veb.lc_providers.gaia_dr3_ari.fetch_metadata import enrich_votable
+    from lc_discovery.providers.gaia_dr3_ari.fetch_metadata import enrich_votable
 
     return VOLightCurve(io.BytesIO(enrich_votable(payload, table_id=table_id)))
 

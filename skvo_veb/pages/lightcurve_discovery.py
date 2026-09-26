@@ -18,8 +18,8 @@ from dash.exceptions import PreventUpdate
 from skvo_veb.components.message import status_alert
 from skvo_veb.components.loading import SPINNER_STYLE_COMPACT, wrap_with_spinner
 from skvo_veb.logging_config import configure_logging
-from skvo_veb.lc_providers.discovery_fetch_context import discovery_fetch_context_from_store
-from skvo_veb.lc_providers.registry import list_missions
+from lc_discovery.discovery_fetch_context import discovery_fetch_context_from_store
+from lc_discovery.registry import list_missions
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
     build_curvedash_title,
@@ -52,7 +52,7 @@ from skvo_veb.utils.lc_discovery_load import (
     discovery_export_basename,
     mission_id_from_lc_key,
 )
-from skvo_veb.lc_providers.base import MissionCapabilities
+from lc_discovery.base import MissionCapabilities
 from skvo_veb.utils.lc_discovery_catalog_columns import (
     catalog_column_defs_for_capabilities,
     catalog_column_defs_for_mission,
@@ -1157,7 +1157,7 @@ def submit_catalog_search(
             time_bounds=time_bounds,
             status_update=_update_search_status,
         )
-    except PipeException as exc:
+    except (PipeException, ValueError) as exc:
         logger.warning("Discovery search failed: %s", exc)
         return (
             [],

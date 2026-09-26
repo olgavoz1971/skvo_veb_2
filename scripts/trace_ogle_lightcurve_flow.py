@@ -37,8 +37,9 @@ import astropy.io.votable as vot
 from astropy.io.votable.tree import ParamRef
 
 from gavo.votable import votparse
-from skvo_veb.lc_providers.ogle_ocvs.fetch_accref import fetch_volightcurve_from_accref
-from skvo_veb.lc_providers.ogle_ocvs.fetch_metadata import enrich_fetched_volightcurve
+from lc_discovery.providers.ogle_ocvs.fetch_accref import fetch_votable_bytes
+from lc_discovery.providers.ogle_ocvs.fetch_metadata import enrich_votable
+from volightcurve import VOLightCurve
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
     _extract_photcal_meta,
@@ -351,15 +352,11 @@ def run_trace(*, accref: str, head: int) -> int:
     _describe_gavo_photdm(payload)
 
     _banner("Stage 3 — VOLightCurve ingestion (provider fetch_accref path)")
-    volc = fetch_volightcurve_from_accref(accref)
+    volc = VOLightCurve(io.BytesIO(fetch_votable_bytes(accref)))
     _describe_volightcurve(volc, head=head)
 
     _banner("Stage 4 — Provider metadata enrichment")
-    volc = enrich_fetched_volightcurve(
-        volc,
-        filter_name="OGLE V",
-        object_id="OGLE-SMC-ECL-05425",
-    )
+    volc = VOLightCurve(io.BytesIO(enrich_votable(fetch_votable_bytes(accref))))
     print(f"TABLE name: {volc.table.meta.get('name')!r}")
     print(f"lightcurve_title: {volc.table.meta.get('lightcurve_title')!r}")
 
