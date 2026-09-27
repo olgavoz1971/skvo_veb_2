@@ -147,7 +147,7 @@ def test_catalog_chrome_from_store_matches_search_outcome():
 
 def test_run_catalog_search_for_mission_unknown():
     """Unknown mission ids raise a user-facing error."""
-    with pytest.raises(ValueError, match="Unknown mission"):
+    with pytest.raises(PipeException, match="Unknown mission"):
         run_catalog_search_for_mission("missing", AA_AND_COORDS, "10", "arcsec")
 
 
@@ -161,10 +161,9 @@ def test_run_catalog_search_personal_cross_ident_before_simbad(monkeypatch):
 
     from lc_discovery.base import MissionArchiveMatch
     from lc_discovery.providers.personal_ts import config
-    from lc_discovery.providers.personal_ts.provider import PersonalTsProvider
     from lc_discovery.providers.personal_ts.ssa_catalog import map_ssa_table_to_catalog
+    import skvo_veb.utils.lc_discovery_search as search_mod
 
-    provider = PersonalTsProvider()
     sample_table = map_ssa_table_to_catalog(
         Table(
             {
@@ -184,22 +183,24 @@ def test_run_catalog_search_personal_cross_ident_before_simbad(monkeypatch):
         provider_id=config.PROVIDER_ID,
     )
 
-    def fake_resolve(_name: str) -> MissionArchiveMatch:
+    def fake_resolve(mission_id: str, name: str) -> MissionArchiveMatch:
+        assert mission_id == "personal_ts"
         return MissionArchiveMatch(
             archive_id="MO_Psc",
             match_kind="personal_cross_ident",
             matched_label="MO Psc",
         )
 
-    def fake_search_catalog(**kwargs):
+    def fake_search(mission_id: str, **kwargs):
+        assert mission_id == "personal_ts"
         if kwargs.get("archive_id") == "MO_Psc":
             return sample_table
         from lc_discovery.catalog_schema import empty_catalog_table
 
         return empty_catalog_table()
 
-    monkeypatch.setattr(provider, "resolve_target_name", fake_resolve)
-    monkeypatch.setattr(provider, "search_catalog", fake_search_catalog)
+    monkeypatch.setattr(search_mod, "resolve_target", fake_resolve)
+    monkeypatch.setattr(search_mod, "search", fake_search)
 
     status_messages: list[str] = []
 
@@ -207,7 +208,7 @@ def test_run_catalog_search_personal_cross_ident_before_simbad(monkeypatch):
         raise AssertionError("Simbad should not be called when provider resolves the alias")
 
     outcome = run_catalog_search(
-        provider,
+        "personal_ts",
         "MO Psc",
         10.0,
         "arcsec",

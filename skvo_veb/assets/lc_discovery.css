@@ -362,6 +362,15 @@
     }
 }
 
+.lc-discovery-export-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--lc-discovery-space-md);
+    width: 100%;
+    margin-bottom: var(--lc-discovery-space-xs);
+}
+
 .lc-discovery-plot-alert {
     margin-top: var(--lc-discovery-space-md);
     width: 100%;

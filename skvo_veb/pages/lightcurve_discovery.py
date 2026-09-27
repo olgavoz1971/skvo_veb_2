@@ -18,8 +18,7 @@ from dash.exceptions import PreventUpdate
 from skvo_veb.components.message import status_alert
 from skvo_veb.components.loading import SPINNER_STYLE_COMPACT, wrap_with_spinner
 from skvo_veb.logging_config import configure_logging
-from lc_discovery.discovery_fetch_context import discovery_fetch_context_from_store
-from lc_discovery.registry import list_missions
+from lc_discovery import list_missions
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
     build_curvedash_title,
@@ -50,12 +49,12 @@ from skvo_veb.utils.lc_discovery_load import (
     catalog_row_for_lc_key,
     curvedash_from_catalog_row,
     discovery_export_basename,
-    mission_id_from_lc_key,
+    fetch_discovery_votable_bytes,
+    mission_id_from_catalog_row,
 )
-from lc_discovery.base import MissionCapabilities
 from skvo_veb.utils.lc_discovery_catalog_columns import (
-    catalog_column_defs_for_capabilities,
     catalog_column_defs_for_mission,
+    empty_discovery_catalog_column_defs,
 )
 from skvo_veb.utils.lc_discovery_search import (
     catalog_results_header,
@@ -223,7 +222,7 @@ def _discovery_catalog_column_defs(mission_id: str | None) -> list[dict]:
     """
     slug = str(mission_id or '').strip() or _default_mission_id()
     if not slug:
-        return catalog_column_defs_for_capabilities(MissionCapabilities())
+        return empty_discovery_catalog_column_defs()
     return catalog_column_defs_for_mission(slug)
 
 
@@ -234,17 +233,17 @@ def _mission_id_from_restored_catalog(row_data: list[dict] | None) -> str:
         row_data (list[dict], optional): Serialised AgGrid catalogue rows.
 
     Returns:
-        str: Mission slug embedded in the row ``lc_key``.
+        str: Mission slug stamped on the restored row.
 
     Raises:
         PipeException: When a restored row is missing a valid ``lc_key``.
     """
     if not row_data:
         raise PipeException('Restored catalogue is empty.')
-    lc_key = row_data[0].get('lc_key')
-    if not lc_key:
-        raise PipeException('Restored catalogue row is missing lc_key.')
-    return mission_id_from_lc_key(lc_key)
+    mission_id = mission_id_from_catalog_row(row_data[0])
+    if not mission_id:
+        raise PipeException('Restored catalogue row is missing mission_id.')
+    return mission_id
 
 
 def _click_help(help_id: str, title: str, body, *, placement: str = 'bottom'):
@@ -836,7 +835,7 @@ def _lightcurve_tools_panel():
                         ],
                         direction='horizontal',
                         gap=2,
-                        style={'width': '100%', 'min-width': '5ch'},
+                        style={'width': '100%', 'min-width': '5ch', 'marginBottom': '5px'},
                     ),
                     dbc.Stack(
                         [
@@ -860,7 +859,7 @@ def _lightcurve_tools_panel():
                     ),
                 ],
                 open=True,
-                style={'marginBottom': '5px'},
+                style={'marginBottom': '1px'},
             ),
             html.Div(
                 [
@@ -873,24 +872,36 @@ def _lightcurve_tools_panel():
                 id='lc_discovery_fold_controls',
                 style={'min-height': '30px'},
             ),
-            dbc.Stack(
+            html.Div(
                 [
-                    dbc.Select(
-                        options=EXPORT_FORMAT_OPTIONS,
-                        value=DEFAULT_EXPORT_FORMAT,
-                        id='lc_discovery_export_format_select',
-                        style={'width': '40%', 'font-size': label_font_size},
+                    dbc.Stack(
+                        [
+                            dbc.Select(
+                                options=EXPORT_FORMAT_OPTIONS,
+                                value=DEFAULT_EXPORT_FORMAT,
+                                id='lc_discovery_export_format_select',
+                                style={'width': '40%', 'font-size': label_font_size},
+                            ),
+                            dbc.Button(
+                                'Download',
+                                id='lc_discovery_download_button',
+                                size='sm',
+                                style={'width': '60%'},
+                            ),
+                        ],
+                        direction='horizontal',
+                        gap=2,
                     ),
                     dbc.Button(
-                        'Download',
-                        id='lc_discovery_download_button',
+                        'Download whole votable',
+                        id='lc_discovery_download_full_button',
+                        color='primary',
                         size='sm',
-                        style={'width': '60%'},
+                        className='w-100',
+                        disabled=True,
                     ),
                 ],
-                direction='horizontal',
-                gap=2,
-                style={'width': '100%', 'min-width': '5ch', 'marginBottom': '5px'},
+                className='lc-discovery-export-stack',
             ),
         ],
         lg=2,
@@ -1038,6 +1049,7 @@ def layout():
             dcc.Store(id='store_lc_discovery_zoom'),
             dcc.Store(id='store_lc_discovery_clientside'),
             dcc.Download(id='lc_discovery_download'),
+            dcc.Download(id='lc_discovery_download_full'),
         ],
         className='g-10 lc-discovery-page',
         fluid=True,
@@ -1192,7 +1204,7 @@ def submit_catalog_search(
             None,
         )
 
-    row_data = catalog_rows_for_aggrid(outcome.catalog)
+    row_data = catalog_rows_for_aggrid(outcome.catalog, mission_id=mission_id)
     truncation_text, truncation_style = catalog_truncation_notice(outcome)
     logger.info(
         "Discovery search mission=%s mode=%s rows=%s",
@@ -1640,7 +1652,6 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         mission_id=State('lc_discovery_mission_switch', 'value'),
         lc_key=State('store_lc_discovery_selected_key', 'data'),
         row_data=State('lc_discovery_catalog_table', 'rowData'),
-        search_metadata=State('store_lc_discovery_resolved_target', 'data'),
         phase_view=State('lc_discovery_fold_switch', 'value'),
         user_tab_id=State('store_lc_discovery_user_tab_id', 'data'),
     ),
@@ -1659,15 +1670,14 @@ def fetch_lc_discovery_lightcurve(
     mission_id,
     lc_key,
     row_data,
-    search_metadata,
     phase_view,
     user_tab_id,
 ):
-    """Fetches the highlighted catalogue row via the mission provider (background job).
+    """Fetches the highlighted catalogue row via the public ``fetch`` API.
 
-    Uses ``provider.fetch_lightcurve`` → ``volc_to_curvedash`` with no shared
-    archive fetch cache (deferred). The resulting ``CurveDash`` is held in the
-    existing per-session plot store for interactive tools.
+    ``curvedash_from_catalog_row`` calls ``lc_discovery.fetch`` and converts
+    VOTable bytes through ``VOLightCurve``. The resulting ``CurveDash`` is held
+    in the per-session plot store for interactive tools.
 
     Args:
         download_clicks (int): Retrieve button click count.
@@ -1675,7 +1685,6 @@ def fetch_lc_discovery_lightcurve(
         mission_id (str): Selected mission slug from the UI.
         lc_key (str): Serialised fetch handle for the selected row.
         row_data (list[dict]): Current AgGrid catalogue rows.
-        search_metadata (dict, optional): Serialised Discovery search outcome store.
         phase_view (bool): Current fold switch state.
         user_tab_id (str, optional): Session plot-store key.
 
@@ -1712,7 +1721,7 @@ def fetch_lc_discovery_lightcurve(
             zoom=no_update,
         )
 
-    if mission_id and mission_id_from_lc_key(lc_key) != mission_id:
+    if mission_id and mission_id_from_catalog_row(catalog_row) != mission_id:
         return dict(
             plot_alert_message=None,
             fold_controls_style={'display': 'none', 'min-height': '30px'},
@@ -1738,14 +1747,9 @@ def fetch_lc_discovery_lightcurve(
     fold_warning_style = {'display': 'none'}
 
     try:
-        discovery_context = discovery_fetch_context_from_store(
-            search_metadata,
-            catalog_row,
-        )
         lcd = curvedash_from_catalog_row(
             catalog_row,
             force_refresh=force_refresh,
-            discovery_context=discovery_context,
         )
         lcd.folded_view = bool(phase_view)
 
@@ -2149,6 +2153,67 @@ def download_lc_discovery_lightcurve(n_clicks, user_tab_id, table_format):
         return dcc.send_bytes(file_bstring, outfile)
     except Exception as exc:
         logger.warning('lightcurve_discovery.download_lc_discovery_lightcurve: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': status_alert(str(exc), 'warning')},
+        )
+        return no_update
+
+
+@callback(
+    Output('lc_discovery_download_full_button', 'disabled'),
+    Input('store_lc_discovery_selected_key', 'data'),
+)
+def toggle_lc_discovery_download_full_button(lc_key):
+    """Enables Download full when a catalogue row is highlighted.
+
+    Args:
+        lc_key (str, optional): Serialised fetch handle for the selected row.
+
+    Returns:
+        bool: ``True`` when no row is selected.
+    """
+    return not lc_key
+
+
+@callback(
+    Output('lc_discovery_download_full', 'data'),
+    Input('lc_discovery_download_full_button', 'n_clicks'),
+    State('store_lc_discovery_selected_key', 'data'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def download_lc_discovery_full_votable(n_clicks, lc_key, user_tab_id):
+    """Downloads the mission VOTable from ``fetch``, not the plotted ``CurveDash``.
+
+    Args:
+        n_clicks (int): Download full button click count.
+        lc_key (str, optional): Serialised fetch handle for the selected row.
+        user_tab_id (str, optional): Session plot-store key for the filename stem.
+
+    Returns:
+        dict | dash.no_update: Dash download payload.
+
+    Raises:
+        PreventUpdate: When the button was not clicked.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+
+    try:
+        payload = fetch_discovery_votable_bytes(lc_key, force_refresh=False)
+        if user_tab_id and has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+            lcd = CurveDash.from_serialized(
+                read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+            )
+            outfile_base = discovery_export_basename(lcd)
+        else:
+            outfile_base = 'lc_discovery'
+        outfile = f'{outfile_base}.vot'
+        set_props('lc_discovery_plot_alert', {'children': None})
+        return dcc.send_bytes(payload, outfile)
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.download_lc_discovery_full_votable: %s', exc)
         set_props(
             'lc_discovery_plot_alert',
             {'children': status_alert(str(exc), 'warning')},

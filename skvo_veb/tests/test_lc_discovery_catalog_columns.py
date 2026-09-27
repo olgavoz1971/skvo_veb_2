@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from lc_discovery.base import MissionCapabilities
-from lc_discovery.registry import get_provider
+from types import SimpleNamespace
+
 from skvo_veb.utils.lc_discovery_catalog_columns import (
     catalog_column_defs_for_capabilities,
     catalog_column_defs_for_mission,
 )
+
+
+def _caps(**kwargs):
+    defaults = dict(
+        supports_discovery_time_filter=False,
+        discovery_catalog_includes_object_class=False,
+        discovery_catalog_includes_n_points=False,
+    )
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
 
 
 def _fields(column_defs: list[dict]) -> list[str]:
@@ -17,13 +27,13 @@ def _fields(column_defs: list[dict]) -> list[str]:
 def test_catalog_columns_respect_time_filter_capability():
     """t_min and t_max appear only when discovery time filtering is supported."""
     with_time = catalog_column_defs_for_capabilities(
-        MissionCapabilities(
+        _caps(
             supports_discovery_time_filter=True,
             discovery_catalog_includes_n_points=True,
         )
     )
     without_time = catalog_column_defs_for_capabilities(
-        MissionCapabilities(
+        _caps(
             supports_discovery_time_filter=False,
             discovery_catalog_includes_n_points=True,
         )
@@ -35,11 +45,11 @@ def test_catalog_columns_respect_time_filter_capability():
 
 
 def test_catalog_columns_respect_object_class_capability():
-    """Type column appears only when the provider queries classification at discovery."""
+    """Type column appears only when the mission reports classification at discovery."""
     with_class = catalog_column_defs_for_capabilities(
-        MissionCapabilities(discovery_catalog_includes_object_class=True)
+        _caps(discovery_catalog_includes_object_class=True)
     )
-    without_class = catalog_column_defs_for_capabilities(MissionCapabilities())
+    without_class = catalog_column_defs_for_capabilities(_caps())
     assert "object_class" in _fields(with_class)
     assert "object_class" not in _fields(without_class)
 
@@ -47,9 +57,9 @@ def test_catalog_columns_respect_object_class_capability():
 def test_catalog_columns_respect_n_points_capability():
     """N column appears only when epoch counts are part of discovery metadata."""
     with_n = catalog_column_defs_for_capabilities(
-        MissionCapabilities(discovery_catalog_includes_n_points=True)
+        _caps(discovery_catalog_includes_n_points=True)
     )
-    without_n = catalog_column_defs_for_capabilities(MissionCapabilities())
+    without_n = catalog_column_defs_for_capabilities(_caps())
     assert "n_points" in _fields(with_n)
     assert "n_points" not in _fields(without_n)
 
@@ -72,8 +82,7 @@ def test_asassn_catalog_columns():
 
 def test_gaia_veb_catalog_columns():
     """Gaia VEB SSA discovery includes time coverage, type, and N."""
-    provider = get_provider("gaia_dr3_veb")
-    fields = _fields(catalog_column_defs_for_capabilities(provider.capabilities))
+    fields = _fields(catalog_column_defs_for_mission("gaia_dr3_veb"))
     assert "t_min" in fields
     assert "object_class" in fields
     assert "n_points" in fields

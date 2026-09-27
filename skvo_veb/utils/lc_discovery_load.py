@@ -1,20 +1,17 @@
 """Fetch and convert Discovery catalogue lightcurves for interactive plotting.
 
-Pipeline (see ``docs/lightcurve_data_flow.md`` and ``docs/mission_lightcurve_providers.md``):
+Pipeline:
 
-    provider.fetch_lightcurve(lc_key) → VOLightCurve
-    volc_to_curvedash() → CurveDash
-
-No Dash imports. No mission-specific parsing beyond the provider registry and
-standard catalogue columns (``period``, ``epoch``).
+    lc_discovery.fetch(lc_key) → VOTable bytes
+    VOLightCurve → volc_to_curvedash() → CurveDash
 """
 
 from __future__ import annotations
 
+import io
 import logging
 
-from lc_discovery.lc_key import decode_lc_key
-from lc_discovery.registry import get_provider
+from lc_discovery import fetch
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import valid_photometry_row_mask, volc_to_curvedash
 from skvo_veb.utils.lc_config import JD_TO_MJD
@@ -43,16 +40,21 @@ def catalog_row_for_lc_key(row_data: list[dict] | None, lc_key: str | None) -> d
     return None
 
 
-def mission_id_from_lc_key(lc_key: str) -> str:
-    """Reads the mission slug embedded in an ``lc_key`` document.
+def mission_id_from_catalog_row(row: dict | None) -> str | None:
+    """Returns the mission slug stamped on an AgGrid catalogue row.
 
     Args:
-        lc_key (str): Serialised fetch handle from a catalogue row.
+        row (dict, optional): Catalogue row.
 
     Returns:
-        str: Registered mission slug (e.g. ``gaia``).
+        str or None: Mission slug when present.
     """
-    return decode_lc_key(lc_key)['mission_id']
+    if not row:
+        return None
+    mission_id = row.get("mission_id")
+    if mission_id:
+        return str(mission_id)
+    return None
 
 
 def discovery_export_basename(lcd: CurveDash) -> str:
@@ -68,11 +70,45 @@ def discovery_export_basename(lcd: CurveDash) -> str:
     return sanitize_filename(f'lc_discovery_{title}')
 
 
+def fetch_discovery_votable_bytes(
+    lc_key: str,
+    *,
+    force_refresh: bool = False,
+) -> bytes:
+    """Fetches the mission VOTable product as returned by ``lc_discovery.fetch``.
+
+    This is the archive/enrich bytes before ``VOLightCurve`` or ``CurveDash``.
+
+    Args:
+        lc_key (str): Serialised fetch handle from a catalogue row.
+        force_refresh (bool): When true, bypass any provider-side cache.
+
+    Returns:
+        bytes: VOTable payload.
+
+    Raises:
+        PipeException: When the key is missing or fetch fails.
+    """
+    if not lc_key:
+        raise PipeException('Select a catalogue row before loading.')
+
+    try:
+        payload = fetch(lc_key, force_refresh=force_refresh)
+    except ValueError as exc:
+        raise PipeException(str(exc)) from exc
+    logger.info(
+        'Discovery VOTable bytes lc_key=%s nbytes=%s force_refresh=%s',
+        lc_key[:32],
+        len(payload),
+        force_refresh,
+    )
+    return payload
+
+
 def fetch_discovery_volightcurve(
     lc_key: str,
     *,
     force_refresh: bool = False,
-    discovery_context=None,
 ) -> VOLightCurve:
     """Fetches a mission lightcurve at the VO layer (no ``CurveDash``).
 
@@ -81,36 +117,17 @@ def fetch_discovery_volightcurve(
         force_refresh (bool): When true, bypass any provider-side cache.
 
     Returns:
-        VOLightCurve: VO-standard lightcurve from the mission provider.
+        VOLightCurve: VO-standard lightcurve parsed from ``fetch`` bytes.
 
     Raises:
-        PipeException: When the key is invalid or fetch fails validation.
+        PipeException: When the key is missing or fetch fails.
     """
-    if not lc_key:
-        raise PipeException('Select a catalogue row before loading.')
-
-    mission_id = mission_id_from_lc_key(lc_key)
-    provider = get_provider(mission_id)
-    if not provider.validate_lc_key(lc_key):
-        raise PipeException(f'{provider.display_name}: invalid lightcurve key.')
-
-    volc = provider.fetch_lightcurve(
-        lc_key,
-        force_refresh=force_refresh,
-        discovery_context=discovery_context,
-    )
-    if isinstance(volc, (bytes, bytearray)):
-        import io
-
-        from volightcurve import VOLightCurve
-
-        volc = VOLightCurve(io.BytesIO(volc))
+    payload = fetch_discovery_votable_bytes(lc_key, force_refresh=force_refresh)
+    volc = VOLightCurve(io.BytesIO(payload))
     logger.info(
-        'Discovery fetch mission=%s lc_key=%s n_points=%s force_refresh=%s',
-        mission_id,
+        'Discovery VOLightCurve lc_key=%s n_points=%s',
         lc_key[:32],
         len(volc),
-        force_refresh,
     )
     return volc
 
@@ -170,7 +187,6 @@ def curvedash_from_catalog_row(
     catalog_row: dict,
     *,
     force_refresh: bool = False,
-    discovery_context=None,
 ) -> CurveDash:
     """Fetches and converts one catalogue row to ``CurveDash``.
 
@@ -191,7 +207,6 @@ def curvedash_from_catalog_row(
     volc = fetch_discovery_volightcurve(
         lc_key,
         force_refresh=force_refresh,
-        discovery_context=discovery_context,
     )
     lcd = volc_to_curvedash(
         volc,
@@ -238,17 +253,11 @@ def load_discovery_lightcurve(
     if not lc_key:
         raise PipeException('Select a catalogue row before loading.')
 
-    key_mission = mission_id_from_lc_key(lc_key)
-    if key_mission != mission_id:
-        raise PipeException(
-            f'Lightcurve key mission ({key_mission!r}) does not match '
-            f'the selected mission ({mission_id!r}).'
-        )
-
     catalog_row = {
         'lc_key': lc_key,
         'object_name': object_name,
         'filter_name': filter_name,
+        'mission_id': mission_id,
     }
     if period_days is not None:
         catalog_row['period'] = period_days

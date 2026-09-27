@@ -10,9 +10,14 @@ from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
-from lc_discovery.base import MissionArchiveMatch, MissionLightcurveProvider
+from lc_discovery import (
+    MissionArchiveMatch,
+    archive_id_from_identifiers,
+    list_missions,
+    resolve_target,
+    search,
+)
 from lc_discovery.catalog_schema import catalog_table_to_row_dicts, read_discovery_truncation_meta
-from lc_discovery.registry import get_provider
 from skvo_veb.utils.coord import parse_coord_to_skycoord, skycoord_to_hms_dms
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
 from skvo_veb.utils.my_tools import PipeException, safe_float
@@ -456,6 +461,43 @@ def catalog_truncation_notice(outcome: SearchOutcome) -> tuple[str, dict[str, st
     return catalog_truncation_notice_from_store(outcome.to_store_dict())
 
 
+def _mission(mission_id: str):
+    """Returns the public mission descriptor for ``mission_id``.
+
+    Args:
+        mission_id (str): Registered mission slug.
+
+    Returns:
+        Mission descriptor from ``list_missions``.
+
+    Raises:
+        PipeException: When the slug is unknown.
+    """
+    for item in list_missions():
+        if item.mission_id == mission_id:
+            return item
+    raise PipeException(f"Unknown mission '{mission_id}'.")
+
+
+def _catalog_search(mission_id: str, **kwargs) -> Table:
+    """Calls public ``search`` and maps package errors to ``PipeException``.
+
+    Args:
+        mission_id (str): Registered mission slug.
+        **kwargs: Arguments of ``search``.
+
+    Returns:
+        astropy.table.Table: Catalogue rows.
+
+    Raises:
+        PipeException: When the mission rejects the query.
+    """
+    try:
+        return search(mission_id, **kwargs)
+    except ValueError as exc:
+        raise PipeException(str(exc)) from exc
+
+
 def _provider_time_kwargs(time_bounds: DiscoveryTimeBounds | None) -> dict[str, float | None]:
     """Builds provider ``search_catalog`` time-limit keyword arguments in MJD.
 
@@ -473,24 +515,24 @@ def _provider_time_kwargs(time_bounds: DiscoveryTimeBounds | None) -> dict[str, 
 
 
 def _ensure_discovery_time_filter_allowed(
-    provider: MissionLightcurveProvider,
+    mission,
     time_bounds: DiscoveryTimeBounds | None,
 ) -> None:
     """Rejects UI time limits when the mission cannot filter discovery results by coverage.
 
     Args:
-        provider (MissionLightcurveProvider): Selected mission adapter.
+        mission: Descriptor from ``list_missions``.
         time_bounds (DiscoveryTimeBounds, optional): Parsed UI limits.
 
     Raises:
-        PipeException: When time bounds are set but the provider does not support them.
+        PipeException: When time bounds are set but the mission does not support them.
     """
-    if provider.capabilities.supports_discovery_time_filter:
+    if mission.capabilities.supports_discovery_time_filter:
         return
     bounds = time_bounds or DiscoveryTimeBounds()
     if bounds.time_start_mjd is not None or bounds.time_end_mjd is not None:
         raise PipeException(
-            f"{provider.display_name} does not support filtering catalogue results "
+            f"{mission.display_name} does not support filtering catalogue results "
             "by time coverage at discovery. Clear the earliest and latest time fields."
         )
 
@@ -548,7 +590,7 @@ def _finish_outcome(
 
 
 def run_catalog_search(
-    provider: MissionLightcurveProvider,
+    mission_id: str,
     target: str,
     radius_value: float,
     radius_unit: str,
@@ -557,15 +599,15 @@ def run_catalog_search(
     simbad_resolver: Callable[[str], SimbadResolveResult] | None = None,
     status_update: Callable[[str], None] | None = None,
 ) -> SearchOutcome:
-    """Runs the agreed Discovery search flow for one mission provider.
+    """Runs the agreed Discovery search flow for one mission.
 
     Args:
-        provider (MissionLightcurveProvider): Selected mission adapter.
+        mission_id (str): Registered mission slug.
         target (str): Target field text (coordinates or name/id).
         radius_value (float): Numeric radius from the UI field.
         radius_unit (str): Radius unit selector value.
         time_bounds (DiscoveryTimeBounds, optional): Optional MJD limits passed
-            to the provider (``None`` components mean open bounds).
+            to catalogue search.
         simbad_resolver (callable, optional): Injectable Simbad resolver for tests.
         status_update (callable, optional): Replaces the UI status bar text per step.
 
@@ -579,17 +621,19 @@ def run_catalog_search(
     if not user_target:
         raise PipeException("Please enter a target name or coordinates.")
 
+    mission = _mission(mission_id)
+    caps = mission.capabilities
+    provider_name = mission.display_name
     radius_arcsec = radius_to_arcsec(radius_value, radius_unit)
     resolve_name = simbad_resolver or resolve_simbad_name
     time_kwargs = _provider_time_kwargs(time_bounds)
     bounds = time_bounds or DiscoveryTimeBounds()
     radius_display_value = float(radius_value)
     radius_display_unit = str(radius_unit or "arcsec").strip().lower()
-    provider_name = provider.display_name
     logger.info(
         "Discovery search started mission=%s target=%r radius=%.3f arcsec "
         "time_start_mjd=%s time_end_mjd=%s.",
-        provider.mission_id,
+        mission_id,
         user_target,
         radius_arcsec,
         bounds.time_start_mjd,
@@ -597,9 +641,9 @@ def run_catalog_search(
     )
 
     if _target_is_coordinates(user_target):
-        if not provider.capabilities.supports_cone_search:
+        if not caps.supports_cone_search:
             raise PipeException(
-                f"{provider.display_name} does not support cone search."
+                f"{provider_name} does not support cone search."
             )
         coord = parse_coord_to_skycoord(user_target)
         logger.info(
@@ -614,7 +658,8 @@ def run_catalog_search(
                 radius_display_unit,
             ),
         )
-        catalog = provider.search_catalog(
+        catalog = _catalog_search(
+            mission_id,
             ra_deg=float(coord.ra.deg),
             dec_deg=float(coord.dec.deg),
             radius_arcsec=radius_arcsec,
@@ -650,7 +695,7 @@ def run_catalog_search(
         status_update,
         status_querying_object(provider_name, user_target),
     )
-    catalog = provider.search_catalog(object_name=user_target, **time_kwargs)
+    catalog = _catalog_search(mission_id, object_name=user_target, **time_kwargs)
     if len(catalog) > 0:
         logger.info(
             "Direct provider lookup matched %s row(s) for %r.",
@@ -673,8 +718,8 @@ def run_catalog_search(
         "Trying provider-native target resolution for %r.",
         user_target,
     )
-    provider_match = provider.resolve_target_name(user_target)
-    if provider_match is not None and provider.capabilities.supports_id_lookup:
+    provider_match = resolve_target(mission_id, user_target)
+    if provider_match is not None and caps.supports_id_lookup:
         logger.info(
             "Provider resolved %r to archive id %r (%s).",
             user_target,
@@ -688,7 +733,8 @@ def run_catalog_search(
                 provider_match.archive_id,
             ),
         )
-        catalog = provider.search_catalog(
+        catalog = _catalog_search(
+            mission_id,
             archive_id=provider_match.archive_id,
             **time_kwargs,
         )
@@ -728,7 +774,14 @@ def run_catalog_search(
         status_simbad_resolved(simbad_result.main_id),
     )
     simbad_markdown = _simbad_object_markdown(simbad_result)
-    archive_match = provider.pick_archive_id_from_simbad(simbad_result)
+    archive_match = archive_id_from_identifiers(
+        mission_id,
+        simbad_result.identifiers,
+        query_name=simbad_result.query_name,
+        main_id=simbad_result.main_id,
+        ra_deg=simbad_result.ra_deg,
+        dec_deg=simbad_result.dec_deg,
+    )
     if archive_match is not None:
         logger.info(
             "Simbad identifiers include mission archive id %r (%s).",
@@ -738,10 +791,10 @@ def run_catalog_search(
     else:
         logger.info(
             "No %s archive id found in Simbad identifiers for %r.",
-            provider.display_name,
+            provider_name,
             user_target,
         )
-    if archive_match is not None and provider.capabilities.supports_id_lookup:
+    if archive_match is not None and caps.supports_id_lookup:
         logger.info(
             "Trying direct provider lookup by archive id %r.",
             archive_match.archive_id,
@@ -750,7 +803,8 @@ def run_catalog_search(
             status_update,
             status_querying_archive_id(provider_name, archive_match.archive_id),
         )
-        catalog = provider.search_catalog(
+        catalog = _catalog_search(
+            mission_id,
             archive_id=archive_match.archive_id,
             **time_kwargs,
         )
@@ -770,7 +824,7 @@ def run_catalog_search(
                 time_bounds=bounds,
             )
 
-    if provider.capabilities.supports_cone_search:
+    if caps.supports_cone_search:
         logger.info(
             "Running provider cone search at Simbad position (%.5f°, %.5f°).",
             simbad_result.ra_deg,
@@ -785,7 +839,8 @@ def run_catalog_search(
                 simbad_position=True,
             ),
         )
-        catalog = provider.search_catalog(
+        catalog = _catalog_search(
+            mission_id,
             ra_deg=simbad_result.ra_deg,
             dec_deg=simbad_result.dec_deg,
             radius_arcsec=radius_arcsec,
@@ -818,7 +873,8 @@ def run_catalog_search(
         status_update,
         status_querying_object(provider_name, simbad_result.main_id),
     )
-    catalog = provider.search_catalog(
+    catalog = _catalog_search(
+        mission_id,
         object_name=simbad_result.main_id,
         **time_kwargs,
     )
@@ -862,29 +918,19 @@ def run_catalog_search_for_mission(
     Returns:
         SearchOutcome: Completed search result.
     """
-    provider = get_provider(mission_id)
-    _ensure_discovery_time_filter_allowed(provider, time_bounds)
+    mission = _mission(mission_id)
+    _ensure_discovery_time_filter_allowed(mission, time_bounds)
     radius_display_value = safe_float(radius_text)
     if radius_display_value is None:
         raise PipeException("Search radius is required.")
-    radius_arcsec = radius_to_arcsec(float(radius_display_value), radius_unit)
-    if provider.capabilities.supports_cone_search:
-        max_arcsec = provider.max_discovery_search_radius_deg() * 3600.0
-        if radius_arcsec > max_arcsec:
-            max_deg = provider.max_discovery_search_radius_deg()
-            raise PipeException(
-                f"{provider.display_name}: search radius "
-                f"{radius_arcsec / 3600.0:g} deg exceeds the provider maximum of "
-                f"{max_deg:g} deg."
-            )
     logger.info(
         "Discovery search for mission=%r target=%r radius=%.3f arcsec.",
         mission_id,
         target,
-        radius_arcsec,
+        radius_to_arcsec(float(radius_display_value), radius_unit),
     )
     return run_catalog_search(
-        provider,
+        mission_id,
         target,
         float(radius_display_value),
         radius_unit,
@@ -894,14 +940,20 @@ def run_catalog_search_for_mission(
     )
 
 
-def catalog_rows_for_aggrid(catalog: Table) -> list[dict]:
-    """Converts a provider catalogue table to AgGrid ``rowData``.
+def catalog_rows_for_aggrid(
+    catalog: Table,
+    *,
+    mission_id: str | None = None,
+) -> list[dict]:
+    """Converts a catalogue table to AgGrid ``rowData``.
 
     Numeric fields are passed through at full precision; the Discovery AgGrid
     applies per-column ``valueFormatter`` functions for display.
 
     Args:
         catalog (astropy.table.Table): Validated catalogue table.
+        mission_id (str, optional): Mission slug stamped on each row so the
+            page can compare without decoding ``lc_key``.
 
     Returns:
         list[dict]: Rows formatted for the Discovery catalogue AgGrid.
@@ -918,5 +970,7 @@ def catalog_rows_for_aggrid(catalog: Table) -> list[dict]:
             display_row["aladin_name"] = f"{object_name} ({filter_name})"
         else:
             display_row["aladin_name"] = object_name
+        if mission_id:
+            display_row["mission_id"] = mission_id
         formatted_rows.append(display_row)
     return formatted_rows

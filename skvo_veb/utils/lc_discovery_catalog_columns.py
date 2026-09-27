@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 from typing import Any
 
-from lc_discovery.base import MissionCapabilities
-from lc_discovery.registry import get_provider
+from lc_discovery import list_missions
+from skvo_veb.utils.my_tools import PipeException
+
+_EMPTY_CAPABILITIES = SimpleNamespace(
+    supports_discovery_time_filter=False,
+    discovery_catalog_includes_object_class=False,
+    discovery_catalog_includes_n_points=False,
+)
 
 _LC_DISCOVERY_CELL_CLASS = "lc-discovery-catalog-cell"
 _LC_DISCOVERY_NUMERIC_CELL_CLASS = "lc-discovery-catalog-cell-numeric"
@@ -157,15 +164,17 @@ _CATALOG_COLUMN_ORDER: tuple[str, ...] = (
 
 
 def catalog_column_defs_for_capabilities(
-    capabilities: MissionCapabilities,
+    capabilities,
 ) -> list[dict[str, Any]]:
     """Builds AgGrid ``columnDefs`` for a mission discovery catalogue table.
 
-    Column visibility follows explicit provider capability flags, not whether
+    Column visibility follows explicit capability flags, not whether
     optional fields happen to be empty in one search result.
 
     Args:
-        capabilities (MissionCapabilities): Registered mission feature flags.
+        capabilities: Object with ``supports_discovery_time_filter``,
+            ``discovery_catalog_includes_object_class``, and
+            ``discovery_catalog_includes_n_points``.
 
     Returns:
         list[dict]: Ordered AgGrid column definitions for the Discovery grid.
@@ -203,7 +212,19 @@ def catalog_column_defs_for_mission(mission_id: str) -> list[dict[str, Any]]:
         list[dict]: AgGrid column definitions for that mission.
 
     Raises:
-        PipeException: When ``mission_id`` is unknown (via ``get_provider``).
+        PipeException: When ``mission_id`` is unknown.
     """
-    provider = get_provider(mission_id)
-    return catalog_column_defs_for_capabilities(provider.capabilities)
+    for item in list_missions():
+        if item.mission_id == mission_id:
+            return catalog_column_defs_for_capabilities(item.capabilities)
+
+    raise PipeException(f"Unknown mission '{mission_id}'.")
+
+
+def empty_discovery_catalog_column_defs() -> list[dict[str, Any]]:
+    """Returns catalogue columns when no mission is selected.
+
+    Returns:
+        list[dict]: Base AgGrid column definitions without optional fields.
+    """
+    return catalog_column_defs_for_capabilities(_EMPTY_CAPABILITIES)
