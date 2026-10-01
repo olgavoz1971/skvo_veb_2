@@ -15,7 +15,13 @@ from skvo_veb.utils import tess_lc_search
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_config import DOMAIN_FLUX
 from skvo_veb.utils.my_tools import PipeException
-from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN, archive_flux_unit_for_pipeline, attach_tess_archive_export_provenance, resolve_photcal
+from skvo_veb.utils.mission_config.tess import (
+    TESS_TIMEORIGIN,
+    archive_flux_unit_for_pipeline,
+    attach_tess_archive_export_provenance,
+    is_tars_pipeline,
+    resolve_photcal,
+)
 from skvo_veb.utils.tess_flux_column_registry import (
     FLUX_METHOD_DEFAULT,
     apply_flux_column_selection,
@@ -24,7 +30,6 @@ from skvo_veb.utils.tess_flux_column_registry import (
     merge_flux_radio_options,
     parse_sector_from_mission_label,
     resolve_default_flux_origin,
-    storage_flux_unit_for_selection,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,74 @@ def _tess_mag_from_lightkurve_list(lc_list) -> float | None:
     return values[0]
 
 
+def _header_float(meta: dict, key: str) -> float | None:
+    """Reads a finite float from Lightkurve FITS metadata.
+
+    Args:
+        meta (dict): Lightkurve ``meta`` mapping.
+        key (str): Header keyword.
+
+    Returns:
+        float or None: Parsed value, or None when missing or invalid.
+    """
+    raw = meta.get(key)
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def _tars_ephemeris_from_lightkurve_list(lc_list) -> tuple[float | None, float | None]:
+    """Reads TARS ``PER1`` (days) and ``TMIN1`` (BTJD) as period and absolute JD epoch.
+
+    ``TMIN1`` is the time of first minimum of the sine at ``PER1``, in BTJD.
+    The stored epoch is absolute JD (``TMIN1 + TESS_TIMEORIGIN``). The TESS
+    page fold field then shows MJD via ``display_epoch_offset``.
+
+    Args:
+        lc_list (list): Downloaded Lightkurve products.
+
+    Returns:
+        tuple: ``(period_days, epoch_jd)``; either item may be None.
+    """
+    periods: list[float] = []
+    epochs_jd: list[float] = []
+    for lc in lc_list:
+        meta = getattr(lc, "meta", None) or {}
+        period = _header_float(meta, "PER1")
+        tmin_btjd = _header_float(meta, "TMIN1")
+        if period is not None:
+            periods.append(period)
+        if tmin_btjd is not None:
+            epochs_jd.append(tmin_btjd + TESS_TIMEORIGIN)
+    period_out = None
+    if periods:
+        rounded = {round(v, 8) for v in periods}
+        if len(rounded) > 1:
+            logger.warning(
+                "Multiple TARS PER1 values across selected sectors %s; using %.8f d.",
+                periods,
+                periods[0],
+            )
+        period_out = periods[0]
+    epoch_out = None
+    if epochs_jd:
+        rounded_e = {round(v, 8) for v in epochs_jd}
+        if len(rounded_e) > 1:
+            logger.warning(
+                "Multiple TARS TMIN1 values across selected sectors %s; using %.8f JD.",
+                epochs_jd,
+                epochs_jd[0],
+            )
+        epoch_out = epochs_jd[0]
+    return period_out, epoch_out
+
+
 def _sector_from_lightcurve(lc, row: dict | None = None) -> int | None:
     """Resolves the TESS sector number for a downloaded light curve.
 
@@ -101,19 +174,10 @@ def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list, stit
     if stitch:
         return "relative flux"
 
-    if len(set(flux_methods)) == 1 and flux_methods[0] == FLUX_METHOD_DEFAULT:
-        if len(set(authors)) == 1:
-            return archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
-        return UNIT_DIMENSIONLESS
-
-    if len(set(is_background_flags)) == 1 and is_background_flags[0]:
-        return storage_flux_unit_for_selection(authors[0], flux_methods[0])
-    if len(set(authors)) == 1 and len(set(flux_methods)) == 1:
-        if flux_methods[0] == FLUX_METHOD_DEFAULT:
-            return archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
-        return storage_flux_unit_for_selection(authors[0], flux_methods[0])
     if len(set(authors)) == 1:
         return archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
+    if len(set(flux_methods)) == 1 and flux_methods[0] == FLUX_METHOD_DEFAULT:
+        return UNIT_DIMENSIONLESS
     raise PipeException(
         "Cannot combine sectors with different flux-column selections across mixed "
         "pipeline authors; use author default flux or select a single sector."
@@ -143,8 +207,11 @@ def create_lc_from_selected_rows(
         flux_method (str): ``default``, ``background``, or a registry flux column name.
         metadata (dict): Target metadata including optional ``lookup_name``.
         phase_view (bool, optional): Initial folded-view flag.
-        period (float, optional): Variability period in days.
-        epoch (float, optional): Reference epoch Julian date.
+        period (float, optional): Variability period in days. TARS fills
+            ``PER1`` when this is omitted.
+        epoch (float, optional): Reference epoch as absolute Julian Date.
+            TARS fills ``TMIN1 + TESS_TIMEORIGIN`` when this is omitted; the
+            archive page shows that epoch as MJD (``Epoch-{2400000.5}``).
         search_store: Serialised Tess search result for cache recovery.
 
     Returns:
@@ -244,6 +311,14 @@ def create_lc_from_selected_rows(
 
     tess_mag = _tess_mag_from_lightkurve_list(lc_list)
     photcal_meta = resolve_photcal(authors, stitched=stitch, tess_mag=tess_mag)
+    tars_period = None
+    tars_epoch_jd = None
+    if is_tars_pipeline(authors):
+        tars_period, tars_epoch_jd = _tars_ephemeris_from_lightkurve_list(lc_list)
+        if period is None:
+            period = tars_period
+        if epoch is None:
+            epoch = tars_epoch_jd
 
     lcd = CurveDash(
         name=lc_list[0].LABEL,
@@ -280,6 +355,10 @@ def create_lc_from_selected_rows(
     lcd.metadata['is_background_flux'] = any(is_background_flags)
     if tess_mag is not None:
         lcd.metadata['tess_mag'] = tess_mag
+    if tars_period is not None:
+        lcd.metadata['tars_period_days'] = tars_period
+    if tars_epoch_jd is not None:
+        lcd.metadata['tars_epoch_jd'] = tars_epoch_jd
     if stitch:
         lcd.metadata['stitched'] = True
 

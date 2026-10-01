@@ -1,7 +1,8 @@
 """TESS instrument configuration, ingest photcal, and VOTable export profiles.
 
 Handles archive pipeline lightcurves (profile ``tess``) and user FFI/TPF cutouts
-(profile ``cutout``).
+(profile ``cutout``). Photometric policy and pipeline-column behaviour are
+documented in ``docs/tess.md``.
 """
 
 from __future__ import annotations
@@ -39,9 +40,33 @@ TESS_TIMESCALE = "TCB"
 TESS_REFPOSITION = "BARYCENTER"
 TESS_TIMEORIGIN = 2457000.0  # Lightkurve BTJD offset (ingest/plot only; not VOTable timeorigin)
 
-TESS_SPOC_ZERO_POINT_REF_MAG = 20.44
-TESS_SPOC_ZERO_POINT_FLUX = 1.0
-TESS_SPOC_ZERO_POINT_FLUX_UNIT = "electron s-1"
+# Instrument conversion for flux in electron s-1 (photoelectrons per second):
+#   mag = -2.5 log10(F / 1 electron s-1) + 20.44
+# TESS Instrument Handbook; public restatement:
+# https://tess.mit.edu/public/tesstransients/pages/readme.html
+# Zero-point uncertainty 0.05 mag. Vega system (TESS defined to match Cousins I).
+# Use only when stored flux is electron s-1 (SPOC, TESS-SPOC, user TPF/FFI
+# aperture sums). Do not apply to dimensionless QLP/TARS flux, ppm, stitched
+# relative flux, or background columns.
+#
+# Normalised (dimensionless) pipeline lightcurves: QLP and TARS. PhotCal uses
+# header TESSMAG from Lightkurve metadata when it is present and finite:
+#   mag = TESSMAG - 2.5 log10(flux), with ZP_FLUX = 1 (dimensionless).
+# If TESSMAG is missing, photcal is passband-only and magnitude conversion is
+# refused. TASOC TESSMAG is catalogue metadata only; FLUX_CORR is ppm stored
+# as dimensionless without this zero point.
+TESS_ELECTRON_S_ZERO_POINT_REF_MAG = 20.44
+TESS_ELECTRON_S_ZERO_POINT_REF_MAG_UNCERTAINTY = 0.05
+TESS_ELECTRON_S_ZERO_POINT_FLUX = 1.0
+TESS_ELECTRON_S_ZERO_POINT_FLUX_UNIT = "electron s-1"
+TESS_ELECTRON_S_ZERO_POINT_SOURCE_URL = (
+    "https://tess.mit.edu/public/tesstransients/pages/readme.html"
+)
+
+# Historical names; same values as the instrument electron s-1 zero point.
+TESS_SPOC_ZERO_POINT_REF_MAG = TESS_ELECTRON_S_ZERO_POINT_REF_MAG
+TESS_SPOC_ZERO_POINT_FLUX = TESS_ELECTRON_S_ZERO_POINT_FLUX
+TESS_SPOC_ZERO_POINT_FLUX_UNIT = TESS_ELECTRON_S_ZERO_POINT_FLUX_UNIT
 QLP_FLUX_UNIT = u.dimensionless_unscaled
 TESS_FILTER_IDENTIFIER = "TESS/TESS.Red"
 TESS_EFFECTIVE_WAVELENGTH = 7453 * u.Angstrom
@@ -65,6 +90,22 @@ def is_spoc_pipeline(authors) -> bool:
     return any(isinstance(a, str) and a.upper() in ["SPOC", "TESS-SPOC"] for a in authors)
 
 
+def is_tars_pipeline(authors) -> bool:
+    """Checks if the pipeline author list includes TARS.
+
+    Args:
+        authors (str or list of str): The pipeline author(s) to check.
+
+    Returns:
+        bool: True when TARS is present, False otherwise.
+    """
+    if not authors:
+        return False
+    if isinstance(authors, str):
+        authors = [authors]
+    return any(isinstance(a, str) and a.upper() == "TARS" for a in authors)
+
+
 def is_qlp_pipeline(authors) -> bool:
     """Checks if the pipeline author list includes QLP.
 
@@ -81,6 +122,18 @@ def is_qlp_pipeline(authors) -> bool:
     return any(isinstance(a, str) and a.upper() == "QLP" for a in authors)
 
 
+def uses_tessmag_catalog_photcal(authors) -> bool:
+    """True when archive photcal uses header ``TESSMAG`` as in QLP.
+
+    Args:
+        authors (str or list of str): Pipeline author(s) to check.
+
+    Returns:
+        bool: True for QLP or TARS.
+    """
+    return is_qlp_pipeline(authors) or is_tars_pipeline(authors)
+
+
 def filter_group_meta() -> dict:
     """Returns serialisable TESS passband fields for ``metadata['photcal']``.
 
@@ -95,6 +148,27 @@ def filter_group_meta() -> dict:
     }
 
 
+def instrument_electron_s_photcal() -> dict:
+    """Returns TESS passband metadata plus the electron s-1 instrument zero point.
+
+    Shared by unstitched SPOC / TESS-SPOC archive curves and user FFI/TPF
+    cutout aperture photometry. Not a pipeline-product keyword: the same
+    handbook conversion applies whenever flux is in electron s-1.
+
+    Returns:
+        dict: Serialisable photcal GROUP including zero points.
+    """
+    meta = filter_group_meta()
+    meta.update({
+        PHOTCAL_KEY_ZP_FLUX: TESS_ELECTRON_S_ZERO_POINT_FLUX,
+        PHOTCAL_KEY_ZP_FLUX_UNIT: TESS_ELECTRON_S_ZERO_POINT_FLUX_UNIT,
+        PHOTCAL_KEY_ZP_MAG: TESS_ELECTRON_S_ZERO_POINT_REF_MAG,
+        PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
+        PHOTCAL_KEY_MAG_SYS: "Vega",
+    })
+    return meta
+
+
 def resolve_photcal(
     authors,
     stitched: bool = False,
@@ -102,16 +176,18 @@ def resolve_photcal(
 ) -> dict:
     """Builds serialisable photcal GROUP metadata for TESS archive lightcurves.
 
-    Filter passband fields are always stored. SPOC pipeline zero points apply to
-    unstitched SPOC curves (fixed reference magnitude). QLP unstitched curves use
-    ``tess_mag`` from Lightkurve ``TESSMAG`` header metadata when supplied.
-    Stitched curves and pipelines without calibration metadata omit zero points
-    but retain filter identification for export and future multicolour work.
+    Filter passband fields are always stored. Unstitched SPOC and TESS-SPOC
+    curves use the shared instrument electron s-1 zero point. QLP and TARS
+    unstitched curves use ``tess_mag`` from Lightkurve ``TESSMAG`` header
+    metadata when supplied. Stitched curves and pipelines without calibration
+    metadata omit zero points but retain filter identification for export and
+    future multicolour work.
 
     Args:
         authors (str or list of str): Pipeline author tag(s) from Lightkurve.
         stitched (bool): True when sectors were stitched with relative normalisation.
-        tess_mag (float, optional): ``TESSMAG`` from downloaded QLP product header.
+        tess_mag (float, optional): ``TESSMAG`` from downloaded QLP or TARS
+            product header.
 
     Returns:
         dict: Full photcal GROUP fields appropriate for serialised storage.
@@ -120,24 +196,23 @@ def resolve_photcal(
     if stitched:
         return meta
     if is_spoc_pipeline(authors):
-        meta.update({
-            PHOTCAL_KEY_ZP_FLUX: TESS_SPOC_ZERO_POINT_FLUX,
-            PHOTCAL_KEY_ZP_FLUX_UNIT: TESS_SPOC_ZERO_POINT_FLUX_UNIT,
-            PHOTCAL_KEY_ZP_MAG: TESS_SPOC_ZERO_POINT_REF_MAG,
-            PHOTCAL_KEY_ZP_MAG_UNIT: "mag",
-            PHOTCAL_KEY_MAG_SYS: "Vega",
-        })
-        return meta
-    if is_qlp_pipeline(authors):
+        return instrument_electron_s_photcal()
+    if uses_tessmag_catalog_photcal(authors):
+        pipeline_name = "TARS" if is_tars_pipeline(authors) else "QLP"
         if tess_mag is None:
             logger.warning(
-                "QLP TESS lightcurve missing TESSMAG metadata; photcal passband only."
+                "%s TESS lightcurve missing TESSMAG metadata; photcal passband only.",
+                pipeline_name,
             )
             return meta
         try:
             zp_mag = float(tess_mag)
         except (TypeError, ValueError):
-            logger.warning("QLP photcal skipped: invalid TESSMAG value %r.", tess_mag)
+            logger.warning(
+                "%s photcal skipped: invalid TESSMAG value %r.",
+                pipeline_name,
+                tess_mag,
+            )
             return meta
         meta.update({
             PHOTCAL_KEY_ZP_FLUX: 1.0,
@@ -155,11 +230,32 @@ tess_filter_group_meta = filter_group_meta
 resolve_tess_photcal = resolve_photcal
 
 
+def serialise_lightkurve_flux_unit(lightkurve_flux_unit) -> str | None:
+    """Serialises a Lightkurve flux unit, treating ppm as dimensionless.
+
+    Physical units (for example electron / s) are kept. ``ppm`` is a
+    dimensionless relative scale, so it is stored as ``None``.
+
+    Args:
+        lightkurve_flux_unit: Unit object or string from the downloaded product.
+
+    Returns:
+        str or None: Serialised unit label, or ``None`` when dimensionless or ppm.
+    """
+    label = to_internal(lightkurve_flux_unit)
+    if label is None:
+        return None
+    compact = str(label).strip().lower().replace("_", " ")
+    if compact in {"ppm", "1e-6"} or "parts per million" in compact:
+        return None
+    return label
+
+
 def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
     """Returns the flux-unit label stored on a TESS archive ``CurveDash``.
 
-    Pipeline-specific units are assigned at ingest from mission configuration,
-    not inferred silently during later domain conversion.
+    QLP and TARS keep the dimensionless catalog-flux convention. Other pipelines
+    preserve the selected Lightkurve column unit, with ppm stored as dimensionless.
 
     Args:
         authors (str or list of str): Pipeline author tag(s) from Lightkurve.
@@ -169,9 +265,9 @@ def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
         str or None: Serialised flux unit for ``CurveDash`` metadata
         (``None`` = dimensionless).
     """
-    if is_qlp_pipeline(authors):
+    if uses_tessmag_catalog_photcal(authors):
         return to_internal(QLP_FLUX_UNIT)
-    return to_internal(lightkurve_flux_unit)
+    return serialise_lightkurve_flux_unit(lightkurve_flux_unit)
 
 
 def validate_tess_magnitude_conversion(lcd) -> None:
@@ -288,8 +384,8 @@ def build_cutout_title(lcd) -> str:
 def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, ra=None, dec=None):
     """Attaches cutout-specific metadata to a CurveDash instance.
 
-    User cutout photometry is uncalibrated; ``photcal`` retains passband only and
-    the pipeline author is tagged as ``user`` for VOTable export.
+    User FFI/TPF aperture sums in electron s-1 share the SPOC instrument zero
+    point. The pipeline author is tagged as ``user`` for VOTable export.
 
     Args:
         lcd (CurveDash): Newly constructed cutout lightcurve.
@@ -308,7 +404,7 @@ def enrich_cutout_curvedash(lcd, pixel_metadata: dict, sector, mask_mode: str, r
         raise PipeException("enrich_cutout_curvedash expects a CurveDash instance.")
 
     lcd.metadata["mission"] = CUTOUT_MISSION_ID
-    lcd.metadata["photcal"] = filter_group_meta()
+    lcd.metadata["photcal"] = instrument_electron_s_photcal()
     lcd.metadata["authors"] = [CUTOUT_PIPELINE_AUTHOR]
     lcd.metadata["sectors"] = [str(sector)]
     lcd.metadata["cutout_source"] = str(pixel_metadata.get("pixel_type", "TPF")).upper()
@@ -345,12 +441,18 @@ def attach_cutout_export_provenance(lcd) -> None:
     sectors_str = ", ".join(sectors) if sectors else "unknown"
     flux_correction = meta.get("flux_correction") or ""
     processing_note = f" Processing applied: {flux_correction}." if flux_correction else ""
+    zp = TESS_ELECTRON_S_ZERO_POINT_REF_MAG
+    zp_err = TESS_ELECTRON_S_ZERO_POINT_REF_MAG_UNCERTAINTY
     calibration_note = (
-        " Photometry is uncalibrated aperture summation; "
-        "photometric zero points are omitted from the PhotCal group."
+        f" Magnitudes use the TESS instrument zero point of {zp} mag at "
+        f"1 {TESS_ELECTRON_S_ZERO_POINT_FLUX_UNIT} "
+        f"(TESS Instrument Handbook; {TESS_ELECTRON_S_ZERO_POINT_SOURCE_URL}). "
+        f"The zero-point uncertainty is {zp_err} mag. This is a user-mask "
+        "aperture sum, not SPOC pipeline photometry; crowding and background "
+        "residuals remain."
     )
     desc = (
-        f"Uncalibrated TESS cutout lightcurve for target {tic_id}. "
+        f"TESS cutout lightcurve for target {tic_id}. "
         f"Data source: {source}. Aperture mask mode: {mask_mode}. "
         f"Sector: {sectors_str}. Pipeline: {CUTOUT_PIPELINE_AUTHOR}."
         f"{processing_note}{calibration_note}"
@@ -416,17 +518,25 @@ def attach_tess_archive_export_provenance(lcd) -> None:
 
 
 def apply_upload_cutout_metadata(lcd) -> None:
-    """Ensures uploaded cutout VOTables retain passband metadata without zero points.
+    """Ensures uploaded cutout VOTables keep mission tags and electron s-1 photcal.
+
+    Existing zero points are preserved. Files that lack a ZP pair receive the
+    shared instrument electron s-1 zero point (same as a fresh cutout).
 
     Args:
         lcd (CurveDash): Lightcurve restored from an uploaded cutout VOTable.
     """
-    from skvo_veb.utils.lc_bridge import _strip_zero_points_from_photcal
-
     lcd.metadata["mission"] = CUTOUT_MISSION_ID
-    lcd.metadata["photcal"] = _strip_zero_points_from_photcal(lcd.metadata.get("photcal"))
-    if not lcd.metadata["photcal"]:
-        lcd.metadata["photcal"] = filter_group_meta()
+    existing = dict(lcd.metadata.get("photcal") or {})
+    instrument = instrument_electron_s_photcal()
+    has_zp = (
+        existing.get(PHOTCAL_KEY_ZP_MAG) is not None
+        and existing.get(PHOTCAL_KEY_ZP_FLUX) is not None
+    )
+    if has_zp:
+        lcd.metadata["photcal"] = {**instrument, **existing}
+    else:
+        lcd.metadata["photcal"] = {**existing, **instrument}
 
 
 def build_archive_votable_kwargs(lcd) -> dict:

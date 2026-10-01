@@ -9,7 +9,7 @@ import numpy as np
 from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import export_curvedash
 from skvo_veb.utils.mission_config.tess import (
-    TESS_SPOC_ZERO_POINT_FLUX,
+    TESS_ELECTRON_S_ZERO_POINT_FLUX,
     is_spoc_pipeline,
     resolve_tess_photcal,
 )
@@ -50,7 +50,7 @@ def test_tess_export():
     assert "zeroPointFlux" in xml_spoc
     assert "zeroPointReferenceMagnitude" in xml_spoc
     assert "TESS/TESS.Red" in xml_spoc
-    assert str(TESS_SPOC_ZERO_POINT_FLUX) in xml_spoc
+    assert str(TESS_ELECTRON_S_ZERO_POINT_FLUX) in xml_spoc
     assert "20.44" in xml_spoc
     assert 'Photometry method(s): pdcsap' in xml_spoc
     assert 'name="label"' in xml_spoc

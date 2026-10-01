@@ -134,20 +134,29 @@ FLUX_COLUMN_REGISTRY: dict[str, list[FluxColumnSpec]] = {
             notes="Systematics removed; no dedicated error column.",
         ),
     ],
+    "TARS": [
+        FluxColumnSpec(
+            flux_col="FLUX",
+            flux_err_col=None,
+            calibration=CALIBRATION_NORMALIZED_CATALOG,
+            zp_mag_source="TESSMAG",
+            notes="CPM-corrected normalised FFI flux; dimensionless; no error column.",
+        ),
+    ],
     "TASOC": [
         FluxColumnSpec(
             flux_col="FLUX_CORR",
             flux_err_col="FLUX_CORR_ERR",
-            calibration=CALIBRATION_PHYSICAL,
+            calibration=CALIBRATION_NORMALIZED_CATALOG,
             zp_mag_source=None,
-            notes="Systematics-corrected flux, e-/s heritage.",
+            notes="CBV-corrected residual; FITS unit ppm, stored as dimensionless.",
         ),
         FluxColumnSpec(
             flux_col="FLUX_RAW",
             flux_err_col="FLUX_RAW_ERR",
             calibration=CALIBRATION_PHYSICAL,
             zp_mag_source=None,
-            notes="Raw aperture photometry, pre-correction.",
+            notes="Raw aperture photometry, e-/s.",
         ),
     ],
     "TGLC": [
@@ -229,7 +238,7 @@ BACKGROUND_COLUMN_REGISTRY: dict[str, BackgroundColumnSpec] = {
         bkg_col="FLUX_BKG",
         bkg_err_col="FLUX_BKG_ERR",
         unit_type=CALIBRATION_PHYSICAL,
-        notes="Background level, e-/s.",
+        notes="Background level, e-/s. Error column optional.",
     ),
     "GSFC-ELEANOR-LITE": BackgroundColumnSpec(
         bkg_col="FLUX_BKG",
@@ -400,23 +409,21 @@ def get_photometry_spec(
 
 
 def background_available(author: str, colnames: Sequence[str]) -> bool:
-    """Checks whether the pipeline background columns exist in a file.
+    """Checks whether the pipeline background flux column exists in a file.
+
+    A missing background error column does not hide the background option.
 
     Args:
         author (str): Pipeline author tag.
         colnames (sequence of str): Columns on the Lightkurve product.
 
     Returns:
-        bool: True when background flux column is present.
+        bool: True when the background flux column is present.
     """
     spec = get_background_spec(author)
     if spec is None:
         return False
-    if not _column_present(colnames, spec.bkg_col):
-        return False
-    if spec.bkg_err_col is not None and not _column_present(colnames, spec.bkg_err_col):
-        return False
-    return True
+    return _column_present(colnames, spec.bkg_col)
 
 
 def storage_flux_unit_for_selection(author: str, flux_method: str) -> str | None:
@@ -438,7 +445,13 @@ def storage_flux_unit_for_selection(author: str, flux_method: str) -> str | None
         return UNIT_PHYSICAL_ELECTRON_S
 
     if flux_method == FLUX_METHOD_DEFAULT:
-        if author in {"QLP", "TGLC"}:
+        if author in {"QLP", "TGLC", "TARS"}:
+            return UNIT_DIMENSIONLESS
+        try:
+            specs = list_photometry_specs(author)
+        except UnknownPipelineError:
+            return UNIT_PHYSICAL_ELECTRON_S
+        if specs and specs[0].calibration == CALIBRATION_NORMALIZED_CATALOG:
             return UNIT_DIMENSIONLESS
         return UNIT_PHYSICAL_ELECTRON_S
 
@@ -582,7 +595,14 @@ def apply_flux_column_selection(
     lower_map = {normalize_lc_column(c): c for c in colnames}
 
     if flux_method == FLUX_METHOD_DEFAULT:
-        return resolve_default_flux_origin(lc), False
+        origin = resolve_default_flux_origin(lc)
+        if getattr(lc, "flux_err", None) is None:
+            lc.flux_err = np.full(len(lc.flux), np.nan)
+            logger.warning(
+                "Author-default flux for '%s' has no error column; flux_err set to NaN.",
+                author,
+            )
+        return origin, False
 
     if flux_method == FLUX_METHOD_BACKGROUND:
         bkg = get_background_spec(author)
@@ -594,13 +614,17 @@ def apply_flux_column_selection(
                 f"Background column '{bkg.bkg_col}' is not present in the downloaded file."
             )
         lc.flux = lc[lower_map[bkg_key]]
-        if bkg.bkg_err_col is not None:
-            err_key = normalize_lc_column(bkg.bkg_err_col)
-            if err_key not in lower_map:
-                raise ValueError(
-                    f"Background error column '{bkg.bkg_err_col}' is not present."
-                )
+        err_key = (
+            normalize_lc_column(bkg.bkg_err_col) if bkg.bkg_err_col is not None else None
+        )
+        if err_key is not None and err_key in lower_map:
             lc.flux_err = lc[lower_map[err_key]]
+        else:
+            lc.flux_err = np.full(len(lc.flux), np.nan)
+            logger.warning(
+                "Background column '%s' has no error column; flux_err set to NaN.",
+                bkg.bkg_col,
+            )
         return normalize_lc_column(bkg.bkg_col), True
 
     spec = get_photometry_spec(author, sector, flux_method, colnames=colnames)

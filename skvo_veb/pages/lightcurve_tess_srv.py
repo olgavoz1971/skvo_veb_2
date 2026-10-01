@@ -199,8 +199,14 @@ def layout():
                                         {
                                             "field": col,
                                             "headerName": col.capitalize() if col != "#" else "#",
-                                            "checkboxSelection": True if col == "#" else False,
-                                            "headerCheckboxSelection": True if col == "#" else False,
+                                            **(
+                                                {
+                                                    "maxWidth": 80,
+                                                    "suppressSizeToFit": True,
+                                                }
+                                                if col == "#"
+                                                else {}
+                                            ),
                                         }
                                         for col in ["#", "mission", "year", "author", "exptime", "target"]
                                     ],
@@ -209,8 +215,11 @@ def layout():
                                     defaultColDef={"filter": True, "sortable": True, "resizable": True},
                                     dashGridOptions={
                                         "theme": "themeBalham",
-                                        "rowSelection": "multiple",
-                                        "suppressRowClickSelection": True,
+                                        "rowSelection": {
+                                            "mode": "singleRow",
+                                            "checkboxes": True,
+                                            "enableClickSelection": True,
+                                        },
                                         "animateRows": True,
                                         # "pagination": True,
                                         # "paginationPageSize": 10,
@@ -1434,6 +1443,8 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
         active_tab=Output('tess_lc_srv_tabs', 'active_tab'),
         periodogram_results_row_style=Output('tess_lc_srv_periodogram_results_row', 'style', allow_duplicate=True),
         pg_row_style=Output('tess_lc_srv_periodogram_row', 'style', allow_duplicate=True),
+        period_val=Output('period_tess_lc_srv_input', 'value', allow_duplicate=True),
+        epoch_val=Output('epoch_tess_lc_srv_input', 'value', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('download_tess_lc_srv_button', 'n_clicks')),
     state=dict(
@@ -1480,13 +1491,16 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         flux_method = effective_flux_method_for_selection(
             selected_rows, table_data, flux_method
         )
-        write_serialized_lc(
-            TESS_LC_SRV_NAMESPACE,
-            user_tab_id,
-            create_lc_from_selected_rows(
-                selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store
-            ),
+        payload = create_lc_from_selected_rows(
+            selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store
         )
+        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, payload)
+        lcd_built = CurveDash.from_serialized(payload)
+        if lcd_built.metadata.get('tars_period_days') is not None and lcd_built.period is not None:
+            output['period_val'] = lcd_built.period
+        tars_epoch = lcd_built.metadata.get('tars_epoch_jd')
+        if tars_epoch is not None:
+            output['epoch_val'] = display_epoch_offset(tars_epoch, jd0)
         # Return a new UUID to ensure the dcc.Store value always changes.
         # This triggers dependent callbacks even if no other data is updated.
         output['lightcurve'] = str(uuid.uuid4())  # returns a string → JSON-serializable

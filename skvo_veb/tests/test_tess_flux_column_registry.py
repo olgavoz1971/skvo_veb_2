@@ -31,6 +31,9 @@ class _FakeColumn:
     def value(self):
         return self._values
 
+    def __len__(self):
+        return len(self._values)
+
 
 class _FakeLc:
     FLUX_ORIGIN = "pdcsap_flux"
@@ -65,11 +68,26 @@ def test_qlp_sector_60_lists_det_flux():
     assert "sap_flux" in cols
 
 
+def test_tars_lists_dimensionless_flux_without_error_column():
+    """TARS registry exposes FLUX when the file has TIME+FLUX and no error column."""
+    specs = list_available_photometry_specs("TARS", 16, ["time", "flux"])
+    assert [normalize_lc_column(s.flux_col) for s in specs] == ["flux"]
+    assert specs[0].flux_err_col is None
+    assert specs[0].zp_mag_source == "TESSMAG"
+
+
 def test_background_available_spoc():
     """SPOC background columns are detected when present."""
     cols = ["pdcsap_flux", "sap_bkg", "sap_bkg_err"]
     assert background_available("SPOC", cols) is True
     assert background_available("TGLC", cols) is False
+
+
+def test_background_available_without_error_column():
+    """Background is offered when the flux column exists, even without errors."""
+    assert background_available("SPOC", ["pdcsap_flux", "sap_bkg"]) is True
+    assert background_available("TASOC", ["flux_corr", "flux_bkg"]) is True
+    assert background_available("TASOC", ["flux_corr"]) is False
 
 
 def test_build_flux_radio_options_includes_default_and_explicit_columns():
@@ -172,6 +190,24 @@ def test_apply_flux_column_selection_background_spoc():
     assert np.allclose(lc.flux.value, [0.5, 0.6])
 
 
+def test_apply_flux_column_selection_background_without_error_uses_nan():
+    """TASOC FLUX_BKG without FLUX_BKG_ERR still selects background; errors are NaN."""
+    lc = _FakeLc(
+        {
+            "pdcsap_flux": [1.0, 2.0],
+            "pdcsap_flux_err": [0.1, 0.1],
+            "flux_bkg": [10.0, 20.0],
+        }
+    )
+    origin, is_background = apply_flux_column_selection(
+        lc, "TASOC", 4, FLUX_METHOD_BACKGROUND
+    )
+    assert origin == "flux_bkg"
+    assert is_background is True
+    assert np.allclose(lc.flux.value, [10.0, 20.0])
+    np.testing.assert_array_equal(np.asarray(lc.flux_err), [np.nan, np.nan])
+
+
 def test_apply_flux_column_selection_missing_column_raises():
     """Missing registry column raises instead of silently falling back."""
     lc = _FakeLc({"pdcsap_flux": [1.0], "pdcsap_flux_err": [0.1]})
@@ -228,6 +264,12 @@ def test_storage_flux_unit_for_selection():
     """Unit labels follow registry calibration types."""
     assert storage_flux_unit_for_selection("SPOC", FLUX_METHOD_DEFAULT) == UNIT_PHYSICAL_ELECTRON_S
     assert storage_flux_unit_for_selection("QLP", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
+    assert storage_flux_unit_for_selection("TARS", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
+    assert storage_flux_unit_for_selection("TARS", "flux") == UNIT_DIMENSIONLESS
+    assert storage_flux_unit_for_selection("TASOC", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
+    assert storage_flux_unit_for_selection("TASOC", "flux_corr") == UNIT_DIMENSIONLESS
+    assert storage_flux_unit_for_selection("TASOC", "flux_raw") == UNIT_PHYSICAL_ELECTRON_S
+    assert storage_flux_unit_for_selection("TASOC", FLUX_METHOD_BACKGROUND) == UNIT_PHYSICAL_ELECTRON_S
     assert storage_flux_unit_for_selection("SPOC", FLUX_METHOD_BACKGROUND) == UNIT_PHYSICAL_ELECTRON_S
     assert storage_flux_unit_for_selection("QLP", FLUX_METHOD_BACKGROUND) == UNIT_DIMENSIONLESS
     spec = get_photometry_spec("SPOC", 4, "sap_flux")

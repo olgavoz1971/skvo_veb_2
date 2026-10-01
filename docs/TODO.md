@@ -24,6 +24,10 @@ give it the next unused ID. When a ticket is done, move its row to
 | 12 | volightcurve: photometric calibration validation for domain conversion | Open |
 | 13 | volightcurve: §8 product validation on ingest (structure + cells) | Open |
 | 14 | volightcurve: preserve VO column names; UCD-aware export; label/sector ingest | Open |
+| 15 | Calibration stays correct when a page changes the light curve | Open |
+| 16 | TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber) | Open |
+| 17 | TESS archive: stitch calibrated flux or magnitude (not only relative) | Open |
+| 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Open |
 
 ## Done
 
@@ -2404,3 +2408,312 @@ going stale in the first place.
 ### Status
 
 **Open.** Inventory first. No code.
+
+---
+
+## Ticket 16 — TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber)
+
+**Page:** TESS cutout (`/tess`). Same race applies to any other page that
+calls Lightkurve ``SearchResult.download()`` into the shared
+``~/.lightkurve/cache/mastDownload`` tree (production:
+``/var/www/.lightkurve/cache``).
+
+**Related:** `skvo_veb/utils/tess_processor.py`
+(``download_selected_pixel`` SPOC TPF branch),
+`skvo_veb/pages/tess_cutout.py` (``download_sector``),
+`skvo_veb/utils/lightkurve_cache.py`, Lightkurve
+``search.SearchResult._download_one``.
+
+### Goal
+
+Two browser tabs (or two users) retrieving the **same** SPOC TPF at the
+same time must not corrupt the shared cache file. The second waiter should
+block until the first download has finished, then **open the complete
+file**, not start a second MAST write into the same path.
+
+### Why this ticket exists
+
+Lightkurve treats ``os.path.exists(path)`` as a cache hit and skips MAST.
+Astroquery creates the FITS path as soon as the download starts and
+streams into it. A second worker therefore opens a half-written TPF:
+the header is valid, HDU 1 (PIXELS) is too short, NumPy raises
+``TypeError: buffer is too small for requested array``, and Lightkurve
+wraps that as “file may be corrupt due to an interrupted download”.
+
+Fast-cadence TPFs make this easy to hit (large, slow). The cutout page’s
+purge-and-retry on ``LightkurveError`` can **delete the file the other
+worker is still writing**, which makes the race worse.
+
+### Locked direction (when asked to code)
+
+Use **one lock per product** plus **atomic publish**. Do not give each
+session its own cache directory (that fights the shared-archive-cache
+rule).
+
+1. **Lock** keyed by ``obs_id`` / product filename (POSIX ``flock`` beside
+   the FITS, or equivalent). The second request waits and then reads.
+   It does not call MAST while the lock is held by a writer.
+2. **Download to a temp name**; ``os.rename`` onto the Lightkurve final
+   path only after ``TessTargetPixelFile`` has opened successfully.
+   ``exists(final_path)`` then means complete.
+3. **Purge/retry only under the lock**, and only the temp or a file this
+   worker produced. Never unlink a path another worker is filling.
+4. Stale locks: prefer ``flock`` so the lock dies with the process. If a
+   sidecar lock is used, expire it when the holder is gone, then
+   re-download into a temp file.
+5. TESScut FFI uses a different cache layout; apply the same pattern if
+   two tabs can retrieve the same cutout.
+
+Fail fast if the published file still cannot be opened. Do not invent
+photometry or silently ignore the error.
+
+### Out of scope
+
+- Changing Lightkurve itself.
+- Per-tab Lightkurve cache directories.
+- UI-only “already retrieving” without a server-side lock (Dash state is
+  per session and cannot see the other tab).
+
+### Agent checklist
+
+- [ ] No code until the developer says go.
+- [ ] SPOC TPF path in ``download_selected_pixel``: lock + temp + rename.
+- [ ] Purge-and-retry no longer deletes another worker’s in-flight file.
+- [ ] Decide whether TESScut FFI needs the same lock in this ticket.
+- [ ] Document the behaviour (timeout / wait) in British English if a
+      user-facing wait message is added.
+
+### Status
+
+**Open.** No code.
+
+---
+
+## Ticket 17 — TESS archive: stitch calibrated flux or magnitude (not only relative)
+
+**Page:** TESS Lightcurve Tool (`/tess_lc`, `skvo_veb/pages/lightcurve_tess_srv.py`).
+
+**Related:** `skvo_veb/utils/tess_lc_builder.py`
+(``create_lc_from_selected_rows``),
+`skvo_veb/utils/mission_config/tess.py` (``resolve_photcal``,
+``validate_tess_magnitude_conversion``,
+``apply_tess_phot_domain_view``),
+`skvo_veb/tests/test_tess_photcal.py`,
+`skvo_veb/tests/volightcurve/test_tess_export.py`,
+[lightcurve_data_flow.md](lightcurve_data_flow.md) (stitched curves omit
+zero points), Ticket 7 (photcal / domain switch), Ticket 15
+(calibration when the curve changes).
+
+### Goal
+
+Stitching several selected sectors must be able to produce a **calibrated**
+combined curve in **flux** or **magnitude**, with photcal kept so the
+Magnitude switch and VOTable export remain honest. Today the Stitch switch
+only builds Lightkurve **relative** (median-normalised) flux and then
+strips zero points.
+
+### Why this ticket exists
+
+``LightCurveCollection.stitch()`` divides each sector by its median. The
+builder then stores ``flux_unit='relative flux'``,
+``metadata['stitched']=True``, and ``resolve_photcal(..., stitched=True)``
+returns **passband only**. Magnitude conversion is refused
+(``validate_tess_magnitude_conversion``). Export omits ``zeroPointFlux`` /
+``zeroPointReferenceMagnitude`` because stitching “invalidates pipeline
+flux calibration”.
+
+That is correct for **relative** stitch. It is the wrong product if the
+user wants one multi-sector curve on the SPOC e⁻ s⁻¹ scale or in TESS
+magnitudes. Photcal for **unstitched** SPOC and QLP (``TESSMAG``) is
+already in place; multi-row retrieve **without** Stitch already
+concatenates native flux and keeps zero points. Stitch has not caught up.
+
+### Current behaviour (do not re-derive)
+
+| Stitch switch | Combine | Photcal ZPs | Magnitude view |
+|---------------|---------|-------------|----------------|
+| Off, several rows | Hand-rolled ``np.concatenate`` on ``jd`` / ``flux`` / ``flux_err`` | Kept (SPOC / QLP ``TESSMAG``) | Allowed when ZPs exist |
+| On | **Yes: original Lightkurve** ``LightCurveCollection.stitch()`` (default ``corrector_func=lambda x: x.normalize()``, then Astropy ``vstack``) | Stripped | Refused |
+
+Lightkurve ``stitch()`` itself is **not** multiprocessing: it is a list
+comprehension plus ``vstack``. The parallelism to kill is **ours**.
+
+**Duplicated join paths (must be removed in this ticket).**
+``create_lc_from_selected_rows`` has two independent combine
+implementations behind ``if stitch``. Do not add a third (calibrated mag)
+beside them. Collapse to **one** join. Relative vs calibrated is only the
+per-sector corrector (median-normalise, identity, or photcal mag), then
+the same stack.
+
+**Split even inside the stitch branch.** Time/flux/error come from
+``lc_res`` after ``stitch()``; the sector ``label`` column is built from
+the **original** ``lc_list`` lengths. Those two series can disagree if
+``vstack(..., join_type="inner")`` drops rows. One join must emit time,
+flux, error, and sector together.
+
+Background / mixed flux-column selections already force author default
+flux on multi-row retrieve. Mixed pipeline authors already fail some
+unit combinations.
+
+### Policy to agree before code (Phase 0)
+
+Prefer **an option**, not a silent replacement of relative stitch.
+Relative stitch remains useful when sector medians differ (crowding,
+systematics) and only the shape matters.
+
+Proposed stitch modes (British English labels):
+
+1. **Relative flux** — current Lightkurve ``stitch()`` (default until
+   the developer says otherwise).
+2. **Calibrated flux** — concatenate native pipeline flux; keep photcal;
+   ``stitched`` may still mean “several sectors joined” but must **not**
+   imply “ZPs invalid”.
+3. **Calibrated magnitude** — convert each sector with existing photcal,
+   then concatenate in mag; keep photcal; ``active_domain`` magnitude.
+
+Phase 0 must also **consider rejecting Lightkurve ``LightCurveCollection`` /
+``stitch()`` / ``vstack`` as the join engine**. We already hold per-sector
+arrays (and photcal) before that call, then unpack ``time`` / ``flux`` /
+``flux_err`` again for ``CurveDash``. Squeezing into a Lightkurve
+Collection and back out is extra cost and extra impedance. Prefer one
+join on the arrays we already have (Astropy ``Table`` / NumPy), and use
+Lightkurve only for ``normalize()`` if relative stitch still needs it.
+Decide this before writing a third wrapper around Collection.
+
+``metadata['stitched']`` today means “relative stitch, no ZP”. If
+calibrated join is added, split the flag (e.g. ``stitch_mode``) so export
+and mag conversion no longer treat every stitched curve as uncalibrated.
+
+### Locked constraints (when asked to code)
+
+1. Math stays in Astropy / existing ``PhotCal`` conversion (and Lightkurve
+   ``normalize`` only if Phase 0 keeps relative median-normalise).
+   **Do not assume** ``LightCurveCollection.stitch()`` remains the join.
+   Phase 0 may drop Collection entirely. No second ``np.concatenate``
+   loop beside whatever join is chosen.
+2. Pages do not implement equations; keep the join in
+   ``tess_lc_builder`` / ``mission_config/tess.py``.
+2a. **No parallel combine code.** One helper for all stitch modes. Sector
+   labels must come from the same stacked result as the photometry.
+3. Fail fast. Incomplete photcal → refuse calibrated mag stitch.
+4. Ticket 7 / 12: domain switch must not invent ZPs.
+5. British English in new UI strings (e.g. “Relative flux”,
+   “Calibrated flux”, “Calibrated magnitude”).
+6. Update tests that assume stitched ⇒ no ZPs / no mag
+   (``test_tess_photcal``, ``test_tess_export``) so they apply only to
+   **relative** stitch.
+7. Update ``docs/lightcurve_data_flow.md`` stitch paragraph.
+
+### Out of scope
+
+- TESS cutout page (aperture LC, not archive stitch).
+- Ticket 16 download locking.
+- Changing Lightkurve’s default ``stitch()`` corrector globally.
+- Inventing a cross-pipeline flux scale for mixed SPOC+QLP.
+
+### Agent checklist
+
+- [ ] No code until Phase 0 (replace vs option, flag naming, keep or drop Lightkurve Collection join) is agreed.
+- [ ] Single join path; delete the parallel ``np.concatenate`` / ``stitch()`` pair.
+- [ ] Stitch UI: relative remains; calibrated flux and/or mag added.
+- [ ] Photcal and Magnitude switch work for calibrated joins.
+- [ ] Relative stitch still omits ZPs and still refuses mag.
+- [ ] Export provenance text matches the actual stitch mode.
+- [ ] Tests split relative vs calibrated stitch.
+
+### Status
+
+**Open.** Phase 0 discussion first. No code.
+
+---
+
+## Ticket 18 — TESS archive: honest retrieve errors, generic HLSP read, TARS profile
+
+**Page:** TESS Lightcurve Tool (`/tess_lc`).
+
+**Related:** `skvo_veb/utils/lightkurve_cache.py`,
+`skvo_veb/utils/tess_lc_builder.py`,
+`skvo_veb/utils/tess_flux_column_registry.py`,
+`skvo_veb/utils/mission_config/tess.py` (``resolve_photcal``),
+Lightkurve ``io.detect`` / ``io.generic`` / ``SearchResult.download``.
+
+### Goal
+
+Unknown HLSPs (first seen: **TARS**) must not be reported as a corrupt
+cache file. Retrieve, flux radio, and photcal must not pretend there is a
+single “default pipeline profile”. Support is three explicit steps.
+
+### Why this ticket exists
+
+TARS (TESS All-Sky Rotation Survey) FITS is a small ``TIME`` + ``FLUX``
+table: no ``ORIGIN`` / ``CREATOR``, no ``QUALITY``, no flux error.
+Lightkurve types it as **``generic``**. ``SearchResult.download()`` always
+passes ``quality_bitmask="default"``. The generic reader rejects that
+keyword (``TypeError``). Lightkurve wraps it as “file may be corrupt due
+to an interrupted download”. Our purge-and-retry deletes a **complete**
+file and fails again.
+
+There is no named default profile. Three fallbacks disagree:
+
+- Reader: Lightkurve ``generic``.
+- Flux radio: ``FLUX_COLUMN_REGISTRY`` has **no** TARS entry (hard fail).
+- Photcal: ``resolve_photcal`` silently returns passband-only.
+
+### Phases (one at a time; do not skip)
+
+#### Phase 1 — Honest message; purge only truncated FITS — **done**
+
+Classify Lightkurve retrieve failures from the **exception cause chain**,
+not from Lightkurve’s canned “interrupted download” sentence (that text
+is attached to every ``read()`` failure).
+
+- Truncated / ``buffer is too small``: purge cache and retry (existing).
+- Unsupported reader / unexpected keyword / generic layout: **do not
+  purge**. British English message: the product is not a recognised TESS
+  pipeline light curve; the file is not treated as corrupt.
+- Other errors: show the inner exception; strip the canned corrupt
+  sentence.
+
+TARS still does not plot after this phase. Fail fast; no invented
+photometry.
+
+#### Phase 2 — Stable generic read — **done**
+
+Archive retrieve no longer uses ``SearchResult.download()`` for mastDownload
+light curves (that call always passes ``quality_bitmask``). It caches or
+fetches the FITS, then ``open_lightcurve_product``:
+
+- Typed Kepler/TESS products: ``read(path, quality_bitmask='default')``.
+- Generic HLSPs: ``read(path)`` only when HDU 1 has ``TIME`` and ``FLUX``.
+- Missing those columns: Phase 1 unsupported-product message; no purge.
+
+MAST ``author`` is copied onto the Lightkurve object when Lightkurve left
+``AUTHOR`` empty. Do not invent ``QUALITY``, ``PDCSAP_FLUX``, or flux
+errors. Flux radio / photcal for TARS are Phase 3.
+
+#### Phase 3 — TARS profile — **done**
+
+Adopted QLP-like photometry: ``TIME`` + dimensionless ``FLUX``,
+``PhotCal`` zero-point magnitude from ``TESSMAG`` (``ZP_FLUX=1``,
+dimensionless). Period from header ``PER1`` (days). Epoch from
+``TMIN1`` (BTJD) stored as absolute JD (``TMIN1 + 2457000``) on
+``CurveDash``; the TESS archive ``Epoch-{2400000.5}`` field shows MJD.
+Retrieve fills those fold controls. No invented flux errors.
+
+### Locked constraints
+
+1. No silent photcal or flux-column invention.
+2. British English in user-facing strings.
+3. Do not change Lightkurve itself.
+4. Ticket 16 (TPF lock) is a different race; do not merge.
+
+### Agent checklist
+
+- [x] Phase 1: classify failures; no purge on unsupported generic read.
+- [x] Phase 1 tests for truncated vs unsupported vs stripped canned text.
+- [x] Phase 2: generic retrieve without ``quality_bitmask``.
+- [x] Phase 3: TARS registry + QLP-like photcal + PER1/TMIN1 (MJD in UI).
+
+### Status
+
+**Done.** Phases 1–3 implemented.

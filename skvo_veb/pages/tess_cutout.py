@@ -2,7 +2,8 @@
 """TESS Cutout Tool — Dash page for FFI/TPF pixel cutouts and user photometry.
 
 Users retrieve TESS pixel cutouts, define aperture masks (handmade, threshold, or
-pipeline), build uncalibrated lightcurves, and export them via the shared
+pipeline), build aperture lightcurves with the shared TESS instrument zero
+point, and export them via the shared
 ``lc_bridge.export_curvedash`` layer with the ``cutout`` VOTable profile.
 """
 
@@ -48,6 +49,7 @@ from skvo_veb.utils.lc_config import (
     DEFAULT_EPOCH_JD as jd0,
     DEFAULT_EXPORT_FORMAT,
     DOMAIN_FLUX,
+    DOMAIN_MAG,
     EXPORT_FORMAT_OPTIONS,
     TIME_AXIS_DATE,
     TIME_AXIS_MJD,
@@ -58,6 +60,7 @@ from skvo_veb.utils.lc_bridge import (
 )
 from skvo_veb.utils.mission_config.tess import (
     TESS_TIMEORIGIN as jd0_tess,
+    apply_tess_phot_domain_view,
     build_cutout_title,
     enrich_cutout_curvedash,
     resolve_cutout_mask_mode,
@@ -78,6 +81,7 @@ register_page(__name__, name='TESS cutout',
 
 switch_label_style = {'display': 'inline-block', 'padding': '5px'}
 label_font_size = '0.8em'
+switch_label_style_vert = {'display': 'block', 'padding': '2px', 'font-size': label_font_size}
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 
 _coord_text = tess_processor._coord_text
@@ -146,7 +150,7 @@ def layout():
                                         dbc.Label('Size', html_for='size_ffi_input',
                                                   style={'width': '7em', 'marginBottom': 0}),
                                         dcc.Input(id='size_ffi_input', type='number', min=1, value=11,
-                                                  style={'width': '5em'}),
+                                                  style={'width': '11em'}),
                                         dbc.Button('Retrieve sector', id='download_sector_button', size="sm",
                                                    style={'width': '100%'}),
                                         dbc.Button('Cancel', id='cancel_download_sector_button', size="sm",
@@ -322,6 +326,14 @@ def layout():
                                       id='flatten_switch_label',
                                       style={'font-size': label_font_size}),
                         ], direction='horizontal'),
+                        dbc.Switch(
+                            id='mag_view_cutout_switch',
+                            label='Magnitude',
+                            value=False,
+                            label_style=switch_label_style_vert,
+                            persistence=False,
+                            style={'marginBottom': '5px', 'width': '100%'},
+                        ),
                         dcc.RadioItems(
                             id='time_axis_cutout_switch',
                             options=[
@@ -1263,8 +1275,8 @@ def create_lightcurve_figure(
     # region parameters
     output=dict(
         lc1=Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),  # todo make it an Input also
-        lc2=Output('lc2_store', 'data'),
-        lc3=Output('lc3_store', 'data'),
+        lc2=Output('lc2_store', 'data', allow_duplicate=True),
+        lc3=Output('lc3_store', 'data', allow_duplicate=True),
         lc_metadata=Output('store_tess_cutout_lightcurve_metadata', 'data', allow_duplicate=True),
     ),
     inputs=dict(n_clicks=Input('plot_curve_tess_button', 'n_clicks')),
@@ -1287,10 +1299,10 @@ def create_lightcurve_figure(
 def create_lightcurve(n_clicks, pixel_metadata, mask_list, star_number, sub_bkg,
                       flatten, show_trend, flatten_window, flatten_break_gap, flatten_order,
                       auto_mask, mask_type):
-    """Computes an uncalibrated cutout lightcurve and stores it in the selected slot.
+    """Computes a cutout lightcurve and stores it in the selected slot.
 
-    Cutout fluxes are never calibrated, so results stay in the flux domain with
-    passband-only photcal. Scientific extraction is delegated to
+    Aperture fluxes in electron s-1 use the shared TESS instrument zero point.
+    Scientific extraction is delegated to
     ``tess_processor.process_lightcurve_computation``.
 
     Args:
@@ -1435,6 +1447,89 @@ def plot_lightcurve(lc1, lc2, lc3, time_axis_mode, lc_metadata):
         set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
     return output
+
+
+def _convert_cutout_store_domain(js_lightcurve, show_magnitude: bool):
+    """Converts one serialised cutout curve to flux or magnitude.
+
+    Args:
+        js_lightcurve (str): Serialised ``CurveDash`` payload, or empty.
+        show_magnitude (bool): True for magnitude domain.
+
+    Returns:
+        str or object: Converted serialisation, or ``no_update`` when empty
+        or already in the requested domain.
+    """
+    if not js_lightcurve:
+        return no_update
+    lcd = CurveDash.from_serialized(js_lightcurve)
+    desired_domain = DOMAIN_MAG if show_magnitude else DOMAIN_FLUX
+    if lcd.active_domain == desired_domain:
+        return no_update
+    apply_tess_phot_domain_view(lcd, show_magnitude)
+    return lcd.serialize()
+
+
+@callback(
+    Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
+    Output('lc2_store', 'data', allow_duplicate=True),
+    Output('lc3_store', 'data', allow_duplicate=True),
+    Output('mag_view_cutout_switch', 'value', allow_duplicate=True),
+    Input('mag_view_cutout_switch', 'value'),
+    State('store_tess_cutout_lightcurve', 'data'),
+    State('lc2_store', 'data'),
+    State('lc3_store', 'data'),
+    prevent_initial_call=True,
+)
+def toggle_cutout_mag_view(show_magnitude, lc1, lc2, lc3):
+    """Converts cached cutout lightcurves to flux or magnitude and triggers a replot.
+
+    On failure the switch is reverted to match the unchanged cache domain so the
+    UI stays consistent with stored photometry.
+    """
+    if not any([lc1, lc2, lc3]):
+        return no_update, no_update, no_update, False
+    try:
+        out1 = _convert_cutout_store_domain(lc1, show_magnitude)
+        out2 = _convert_cutout_store_domain(lc2, show_magnitude)
+        out3 = _convert_cutout_store_domain(lc3, show_magnitude)
+        set_props('div_tess_alert', {'children': '', 'style': {'display': 'none'}})
+        return out1, out2, out3, no_update
+    except Exception as exc:
+        logger.warning(f'tess_cutout.toggle_cutout_mag_view: {exc}')
+        alert_message = message.warning_alert(exc)
+        set_props('div_tess_alert', {'children': alert_message, 'style': {'display': 'block'}})
+        switch_value = not show_magnitude
+        try:
+            for js_lightcurve in (lc1, lc2, lc3):
+                if not js_lightcurve:
+                    continue
+                lcd = CurveDash.from_serialized(js_lightcurve)
+                switch_value = lcd.active_domain == DOMAIN_MAG
+                break
+        except Exception:
+            pass
+        return no_update, no_update, no_update, switch_value
+
+
+@callback(
+    Output('mag_view_cutout_switch', 'value', allow_duplicate=True),
+    Input('store_tess_cutout_lightcurve', 'data'),
+    Input('lc2_store', 'data'),
+    Input('lc3_store', 'data'),
+    prevent_initial_call=True,
+)
+def sync_cutout_mag_view_switch(lc1, lc2, lc3):
+    """Keeps the magnitude switch aligned with the active domain in the stores."""
+    try:
+        for js_lightcurve in (lc1, lc2, lc3):
+            if not js_lightcurve:
+                continue
+            lcd = CurveDash.from_serialized(js_lightcurve)
+            return lcd.active_domain == DOMAIN_MAG
+    except Exception:
+        raise PreventUpdate
+    raise PreventUpdate
 
 
 @callback(
@@ -1966,7 +2061,8 @@ def download_tess_lightcurve(n_clicks, js_lightcurve, table_format, relayout_dat
                              selection_bounds, lc_metadata, time_axis_mode):
     """Exports the primary cutout lightcurve, clipped to the active selection or zoom.
 
-    Provenance and passband photcal are taken from CurveDash metadata (attached at
+    Provenance and PhotCal (including the instrument electron s-1 zero point)
+    are taken from CurveDash metadata (attached at
     enrich). All formats share the same product; only ``write_lightcurve`` differs.
     The on-screen store retains any prior trims; export further limits output to the
     stored box-selection bounds, or otherwise the visible time axis.
