@@ -28,6 +28,9 @@ give it the next unused ID. When a ticket is done, move its row to
 | 16 | TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber) | Open |
 | 17 | TESS archive: stitch calibrated flux or magnitude (not only relative) | Open |
 | 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Open |
+| 19 | TESS photcal: mag column plus absolute flux (Jy) on VOTable export | Open |
+| 20 | TESS search Exptime: ghelp for cadence vs CRM effective time | Open |
+| 21 | Export original TESS pipeline light-curve FITS from the server cache | Open |
 
 ## Done
 
@@ -2717,3 +2720,157 @@ Retrieve fills those fold controls. No invented flux errors.
 ### Status
 
 **Done.** Phases 1–3 implemented.
+
+---
+
+## Ticket 19 — TESS photcal: mag column plus absolute flux (Jy) on VOTable export
+
+**Pages:** TESS Lightcurve Tool (`/tess_lc`) and TESS cutout (`/tess_cutout`)
+exports; any other TESS curve that already carries instrument or TESSMAG
+photcal.
+
+**Related:** [tess.md](tess.md) §1, `skvo_veb/utils/mission_config/tess.py`,
+sibling ``volightcurve`` ``PhotCal`` / VOTable photcal GROUP, Ticket 7
+(photcal policy; do not invent zeropoints), Ticket 12 (domain conversion
+validation), Ticket 17 (calibrated stitch — separate).
+
+### Goal
+
+Improve TESS light-curve photometric calibration so a **magnitude** column
+can also carry **absolute flux** calibration (jansky).
+
+The intended **exported VOTable** (when we later agree how to represent it)
+would present **two photometric columns**, each with its own linked photcal:
+
+1. **Flux** in **electron s⁻¹**, with photcal that converts that flux into
+   **TESS magnitude** (the instrument / pipeline pair we already document:
+   20.44 at 1 electron s⁻¹, or TESSMAG for normalised pipelines, as
+   applicable).
+2. **Magnitude**, with a **second** photcal that converts that magnitude
+   into **absolute flux in jansky**.
+
+### Why this ticket exists
+
+Today TESS curves are stored and switched in one photometric domain at a
+time. Photcal on the curve is the pair that supports **flux ↔ TESS mag**.
+Export follows that single group. There is **no** agreed product yet for
+keeping native electron s⁻¹ **and** a mag column whose photcal opens a
+path to **Jy**.
+
+This ticket records that product wish. It does **not** choose a data model
+(one vs two ``PhotCal`` objects, which column is native, AB vs Vega, how
+GROUP ``ref``s attach in VOTable, whether the in-app Magnitude switch
+changes).
+
+### Locked for now
+
+1. **No design and no code** until the developer asks to open the topic.
+2. Do not invent a jansky zeropoint, a second photcal helper, or a dual-column
+   export layout in passing while working on other TESS tickets.
+3. Do not treat this as a silent extension of Ticket 7 Phase 2 (calibration
+   editor) or Ticket 17 (stitch modes).
+4. Fail-fast / no silent fallbacks still apply when this is eventually
+   specified.
+
+### Out of scope until specified
+
+- Choosing constants, references, or formulae for TESS mag → Jy.
+- Changing the in-app flux/magnitude switch behaviour.
+- Non-TESS missions.
+
+### Agent checklist
+
+- [ ] No implementation until asked.
+- [ ] When opened: discuss representation and export contract first; then
+      code only what was agreed.
+
+### Status
+
+**Open.** Backlog only. Discussion later.
+
+---
+
+## Ticket 20 — TESS search Exptime: ghelp for cadence vs CRM effective time
+
+**Pages:** TESS cutout (`/tess_cutout`) search results table first; TESS
+archive (`/tess_lc`) if the same Exptime column is shown.
+
+**Related:** [tess.md](tess.md) §3.
+
+### Goal
+
+Put the documented meaning of **Exptime** into the in-app **ghelp** (`?`
+popover): the column is MAST/Lightkurve **cadence** (`t_exptime` /
+`TIMEDEL`), not CRM-shortened photon time (`NREADOUT * INT_TIME`).
+
+### Locked for now
+
+1. **No UI until asked.** Do not invent popover placement or rewrite the
+   column header in passing.
+2. Help copy must follow [tess.md](tess.md) §3; do not invent a second
+   explanation.
+3. Do not change what the table stores (still Lightkurve `exptime`).
+
+### Agent checklist
+
+- [ ] No implementation until asked.
+- [ ] When opened: reuse the page `?` / ghelp pattern; British English.
+
+### Status
+
+**Open.** Documentation is in ``docs/tess.md`` §3. Ghelp later.
+
+---
+
+## Ticket 21 — Export original TESS pipeline light-curve FITS from the server cache
+
+**Pages:** TESS Lightcurve Tool (`/tess_lc`) first. Cutout page is **not**
+in scope as a download target (see below).
+
+**Related:** `skvo_veb/utils/lightkurve_cache.py`, `skvo_veb/utils/tess_cache.py`
+(``save_lc_fits`` / Lightkurve mastDownload), existing CurveDash export
+(`export_curvedash` — VOTable / ASCII of the **working** curve, not the
+archive FITS).
+
+### Goal
+
+Let an **advanced** in-app user obtain the **original pipeline light-curve
+FITS** that we already hold in the TESS server cache after Retrieve. Today
+those files sit on the server and are unreachable from the UI. Existing
+export is our processed `CurveDash` product, not the MAST/Lightkurve FITS.
+
+### Why this ticket exists
+
+Retrieve already downloads (or cache-hits) the ready-made light-curve FITS.
+That file is the archival product (SPOC, QLP, TARS, …) with native columns
+and headers. Advanced users may want that FITS on their own machine. The
+browser session never offers it.
+
+### Doubtful extra: cutout FITS download
+
+**Do not** add a control that sends FFI/TPF **cutouts** to the user’s
+computer. Pixel cubes are large, are not “ready-made light curves”, and
+are not a product we intend to ship this way.
+
+Recorded only so it is not “discovered” later as an obvious sibling
+feature. Flag: **doubtfully reasonable**. Leave it closed unless the
+developer explicitly reopens it.
+
+### Locked for now
+
+1. **No UI and no download code** until asked.
+2. Do not invent a cache-busting public URL, zip-all-sectors button, or a
+   second export format beside the existing CurveDash exporters.
+3. Do not treat this as a substitute for Ticket 19 (Jy photcal) or Ticket 8
+   (volightcurve I/O).
+4. Cutout pixel FITS download stays out of scope (doubtful extra above).
+
+### Agent checklist
+
+- [ ] No implementation until asked.
+- [ ] When opened: discuss which retrieved product(s) may be offered, and
+      that cutout FITS remain unavailable.
+
+### Status
+
+**Open.** Backlog only. Discussion later.

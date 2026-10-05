@@ -152,3 +152,65 @@ Archive HLSPs keep author-specific columns and the rules in §1–2.3.
 
 For background extraction details on SPOC/QLP/cutout, see
 [tess_background_lightkurve.md](tess_background_lightkurve.md).
+
+---
+
+## 3. Search table Exptime (cadence vs effective integration)
+
+The **Exptime** column on `/tess_cutout` (and the same Lightkurve field on
+`/tess_lc`) is **not** computed by this application. Both TPF and FFI search
+rows copy Lightkurve `SearchResult.table["exptime"]`, which Lightkurve aliases
+from MAST **`t_exptime`**, in seconds.
+
+That catalogue field is the product **cadence** (`TIMEDEL` in the FITS PIXEL
+header), not the photon live time after cosmic-ray mitigation (CRM).
+
+### 3.1 Cadence (what the table shows)
+
+| Product | Typical `TIMEDEL` / table Exptime |
+|---|---|
+| SPOC TPF short | 120 s |
+| SPOC TPF fast | 20 s |
+| TESS-SPOC TPF from 10 min FFI | 600 s |
+| TESS-SPOC TPF from ~200 s FFI | 200 s |
+| FFI / TESScut (by mission phase) | 1800 s, 600 s, or 200 s |
+
+Frame timing on SPOC-family files: `INT_TIME = 1.98 s` (photon accumulation per
+frame), `READTIME = 0.02 s`, `FRAMETIM = 2.0 s`, `NUM_FRM` frames stacked per
+cadence, so `NUM_FRM * FRAMETIM = TIMEDEL`.
+
+### 3.2 Effective integration (in the FITS header, not in the table)
+
+Spacecraft CRM (`CRMITEN = True`) keeps **80%** of frames:
+`NREADOUT / NUM_FRM = 0.8`. Per-cadence photon time is
+
+```text
+NREADOUT * INT_TIME
+```
+
+which is **0.792 × cadence** (0.8 of frames, then 1.98/2.0 for readout on the
+frames that are kept). Checked on cached files:
+
+| Product | Cadence | `NREADOUT * INT_TIME` | Ratio |
+|---|---|---|---|
+| SPOC 2 min TPF | 120 s | 95.04 s | 0.792 |
+| TESS-SPOC 10 min TPF | 600 s | 475.2 s | 0.792 |
+| TESS-SPOC ~200 s TPF | 200 s | 158.4 s | 0.792 |
+| TESScut FFI (same cadences) | 1800 / 600 / 200 s | 1425.6 / 475.2 / 158.4 s | 0.792 |
+
+**20 s SPOC TPF** does not use spacecraft CRM (`CRMITEN = False`,
+`CRSPOC = True`): `NREADOUT = NUM_FRM`, so photon time is **19.8 s**
+(0.99 × cadence).
+
+`EXPOSURE` in the header is **not** interchangeable between products:
+
+- **TPF:** `[d] time on source` for the **whole file**, not one cadence.
+- **TESScut FFI PIXEL HDU:** about **one cadence** of effective time
+  (for example ~475 s on a 600 s FFI), matching `NREADOUT * INT_TIME`.
+
+### 3.3 UI note (ghelp later)
+
+Do not relabel the column until in-app help exists. Copy this section into
+the cutout (and archive, if the same column is shown) **ghelp** `?` popover
+when that work is opened (Ticket 20). Until then, Exptime remains MAST
+cadence.
