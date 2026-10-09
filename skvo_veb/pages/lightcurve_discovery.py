@@ -893,7 +893,7 @@ def _lightcurve_tools_panel():
                         gap=2,
                     ),
                     dbc.Button(
-                        'Download whole votable',
+                        'Download entire votable',
                         id='lc_discovery_download_full_button',
                         color='primary',
                         size='sm',
@@ -2209,7 +2209,7 @@ def download_lc_discovery_full_votable(n_clicks, lc_key, user_tab_id):
             outfile_base = discovery_export_basename(lcd)
         else:
             outfile_base = 'lc_discovery'
-        outfile = f'{outfile_base}.vot'
+        outfile = f'{outfile_base}_orig.vot'
         set_props('lc_discovery_plot_alert', {'children': None})
         return dcc.send_bytes(payload, outfile)
     except Exception as exc:
