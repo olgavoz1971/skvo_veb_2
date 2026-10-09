@@ -81,6 +81,8 @@ register_page(__name__, name='TESS cutout',
 
 switch_label_style = {'display': 'inline-block', 'padding': '5px'}
 label_font_size = '0.8em'
+group_label_font_size = '1.0em'
+
 switch_label_style_vert = {'display': 'block', 'padding': '2px', 'font-size': label_font_size}
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 
@@ -99,7 +101,8 @@ def layout():
                         dbc.Stack([
                             dbc.Label('Object', html_for='obj_name_tess_input', style={'width': '7em'}),
                             dcc.Input(id='obj_name_tess_input', persistence=True, type='search',
-                                      style={'flexGrow': '1', 'width': 'auto'}),
+                                    #   style={'flexGrow': '1', 'width': 'auto'}),
+                                style={'width': '100%'}),
                             dbc.Button('Resolve', id='resolve_tess_button', size='sm', style={'whiteSpace': 'nowrap'}),
                         ], direction='horizontal', gap=2, style={'marginBottom': '5px'}),
                         dbc.Stack([
@@ -202,7 +205,7 @@ def layout():
                     dbc.Col([
                         dbc.Label('Cutout Tools', style={'display': 'flex', 'justify-content': 'center'}),
                         html.Details([
-                            html.Summary('Plot options', style={'font-size': label_font_size}),
+                            html.Summary('Plot options', style={'font-size': group_label_font_size}),
                             dbc.Stack([
                                 dbc.Label('Scale', html_for='input_tess_gamma',
                                           style={'width': '7em', 'font-size': label_font_size}),
@@ -235,10 +238,8 @@ def layout():
                                 style={'display': 'none', 'marginTop': '8px'},
                             ),
                         ]),
-                        dbc.Button('rePlot pixel', id='replot_pixel_button', size="sm",
-                                   style={'width': '100%'}),
                         html.Details([
-                            html.Summary('Mask', style={'font-size': label_font_size}),
+                            html.Summary('Mask', style={'font-size': group_label_font_size}),
                             dcc.RadioItems(
                                 id='auto_mask_switch',
                                 options=[
@@ -276,6 +277,8 @@ def layout():
                                 is_open=True,
                             ),  # specify an auto mask threshold here
                         ], open=True),
+                        dbc.Button('rePlot pixel', id='replot_pixel_button', size="sm",
+                                   style={'width': '100%'}),
                     ], md=2, sm=4, style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'}),  # tools
                     dbc.Col([
                         dcc.Markdown(
@@ -405,15 +408,9 @@ def layout():
                             id='flatten_collapse',
                             is_open=True,
                         ),
-                        dbc.Button('rePlot curve', id='plot_curve_tess_button',
-                                   size="sm",
-                                   style={
-                                       # 'marginBottom': '5px',
-                                       'marginTop': '5px',
-                                       # 'marginLeft': '2px', 'marginRight': '2px',
-                                       'width': '100%'}),
+                        
                         html.Details([
-                            html.Summary('Plot Options', style={'font-size': label_font_size}),
+                            html.Summary('Plot options', style={'font-size': group_label_font_size}),
                             dcc.RadioItems(
                                 id='star_tess_switch',
                                 options=[
@@ -438,8 +435,17 @@ def layout():
                             dbc.Button('Compare', id='plot_difference_button', size="sm",
                                        style={'width': '100%'})
                         ], style={'marginBottom': '5px'}),  # plot / compare  curves options
+                        
+                        dbc.Button('rePlot curve', id='plot_curve_tess_button',
+                                   size="sm",
+                                   style={
+                                       'marginBottom': '5px',
+                                    #    'marginTop': '5px',
+                                       # 'marginLeft': '2px', 'marginRight': '2px',
+                                       'width': '100%'}),
                         dbc.Button('Trim selected', id='cut_tess_button', size="sm",
-                                   style={'marginBottom': '5px', 'width': '100%'}),
+                                   style={'marginBottom': '10px',
+                                   'width': '100%'}),
                         dbc.Stack([
                             dbc.Select(options=EXPORT_FORMAT_OPTIONS,
                                        value=DEFAULT_EXPORT_FORMAT,

@@ -1,0 +1,45 @@
+/* TESS Lightcurve Tool (`/tess_lc`) — Plot-tab export group.
+ * Tokens live on the page class; Python carries class names only.
+ */
+
+.tess-lc-srv-page {
+    --tess-lc-srv-space-xs: 0.25rem;
+    --tess-lc-srv-space-sm: 0.375rem;
+    --tess-lc-srv-space-md: 0.75rem;
+    --tess-lc-srv-text-sm: 0.85rem;
+}
+
+/* .tess-lc-srv-section-label {
+    display: block;
+    font-weight: 700;
+    margin: 0;
+ } */
+
+.tess-lc-srv-export-block {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--tess-lc-srv-space-xs);
+    width: 100%;
+    margin-bottom: var(--tess-lc-srv-space-md);
+    /* margin-bottom: 1.5rem; */
+
+}
+
+.tess-lc-srv-export-row {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--tess-lc-srv-space-xs);
+    width: 100%;
+}
+
+.tess-lc-srv-export-format {
+    width: 40%;
+    min-width: 0;
+    font-size: var(--tess-lc-srv-text-sm);
+}
+
+.tess-lc-srv-export-download {
+    width: 60%;
+}

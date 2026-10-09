@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 MISSION_ID = "tess"
 CUTOUT_MISSION_ID = "cutout"
 
-TESS_TIMESCALE = "TCB"
+TESS_TIMESCALE = "TDB"
 TESS_REFPOSITION = "BARYCENTER"
 TESS_TIMEORIGIN = 2457000.0  # Lightkurve BTJD offset (ingest/plot only; not VOTable timeorigin)
 
@@ -46,8 +46,8 @@ TESS_TIMEORIGIN = 2457000.0  # Lightkurve BTJD offset (ingest/plot only; not VOT
 # https://tess.mit.edu/public/tesstransients/pages/readme.html
 # Zero-point uncertainty 0.05 mag. Vega system (TESS defined to match Cousins I).
 # Use only when stored flux is electron s-1 (SPOC, TESS-SPOC, user TPF/FFI
-# aperture sums). Do not apply to dimensionless QLP/TARS flux, ppm, stitched
-# relative flux, or background columns.
+# aperture sums). Do not apply to dimensionless QLP/TARS flux, ppm, legacy
+# stitched relative flux, or background columns.
 #
 # Normalised (dimensionless) pipeline lightcurves: QLP and TARS. PhotCal uses
 # header TESSMAG from Lightkurve metadata when it is present and finite:
@@ -151,7 +151,7 @@ def filter_group_meta() -> dict:
 def instrument_electron_s_photcal() -> dict:
     """Returns TESS passband metadata plus the electron s-1 instrument zero point.
 
-    Shared by unstitched SPOC / TESS-SPOC archive curves and user FFI/TPF
+    Shared by SPOC / TESS-SPOC archive curves and user FFI/TPF
     cutout aperture photometry. Not a pipeline-product keyword: the same
     handbook conversion applies whenever flux is in electron s-1.
 
@@ -176,16 +176,17 @@ def resolve_photcal(
 ) -> dict:
     """Builds serialisable photcal GROUP metadata for TESS archive lightcurves.
 
-    Filter passband fields are always stored. Unstitched SPOC and TESS-SPOC
+    Filter passband fields are always stored. SPOC and TESS-SPOC
     curves use the shared instrument electron s-1 zero point. QLP and TARS
-    unstitched curves use ``tess_mag`` from Lightkurve ``TESSMAG`` header
-    metadata when supplied. Stitched curves and pipelines without calibration
-    metadata omit zero points but retain filter identification for export and
-    future multicolour work.
+    curves use ``tess_mag`` from Lightkurve ``TESSMAG`` header
+    metadata when supplied. Legacy stitched VOTables and pipelines without
+    calibration metadata omit zero points but retain filter identification
+    for export and future multicolour work.
 
     Args:
         authors (str or list of str): Pipeline author tag(s) from Lightkurve.
-        stitched (bool): True when sectors were stitched with relative normalisation.
+        stitched (bool): True for ingested VOTables that recorded relative
+            sector stitching. The archive retrieve path never sets this.
         tess_mag (float, optional): ``TESSMAG`` from downloaded QLP or TARS
             product header.
 
@@ -273,7 +274,7 @@ def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
 def validate_tess_magnitude_conversion(lcd) -> None:
     """Checks that a TESS archive lightcurve may be converted to magnitudes.
 
-    Stitched curves and products without zero-point metadata must not be converted;
+    Legacy stitched curves and products without zero-point metadata must not be converted;
     unit mismatches are left to ``PhotCal`` and surface as conversion errors.
 
     Args:

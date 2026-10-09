@@ -217,7 +217,7 @@ Export profiles bundle instrument constants so callbacks do not assemble paramet
 
 | Profile | Use case | Zero points in PhotCal |
 |---------|----------|------------------------|
-| `tess` | Archive / pipeline lightcurves (`lightcurve_tess_srv`) | SPOC only, omitted when stitched |
+| `tess` | Archive / pipeline lightcurves (`lightcurve_tess_srv`) | Pipeline PhotCal (SPOC 20.44, QLP/TARS TESSMAG); omitted on legacy `stitched=true` ingest |
 | `cutout` | User FFI/TPF aperture photometry (`tess_cutout`) | Never (uncalibrated) |
 
 The **cutout** profile records `cutout_source` (FFI/TPF), `mask_mode` (handmade/threshold/pipeline), and pipeline author **`user`** in table descriptions and PARAM metadata.
@@ -275,7 +275,7 @@ The phase column is useful interactively but **must never** appear in standards-
 
 TESS photometry method (e.g. `pdcsap`, `sap`) appears in the `<TABLE>` description and in `flux_origins` metadata.
 
-**Stitched lightcurves:** sector stitching applies relative flux normalisation, so pipeline photometric zero points must **not** be written to the `<GROUP name="photcal">` block. The TESS export profile omits `zeroPointFlux` and `zeroPointReferenceMagnitude` when `metadata['stitched']` is set (any pipeline). Passband metadata (`filterIdentifier`, `effectiveWavelength`) is still exported.
+**Legacy stitched VOTables:** `/tess_lc` no longer stitches. If an uploaded file still has `metadata['stitched']`, the TESS export profile omits `zeroPointFlux` and `zeroPointReferenceMagnitude` (any pipeline) because relative flux normalisation is not a pipeline zero point. Passband metadata (`filterIdentifier`, `effectiveWavelength`) is still exported.
 
 Plot titles after upload are rebuilt by `build_curvedash_title()` from metadata or restored from the exported `title` PARAM.
 

@@ -155,7 +155,7 @@ Under **Plot → Flux options** (`html.Details`):
 - `dcc.RadioItems` **`flux_tess_lc_srv_switch`** — options built dynamically from the registry (`update_flux_radio_options` callback).
 - Default value: **`FLUX_METHOD_DEFAULT`** (`"default"`).
 - When the downloaded file contains the pipeline background column, an extra option **`background`** appears (`FLUX_METHOD_BACKGROUND`).
-- Additional switches: stitch, magnitude view, time axis (MJD / date).
+- Additional switches: magnitude view, time axis (MJD / date).
 
 Callbacks **`update_flux_radio_options`** and **`reset_flux_on_new_search`** keep the radio list in sync with the AgGrid selection and MAST search store.
 
@@ -169,9 +169,9 @@ Callbacks **`update_flux_radio_options`** and **`reset_flux_on_new_search`** kee
    - **`flux_origins`** — column names actually plotted (e.g. `pdcsap_flux`, `sap_bkg`).
    - **`flux_method`** — radio value used for the build.
    - **`is_background_flux`** — `True` if any sector used **`background`**.
-   - **`authors`**, **`sectors`**, **`stitched`**, TESS photometric calibration via **`resolve_photcal`**.
+   - **`authors`**, **`sectors`**, TESS photometric calibration via **`resolve_photcal`**.
 
-Multi-row selection **forces** `FLUX_METHOD_DEFAULT` (`effective_flux_method_for_selection`) so a single-row background choice does not silently apply to a stitch of mixed products.
+The search table is single-row. Multi-row selection, if it occurs, **forces** `FLUX_METHOD_DEFAULT` (`effective_flux_method_for_selection`) so a background choice does not silently apply across mixed products.
 
 #### Storage and plotting
 

@@ -38,7 +38,7 @@ Constants and the helper `instrument_electron_s_photcal()` live in
 - user **TPF/FFI cutout** aperture sums (author tagged `user`).
 
 It is **not** applied to dimensionless QLP/TARS flux, TASOC `FLUX_CORR` (ppm
-stored as dimensionless), stitched relative flux, or background columns.
+stored as dimensionless), legacy stitched relative flux, or background columns.
 
 Cutout provenance must say that 20.44 makes magnitudes commensurable with
 SPOC **on the same unit**. A user mask aperture sum is not SPOC pipeline
@@ -73,9 +73,15 @@ explicitly later.
 
 ### 1.3 Stitching
 
-Sector stitching applies relative normalisation. Pipeline zero points are
-omitted from PhotCal for stitched curves. Passband metadata is kept.
-This approach will be changed shortly. 
+The archive page (`/tess_lc`) does **not** stitch sectors. Retrieve copies
+native pipeline flux from the selected search row. There is no
+`LightCurveCollection.stitch()` path and no `metadata['stitched']` on
+new products.
+
+Older VOTables that still carry `stitched=true` (relative flux
+normalisation) are ingested defensively: PhotCal keeps passband metadata
+and omits pipeline zero points, and magnitude conversion is refused. We
+do not invent zero points for those files. 
 
 ### 1.4 Background
 
@@ -116,8 +122,8 @@ HLSP.
 - other physical units (electron / s) are preserved via
   `serialise_lightkurve_flux_unit`.
 
-`resolve_photcal` in `tess.py` then attaches PhotCal from author, stitch
-flag, and optional TESSMAG collected from product `meta`.
+`resolve_photcal` in `tess.py` then attaches PhotCal from author and
+optional TESSMAG collected from product `meta`.
 
 ### 2.3 Pipeline notes (as implemented)
 

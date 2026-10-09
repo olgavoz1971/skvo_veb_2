@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 from typing import Literal
@@ -338,6 +339,112 @@ def get_cached_fits_path(search_result: lk.SearchResult, row_idx: int) -> str | 
 
     path = _expected_mast_fits_path(search_result, row_idx)
     return path if path and os.path.isfile(path) else None
+
+
+_MAST_FITS_GONE = (
+    "The original MAST FITS file is missing or unreadable. "
+    "Please retrieve the light curve again."
+)
+
+
+def mast_pipeline_fits_pointer(
+    search_result: lk.SearchResult, row_idx: int
+) -> dict[str, str] | None:
+    """Builds a session pointer to a MAST pipeline FITS product.
+
+    FFI/TESScut rows have no mastDownload light-curve product.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result table.
+        row_idx (int): Row index in the search result.
+
+    Returns:
+        dict or None: ``obs_collection``, ``obs_id``, and ``product_filename``,
+        or ``None`` when the row is not a pipeline light-curve FITS.
+
+    Raises:
+        PipeException: When ``row_idx`` is out of range.
+    """
+    if row_idx < 0 or row_idx >= len(search_result):
+        raise PipeException(f"Invalid search row index: {row_idx}")
+    table = search_result.table
+    description = str(table["description"][row_idx]) if "description" in table.colnames else ""
+    if "FFI Cutout" in description:
+        return None
+    row = table[row_idx]
+    return {
+        "obs_collection": str(row["obs_collection"]),
+        "obs_id": str(row["obs_id"]),
+        "product_filename": str(row["productFilename"]),
+    }
+
+
+def _path_from_mast_fits_pointer(pointer: dict[str, str]) -> str:
+    """Resolves a session pointer against the shared Lightkurve cache.
+
+    Args:
+        pointer (dict): Stored ``obs_collection``, ``obs_id``, ``product_filename``.
+
+    Returns:
+        str: Absolute path under ``mastDownload``.
+    """
+    download_dir = get_lightkurve_cache_dir().rstrip("/")
+    return os.path.join(
+        download_dir,
+        "mastDownload",
+        pointer["obs_collection"],
+        pointer["obs_id"],
+        pointer["product_filename"],
+    )
+
+
+def read_cached_mast_pipeline_fits(pointer: dict[str, str] | None) -> tuple[bytes, str]:
+    """Reads original pipeline FITS bytes from the shared MAST cache.
+
+    Args:
+        pointer (dict, optional): Session pointer from the last archive retrieve.
+
+    Returns:
+        tuple: ``(fits_bytes, product_filename)``.
+
+    Raises:
+        PipeException: When the pointer is missing or the file is gone or corrupt.
+    """
+    if not pointer:
+        raise PipeException(
+            "Retrieve a TESS archive light curve before downloading the original MAST FITS."
+        )
+    try:
+        filename = str(pointer["product_filename"])
+        path = _path_from_mast_fits_pointer(pointer)
+    except (KeyError, TypeError) as exc:
+        raise PipeException(_MAST_FITS_GONE) from exc
+
+    if not os.path.isfile(path):
+        raise PipeException(_MAST_FITS_GONE)
+
+    try:
+        from astropy.io import fits
+
+        with open(path, "rb") as handle:
+            payload = handle.read()
+        if not payload:
+            raise PipeException(_MAST_FITS_GONE)
+        with fits.open(io.BytesIO(payload), memmap=False) as hdulist:
+            if len(hdulist) < 1:
+                raise PipeException(_MAST_FITS_GONE)
+    except PipeException:
+        raise
+    except Exception as exc:
+        logger.warning("read_cached_mast_pipeline_fits failed path=%s: %s", path, exc)
+        raise PipeException(_MAST_FITS_GONE) from exc
+
+    logger.info(
+        "Serving cached MAST pipeline FITS name=%s nbytes=%s",
+        filename,
+        len(payload),
+    )
+    return payload, filename
 
 
 def purge_lightkurve_cached_fits(search_result: lk.SearchResult, row_idx: int) -> bool:

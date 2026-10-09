@@ -15,7 +15,9 @@ from skvo_veb.utils.lightkurve_cache import (
     classify_lightkurve_read_failure,
     download_lightcurve_row_with_recovery,
     format_lightkurve_retrieve_error,
+    mast_pipeline_fits_pointer,
     open_lightcurve_product,
+    read_cached_mast_pipeline_fits,
 )
 from skvo_veb.utils.my_tools import PipeException
 
@@ -202,3 +204,108 @@ def test_open_cached_tars_file_when_present():
     lc = open_lightcurve_product(str(path), row_idx=13, author="TARS")
     assert "flux" in lc.colnames
     assert len(lc) > 0
+
+
+class _MiniSearchResult:
+    """Minimal Lightkurve-like search result for pointer tests."""
+
+    def __init__(self, table: Table):
+        self.table = table
+
+    def __len__(self):
+        return len(self.table)
+
+    def _default_download_dir(self):
+        return "/tmp/lightkurve-cache"
+
+
+def _pipeline_search_result(*, ffi: bool = False) -> _MiniSearchResult:
+    """Builds a one-row search table for MAST pointer tests.
+
+    Args:
+        ffi (bool): When true, mark the row as a TESScut FFI product.
+
+    Returns:
+        _MiniSearchResult: Search-like object with one row.
+    """
+    description = "TESS FFI Cutout" if ffi else "Light curves"
+    table = Table(
+        {
+            "description": [description],
+            "obs_collection": ["TESS"],
+            "obs_id": ["tess123"],
+            "productFilename": ["hlsp_example_lc.fits"],
+        }
+    )
+    return _MiniSearchResult(table)
+
+
+def test_mast_pipeline_fits_pointer_skips_ffi():
+    """TESScut FFI rows have no mastDownload pipeline FITS pointer."""
+    assert mast_pipeline_fits_pointer(_pipeline_search_result(ffi=True), 0) is None
+
+
+def test_mast_pipeline_fits_pointer_records_mast_name():
+    """Pipeline rows store the MAST product filename, not a rewritten name."""
+    pointer = mast_pipeline_fits_pointer(_pipeline_search_result(), 0)
+    assert pointer["product_filename"] == "hlsp_example_lc.fits"
+    assert pointer["obs_collection"] == "TESS"
+    assert pointer["obs_id"] == "tess123"
+
+
+def test_read_cached_mast_pipeline_fits_serves_bytes(tmp_path, monkeypatch):
+    """Cached FITS is returned under the original MAST filename."""
+    pointer = mast_pipeline_fits_pointer(_pipeline_search_result(), 0)
+    dest = (
+        tmp_path
+        / "mastDownload"
+        / pointer["obs_collection"]
+        / pointer["obs_id"]
+        / pointer["product_filename"]
+    )
+    dest.parent.mkdir(parents=True)
+    _write_generic_lc_fits(dest, include_flux=True)
+    monkeypatch.setattr(
+        "skvo_veb.utils.lightkurve_cache.get_lightkurve_cache_dir",
+        lambda: str(tmp_path),
+    )
+    payload, filename = read_cached_mast_pipeline_fits(pointer)
+    assert filename == "hlsp_example_lc.fits"
+    assert payload == dest.read_bytes()
+
+
+def test_read_cached_mast_pipeline_fits_missing_asks_retrieve(tmp_path, monkeypatch):
+    """A vanished cache file asks the user to retrieve again."""
+    pointer = mast_pipeline_fits_pointer(_pipeline_search_result(), 0)
+    monkeypatch.setattr(
+        "skvo_veb.utils.lightkurve_cache.get_lightkurve_cache_dir",
+        lambda: str(tmp_path),
+    )
+    with pytest.raises(PipeException, match="Please retrieve"):
+        read_cached_mast_pipeline_fits(pointer)
+
+
+def test_read_cached_mast_pipeline_fits_corrupt_asks_retrieve(tmp_path, monkeypatch):
+    """An unreadable cache file asks the user to retrieve again."""
+    pointer = mast_pipeline_fits_pointer(_pipeline_search_result(), 0)
+    dest = (
+        tmp_path
+        / "mastDownload"
+        / pointer["obs_collection"]
+        / pointer["obs_id"]
+        / pointer["product_filename"]
+    )
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"not a fits file")
+    monkeypatch.setattr(
+        "skvo_veb.utils.lightkurve_cache.get_lightkurve_cache_dir",
+        lambda: str(tmp_path),
+    )
+    with pytest.raises(PipeException, match="Please retrieve"):
+        read_cached_mast_pipeline_fits(pointer)
+
+
+def test_read_cached_mast_pipeline_fits_requires_pointer():
+    """No retrieve pointer is a user-facing error."""
+    with pytest.raises(PipeException, match="Retrieve a TESS archive"):
+        read_cached_mast_pipeline_fits(None)

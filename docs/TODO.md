@@ -26,16 +26,16 @@ give it the next unused ID. When a ticket is done, move its row to
 | 14 | volightcurve: preserve VO column names; UCD-aware export; label/sector ingest | Open |
 | 15 | Calibration stays correct when a page changes the light curve | Open |
 | 16 | TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber) | Open |
-| 17 | TESS archive: stitch calibrated flux or magnitude (not only relative) | Open |
 | 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Open |
 | 19 | TESS photcal: mag column plus absolute flux (Jy) on VOTable export | Open |
 | 20 | TESS search Exptime: ghelp for cadence vs CRM effective time | Open |
-| 21 | Export original TESS pipeline light-curve FITS from the server cache | Open |
 
 ## Done
 
 | ID | Title | Status |
 |----|-------|--------|
+| 21 | Export original TESS pipeline light-curve FITS from the server cache | Done |
+| 17 | TESS archive: remove all stitching from ``/tess_lc`` | Done |
 | 8 | volightcurve owns lightcurve file I/O; preserve metadata on all formats | Done (Phases 0–3) |
 | 6 | Professional busy feedback for long lightcurve uploads (GP + Processor) | Done (unified icons + ? detail) |
 | 5 | Spinners for background-callback long operations | Done (Phases 0–1; Phase 2 waived) |
@@ -2492,141 +2492,55 @@ photometry or silently ignore the error.
 
 ---
 
-## Ticket 17 — TESS archive: stitch calibrated flux or magnitude (not only relative)
+## Ticket 17 — TESS archive: remove all stitching from ``/tess_lc``
 
 **Page:** TESS Lightcurve Tool (`/tess_lc`, `skvo_veb/pages/lightcurve_tess_srv.py`).
 
 **Related:** `skvo_veb/utils/tess_lc_builder.py`
 (``create_lc_from_selected_rows``),
-`skvo_veb/utils/mission_config/tess.py` (``resolve_photcal``,
-``validate_tess_magnitude_conversion``,
-``apply_tess_phot_domain_view``),
+`skvo_veb/utils/mission_config/tess.py` (``resolve_photcal(..., stitched=)``,
+magnitude refusal, export provenance),
+`skvo_veb/utils/lc_bridge.py` (``stitched`` metadata on ingest/export),
 `skvo_veb/tests/test_tess_photcal.py`,
 `skvo_veb/tests/volightcurve/test_tess_export.py`,
-[lightcurve_data_flow.md](lightcurve_data_flow.md) (stitched curves omit
-zero points), Ticket 7 (photcal / domain switch), Ticket 15
-(calibration when the curve changes).
+[lightcurve_data_flow.md](lightcurve_data_flow.md), [tess.md](tess.md) §1.3.
 
 ### Goal
 
-Stitching several selected sectors must be able to produce a **calibrated**
-combined curve in **flux** or **magnitude**, with photcal kept so the
-Magnitude switch and VOTable export remain honest. Today the Stitch switch
-only builds Lightkurve **relative** (median-normalised) flux and then
-strips zero points.
+The archive page **does not stitch**. There is no Stitch switch and there
+must be **no** Lightkurve ``LightCurveCollection.stitch()`` path, no
+``metadata['stitched']`` written by retrieve/rePlot, and no remaining
+``if stitch`` / relative-flux branch on this page.
 
-### Why this ticket exists
+Retrieve one search row (table is already ``singleRow``). Keep native
+pipeline flux and photcal (SPOC e⁻ s⁻¹, QLP/TARS ``TESSMAG``, etc.).
 
-``LightCurveCollection.stitch()`` divides each sector by its median. The
-builder then stores ``flux_unit='relative flux'``,
-``metadata['stitched']=True``, and ``resolve_photcal(..., stitched=True)``
-returns **passband only**. Magnitude conversion is refused
-(``validate_tess_magnitude_conversion``). Export omits ``zeroPointFlux`` /
-``zeroPointReferenceMagnitude`` because stitching “invalidates pipeline
-flux calibration”.
+### Why the old ticket was rewritten
 
-That is correct for **relative** stitch. It is the wrong product if the
-user wants one multi-sector curve on the SPOC e⁻ s⁻¹ scale or in TESS
-magnitudes. Photcal for **unstitched** SPOC and QLP (``TESSMAG``) is
-already in place; multi-row retrieve **without** Stitch already
-concatenates native flux and keeps zero points. Stitch has not caught up.
+The previous goal (calibrated stitch modes: relative flux / calibrated
+flux / calibrated magnitude) is **cancelled**. We will not add stitch
+options. Cleanup only.
 
-### Current behaviour (do not re-derive)
+### Done
 
-| Stitch switch | Combine | Photcal ZPs | Magnitude view |
-|---------------|---------|-------------|----------------|
-| Off, several rows | Hand-rolled ``np.concatenate`` on ``jd`` / ``flux`` / ``flux_err`` | Kept (SPOC / QLP ``TESSMAG``) | Allowed when ZPs exist |
-| On | **Yes: original Lightkurve** ``LightCurveCollection.stitch()`` (default ``corrector_func=lambda x: x.normalize()``, then Astropy ``vstack``) | Stripped | Refused |
-
-Lightkurve ``stitch()`` itself is **not** multiprocessing: it is a list
-comprehension plus ``vstack``. The parallelism to kill is **ours**.
-
-**Duplicated join paths (must be removed in this ticket).**
-``create_lc_from_selected_rows`` has two independent combine
-implementations behind ``if stitch``. Do not add a third (calibrated mag)
-beside them. Collapse to **one** join. Relative vs calibrated is only the
-per-sector corrector (median-normalise, identity, or photcal mag), then
-the same stack.
-
-**Split even inside the stitch branch.** Time/flux/error come from
-``lc_res`` after ``stitch()``; the sector ``label`` column is built from
-the **original** ``lc_list`` lengths. Those two series can disagree if
-``vstack(..., join_type="inner")`` drops rows. One join must emit time,
-flux, error, and sector together.
-
-Background / mixed flux-column selections already force author default
-flux on multi-row retrieve. Mixed pipeline authors already fail some
-unit combinations.
-
-### Policy to agree before code (Phase 0)
-
-Prefer **an option**, not a silent replacement of relative stitch.
-Relative stitch remains useful when sector medians differ (crowding,
-systematics) and only the shape matters.
-
-Proposed stitch modes (British English labels):
-
-1. **Relative flux** — current Lightkurve ``stitch()`` (default until
-   the developer says otherwise).
-2. **Calibrated flux** — concatenate native pipeline flux; keep photcal;
-   ``stitched`` may still mean “several sectors joined” but must **not**
-   imply “ZPs invalid”.
-3. **Calibrated magnitude** — convert each sector with existing photcal,
-   then concatenate in mag; keep photcal; ``active_domain`` magnitude.
-
-Phase 0 must also **consider rejecting Lightkurve ``LightCurveCollection`` /
-``stitch()`` / ``vstack`` as the join engine**. We already hold per-sector
-arrays (and photcal) before that call, then unpack ``time`` / ``flux`` /
-``flux_err`` again for ``CurveDash``. Squeezing into a Lightkurve
-Collection and back out is extra cost and extra impedance. Prefer one
-join on the arrays we already have (Astropy ``Table`` / NumPy), and use
-Lightkurve only for ``normalize()`` if relative stitch still needs it.
-Decide this before writing a third wrapper around Collection.
-
-``metadata['stitched']`` today means “relative stitch, no ZP”. If
-calibrated join is added, split the flag (e.g. ``stitch_mode``) so export
-and mag conversion no longer treat every stitched curve as uncalibrated.
-
-### Locked constraints (when asked to code)
-
-1. Math stays in Astropy / existing ``PhotCal`` conversion (and Lightkurve
-   ``normalize`` only if Phase 0 keeps relative median-normalise).
-   **Do not assume** ``LightCurveCollection.stitch()`` remains the join.
-   Phase 0 may drop Collection entirely. No second ``np.concatenate``
-   loop beside whatever join is chosen.
-2. Pages do not implement equations; keep the join in
-   ``tess_lc_builder`` / ``mission_config/tess.py``.
-2a. **No parallel combine code.** One helper for all stitch modes. Sector
-   labels must come from the same stacked result as the photometry.
-3. Fail fast. Incomplete photcal → refuse calibrated mag stitch.
-4. Ticket 7 / 12: domain switch must not invent ZPs.
-5. British English in new UI strings (e.g. “Relative flux”,
-   “Calibrated flux”, “Calibrated magnitude”).
-6. Update tests that assume stitched ⇒ no ZPs / no mag
-   (``test_tess_photcal``, ``test_tess_export``) so they apply only to
-   **relative** stitch.
-7. Update ``docs/lightcurve_data_flow.md`` stitch paragraph.
-
-### Out of scope
-
-- TESS cutout page (aperture LC, not archive stitch).
-- Ticket 16 download locking.
-- Changing Lightkurve’s default ``stitch()`` corrector globally.
-- Inventing a cross-pipeline flux scale for mixed SPOC+QLP.
+- Plot-tab **Stitch curves** switch and Flux-options collapse (earlier).
+- ``tess_lc_builder``: no ``.stitch()``, no ``stitch`` argument, no
+  ``relative flux`` unit, no ``lcd.metadata['stitched']``.
+- Archive builder calls ``resolve_photcal(authors, tess_mag=...)`` only.
+- ``lc_bridge`` / ``tess.py`` still ingest old ``stitched=true`` VOTables
+  and refuse magnitude without inventing zero points.
+- Docs: ``lightcurve_data_flow.md``, ``tess.md`` §1.3.
 
 ### Agent checklist
 
-- [ ] No code until Phase 0 (replace vs option, flag naming, keep or drop Lightkurve Collection join) is agreed.
-- [ ] Single join path; delete the parallel ``np.concatenate`` / ``stitch()`` pair.
-- [ ] Stitch UI: relative remains; calibrated flux and/or mag added.
-- [ ] Photcal and Magnitude switch work for calibrated joins.
-- [ ] Relative stitch still omits ZPs and still refuses mag.
-- [ ] Export provenance text matches the actual stitch mode.
-- [ ] Tests split relative vs calibrated stitch.
+- [x] Delete ``LightCurveCollection.stitch()`` and all ``stitch`` arguments
+      from the archive retrieve/rePlot path.
+- [x] Stop writing ``metadata['stitched']`` from ``/tess_lc``.
+- [x] Update photcal/export tests and docs; do not add stitch-mode tests.
 
 ### Status
 
-**Open.** Phase 0 discussion first. No code.
+**Done.** Product: no stitch on ``/tess_lc``.
 
 ---
 
@@ -2732,7 +2646,7 @@ photcal.
 **Related:** [tess.md](tess.md) §1, `skvo_veb/utils/mission_config/tess.py`,
 sibling ``volightcurve`` ``PhotCal`` / VOTable photcal GROUP, Ticket 7
 (photcal policy; do not invent zeropoints), Ticket 12 (domain conversion
-validation), Ticket 17 (calibrated stitch — separate).
+validation), Ticket 17 (no stitch on ``/tess_lc`` — separate).
 
 ### Goal
 
@@ -2768,7 +2682,7 @@ changes).
 2. Do not invent a jansky zeropoint, a second photcal helper, or a dual-column
    export layout in passing while working on other TESS tickets.
 3. Do not treat this as a silent extension of Ticket 7 Phase 2 (calibration
-   editor) or Ticket 17 (stitch modes).
+   editor) or Ticket 17 (stitch removal).
 4. Fail-fast / no silent fallbacks still apply when this is eventually
    specified.
 
@@ -2856,21 +2770,23 @@ Recorded only so it is not “discovered” later as an obvious sibling
 feature. Flag: **doubtfully reasonable**. Leave it closed unless the
 developer explicitly reopens it.
 
-### Locked for now
+### Locked (shipped)
 
-1. **No UI and no download code** until asked.
-2. Do not invent a cache-busting public URL, zip-all-sectors button, or a
-   second export format beside the existing CurveDash exporters.
-3. Do not treat this as a substitute for Ticket 19 (Jy photcal) or Ticket 8
-   (volightcurve I/O).
-4. Cutout pixel FITS download stays out of scope (doubtful extra above).
+1. Existing **Download** is the working ``CurveDash`` product (VOTable /
+   ASCII). **Download MAST FITS** is an extra archive copy.
+2. No public URL, no zip, no FITS bytes in the session cache (pointer
+   only: ``obs_collection``, ``obs_id``, ``product_filename``).
+3. Missing or unreadable shared Lightkurve/MAST file: ask the user to
+   retrieve again. Cutout pixel FITS stay out of scope.
 
 ### Agent checklist
 
-- [ ] No implementation until asked.
-- [ ] When opened: discuss which retrieved product(s) may be offered, and
-      that cutout FITS remain unavailable.
+- [x] Discussed: original MAST FITS vs issued VO product; cutout out of
+      scope.
+- [x] **Download MAST FITS** on ``/tess_lc`` Plot tab; original MAST
+      filename; pointer in session cache; fail-fast if the FITS is gone.
 
 ### Status
 
-**Open.** Backlog only. Discussion later.
+**Done.** Advanced users can download the pipeline FITS from the shared
+MAST cache after Retrieve. Cutout FITS download remains closed.

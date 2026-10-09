@@ -39,7 +39,7 @@ def _tess_mag_from_lightkurve_list(lc_list) -> float | None:
     """Collects a single ``TESSMAG`` reference from downloaded Lightkurve products.
 
     QLP (and related) pipelines store target catalogue magnitude in FITS header
-    metadata as ``TESSMAG``. When several sectors are combined unstitched, values
+    metadata as ``TESSMAG``. When several products are concatenated, values
     should agree; a warning is logged when they differ.
 
     Args:
@@ -156,7 +156,7 @@ def _sector_from_lightcurve(lc, row: dict | None = None) -> int | None:
     return None
 
 
-def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list, stitch: bool) -> str:
+def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list) -> str:
     """Chooses a serialised flux-unit label for the combined light curve.
 
     Args:
@@ -164,15 +164,11 @@ def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list, stit
         flux_methods (list): Flux selection per sector (may repeat).
         is_background_flags (list): Whether each sector uses a background column.
         lc_list (list): Downloaded Lightkurve products.
-        stitch (bool): Whether sectors were stitched.
 
     Returns:
         str: Flux unit string for ``CurveDash`` metadata.
     """
     from skvo_veb.utils.tess_flux_column_registry import UNIT_DIMENSIONLESS
-
-    if stitch:
-        return "relative flux"
 
     if len(set(authors)) == 1:
         return archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
@@ -187,7 +183,6 @@ def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list, stit
 def create_lc_from_selected_rows(
     selected_rows,
     table_data,
-    stitch,
     flux_method,
     metadata,
     phase_view=False,
@@ -197,13 +192,12 @@ def create_lc_from_selected_rows(
 ) -> str:
     """Builds a serialised CurveDash payload from selected TESS search rows.
 
-    Retrieves Lightkurve lightcurves for the selected table rows, optionally
-    stitches them, and stores the result in flux domain without domain conversion.
+    Retrieves Lightkurve lightcurves for the selected table rows and stores
+    native pipeline flux without sector stitching or domain conversion.
 
     Args:
         selected_rows: Selected AgGrid row indices or row dicts.
         table_data: Full AgGrid row data when indices are supplied.
-        stitch (bool): Whether to stitch sectors into one continuous curve.
         flux_method (str): ``default``, ``background``, or a registry flux column name.
         metadata (dict): Target metadata including optional ``lookup_name``.
         phase_view (bool, optional): Initial folded-view flag.
@@ -282,35 +276,24 @@ def create_lc_from_selected_rows(
         is_background_flags.append(is_background)
         lc_list.append(lc)
 
-    if stitch:
-        lc_res = lk.LightCurveCollection(lc_list).stitch()
-        jd = lc_res.time.value
-        flux = lc_res.flux.value
-        flux_err = lc_res.flux_err.value
+    jd = np.array([], dtype=float)
+    flux = np.array([], dtype=float)
+    flux_err = np.array([], dtype=float)
+    sector_array = np.array([], dtype=np.uint8)
+    for lc_item in lc_list:
+        flux = np.concatenate([flux, lc_item.flux.value])
+        flux_err = np.concatenate([flux_err, lc_item.flux_err.value])
+        jd = np.concatenate([jd, lc_item.time.value])
         sector_array = np.concatenate([
-            np.full(len(lc_item), lc_item.SECTOR, dtype=np.uint8)
-            for lc_item in lc_list
+            sector_array,
+            np.full_like(lc_item.time.value, fill_value=lc_item.SECTOR, dtype=np.uint8),
         ])
-        flux_unit = 'relative flux'
-    else:
-        jd = np.array([], dtype=float)
-        flux = np.array([], dtype=float)
-        flux_err = np.array([], dtype=float)
-        sector_array = np.array([], dtype=np.uint8)
-        for lc_item in lc_list:
-            flux = np.concatenate([flux, lc_item.flux.value])
-            flux_err = np.concatenate([flux_err, lc_item.flux_err.value])
-            jd = np.concatenate([jd, lc_item.time.value])
-            sector_array = np.concatenate([
-                sector_array,
-                np.full_like(lc_item.time.value, fill_value=lc_item.SECTOR, dtype=np.uint8),
-            ])
-        flux_unit = _resolve_flux_unit(
-            authors, flux_methods_applied, is_background_flags, lc_list, stitch=False
-        )
+    flux_unit = _resolve_flux_unit(
+        authors, flux_methods_applied, is_background_flags, lc_list
+    )
 
     tess_mag = _tess_mag_from_lightkurve_list(lc_list)
-    photcal_meta = resolve_photcal(authors, stitched=stitch, tess_mag=tess_mag)
+    photcal_meta = resolve_photcal(authors, tess_mag=tess_mag)
     tars_period = None
     tars_epoch_jd = None
     if is_tars_pipeline(authors):
@@ -359,15 +342,11 @@ def create_lc_from_selected_rows(
         lcd.metadata['tars_period_days'] = tars_period
     if tars_epoch_jd is not None:
         lcd.metadata['tars_epoch_jd'] = tars_epoch_jd
-    if stitch:
-        lcd.metadata['stitched'] = True
 
     title = (
         f'{lcd.lookup_name} {lc_list[0].LABEL} sector: {",".join(sectors)} '
         f'author: {",".join(authors)} methods: {",".join(flux_origins)}'
     )
-    if stitch:
-        title = 'Stitched curve ' + title
     lcd.title = title
     lcd.metadata['title'] = title
     attach_tess_archive_export_provenance(lcd)

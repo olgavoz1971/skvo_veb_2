@@ -70,15 +70,17 @@ from skvo_veb.utils.lc_interaction import (
     trim_curvedash_from_selection_bounds,
 )
 from skvo_veb.utils.lc_session_cache import (
+    clear_page_blob,
     generate_user_tab_id,
     has_cached_lc,
+    read_page_blob,
     read_serialized_lc,
+    write_page_blob,
     write_serialized_lc,
 )
 from skvo_veb.utils.tess_lc_builder import (
     create_lc_from_selected_rows,
     effective_flux_method_for_selection,
-    flux_radio_options_for_rows,
 )
 from skvo_veb.utils.tess_flux_column_registry import FLUX_METHOD_DEFAULT
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
@@ -101,8 +103,64 @@ register_page(__name__, name='TESS curve',
               in_navbar=True)
 
 TESS_LC_SRV_NAMESPACE = 'tess_lc_srv'
+TESS_MAST_FITS_POINTER_BLOB = 'mast_fits_pointer'
+
+
+def _selected_search_row_index(selected_rows, table_data) -> int | None:
+    """Returns the search-table ``#`` of the single selected row.
+
+    Args:
+        selected_rows: AgGrid selection (row dicts or indices).
+        table_data: Full table rows when selection is by index.
+
+    Returns:
+        int or None: Search-result row index, or ``None`` when nothing is selected.
+    """
+    if not selected_rows:
+        return None
+    if isinstance(selected_rows[0], dict):
+        row = selected_rows[0]
+    else:
+        if not table_data:
+            return None
+        row = table_data[selected_rows[0]]
+    index = row.get('#')
+    return None if index is None else int(index)
+
+
+def remember_retrieved_mast_fits_pointer(
+    user_tab_id: str | None,
+    selected_rows,
+    table_data,
+    search_store,
+) -> None:
+    """Stores or clears the MAST FITS pointer after a retrieve or rePlot.
+
+    Args:
+        user_tab_id (str, optional): Session tab id.
+        selected_rows: Current AgGrid selection.
+        table_data: Full AgGrid row data.
+        search_store: Serialised Lightkurve search result.
+    """
+    if not user_tab_id:
+        return
+    row_idx = _selected_search_row_index(selected_rows, table_data)
+    pointer = None
+    if search_store and row_idx is not None:
+        search_result = tess_lc_search.restore_search_result(search_store)
+        pointer = lightkurve_cache.mast_pipeline_fits_pointer(search_result, row_idx)
+    if pointer:
+        write_page_blob(
+            TESS_LC_SRV_NAMESPACE,
+            user_tab_id,
+            TESS_MAST_FITS_POINTER_BLOB,
+            pointer,
+        )
+        return
+    clear_page_blob(TESS_LC_SRV_NAMESPACE, user_tab_id, TESS_MAST_FITS_POINTER_BLOB)
 
 label_font_size = '0.8em'
+group_label_font_size = '1.0em'
 switch_label_style = {'display': 'inline-block', 'padding': '2px', 'font-size': label_font_size}
 switch_label_style_vert = {'display': 'block', 'padding': '2px', 'font-size': label_font_size}
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
@@ -127,7 +185,8 @@ def layout():
                         dbc.Stack([
                             dbc.Label('Object', html_for='obj_name_tess_lc_srv_input', style={'width': '7em'}),
                             dcc.Input(id='obj_name_tess_lc_srv_input', persistence=True, type='search',
-                                      style={'flexGrow': '1', 'width': 'auto'}),
+                                    style={'width': '100%'}),
+                                    #   style={'flexGrow': '1', 'width': 'auto'}),
                             dbc.Button('Resolve', id='resolve_tess_lc_srv_button', size='sm', style={'whiteSpace': 'nowrap'}),
                         ], direction='horizontal', gap=2, style={'marginBottom': '5px'}),
                         dbc.Stack([
@@ -180,9 +239,9 @@ def layout():
                                 html.Div([
                                     html.H3("Search results", id="table_tess_lc_srv_header"),
                                     dbc.Stack([
-                                        dbc.Button('Retrieve curves', id='download_tess_lc_srv_button', size="sm",
+                                        dbc.Button('Retrieve curve', id='download_tess_lc_srv_button', size="sm",
                                                    className="me-2"),
-                                        dbc.Button('Reretrieve', id='purge_redownload_tess_lc_srv_button',
+                                        dbc.Button('ReRetrieve', id='purge_redownload_tess_lc_srv_button',
                                                    size="sm", outline=True, color='warning', className="me-2"),
                                         dbc.Button('Cancel', id='cancel_download_tess_lc_srv_button', size="sm",
                                                    disabled=True),
@@ -244,23 +303,6 @@ def layout():
             dbc.Tab(label='Plot', children=[
                 dbc.Row([
                     dbc.Col([
-                        html.Details([
-                            html.Summary('Flux options', style={'font-size': label_font_size}),
-                            # region fold_it
-                            dcc.RadioItems(  # type : ignore
-                                id='flux_tess_lc_srv_switch',
-                                options=[],   # type: ignore
-                                value=FLUX_METHOD_DEFAULT,
-                                labelStyle=switch_label_style,
-                            ),
-                            # flux type radio
-                            dbc.Switch(
-                                id='stitch_switch_tess_lc_srv', label='Stitch curves', value=False,
-                                label_style=switch_label_style,
-                                persistence=True
-                            ),  # todo: add callback fired by stitch switch toggle, check it with user curve added
-                            # endregion
-                        ], style={'marginBottom': '5px'}),  # Flux options
                         dbc.Switch(
                             id='mag_view_tess_lc_srv_switch',
                             label='Magnitude',
@@ -287,8 +329,46 @@ def layout():
                         ),
                         dbc.Button('rePlot Curve', id='recreate_selected_tess_lc_srv_button', size="sm",
                                    style={'width': '100%', 'marginBottom': '5px'}),
+                        html.Div(
+                            [
+                                html.Label('Export', 
+                                    style={'display': 'block', 'padding': '2px', 
+                                        'font-size': group_label_font_size}),
+                                # className='tess-lc-srv-section-label'),
+                                html.Div(
+                                    [
+                                        dbc.Select(
+                                            options=EXPORT_FORMAT_OPTIONS,
+                                            value=DEFAULT_EXPORT_FORMAT,
+                                            id='select_tess_lc_srv_format',
+                                            className='tess-lc-srv-export-format',
+                                        ),
+                                        dbc.Button(
+                                            'Download',
+                                            id='btn_download_tess_lc_srv',
+                                            color='primary',
+                                            size='sm',
+                                            className='tess-lc-srv-export-download',
+                                        ),
+                                    ],
+                                    className='tess-lc-srv-export-row',
+                                ),
+                                dbc.Button(
+                                    'Download MAST FITS',
+                                    id='btn_download_tess_lc_srv_mast_fits',
+                                    color='primary',
+                                    size='sm',
+                                    className='w-100',
+                                    disabled=True,
+                                ),
+                            ],
+                            className='tess-lc-srv-export-block',
+                        ),
+                        dbc.Button('Trim selected', id='trim_tess_lc_srv_button', size='sm',
+                                   style={'width': '100%', 'marginBottom': '5px'}),
+                        
                         html.Details([
-                            html.Summary('Folding', style={'font-size': label_font_size}),
+                            html.Summary('Folding', style={'font-size': group_label_font_size}),
                             dbc.Stack([
                                 dbc.Label('Period:',
                                           style={'width': '7em', 'font-size': label_font_size}),
@@ -308,7 +388,6 @@ def layout():
                                           pattern=float_pattern,
                                           style={'width': '100%'},
                                           ),
-
                             ], direction='horizontal', gap=2, style={'width': '100%', 'min-width': '5ch'}),
                             dbc.Stack([
                                 dbc.Switch(id='fold_tess_lc_srv_switch', label='Fold', value=False,
@@ -319,22 +398,10 @@ def layout():
                             ], direction='horizontal', gap=2),
                             dbc.Button('Shift to min', size='sm', id='shift_epoch_btn_tess_lc_srv',
                                        style={'width': '100%'})
-                        ], open=True, style={'marginBottom': '5px'}),  # Folding
-                        dbc.Button('Trim selected', id='trim_tess_lc_srv_button', size='sm',
-                                   style={'width': '100%', 'marginBottom': '5px'}),
-                        dbc.Stack([
-                            dbc.Select(
-                                options=EXPORT_FORMAT_OPTIONS,
-                                value=DEFAULT_EXPORT_FORMAT,
-                                id='select_tess_lc_srv_format',
-                                style={'width': '40%', 'font-size': label_font_size}
-                            ),
-                            dbc.Button('Download', id='btn_download_tess_lc_srv', size="sm",
-                                       style={'width': '60%'}),
-                        ], direction='horizontal', gap=2,
-                            style={'width': '100%', 'min-width': '5ch', 'marginBottom': '5px'}),
+                        ], open=False, style={'marginBottom': '5px'}),  # Folding
+                        
                         html.Details([
-                            html.Summary('Periodogram', style={'font-size': label_font_size}),
+                            html.Summary('Periodogram', style={'font-size': group_label_font_size}),
                             dcc.RadioItems(
                                 id='period_freq_tess_lc_srv_switch',
                                 options=[
@@ -497,8 +564,9 @@ def layout():
         dcc.Store(id='store_tess_periodogram_result_lc_srv', **SESSION_STORE),
         dcc.Store(id='store_resolved_coords_tess_lc_srv', **SESSION_STORE),
         dcc.Download(id='download_tess_lc_srv_lightcurve'),
+        dcc.Download(id='download_tess_lc_srv_mast_fits'),
     ],
-        className="g-10", fluid=True, style={'display': 'flex', 'flexDirection': 'column'})
+        className="g-10 tess-lc-srv-page", fluid=True, style={'display': 'flex', 'flexDirection': 'column'})
     return page_layout
 
 
@@ -789,42 +857,6 @@ def restore_lc_srv_search_table(search_store, current_rows):
 
 
 @callback(
-    Output('flux_tess_lc_srv_switch', 'options'),
-    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
-    Input('data_tess_lc_srv_table', 'selectedRows'),
-    State('data_tess_lc_srv_table', 'rowData'),
-    State('store_tess_lc_search_result', 'data'),
-    State('flux_tess_lc_srv_switch', 'value'),
-    prevent_initial_call=True,
-)
-def update_flux_radio_options(selected_rows, table_data, search_store, current_value):
-    """Updates flux-column radio choices from registry metadata for the selection."""
-    if not selected_rows:
-        raise PreventUpdate
-    options = flux_radio_options_for_rows(selected_rows, table_data, search_store)
-    if not options:
-        raise PreventUpdate
-    multi_row = len(selected_rows) > 1
-    if multi_row:
-        return options, FLUX_METHOD_DEFAULT
-    allowed = {opt['value'] for opt in options}
-    if current_value in allowed:
-        return options, dash.no_update
-    return options, FLUX_METHOD_DEFAULT
-
-
-@callback(
-    Output('flux_tess_lc_srv_switch', 'options', allow_duplicate=True),
-    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
-    Input('store_tess_lc_search_result', 'data'),
-    prevent_initial_call=True,
-)
-def reset_flux_on_new_search(_search_store):
-    """Resets flux choice when a new MAST search replaces the sector table."""
-    return [], FLUX_METHOD_DEFAULT
-
-
-@callback(
     Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
     Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
     Input('store_user_tab_id_tess_lc_srv', 'data'),
@@ -857,7 +889,7 @@ def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXI
         display_epoch=jd0,
         phase_view=phase_view,
         time_axis_mode=time_axis_mode or TIME_AXIS_MJD,
-        color_by_label=True,
+        color_by_label=False,
     )
 
 
@@ -886,8 +918,6 @@ def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXI
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
         selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
-        stitch=State('stitch_switch_tess_lc_srv', 'value'),
-        flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
         search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
@@ -896,7 +926,7 @@ def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXI
     ),
     prevent_initial_call=True
 )
-def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, stitch, flux_method, metadata,
+def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, metadata,
                            search_store, phase_view, period, epoch):
     if n_clicks is None:
         raise PreventUpdate
@@ -906,12 +936,23 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, sti
         epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
         epoch = epoch_abs if epoch_abs is not None else epoch
         flux_method = effective_flux_method_for_selection(
-            selected_rows, table_data, flux_method
+            selected_rows, table_data, FLUX_METHOD_DEFAULT
         )
-        lc = create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata,
-                                          phase_view, period, epoch, search_store=search_store)
+        lc = create_lc_from_selected_rows(
+            selected_rows,
+            table_data,
+            flux_method,
+            metadata,
+            phase_view,
+            period,
+            epoch,
+            search_store=search_store,
+        )
         # write it to server user cache
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
+        remember_retrieved_mast_fits_pointer(
+            user_tab_id, selected_rows, table_data, search_store
+        )
 
         set_props('div_tess_lc_srv_alert', {'children': None})
         output = {'lc': str(uuid.uuid4())}  # trigger dependent callbacks
@@ -1451,8 +1492,6 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
         selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
-        stitch=State('stitch_switch_tess_lc_srv', 'value'),
-        flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
         search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
@@ -1462,7 +1501,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
              (Output('cancel_download_tess_lc_srv_button', 'disabled'), False, True)],
     cancel=[Input('cancel_download_tess_lc_srv_button', 'n_clicks')],
     prevent_initial_call=True)
-def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, stitch, flux_method, metadata,
+def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, metadata,
                                search_store, phase_view):
     """
     This method checks for the presence of light curves in the local cache.
@@ -1489,12 +1528,19 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         # Store the loaded light curve into dcc.Store
         # Store a loaded light curve on the server side in the DiskCache instead
         flux_method = effective_flux_method_for_selection(
-            selected_rows, table_data, flux_method
+            selected_rows, table_data, FLUX_METHOD_DEFAULT
         )
         payload = create_lc_from_selected_rows(
-            selected_rows, table_data, stitch, flux_method, metadata, search_store=search_store
+            selected_rows,
+            table_data,
+            flux_method,
+            metadata,
+            search_store=search_store,
         )
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, payload)
+        remember_retrieved_mast_fits_pointer(
+            user_tab_id, selected_rows, table_data, search_store
+        )
         lcd_built = CurveDash.from_serialized(payload)
         if lcd_built.metadata.get('tars_period_days') is not None and lcd_built.period is not None:
             output['period_val'] = lcd_built.period
@@ -1504,7 +1550,7 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         # Return a new UUID to ensure the dcc.Store value always changes.
         # This triggers dependent callbacks even if no other data is updated.
         output['lightcurve'] = str(uuid.uuid4())  # returns a string → JSON-serializable
-        # output['lightcurve'] = create_lc_from_selected_rows(selected_rows, table_data, stitch, flux_method, metadata)
+        # output['lightcurve'] = create_lc_from_selected_rows(selected_rows, table_data, flux_method, metadata)
 
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'
@@ -1574,6 +1620,64 @@ def download_to_user_tess_lc_srv_lightcurve(n_clicks, user_tab_id, table_format,
         ret = dash.no_update
 
     return ret
+
+
+@callback(
+    Output('btn_download_tess_lc_srv_mast_fits', 'disabled'),
+    Input('store_tess_lightcurve_lc_srv', 'data'),
+    Input('store_user_tab_id_tess_lc_srv', 'data'),
+)
+def toggle_tess_lc_srv_mast_fits_button(_revision, user_tab_id):
+    """Enables Download MAST FITS when a retrieve pointer is in the session cache.
+
+    Args:
+        _revision: Plot-store revision token (dependency only).
+        user_tab_id (str, optional): Session tab id.
+
+    Returns:
+        bool: ``True`` when no MAST FITS pointer is stored.
+    """
+    pointer = read_page_blob(
+        TESS_LC_SRV_NAMESPACE, user_tab_id, TESS_MAST_FITS_POINTER_BLOB
+    )
+    return pointer is None
+
+
+@callback(
+    Output('download_tess_lc_srv_mast_fits', 'data'),
+    Input('btn_download_tess_lc_srv_mast_fits', 'n_clicks'),
+    State('store_user_tab_id_tess_lc_srv', 'data'),
+    prevent_initial_call=True,
+)
+def download_tess_lc_srv_mast_fits(n_clicks, user_tab_id):
+    """Sends the original MAST pipeline FITS from the shared Lightkurve cache.
+
+    Args:
+        n_clicks (int): Button click count.
+        user_tab_id (str, optional): Session tab id holding the filename pointer.
+
+    Returns:
+        dict | dash.no_update: Dash download payload.
+
+    Raises:
+        PreventUpdate: When the button was not clicked.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    try:
+        pointer = read_page_blob(
+            TESS_LC_SRV_NAMESPACE, user_tab_id, TESS_MAST_FITS_POINTER_BLOB
+        )
+        payload, filename = lightkurve_cache.read_cached_mast_pipeline_fits(pointer)
+        set_props('div_tess_lc_srv_alert', {'children': None})
+        return dcc.send_bytes(payload, filename)
+    except Exception as exc:
+        logger.warning('tess_lc.download_tess_lc_srv_mast_fits: %s', exc)
+        set_props(
+            'div_tess_lc_srv_alert',
+            {'children': status_alert(str(exc), 'warning')},
+        )
+        return dash.no_update
 
 
 # @callback(Output('period_tess_lc_srv_input', 'value', allow_duplicate=True),
@@ -1744,6 +1848,10 @@ def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_ta
             user_tab_id = generate_user_tab_id()
             output['user_tab_id'] = user_tab_id
         write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
+        if not append:
+            clear_page_blob(
+                TESS_LC_SRV_NAMESPACE, user_tab_id, TESS_MAST_FITS_POINTER_BLOB
+            )
         output['lightcurve'] = str(uuid.uuid4())
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'

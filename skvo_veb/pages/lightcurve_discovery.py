@@ -599,7 +599,7 @@ def _search_results_panel():
                                         className='me-2',
                                     ),
                                     dbc.Button(
-                                        'Reretrieve',
+                                        'ReRetrieve',
                                         id='lc_discovery_refetch_button',
                                         size='sm',
                                         outline=True,
