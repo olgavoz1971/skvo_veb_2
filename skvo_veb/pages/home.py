@@ -26,6 +26,6 @@ def layout():
         SIMBAD-resolved names, display their light curves in different passband and show parameters from GAIA 
         catalogues.
          
-        To search an object by the name or coordinates, go to the [search page](/igebc/search)
+        To search an object by the name or coordinates, go to the [search page](/igebc/lc_discovery)
         '''),
     ], className="g-0", fluid=True)
