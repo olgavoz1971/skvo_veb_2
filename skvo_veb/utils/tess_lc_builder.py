@@ -155,6 +155,92 @@ def _sector_from_lightcurve(lc, row: dict | None = None) -> int | None:
     return None
 
 
+_COLUMN_INFO_PREFIX = "tess_lc_column_info"
+
+
+def _column_info_key(search_result, row_idx) -> dict:
+    """Builds the shared-cache key of one search row's product.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result.
+        row_idx (int): Row index (the ``#`` column value).
+
+    Returns:
+        dict: Key fields that identify the MAST product file.
+    """
+    row = search_result.table[row_idx]
+    return {
+        "obs_collection": str(row["obs_collection"]),
+        "obs_id": str(row["obs_id"]),
+        "product": str(row["productFilename"]),
+    }
+
+
+def remember_column_info(search_result, row_idx, lc) -> dict:
+    """Stores the column names and default flux column of a product in the shared cache.
+
+    Later row selections read this small record instead of opening the FITS.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result.
+        row_idx (int): Row index (the ``#`` column value).
+        lc: Lightkurve ``LightCurve`` as read, before any flux selection.
+
+    Returns:
+        dict: ``{"colnames": list[str], "default_origin": str}``.
+    """
+    info = {
+        "colnames": [str(c) for c in lc.columns],
+        "default_origin": resolve_default_flux_origin(lc),
+    }
+    cache.save(info, _COLUMN_INFO_PREFIX, **_column_info_key(search_result, row_idx))
+    return info
+
+
+def load_column_info(search_result, row_idx) -> dict | None:
+    """Reads the shared-cache column record of a product.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result.
+        row_idx (int): Row index (the ``#`` column value).
+
+    Returns:
+        dict or None: Record written by ``remember_column_info``, or ``None``.
+    """
+    return cache.load(_COLUMN_INFO_PREFIX, **_column_info_key(search_result, row_idx))
+
+
+def _absolute_jd_from_lightcurve(lc) -> tuple[np.ndarray, str, str | None]:
+    """Converts the product time axis to absolute Julian Date.
+
+    ``TESS_TIMEORIGIN`` is added only when the Lightkurve time is BTJD. For any
+    other format the absolute JD of the astropy ``Time`` is used. A warning
+    is returned when the format is not BTJD or the scale is not TDB.
+
+    Args:
+        lc: Lightkurve ``LightCurve`` instance.
+
+    Returns:
+        tuple: ``(jd, timescale, warning)`` where ``warning`` is ``None`` when
+        the time system is the expected BTJD / TDB.
+    """
+    time = lc.time
+    fmt = str(getattr(time, 'format', '')).lower()
+    scale = str(getattr(time, 'scale', '')).lower()
+    if fmt == 'btjd':
+        jd = np.asarray(time.value, dtype=float) + TESS_TIMEORIGIN
+    else:
+        jd = np.asarray(time.jd, dtype=float)
+    warning = None
+    if fmt != 'btjd' or scale != 'tdb':
+        warning = (
+            f"Unexpected time system in the product: format '{fmt}', scale '{scale}' "
+            "(expected BTJD, TDB). Times are converted to absolute JD as given."
+        )
+        logger.warning(warning)
+    return jd, scale or None, warning
+
+
 def create_lc_from_selected_rows(
     selected_rows,
     table_data,
@@ -210,20 +296,20 @@ def create_lc_from_selected_rows(
     row_idx = row['#']
     if full_search is not None:
         lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row_idx)
+        remember_column_info(full_search, row_idx, lc)
     else:
         target = f'TIC {row.get("target", None)}'
         author = row["author"]
         exptime = row["exptime"]
         sector = parse_sector_from_mission_label(row.get('mission', ''))
-        if sector is None:
-            sector = -1
         args = {
             'target': target,
             'author': author,
             'mission': 'TESS',
-            'sector': sector,
             'exptime': exptime,
         }
+        if sector is not None:
+            args['sector'] = sector
         search_lcf_refined = cache.load("search_lcf_refined", **args)
         if search_lcf_refined is None:
             search_lcf_refined = lk.search_lightcurve(**args)
@@ -242,14 +328,16 @@ def create_lc_from_selected_rows(
 
     lc_list = [lc]
     authors = [author]
-    sectors = [str(sector if sector is not None else getattr(lc, "SECTOR", ""))]
+    sectors = [str(sector) if sector is not None else ""]
     flux_origins = [flux_origin]
     is_background_flags = [is_background]
 
-    jd = np.asarray(lc.time.value, dtype=float)
+    jd, timescale, time_warning = _absolute_jd_from_lightcurve(lc)
     flux = np.asarray(lc.flux.value, dtype=float)
     flux_err = np.asarray(lc.flux_err.value, dtype=float)
-    sector_array = np.full_like(jd, fill_value=lc.SECTOR, dtype=np.uint8)
+    sector_array = (
+        np.full_like(jd, fill_value=sector, dtype=np.uint8) if sector is not None else None
+    )
     flux_unit = archive_flux_unit_for_pipeline(authors, lc.flux.unit)
 
     tess_mag = _tess_mag_from_lightkurve_list(lc_list)
@@ -266,12 +354,12 @@ def create_lc_from_selected_rows(
     lcd = CurveDash(
         name=lc_list[0].LABEL,
         lookup_name=metadata.get('lookup_name', None),
-        jd=jd + TESS_TIMEORIGIN,
+        jd=jd,
         flux=flux,
         flux_err=flux_err,
         label=sector_array,
         time_unit='jd',
-        timescale='tdb',
+        timescale=timescale,
         flux_unit=flux_unit,
         active_domain=DOMAIN_FLUX,
         photcal=photcal_meta,
@@ -291,6 +379,8 @@ def create_lc_from_selected_rows(
     lcd.metadata['ra'] = ra_val
     lcd.metadata['dec'] = dec_val
     lcd.metadata['mission'] = 'tess'
+    if time_warning:
+        lcd.metadata['time_warning'] = time_warning
     lcd.metadata['authors'] = authors
     lcd.metadata['sectors'] = sectors
     lcd.metadata['flux_origins'] = flux_origins
@@ -349,15 +439,21 @@ def flux_radio_options_for_rows(
         default_origin = None
         if full_search is not None:
             try:
-                lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row["#"])
-                colnames = list(lc.columns)
-                default_origin = resolve_default_flux_origin(lc)
+                info = load_column_info(full_search, row["#"])
+                if info is None and lightkurve_cache.get_cached_fits_path(full_search, row["#"]):
+                    # Local file only: selecting a row must never trigger a MAST download.
+                    lc = lightkurve_cache.download_lightcurve_row_with_recovery(
+                        full_search, row["#"]
+                    )
+                    info = remember_column_info(full_search, row["#"], lc)
+                if info is not None:
+                    colnames = info["colnames"]
+                    default_origin = info["default_origin"]
             except Exception as exc:
                 logger.warning("Could not read columns for flux options: %s", exc)
         if default_origin is None:
-            logger.error(
-                "Missing default flux column name for author=%r sector=%s; "
-                "download the sector file before showing flux options.",
+            logger.info(
+                "Flux options for author=%r sector=%s wait until the product is retrieved.",
                 author,
                 sector,
             )

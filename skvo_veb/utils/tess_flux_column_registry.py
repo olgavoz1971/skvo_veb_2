@@ -332,6 +332,43 @@ def resolve_default_flux_origin(lc) -> str:
     raise ValueError("LightCurve has no FLUX_ORIGIN or flux.name for default labelling.")
 
 
+CALIBRATION_UNKNOWN = "unknown"
+
+
+def generic_photometry_specs(colnames: Sequence[str]) -> list[FluxColumnSpec]:
+    """Lists flux-like columns of a product from a pipeline absent in the registry.
+
+    A column is flux-like when its name contains ``flux`` and does not look
+    like an error, background or quality column. The error column is the
+    column named ``<flux>_err`` when it exists, else ``None``.
+
+    Args:
+        colnames (sequence of str): Columns on the Lightkurve product.
+
+    Returns:
+        list[FluxColumnSpec]: One spec per flux-like column, in file order.
+    """
+    present = _lower_colset(colnames)
+    specs: list[FluxColumnSpec] = []
+    for name in colnames:
+        key = normalize_lc_column(name)
+        if "flux" not in key or key.endswith("_err") or key.endswith("_error"):
+            continue
+        if "bkg" in key or "quality" in key:
+            continue
+        err = f"{key}_err"
+        specs.append(
+            FluxColumnSpec(
+                flux_col=key,
+                flux_err_col=err if err in present else None,
+                calibration=CALIBRATION_UNKNOWN,
+                zp_mag_source=None,
+                notes="Flux-like column of a pipeline absent from the registry.",
+            )
+        )
+    return specs
+
+
 def list_available_photometry_specs(
     author: str,
     sector: Optional[int],
@@ -350,7 +387,7 @@ def list_available_photometry_specs(
     try:
         registry_specs = list_photometry_specs(author, sector)
     except UnknownPipelineError:
-        return []
+        return generic_photometry_specs(colnames)
 
     available: list[FluxColumnSpec] = []
     seen: set[str] = set()
@@ -388,7 +425,12 @@ def get_photometry_spec(
         UnknownPipelineError: Unknown author.
         ValueError: Preferred column or colnames mismatch.
     """
-    matches = list_photometry_specs(author, sector)
+    try:
+        matches = list_photometry_specs(author, sector)
+    except UnknownPipelineError:
+        if colnames is None:
+            raise
+        matches = generic_photometry_specs(colnames)
     preferred_key = normalize_lc_column(preferred)
     filtered = [s for s in matches if normalize_lc_column(s.flux_col) == preferred_key]
     if not filtered:
@@ -424,41 +466,6 @@ def background_available(author: str, colnames: Sequence[str]) -> bool:
     if spec is None:
         return False
     return _column_present(colnames, spec.bkg_col)
-
-
-def storage_flux_unit_for_selection(author: str, flux_method: str) -> str | None:
-    """Returns the serialised flux-unit label for a flux-column selection.
-
-    Args:
-        author (str): Pipeline author tag.
-        flux_method (str): ``default``, ``background``, or a photometry column name.
-
-    Returns:
-        str or None: Unit string for ``CurveDash`` metadata (``None`` = dimensionless).
-    """
-    if flux_method == FLUX_METHOD_BACKGROUND:
-        bkg = get_background_spec(author)
-        if bkg is None:
-            raise ValueError(f"Pipeline '{author}' does not provide a background column.")
-        if bkg.unit_type == CALIBRATION_NORMALIZED_CATALOG:
-            return UNIT_DIMENSIONLESS
-        return UNIT_PHYSICAL_ELECTRON_S
-
-    if flux_method == FLUX_METHOD_DEFAULT:
-        if author in {"QLP", "TGLC", "TARS"}:
-            return UNIT_DIMENSIONLESS
-        try:
-            specs = list_photometry_specs(author)
-        except UnknownPipelineError:
-            return UNIT_PHYSICAL_ELECTRON_S
-        if specs and specs[0].calibration == CALIBRATION_NORMALIZED_CATALOG:
-            return UNIT_DIMENSIONLESS
-        return UNIT_PHYSICAL_ELECTRON_S
-
-    spec = get_photometry_spec(author, sector=None, preferred=flux_method)
-    if spec.calibration == CALIBRATION_NORMALIZED_CATALOG:
-        return UNIT_DIMENSIONLESS
-    return UNIT_PHYSICAL_ELECTRON_S
 
 
 def parse_sector_from_mission_label(mission_label: str) -> Optional[int]:

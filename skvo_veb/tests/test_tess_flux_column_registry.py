@@ -17,7 +17,6 @@ from skvo_veb.utils.tess_flux_column_registry import (
     get_photometry_spec,
     list_available_photometry_specs,
     normalize_lc_column,
-    storage_flux_unit_for_selection,
 )
 
 
@@ -227,17 +226,17 @@ def test_default_flux_option_label_requires_column_name():
         default_flux_option_label()
 
 
-def test_storage_flux_unit_for_selection():
-    """Unit labels follow registry calibration types."""
-    assert storage_flux_unit_for_selection("SPOC", FLUX_METHOD_DEFAULT) == UNIT_PHYSICAL_ELECTRON_S
-    assert storage_flux_unit_for_selection("QLP", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
-    assert storage_flux_unit_for_selection("TARS", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
-    assert storage_flux_unit_for_selection("TARS", "flux") == UNIT_DIMENSIONLESS
-    assert storage_flux_unit_for_selection("TASOC", FLUX_METHOD_DEFAULT) == UNIT_DIMENSIONLESS
-    assert storage_flux_unit_for_selection("TASOC", "flux_corr") == UNIT_DIMENSIONLESS
-    assert storage_flux_unit_for_selection("TASOC", "flux_raw") == UNIT_PHYSICAL_ELECTRON_S
-    assert storage_flux_unit_for_selection("TASOC", FLUX_METHOD_BACKGROUND) == UNIT_PHYSICAL_ELECTRON_S
-    assert storage_flux_unit_for_selection("SPOC", FLUX_METHOD_BACKGROUND) == UNIT_PHYSICAL_ELECTRON_S
-    assert storage_flux_unit_for_selection("QLP", FLUX_METHOD_BACKGROUND) == UNIT_DIMENSIONLESS
+def test_generic_specs_for_unknown_pipeline():
+    """Unknown pipelines list every flux-like column and pair ``_err`` columns."""
+    cols = ["time", "flux", "flux_err", "cal_flux", "flux_bkg", "quality"]
+    specs = list_available_photometry_specs("NEWPIPE", 5, cols)
+    assert [s.flux_col for s in specs] == ["flux", "cal_flux"]
+    assert specs[0].flux_err_col == "flux_err"
+    assert specs[1].flux_err_col is None
+    assert get_photometry_spec("NEWPIPE", 5, "cal_flux", colnames=cols).flux_col == "cal_flux"
+
+
+def test_registered_spec_calibration():
+    """Registry entries keep their calibration type."""
     spec = get_photometry_spec("SPOC", 4, "sap_flux")
     assert spec.calibration == "physical"

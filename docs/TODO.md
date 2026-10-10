@@ -2895,6 +2895,8 @@ rewrite the tests. No behaviour change otherwise. Run the full
 
 #### Phase 2 — Retrieve through the plugin — **REVERTED on the page (developer decision)**
 
+**Done instead (page-local):** unknown pipelines list every flux-like column (name contains `flux`, `<name>_err` paired); units come from the file column (no author guess); a missing sector stays empty (no `sector=-1`); a time system other than BTJD/TDB logs a warning and shows it in the page alert (absolute JD from astropy `Time`). NaN `flux_err` stays (no error bars). Author-based PhotCal (`resolve_photcal`) and reading the file on row selection are NOT changed yet.
+
 **Decision.** The `/tess_lc` page does not use the `lc_discovery` plugin. The page was restored to the earlier Lightkurve-object code (snapshot `tmp/arj`), and only the agreed stitching removal was re-applied. The plugin-side work below stays in `lc_discovery` for Discovery. The XML round trip made series switches slow; do not reintroduce it.
 
 
@@ -3083,3 +3085,97 @@ Update the plugin `columns.py` header (no longer "copied from host").
 
 **Open.** Plan agreed; implement phase by phase when the developer asks.
 
+
+---
+
+## Ticket 23 — lc_discovery (SEPARATE PACKAGE): agent-ready public API, discovery helpers, plot recipe
+
+**Applies to the separate package** `/home/voz/projects/UPJS/lc_discovery`, **not** to this
+application. Recorded here because this is the developer's task list. Nothing in `skvo_veb`
+is to change for it, except where the host later adopts a new call.
+
+**Think a lot before implementing each phase.** Every phase changes the public contract
+that agents and applications depend on. Discuss the design, the names and the failure
+behaviour with the developer first. Do not start a phase without an explicit request.
+No silent fallbacks; no invented values.
+
+### Why this ticket exists
+
+A role-play review (a user who runs no code, an agent with empty context that has
+installed the package and read the skills and docs) with three questions: which
+sources exist; what exists for "AA And" with points in the first half of 2020 and in
+which filters; retrieve one curve and plot it. Findings:
+
+1. **Sources.** `list_missions()` gives only `mission_id`, `display_name`,
+   `export_profile` and capability flags. No description, coverage, bands or data
+   kind. The human summary is in `docs/providers/*.md`, which the skill does not
+   point to.
+2. **Object to ids.** No public call resolves a name to coordinates and Simbad
+   identifiers. `archive_id_from_identifiers` needs that list, and the skill does
+   not say where it comes from.
+3. **Time window.** Only `gaia_dr3_veb`, `ogle_ocvs`, `personal_ts`, `tess`,
+   `upjs_ts` accept it. For `asassn`, `gaia_dr3_aip`, `gaia_dr3_ari`,
+   `panstarrs1_dr2`, `ztf_dr24` the call raises; coverage must be read from
+   optional `t_min` / `t_max`, which can be empty (then it is known only after
+   `fetch`). Nothing helps an agent combine these cases or report "unknown".
+4. **Many missions.** Each caller writes its own loop over missions and search kinds.
+5. **Reading the product.** `Table.read` keeps UCDs in `col.meta['ucd']`
+   but drops `TIMESYS` (the time column is only `d`, origin 2400000.5 is lost) and
+   the PhotCal groups. The skill shows OGLE column names, not UCD-based selection.
+   Several photometry columns (SAP, KSPSAP, background) have no selection rule.
+6. **Stale sample.** `auxiliary/lc_discovery_test/data/aa_and_tess_sector16/*.vot`
+   labels background `phot.flux;obs.background`; the plugin and `docs/providers/tess.md`
+   say `instr.background`. Regenerate it.
+
+### Phases (each needs a design discussion first)
+
+- [x] **Phase A: mission descriptor (done).** `description` is a mandatory text on every
+      provider, returned by `list_missions()`. Template in
+      `docs/adding_a_lightcurve_provider.md` section 2.1 (what it is, where from,
+      bands, time coverage, sky, id lookup, reference; free text, `TO CONFIRM` for
+      unchecked facts).
+- [x] **Phase B: object resolution (done, as advice only).** Decision: no algorithm and
+      no Simbad client in the package for now (an agent can query Simbad itself).
+      The package states what a naive agent cannot guess: per mission, the "Id lookup"
+      line in `description` (which id, an example, which Simbad identifier to take, or
+      "Simbad does not list it, use a cone search"). The skill `lc-discovery` has a
+      "Finding an object" section with the advised order and a "Time windows" section
+      (warn that some missions cannot filter by time at search; offer them as possible
+      sources only; fetching each curve to check is slow, never for a long list).
+      Postponed: a Simbad resolver in the package.
+- [ ] **Phase C: multi-mission search.** Decide on a `search_all(...)` that returns
+      one table with `mission_id` and a coverage status per row (inside the window,
+      outside, unknown), versus a documented recipe. Open: how unsupported search
+      kinds and missions that reject a window are reported (never skipped silently).
+- [ ] **Phase D: reading and plotting recipe.** Decide between a skill recipe
+      (select by UCD, take time from `TIMESYS` as an astropy `Time`, pair errors,
+      state which column is plotted) and a public reader that returns the whole
+      structure (time, series, errors, units, calibration), not a flat table.
+      Open: rule for choosing among several flux columns.
+      **Idea to describe in the skill (not implemented yet):** the simplest way to
+      recognise column roles is by UCD (`col.meta['ucd']`), for example `time.*` for
+      time, `phot.flux*` and `phot.mag*` for series, `stat.error` (with the matching
+      series) for errors, `instr.background` or `phot.flux;obs.background` for
+      background. The agent lists the flux and magnitude columns it found (name, UCD,
+      unit) and asks the user to choose one to plot; it never picks silently when
+      there are several. The chosen column and its unit are stated with the plot.
+- [ ] **Phase E: housekeeping.** Regenerate the stale sample VOTable. Keep the
+      skill's example in line with the real calls after each phase.
+
+### Already done (not part of the phases)
+
+- `purge_cache(lc_key)` and `supports_cache_purge` (TESS, Gaia AIP); TESS
+  `force_refresh` now purges and downloads again.
+- Host-specific text and names removed from the package docs and source;
+  `catalog_row_to_aggrid_dict` renamed `catalog_row_to_indexed_dict`.
+- Skills: worked example, errors section, local-cache rules.
+- Time-window filter in `gaia_dr3_veb`, `upjs_ts`, `personal_ts`, `ogle_ocvs` now
+  keeps products whose time span overlaps the window (`t_max > start`,
+  `t_min < end`), not only those fully inside it (`t_min` / `t_max` are the start and
+  end of the series). TESS already did. Docs, skill and test updated.
+- `gaia_dr3_veb` description corrected: the search does apply time windows.
+
+### Status
+
+**Open.** Phases A and B done (see above). Phases C, D and E wait for the developer's
+explicit request.

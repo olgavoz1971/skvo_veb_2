@@ -905,6 +905,36 @@ def update_flux_radio_options(selected_rows, table_data, search_store, current_v
 @callback(
     Output('flux_tess_lc_srv_switch', 'options', allow_duplicate=True),
     Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('store_tess_lightcurve_lc_srv', 'data'),  # fires after Retrieve
+    State('data_tess_lc_srv_table', 'selectedRows'),
+    State('data_tess_lc_srv_table', 'rowData'),
+    State('store_tess_lc_search_result', 'data'),
+    State('flux_tess_lc_srv_switch', 'value'),
+    prevent_initial_call=True,
+)
+def refresh_flux_radio_options_after_retrieve(_lc_token, selected_rows, table_data, search_store,
+                                              current_value):
+    """Fills the flux radio once Retrieve has stored the product column record.
+
+    Args:
+        _lc_token (str): Retrieve/replot trigger token (unused).
+        selected_rows (list): Selected AgGrid rows.
+        table_data (list): Full AgGrid row data.
+        search_store (dict): Serialised TESS search result.
+        current_value (str): Currently chosen flux method.
+
+    Returns:
+        tuple: Radio options and the value to keep or reset to the default.
+
+    Raises:
+        PreventUpdate: When nothing is selected or no options are available.
+    """
+    return update_flux_radio_options(selected_rows, table_data, search_store, current_value)
+
+
+@callback(
+    Output('flux_tess_lc_srv_switch', 'options', allow_duplicate=True),
+    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
     Input('store_tess_lc_search_result', 'data'),
     prevent_initial_call=True,
 )
@@ -1608,7 +1638,11 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_lc_srv_graph_tab'
         output['message_results'] = 'Success, switch to the next Tab'
-        set_props('div_tess_lc_srv_download_alert', {'children': None})
+        time_warning = lcd_built.metadata.get('time_warning')
+        set_props(
+            'div_tess_lc_srv_download_alert',
+            {'children': status_alert(time_warning, 'warning') if time_warning else None},
+        )
     except Exception as e:
         logger.warning(f'lightcurve_tess.download_tess_curve {e}')
         alert_message = status_alert(str(e), 'warning')

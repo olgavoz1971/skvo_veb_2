@@ -250,19 +250,18 @@ def serialise_lightkurve_flux_unit(lightkurve_flux_unit) -> str | None:
 def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
     """Returns the flux-unit label stored on a TESS archive ``CurveDash``.
 
-    QLP and TARS keep the dimensionless catalog-flux convention. Other pipelines
-    preserve the selected Lightkurve column unit, with ppm stored as dimensionless.
+    The unit comes from the selected column of the file; it is not guessed
+    from the pipeline name. ppm is stored as dimensionless.
 
     Args:
-        authors (str or list of str): Pipeline author tag(s) from Lightkurve.
+        authors (str or list of str): Pipeline author tag(s); kept for call
+            compatibility and not used for the unit.
         lightkurve_flux_unit: Unit object or string from the downloaded product.
 
     Returns:
         str or None: Serialised flux unit for ``CurveDash`` metadata
-        (``None`` = dimensionless).
+        (``None`` = dimensionless or unknown).
     """
-    if uses_tessmag_catalog_photcal(authors):
-        return to_internal(QLP_FLUX_UNIT)
     return serialise_lightkurve_flux_unit(lightkurve_flux_unit)
 
 

@@ -6,7 +6,7 @@ import pytest
 from astropy.table import Table
 
 from lc_discovery.catalog_schema import (
-    catalog_row_to_aggrid_dict,
+    catalog_row_to_indexed_dict,
     catalog_table_to_row_dicts,
     empty_catalog_table,
     validate_catalog_table,
@@ -81,6 +81,6 @@ def test_catalog_table_to_row_dicts_round_trip():
 def test_catalog_row_to_aggrid_dict_adds_index():
     """AgGrid helper adds the display index column."""
     table = validate_catalog_table(Table([_sample_catalog_row()]))
-    aggrid_row = catalog_row_to_aggrid_dict(table[0], row_index=0)
+    aggrid_row = catalog_row_to_indexed_dict(table[0], row_index=0)
     assert aggrid_row["#"] == 1
     assert aggrid_row["filter_name"] == "Gaia G"
