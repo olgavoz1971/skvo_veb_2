@@ -131,3 +131,19 @@ Adjust those media-query blocks if the page feels too tall on a small monitor.
 | `skvo_veb/assets/lc_discovery.css` | All Discovery page styling |
 | `skvo_veb/pages/lightcurve_discovery.py` | Layout, IDs, class names |
 | `skvo_veb/assets/style.css` | Global Bootstrap (whole app — avoid for page-only tweaks) |
+
+---
+
+## Catalogue table and Aladin layout
+
+- **Deterministic widths.** No `columnSize='autoSize'`: it measures only rendered rows, so widths
+  would depend on scroll position. Every shared column has an explicit `width`, `minWidth` and
+  `maxWidth` from the tiers in `skvo_veb/utils/lc_discovery_catalog_columns.py`.
+- **Provider extras** (`CatalogExtraColumn`) use the narrow host default (64 px, 44-120 px) unless the
+  provider sets `CatalogExtraColumn.width`. Provider field names never appear in host code.
+- **Order:** Object (flexible, not pinned: pinning blocked row click selection) then Sep, Filter, provider extras, Type, RA, Dec,
+  t_min, t_max, mag, N. Sep is not pinned.
+- **Unsorted icon** is off (`unSortIcon` removed) to save header width.
+- **Space split.** `.lc-discovery-catalog-body-row` is a flex row: the table takes all free width
+  (`flex: 1 1 28rem`), Aladin keeps a fixed width taken from `_LC_DISCOVERY_ALADIN_WIDTH` through the
+  `--lc-discovery-aladin-width` custom property, and wraps under the table when the panel is too narrow.

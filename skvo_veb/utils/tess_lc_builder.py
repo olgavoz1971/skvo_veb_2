@@ -27,7 +27,6 @@ from skvo_veb.utils.tess_flux_column_registry import (
     apply_flux_column_selection,
     build_flux_radio_options,
     default_flux_option_label,
-    merge_flux_radio_options,
     parse_sector_from_mission_label,
     resolve_default_flux_origin,
 )
@@ -156,30 +155,6 @@ def _sector_from_lightcurve(lc, row: dict | None = None) -> int | None:
     return None
 
 
-def _resolve_flux_unit(authors, flux_methods, is_background_flags, lc_list) -> str:
-    """Chooses a serialised flux-unit label for the combined light curve.
-
-    Args:
-        authors (list): Pipeline author tags per sector.
-        flux_methods (list): Flux selection per sector (may repeat).
-        is_background_flags (list): Whether each sector uses a background column.
-        lc_list (list): Downloaded Lightkurve products.
-
-    Returns:
-        str: Flux unit string for ``CurveDash`` metadata.
-    """
-    from skvo_veb.utils.tess_flux_column_registry import UNIT_DIMENSIONLESS
-
-    if len(set(authors)) == 1:
-        return archive_flux_unit_for_pipeline(authors, lc_list[0].flux.unit)
-    if len(set(flux_methods)) == 1 and flux_methods[0] == FLUX_METHOD_DEFAULT:
-        return UNIT_DIMENSIONLESS
-    raise PipeException(
-        "Cannot combine sectors with different flux-column selections across mixed "
-        "pipeline authors; use author default flux or select a single sector."
-    )
-
-
 def create_lc_from_selected_rows(
     selected_rows,
     table_data,
@@ -192,11 +167,12 @@ def create_lc_from_selected_rows(
 ) -> str:
     """Builds a serialised CurveDash payload from selected TESS search rows.
 
-    Retrieves Lightkurve lightcurves for the selected table rows and stores
-    native pipeline flux without sector stitching or domain conversion.
+    Retrieves the Lightkurve light curve for the single selected table row and
+    stores native pipeline flux of that one row; no merging and no domain
+    conversion.
 
     Args:
-        selected_rows: Selected AgGrid row indices or row dicts.
+        selected_rows: One selected AgGrid row index or row dict.
         table_data: Full AgGrid row data when indices are supplied.
         flux_method (str): ``default``, ``background``, or a registry flux column name.
         metadata (dict): Target metadata including optional ``lookup_name``.
@@ -212,7 +188,7 @@ def create_lc_from_selected_rows(
         str: JSON serialisation of the constructed ``CurveDash`` instance.
 
     Raises:
-        PipeException: If no rows are selected or search data is missing.
+        PipeException: If not exactly one row is selected or search data is missing.
     """
     if not selected_rows:
         raise PipeException('Search for the lightcurves first and try again')
@@ -223,74 +199,58 @@ def create_lc_from_selected_rows(
             raise PipeException('Search for the lightcurves first and try again')
         selected_data = [table_data[i] for i in selected_rows]
 
-    if len(selected_data) > 1:
-        flux_method = FLUX_METHOD_DEFAULT
+    if len(selected_data) != 1:
+        raise PipeException(
+            'Select exactly one search row: each retrieve builds one product.'
+        )
+    row = selected_data[0]
 
     full_search = tess_lc_search.restore_search_result(search_store) if search_store else None
 
-    lc_list = []
-    authors = []
-    sectors = []
-    flux_origins = []
-    flux_methods_applied = []
-    is_background_flags = []
+    row_idx = row['#']
+    if full_search is not None:
+        lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row_idx)
+    else:
+        target = f'TIC {row.get("target", None)}'
+        author = row["author"]
+        exptime = row["exptime"]
+        sector = parse_sector_from_mission_label(row.get('mission', ''))
+        if sector is None:
+            sector = -1
+        args = {
+            'target': target,
+            'author': author,
+            'mission': 'TESS',
+            'sector': sector,
+            'exptime': exptime,
+        }
+        search_lcf_refined = cache.load("search_lcf_refined", **args)
+        if search_lcf_refined is None:
+            search_lcf_refined = lk.search_lightcurve(**args)
+            if len(search_lcf_refined) > 0:
+                cache.save(search_lcf_refined, "search_lcf_refined", **args)
+        lc = lightkurve_cache.download_lightcurve_row_with_recovery(search_lcf_refined, 0)
 
-    for row in selected_data:
-        row_idx = row['#']
-        if full_search is not None:
-            lc = lightkurve_cache.download_lightcurve_row_with_recovery(full_search, row_idx)
-        else:
-            target = f'TIC {row.get("target", None)}'
-            author = row["author"]
-            exptime = row["exptime"]
-            sector = parse_sector_from_mission_label(row.get('mission', ''))
-            if sector is None:
-                sector = -1
-            args = {
-                'target': target,
-                'author': author,
-                'mission': 'TESS',
-                'sector': sector,
-                'exptime': exptime,
-            }
-            search_lcf_refined = cache.load("search_lcf_refined", **args)
-            if search_lcf_refined is None:
-                search_lcf_refined = lk.search_lightcurve(**args)
-                if len(search_lcf_refined) > 0:
-                    cache.save(search_lcf_refined, "search_lcf_refined", **args)
-            lc = lightkurve_cache.download_lightcurve_row_with_recovery(search_lcf_refined, 0)
+    author = lc.AUTHOR
+    sector = _sector_from_lightcurve(lc, row)
+    try:
+        flux_origin, is_background = apply_flux_column_selection(
+            lc, author, sector, flux_method
+        )
+    except ValueError as exc:
+        raise PipeException(str(exc)) from exc
 
-        author = lc.AUTHOR
-        sector = _sector_from_lightcurve(lc, row)
-        try:
-            flux_origin, is_background = apply_flux_column_selection(
-                lc, author, sector, flux_method
-            )
-        except ValueError as exc:
-            raise PipeException(str(exc)) from exc
+    lc_list = [lc]
+    authors = [author]
+    sectors = [str(sector if sector is not None else getattr(lc, "SECTOR", ""))]
+    flux_origins = [flux_origin]
+    is_background_flags = [is_background]
 
-        sectors.append(str(sector if sector is not None else getattr(lc, "SECTOR", "")))
-        authors.append(author)
-        flux_origins.append(flux_origin)
-        flux_methods_applied.append(flux_method)
-        is_background_flags.append(is_background)
-        lc_list.append(lc)
-
-    jd = np.array([], dtype=float)
-    flux = np.array([], dtype=float)
-    flux_err = np.array([], dtype=float)
-    sector_array = np.array([], dtype=np.uint8)
-    for lc_item in lc_list:
-        flux = np.concatenate([flux, lc_item.flux.value])
-        flux_err = np.concatenate([flux_err, lc_item.flux_err.value])
-        jd = np.concatenate([jd, lc_item.time.value])
-        sector_array = np.concatenate([
-            sector_array,
-            np.full_like(lc_item.time.value, fill_value=lc_item.SECTOR, dtype=np.uint8),
-        ])
-    flux_unit = _resolve_flux_unit(
-        authors, flux_methods_applied, is_background_flags, lc_list
-    )
+    jd = np.asarray(lc.time.value, dtype=float)
+    flux = np.asarray(lc.flux.value, dtype=float)
+    flux_err = np.asarray(lc.flux_err.value, dtype=float)
+    sector_array = np.full_like(jd, fill_value=lc.SECTOR, dtype=np.uint8)
+    flux_unit = archive_flux_unit_for_pipeline(authors, lc.flux.unit)
 
     tess_mag = _tess_mag_from_lightkurve_list(lc_list)
     photcal_meta = resolve_photcal(authors, tess_mag=tess_mag)
@@ -352,33 +312,6 @@ def create_lc_from_selected_rows(
     attach_tess_archive_export_provenance(lcd)
 
     return lcd.serialize()
-
-
-def effective_flux_method_for_selection(selected_rows, table_data, flux_method: str) -> str:
-    """Returns the flux column choice applied when building a light curve.
-
-    Multi-row downloads always use the author default flux; a prior single-row
-    radio selection must not carry over.
-
-    Args:
-        selected_rows: Selected AgGrid row indices or row dicts.
-        table_data: Full AgGrid row data when indices are supplied.
-        flux_method (str): Current flux radio value.
-
-    Returns:
-        str: Flux method passed to ``create_lc_from_selected_rows``.
-    """
-    if not selected_rows:
-        return flux_method
-    if isinstance(selected_rows[0], dict):
-        count = len(selected_rows)
-    elif table_data:
-        count = len(selected_rows)
-    else:
-        count = 1
-    if count > 1:
-        return FLUX_METHOD_DEFAULT
-    return flux_method
 
 
 def flux_radio_options_for_rows(
@@ -456,6 +389,4 @@ def flux_radio_options_for_rows(
 
     if not per_row_options:
         return []
-    if len(per_row_options) == 1:
-        return per_row_options[0]
-    return merge_flux_radio_options(per_row_options)
+    return per_row_options[0]

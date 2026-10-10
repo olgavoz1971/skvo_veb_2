@@ -46,7 +46,7 @@ class _FakeLcMeta:
             self.meta.update(extra)
 
 
-def _build_archive_lcd(flux, flux_err, *, authors, photcal, flux_unit, stitched=False):
+def _build_archive_lcd(flux, flux_err, *, authors, photcal, flux_unit):
     """Builds a minimal TESS archive CurveDash for conversion tests."""
     flux = np.asarray(flux, dtype=float)
     flux_err = np.asarray(flux_err, dtype=float)
@@ -63,14 +63,12 @@ def _build_archive_lcd(flux, flux_err, *, authors, photcal, flux_unit, stitched=
     )
     lcd.metadata["authors"] = authors
     lcd.metadata["flux_origins"] = ["sap"]
-    if stitched:
-        lcd.metadata["stitched"] = True
     return lcd
 
 
-def test_resolve_photcal_spoc_unstitched():
+def test_resolve_photcal_spoc_archive():
     """SPOC archive curves retain the fixed pipeline zero point."""
-    photcal = resolve_photcal(["SPOC"], stitched=False)
+    photcal = resolve_photcal(["SPOC"])
     assert photcal[PHOTCAL_KEY_ZP_MAG] == TESS_ELECTRON_S_ZERO_POINT_REF_MAG
     assert photcal[PHOTCAL_KEY_ZP_FLUX] == 1.0
     assert photcal[PHOTCAL_KEY_ZP_FLUX_UNIT] == "electron s-1"
@@ -78,15 +76,15 @@ def test_resolve_photcal_spoc_unstitched():
 
 def test_resolve_photcal_qlp_without_tess_mag_passband_only():
     """QLP without TESSMAG stores passband metadata only."""
-    photcal = resolve_photcal(["QLP"], stitched=False)
+    photcal = resolve_photcal(["QLP"])
     assert PHOTCAL_KEY_ZP_MAG not in photcal
     assert PHOTCAL_KEY_ZP_FLUX not in photcal
     assert photcal["filter_identifier"] == "TESS/TESS.Red"
 
 
 def test_resolve_photcal_tars_with_tess_mag():
-    """TARS unstitched curves use TESSMAG with dimensionless zero-point flux, like QLP."""
-    photcal = resolve_photcal(["TARS"], stitched=False, tess_mag=5.80207)
+    """TARS curves use TESSMAG with dimensionless zero-point flux, like QLP."""
+    photcal = resolve_photcal(["TARS"], tess_mag=5.80207)
     assert photcal[PHOTCAL_KEY_ZP_MAG] == pytest.approx(5.80207)
     assert photcal[PHOTCAL_KEY_ZP_FLUX] == 1.0
     assert photcal[PHOTCAL_KEY_ZP_FLUX_UNIT] is None
@@ -110,7 +108,7 @@ def test_tars_flux_mag_matches_tessmag_formula():
 
 def test_resolve_photcal_tasoc_passband_only_even_with_tessmag():
     """TASOC TESSMAG is catalogue metadata, not a QLP-style flux zero point."""
-    photcal = resolve_photcal(["TASOC"], stitched=False, tess_mag=11.2032)
+    photcal = resolve_photcal(["TASOC"], tess_mag=11.2032)
     assert PHOTCAL_KEY_ZP_MAG not in photcal
     assert PHOTCAL_KEY_ZP_FLUX not in photcal
     assert photcal["filter_identifier"] == "TESS/TESS.Red"
@@ -141,17 +139,13 @@ def test_archive_flux_unit_ppm_is_dimensionless():
 
 
 def test_resolve_photcal_qlp_with_tess_mag():
-    """QLP unstitched curves use header TESSMAG with dimensionless zero-point flux."""
-    photcal = resolve_photcal(["QLP"], stitched=False, tess_mag=11.42)
+    """QLP curves use header TESSMAG with dimensionless zero-point flux."""
+    photcal = resolve_photcal(["QLP"], tess_mag=11.42)
     assert photcal[PHOTCAL_KEY_ZP_MAG] == 11.42
     assert photcal[PHOTCAL_KEY_ZP_FLUX] == 1.0
     assert photcal[PHOTCAL_KEY_ZP_FLUX_UNIT] is None
 
 
-def test_resolve_photcal_qlp_stitched_omits_zero_points():
-    """Stitched QLP curves never carry zero points even with TESSMAG."""
-    photcal = resolve_photcal(["QLP"], stitched=True, tess_mag=11.42)
-    assert PHOTCAL_KEY_ZP_MAG not in photcal
 
 
 def test_tess_mag_from_lightkurve_list_picks_first_when_consistent():
@@ -209,20 +203,6 @@ def test_qlp_flux_to_mag_matches_tessmag_formula():
     np.testing.assert_allclose(lcd.lightcurve["mag"].values, expected, rtol=1e-12)
 
 
-def test_stitched_curve_rejects_magnitude_conversion():
-    """Stitched TESS curves must not convert to magnitudes."""
-    lcd = _build_archive_lcd(
-        [1.0, 2.0],
-        [0.1, 0.1],
-        authors=["SPOC"],
-        photcal=resolve_tess_photcal(["SPOC"]),
-        flux_unit="electron s-1",
-        stitched=True,
-    )
-    with pytest.raises(PipeException, match="stitched"):
-        validate_tess_magnitude_conversion(lcd)
-    with pytest.raises(PipeException, match="stitched"):
-        apply_tess_phot_domain_view(lcd, True)
 
 
 def test_qlp_without_tessmag_rejects_magnitude_conversion():
@@ -346,7 +326,7 @@ def test_tars_ephemeris_expressed_as_mjd_offset():
 
 def test_instrument_photcal_matches_spoc_and_cutout():
     """SPOC archive photcal and cutout enrich share the electron s-1 zero point."""
-    spoc = resolve_photcal(["SPOC"], stitched=False)
+    spoc = resolve_photcal(["SPOC"])
     instrument = instrument_electron_s_photcal()
     assert spoc == instrument
     assert instrument[PHOTCAL_KEY_ZP_MAG] == TESS_ELECTRON_S_ZERO_POINT_REF_MAG

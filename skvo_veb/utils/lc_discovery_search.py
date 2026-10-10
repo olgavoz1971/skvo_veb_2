@@ -964,12 +964,6 @@ def catalog_rows_for_aggrid(
         display_row = {
             key: value for key, value in row.items() if key != "#"
         }
-        object_name = str(display_row.get("object_name") or "object")
-        filter_name = str(display_row.get("filter_name") or "")
-        if filter_name:
-            display_row["aladin_name"] = f"{object_name} ({filter_name})"
-        else:
-            display_row["aladin_name"] = object_name
         if mission_id:
             display_row["mission_id"] = mission_id
         formatted_rows.append(display_row)

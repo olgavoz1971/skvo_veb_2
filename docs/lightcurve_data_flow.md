@@ -156,13 +156,22 @@ VOTable products take a **single byte read**, then two complementary parsers —
 ### 3.2 TESS archive retrieve (Lightkurve → cache)
 
 ```text
-  Lightkurve search / retrieve
+  Page search table row (TIC, sector, author, exptime)
                  |
                  v
-  tess_lc_builder.create_lc_from_selected_rows()   ← flux domain, no conversion
+  lc_discovery TESS provider (shared Lightkurve cache, cache repair,
+  generic HLSP read, time check) → issued calibrated VOTable
+  (all columns, roles, PhotCal, pointer to the original FITS)
+                 |
+                 v
+  Page chooses a flux / mag / background column by role   ← no conversion
                  |
                  v
          CurveDash.serialize() → DiskCache
+
+  Target contract (TODO.md Ticket 22). Until phases 2 and 3 are done,
+  tess_lc_builder.create_lc_from_selected_rows() still does the
+  Lightkurve retrieve and column selection with the old registry.
 ```
 
 ### 3.3 Export (cache → user file)
@@ -217,7 +226,7 @@ Export profiles bundle instrument constants so callbacks do not assemble paramet
 
 | Profile | Use case | Zero points in PhotCal |
 |---------|----------|------------------------|
-| `tess` | Archive / pipeline lightcurves (`lightcurve_tess_srv`) | Pipeline PhotCal (SPOC 20.44, QLP/TARS TESSMAG); omitted on legacy `stitched=true` ingest |
+| `tess` | Archive / pipeline lightcurves (`lightcurve_tess_srv`) | PhotCal from the issued VOTable (20.44 only for electron s-1 / counts s-1 file units; TESSMAG for normalised flux); no stitching |
 | `cutout` | User FFI/TPF aperture photometry (`tess_cutout`) | Never (uncalibrated) |
 
 The **cutout** profile records `cutout_source` (FFI/TPF), `mask_mode` (handmade/threshold/pipeline), and pipeline author **`user`** in table descriptions and PARAM metadata.
@@ -275,7 +284,7 @@ The phase column is useful interactively but **must never** appear in standards-
 
 TESS photometry method (e.g. `pdcsap`, `sap`) appears in the `<TABLE>` description and in `flux_origins` metadata.
 
-**Legacy stitched VOTables:** `/tess_lc` no longer stitches. If an uploaded file still has `metadata['stitched']`, the TESS export profile omits `zeroPointFlux` and `zeroPointReferenceMagnitude` (any pipeline) because relative flux normalisation is not a pipeline zero point. Passband metadata (`filterIdentifier`, `effectiveWavelength`) is still exported.
+There is no stitching on `/tess_lc`, and no `stitched` flag anywhere in the export profile; every VOTable with a complete PhotCal group exports its zero points.
 
 Plot titles after upload are rebuilt by `build_curvedash_title()` from metadata or restored from the exported `title` PARAM.
 
@@ -325,7 +334,7 @@ Application state: Pandas DataFrame, `active_domain`, UI columns (`selected`, `p
 
 ### D. `skvo_veb/utils/tess_lc_builder.py`
 
-Lightkurve ingestion for TESS archive retrieve. Always produces flux-domain `CurveDash`.
+Builds the flux-domain `CurveDash` for TESS archive retrieve from the chosen column of the issued VOTable (Ticket 22; until then it still reads Lightkurve directly). It does not stitch, derive PhotCal from the author, or invent units, errors or sectors.
 
 ### E. `skvo_veb/pages/lightcurve_tess_srv.py`
 

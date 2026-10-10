@@ -29,6 +29,7 @@ give it the next unused ID. When a ticket is done, move its row to
 | 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Open |
 | 19 | TESS photcal: mag column plus absolute flux (Jy) on VOTable export | Open |
 | 20 | TESS search Exptime: ghelp for cadence vs CRM effective time | Open |
+| 22 | TESS page: use the ``lc_discovery`` issued VOTable; column choice by role; no invented values | Open |
 
 ## Done
 
@@ -2790,3 +2791,295 @@ developer explicitly reopens it.
 
 **Done.** Advanced users can download the pipeline FITS from the shared
 MAST cache after Retrieve. Cutout FITS download remains closed.
+
+---
+
+## Ticket 22 — TESS page: use the ``lc_discovery`` issued VOTable; column choice by role; no invented values
+
+**Page:** TESS Lightcurve Tool (`/tess_lc`, `skvo_veb/pages/lightcurve_tess_srv.py`).
+
+**Related:** `skvo_veb/utils/tess_lc_builder.py`,
+`skvo_veb/utils/tess_flux_column_registry.py`,
+`skvo_veb/utils/mission_config/tess.py`,
+`skvo_veb/utils/lightkurve_cache.py`, `skvo_veb/utils/lc_bridge.py`,
+sibling package `lc_discovery`
+(`providers/tess/{tess_fetch,fetch_metadata,columns}.py`,
+`docs/providers/tess.md`), Tickets 17, 18, 19.
+
+### Goal
+
+The TESS page uses the **same approach as the Discovery TESS provider**:
+the product is read once, issued as a calibrated VOTable with roles and
+PhotCal read from the file, and the page only **chooses a column** from
+that table. No second copy of the registry, no unit or PhotCal rules
+derived from the author tag, no invented values.
+
+### Why this ticket exists
+
+Comparison of `/tess_lc` with the Discovery provider (agreed with the
+developer):
+
+1. **Hardcoded units by author.** `storage_flux_unit_for_selection`
+   returns `electron s-1` for any unknown pipeline and for background,
+   and hardcodes `{"QLP", "TGLC", "TARS"}` as dimensionless.
+   `archive_flux_unit_for_pipeline` forces QLP/TARS dimensionless and
+   turns ppm into ``None``.
+2. **PhotCal by author name.** `resolve_photcal` (`is_spoc_pipeline`,
+   `uses_tessmag_catalog_photcal`) ignores the unit in the file.
+3. **Invented data.** `flux_err` is filled with NaN when the product has
+   no error column. `sector = -1` is substituted when the sector is
+   missing. (The ``corr_flux`` error formula
+   ``corr_flux * raw_flux_err / raw_flux`` was removed from
+   ``apply_flux_column_selection``; ``CORR_FLUX`` now falls into the NaN
+   branch until this ticket removes that branch too.)
+4. **Unknown pipelines are unreachable.** `list_available_photometry_specs`
+   returns ``[]`` for an author outside the registry, so only "Default"
+   is offered.
+5. **Duplicate retrieval code.** The page has its own search, cache and
+   generic-HLSP reader (`open_lightcurve_product`, Ticket 18). The
+   plugin has the same fix (`_download_generic_product`). Two
+   implementations will drift.
+6. **Time assumed.** `TESS_TIMEORIGIN` is applied without checking the
+   Lightkurve time format and scale (the plugin checks BTJD / TDB).
+7. **Registry copied.** The plugin's `columns.py` is documented as a copy
+   of the host registry.
+8. **Leftover stitching traces.** Ticket 17 is Done, but traces remain:
+   `create_lc_from_selected_rows` still concatenates several rows
+   (the table is ``singleRow``, so only one is ever used); the
+   ``stitched`` flag is still read and written in `lc_bridge.py`
+   (ingest, export, `_is_stitched_lightcurve`, title prefix
+   ``Stitched curve``); `resolve_photcal(..., stitched=)` and the
+   "stitched" magnitude refusal in `mission_config/tess.py`; export
+   provenance text about stitching; tests in `test_tess_photcal.py` and
+   `volightcurve/test_tess_export.py`. Ticket 17 kept legacy ingest on
+   purpose; this ticket **removes it** on the developer's instruction
+   ("no stitching, no tracks").
+
+### Decisions (agreed with the developer)
+
+1. The page consumes the plugin's issued VOTable (single source for
+   search, download, TARS handling, time check, roles, PhotCal).
+2. The page offers, as flux choices, the columns whose role in the
+   VOTable is **flux**, **mag** or **background**. Columns without a
+   role are not selectable.
+3. **Background** can be selected as the plotted series
+   ("background light curve"). The user selects it explicitly; it is never
+   chosen by default.
+4. Default choice is not made in the plugin. The page picks the default
+   from the VOTable roles (the flux column Lightkurve declares through
+   ``FLUX_ORIGIN``), not from a name table.
+5. Units, errors and zero points come from the issued VOTable. A missing
+   error column stays absent: no NaN column, no formula. How the plot and
+   export show "no error" is part of Phase 3.
+6. PhotCal is read from the VOTable PhotCal group of the chosen column.
+   It is not recomputed from the author.
+7. **No stitching, no traces**: one product per Retrieve; the
+   ``stitched`` flag, parameter, branches, texts and tests are deleted.
+   Old VOTables that carry ``stitched=true`` are not specially handled.
+8. User-facing strings: British English. No hardcoded defaults for
+   units, errors or sector.
+
+### Phases (one at a time; do not skip)
+
+#### Phase 0 — Contract in docs — **done**
+
+Update `tess.md` and `lightcurve_data_flow.md`: the page works from the
+issued VOTable and chooses columns by role. Link to `lc_discovery`
+`docs/providers/tess.md`.
+
+#### Phase 1 — Remove stitching traces — **done**
+
+Delete every item in "Why" point 8. One row per Retrieve. Remove or
+rewrite the tests. No behaviour change otherwise. Run the full
+`skvo_veb/tests`.
+
+#### Phase 2 — Retrieve through the plugin — **REVERTED on the page (developer decision)**
+
+**Decision.** The `/tess_lc` page does not use the `lc_discovery` plugin. The page was restored to the earlier Lightkurve-object code (snapshot `tmp/arj`), and only the agreed stitching removal was re-applied. The plugin-side work below stays in `lc_discovery` for Discovery. The XML round trip made series switches slow; do not reintroduce it.
+
+
+**What was built, and where it differs from the plan below.**
+
+- Plugin: new `providers/tess/archive_cache.py` (path, hit, astroquery
+  miss, classification, one purge and retry only for truncated FITS,
+  generic HLSP opened only with `TIME` and `FLUX`, British English
+  `ValueError` messages) and `tess_fetch.download_archive_product` /
+  `redownload_archive_product`. The `mast_*` TABLE PARAMs are written by
+  `votable_from_lightcurve(mast_pointer=...)`. Tests:
+  `lc_discovery/tests/test_tess_archive_cache.py`.
+- Deviation 1: the page does **not** yet parse the issued VOTable. Until
+  Phase 3 it builds `CurveDash` from the Lightkurve object that the
+  plugin returns, and takes the pointer from the plugin return value
+  (stored in `CurveDash.metadata["mast_fits_pointer"]`). The VOTable
+  PARAMs are in place for Phase 3. The page does not build an `lc_key`.
+- Deviation 2: the page passes its own one-row search result to the
+  plugin, so no second MAST search happens (the plan only needed the
+  identity). Without a search store the retrieve now fails fast; the old
+  own-search branch and its `sector=-1` substitute are deleted.
+- `skvo_veb/utils/lightkurve_cache.py` now only serves the original FITS
+  (Ticket 21) and resolves the path through the plugin
+  (`archive_cache.pointer_path`). Its old tests are replaced by four
+  tests of that reader; the moved tests live in the plugin suite.
+- Not done: a server-side `flask_caching` layer keyed by TIC, sector,
+  author, exptime. The shared Lightkurve file cache is the cache.
+- Verified: plugin tests 29 passed; `skvo_veb/tests` 599 passed and the
+  same 5 failures as before this work. No live MAST retrieve or UI click
+  test was run.
+
+Original plan:
+
+Replace the page's own search / download / generic-HLSP reading with the
+plugin fetch (cached through the shared server cache; cache key from TIC,
+sector, author, exptime).
+
+**Decision (Ticket 21 pointer): the pointer travels inside the issued
+VOTable.**
+
+- The plugin writes three TABLE PARAMs in the issued VOTable, taken from
+  the same one-row Lightkurve search result it downloads:
+  `mast_obs_collection`, `mast_obs_id`, `mast_product_filename`
+  (the same fields Ticket 21 stores today).
+- The page calls the plugin with the product identity it already has from
+  its own search table (TIC, sector, author, exptime; the same payload as
+  `lc_key`), reads the three PARAMs from the returned VOTable, and stores
+  the pointer in the session cache exactly as
+  `remember_retrieved_mast_fits_pointer` does now.
+- "Download MAST FITS" is unchanged: it resolves
+  `<lightkurve cache>/mastDownload/<obs_collection>/<obs_id>/<product_filename>`
+  and fails fast when the file is gone.
+- Plugin API stays `fetch_lightcurve(lc_key) -> bytes`; no new return
+  type. The page builds the `lc_key` with the plugin's own encoder.
+- Both sides use Lightkurve's default cache directory
+  (`lightkurve.config.get_cache_dir()`). TARS is downloaded by the plugin
+  into the same directory layout, so the pointer resolves there as well.
+- Rejected: a second MAST query on the page to recompute the pointer
+  (extra request, can drift), and a richer return type from the plugin
+  (breaks the shared provider contract).
+
+**Decision (cache maintenance): it moves into the plugin.** The plugin
+owns everything about getting a readable FITS from the shared Lightkurve
+cache; the page keeps none of it. The plugin package does not import
+`skvo_veb` and raises `ValueError` / `RuntimeError`, not `PipeException`;
+the page turns those into its own alerts.
+
+Moves from `skvo_veb/utils/lightkurve_cache.py` into
+`lc_discovery/providers/tess/tess_fetch.py` (or a sibling module in the
+same provider):
+
+- Expected-path lookup and cache hit
+  (`<cache>/mastDownload/<obs_collection>/<obs_id>/<productFilename>`),
+  and the astroquery download on a miss (`ensure_mast_product_fits`).
+  This replaces the plugin's current `_download_generic_product`, so the
+  plugin has one download path for all authors.
+- Failure classification from the exception cause chain
+  (`truncated_cache`, `unsupported_product`, `other`) and the canned
+  "interrupted download" sentence stripping.
+- Purge and one re-download **only** for a truncated FITS. Never purge
+  for an unsupported or generic-reader failure.
+- Opening: typed products with `quality_bitmask='default'`; generic HLSPs
+  (TARS) with `read(path)` only when HDU 1 has `TIME` and `FLUX`.
+- Honest British English error messages for those classes.
+
+Stays or is deleted in the page:
+
+- `mast_pipeline_fits_pointer`, `_path_from_mast_fits_pointer` and the
+  FITS download resolver stay (Ticket 21; they only read the pointer and
+  the file).
+- The rest of `lightkurve_cache.py` (search-row download with recovery,
+  classification, open) is deleted after the plugin takes over. Move the
+  related tests (`test_lightkurve_cache.py`) to the plugin test suite.
+
+Locked: one retry at most; no silent fallback to another author or
+product; the pointer PARAMs in the VOTable are written from the same
+search row the plugin downloaded.
+
+#### Phase 3 — Choose the column from VOTable roles — **REVERTED on the page (developer decision)**
+
+The Series radio, `tess_series.py` and the VOTable path were removed from the page. The registry, the NaN error fill, the `sector=-1` substitute and the author-based units are back, awaiting a decision. Background selection on the page needs a new design.
+
+
+**What was built.**
+
+- Plugin: table PARAM `flux_origin`; a background error now shares the
+  background PhotCal group.
+- `volightcurve`: a column with a declared UCD (for example
+  `instr.background`) is no longer picked as the label column and its UCD
+  is no longer overwritten with `meta.id`. This bug made the background
+  column the row label.
+- Page: new `utils/tess_series.py` (roles by UCD, default from
+  `flux_origin`), `lc_bridge.paired_error_column` and
+  `volc_to_curvedash(phot_col=)`, `tess_lc_builder.curvedash_from_issued_votable`.
+  A "Series" radio on the Plot tab lists the columns; rePlot uses it.
+  Period and epoch (TARS) come from the table PARAMs.
+- Deleted: `resolve_photcal`, `archive_flux_unit_for_pipeline`,
+  `serialise_lightkurve_flux_unit`, `is_*_pipeline`, the NaN error fill,
+  the `sector=-1` substitute, `flux_radio_options_for_rows`, and the whole
+  `tess_flux_column_registry.py` with its test (this covers Phase 4's
+  deletion; see Phase 4). Tests that needed author-based PhotCal use
+  `tests/tess_photcal_fixtures.py`.
+- Verified with the real cached SPOC files (default `pdcsap_flux`, its
+  error, `electron s-1`, options `pdcsap_flux`, `sap_flux`, `sap_bkg`);
+  `skvo_veb/tests` 582 passed, same 5 failures as before; plugin tests pass.
+  No browser click-through was done.
+
+**Open points to decide.**
+
+- "No error" is shown in the radio label, but `CurveDash` still stores a
+  missing error as zeros (flux errors `<= 0` become NaN). Making it truly
+  absent needs a `CurveDash` change that also touches plots, export and
+  GP code.
+- When a product has several flux columns and declares no
+  `FLUX_ORIGIN`, the retrieve fails with a message listing the columns,
+  because the radio exists only after a retrieve.
+
+Original plan:
+
+- Build the flux radio from the VOTable: flux, mag, and background
+  columns, labelled with the file's column names.
+- Build the `CurveDash` from the chosen column, its error column (if any,
+  by the shared PhotCal group) and its unit.
+- Delete `storage_flux_unit_for_selection`,
+  `archive_flux_unit_for_pipeline`, the NaN error fill, the `-1` sector,
+  and the author-based `resolve_photcal` branches.
+- Show "no error" explicitly for columns without one.
+
+#### Phase 4 — Remove the duplicate registry — **not done (registry restored)**
+
+Done: `tess_flux_column_registry.py` and its test are deleted;
+`parse_sector_from_mission_label` moved to `tess_lc_search.py`. Left:
+the TESS-specific constants and comments in `mission_config/tess.py`
+that no code uses, the plugin `columns.py` header, and the older docs
+(`tess_background_lightkurve.md`, `scripts/tess_*registry.py`).
+
+Original plan:
+
+Delete `tess_flux_column_registry.py` and the TESS-specific parts of
+`mission_config/tess.py` once nothing imports them. Keep only what the
+cutout page still needs (check `tess_cutout.py` before deleting).
+Update the plugin `columns.py` header (no longer "copied from host").
+
+### Locked constraints
+
+1. No silent defaults: no invented unit, error, flux column, or sector.
+2. The choice of the plotted column is the page's job. The plugin issues
+   everything it understood and never chooses.
+3. Do not change Lightkurve itself.
+4. Ticket 16 (TPF lock) is a different race; do not merge.
+5. The cutout page (`/tess_cutout`) is out of scope except where it still
+   imports TESS helpers that Phase 4 would delete.
+
+### Agent checklist
+
+- [x] ``corr_flux`` error formula removed from
+      ``apply_flux_column_selection``.
+- [x] Phase 0: docs (`tess.md`, `lightcurve_data_flow.md` describe the target contract; old registry marked *(current)*).
+- [x] Phase 1: remove stitching traces; tests green (done: builder takes exactly one row, `stitched` parameter/flag/branches/text and `_is_stitched_lightcurve`, `_strip_zero_points_from_photcal`, `merge_flux_radio_options`, `effective_flux_method_for_selection` deleted; stitching tests removed).
+- [ ] Phase 2: reverted on the page (no plugin on /tess_lc).
+- [ ] Phase 3 (reverted; to be redesigned with the developer): column choice by VOTable roles; background option;
+      no invented values.
+- [ ] Phase 4: delete the duplicate registry and author-based rules.
+
+### Status
+
+**Open.** Plan agreed; implement phase by phase when the developer asks.
+

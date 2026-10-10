@@ -545,30 +545,6 @@ def build_flux_radio_options(
     return options
 
 
-def merge_flux_radio_options(option_lists: Sequence[list[dict[str, str]]]) -> list[dict[str, str]]:
-    """Merges flux radio options from several rows, preserving default first.
-
-    Args:
-        option_lists (sequence): Option lists from ``build_flux_radio_options``.
-
-    Returns:
-        list[dict]: De-duplicated Dash RadioItems options.
-    """
-    merged: dict[str, dict[str, str]] = {}
-    ordered_values: list[str] = []
-    for options in option_lists:
-        for opt in options:
-            value = opt["value"]
-            if value not in merged:
-                ordered_values.append(value)
-            merged[value] = opt
-    if FLUX_METHOD_DEFAULT in merged:
-        ordered_values = [FLUX_METHOD_DEFAULT] + [
-            v for v in ordered_values if v != FLUX_METHOD_DEFAULT
-        ]
-    return [merged[v] for v in ordered_values]
-
-
 def apply_flux_column_selection(
     lc,
     author: str,
@@ -637,16 +613,6 @@ def apply_flux_column_selection(
     if spec.flux_err_col is not None:
         err_key = normalize_lc_column(spec.flux_err_col)
         lc.flux_err = lc[lower_map[err_key]]
-    elif (
-        flux_key == "corr_flux"
-        and "raw_flux" in lower_map
-        and "raw_flux_err" in lower_map
-    ):
-        lc.flux_err = (
-            lc[lower_map[flux_key]]
-            * lc[lower_map["raw_flux_err"]]
-            / lc[lower_map["raw_flux"]]
-        )
     else:
         lc.flux_err = np.full(len(lc.flux), np.nan)
         logger.warning(

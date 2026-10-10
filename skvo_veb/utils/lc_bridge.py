@@ -660,7 +660,8 @@ def photometry_yaxis_title(view_mode: str, meta: dict) -> str:
             ``mag_unit``, and ``photcal``).
 
     Returns:
-        str: Axis title such as ``flux,Jy`` or ``magnitude,mag``.
+        str: Axis title such as ``flux,Jy`` or ``magnitude,mag``; plain
+        ``flux`` when the column has no unit.
     """
     if view_mode == DOMAIN_MAG:
         unit = str(meta.get("mag_unit") or "mag").strip() or "mag"
@@ -668,10 +669,8 @@ def photometry_yaxis_title(view_mode: str, meta: dict) -> str:
 
     flux_unit = to_internal(meta.get("flux_unit"))
     if flux_unit is None:
-        photcal = meta.get("photcal") or {}
-        flux_unit = to_internal(photcal.get(PHOTCAL_KEY_ZP_FLUX_UNIT))
-    unit = to_display(flux_unit)
-    return f"flux,{unit}"
+        return "flux"
+    return f"flux,{to_display(flux_unit)}"
 
 
 def unpack_json_for_plotly(json_str: str, view_mode='mag'):
@@ -1052,27 +1051,6 @@ def build_curvedash_title(lcd) -> str:
     if parts:
         return ' '.join(parts)
     return name or lookup or 'Uploaded lightcurve'
-
-
-def _strip_zero_points_from_photcal(photcal: dict | None) -> dict:
-    """Removes zero-point keys while preserving filter passband metadata.
-
-    Args:
-        photcal (dict, optional): Serialised photcal GROUP metadata.
-
-    Returns:
-        dict: Photcal metadata without absolute calibration fields.
-    """
-    pc = dict(photcal or {})
-    for key in (
-        PHOTCAL_KEY_ZP_FLUX,
-        PHOTCAL_KEY_ZP_FLUX_UNIT,
-        PHOTCAL_KEY_ZP_MAG,
-        PHOTCAL_KEY_ZP_MAG_UNIT,
-        PHOTCAL_KEY_MAG_SYS,
-    ):
-        pc.pop(key, None)
-    return pc
 
 
 def photcal_from_metadata(photcal: dict | None) -> PhotCal:
@@ -1512,7 +1490,7 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     domain (magnitude or flux) without conversion. PhotCal is copied from the
     ``VOLightCurve`` photometry column (including MAG0-promoted ``.dat``
     calibration). ECSV header fields are merged afterwards; they do not wipe
-    zero points. Stitched products still drop zero points.
+    zero points.
 
     Rows are stable-sorted by absolute Julian Date before ``CurveDash`` is
     built (Skvo ingest boundary; file order in ``volightcurve`` is unchanged).
@@ -1655,9 +1633,6 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     _apply_tabular_meta_to_curvedash(lcd, meta)
     if absolute_epoch is not None:
         lcd.epoch = absolute_epoch
-    if meta.get('stitched') in (True, 'true', 'True', '1', 1):
-        lcd.metadata['stitched'] = True
-        lcd.metadata['photcal'] = _strip_zero_points_from_photcal(lcd.metadata.get('photcal'))
     for key in ('cutout_source', 'mask_mode'):
         if key in meta:
             lcd.metadata[key] = meta[key]
@@ -1796,8 +1771,6 @@ def curvedash_to_table(lcd) -> Table:
         )
         if exported_epoch is not None:
             meta_export["epoch"] = exported_epoch
-        if lcd.metadata.get('stitched'):
-            meta_export['stitched'] = 'true'
     if lcd.title:
         meta_export['title'] = lcd.title
     elif lcd.name:
@@ -2032,11 +2005,9 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
 
     filter_identifier = photcal.get(PHOTCAL_KEY_FILTER_IDENTIFIER) or None
 
-    is_stitched = _is_stitched_lightcurve(lcd)
     include_zero_points = (
         photcal.get(PHOTCAL_KEY_ZP_FLUX) is not None
         and photcal.get(PHOTCAL_KEY_ZP_MAG) is not None
-        and not is_stitched
     )
     photcal_fields = _photcal_group_to_votable_fields(
         photcal,
@@ -2159,7 +2130,6 @@ def _curvedash_to_export_volc(lcd) -> VOLightCurve:
         "mask_mode",
         "flux_correction",
         "title",
-        "stitched",
     ):
         if meta.get(key) is not None:
             tab.meta[key] = meta[key]
@@ -2286,25 +2256,6 @@ def export_curvedash(lcd, table_format: str, profile: str | None = None) -> byte
         return write_lightcurve(volc, table_format)
     except LightcurveIOError as exc:
         raise _map_io_error(exc) from exc
-
-
-def _is_stitched_lightcurve(lcd) -> bool:
-    """Detects whether a lightcurve was produced by sector stitching.
-
-    Stitching applies arithmetic normalisation across sectors, so pipeline
-    photometric zero points are no longer valid for the combined flux scale.
-
-    Args:
-        lcd (CurveDash): Application lightcurve state container.
-
-    Returns:
-        bool: True if the curve is stitched.
-    """
-    meta = lcd.metadata or {}
-    if meta.get('stitched') in (True, 'true', 'True', '1', 1):
-        return True
-    title = meta.get('title') or getattr(lcd, 'title', None) or ''
-    return str(title).startswith('Stitched curve')
 
 
 def main():

@@ -2,17 +2,27 @@
 
 This note describes how TESS archive products (`/tess_lc`) and user FFI/TPF
 cutouts (`/tess_cutout`) are calibrated and how pipeline-specific columns are
-selected. Implementation lives in `skvo_veb/utils/mission_config/tess.py` and
-`skvo_veb/utils/tess_flux_column_registry.py`. Pages must not duplicate zero
-points or column names.
+selected.
+
+> **Target contract (Ticket 22 in [TODO.md](TODO.md)).** `/tess_lc` reads
+> the calibrated VOTable issued by the `lc_discovery` TESS provider and only
+> **chooses a column** from it. Roles, units and PhotCal are those of the
+> issued table; the page has no author tables of its own. The provider
+> rules are in the sibling package, `lc_discovery/docs/providers/tess.md`
+> (sections 2 to 4: retrieval, roles from `FLUX_ORIGIN`, units read from the
+> file, background UCDs, responsibility split). Until Ticket 22 phases 1 to
+> 4 are done, parts of the code still follow the old registry; sections
+> marked *(current)* below describe that code and will be deleted.
+> Cutouts (`/tess_cutout`) are not affected.
 
 ---
 
 ## 1. Photometric calibration
 
 TESS data reach the app in two photometric families. The PhotCal group on
-`CurveDash` follows the stored **flux unit**, not a single global TESS
-magnitude scale.
+`CurveDash` follows the **unit of the chosen column in the file** and the
+PhotCal group of the issued VOTable, not the author tag and not a single
+global TESS magnitude scale.
 
 ### 1.1 Electron per second (instrument zero point 20.44)
 
@@ -32,13 +42,17 @@ the same number and uncertainty, is the MIT TESS Transients README:
 <https://tess.mit.edu/public/tesstransients/pages/readme.html>
 
 Constants and the helper `instrument_electron_s_photcal()` live in
-`mission_config/tess.py`. The same pair is used for:
+`mission_config/tess.py` (used by the cutout page). For archive light
+curves the pair is written by the provider into the issued VOTable, and only
+when the **file unit** of the flux column is electron s-1 or counts per
+second. It is used for:
 
-- unstitched **SPOC** and **TESS-SPOC** archive light curves;
+- archive flux columns whose file unit is in that family (SPOC and
+  TESS-SPOC, and any other author whose file declares it);
 - user **TPF/FFI cutout** aperture sums (author tagged `user`).
 
 It is **not** applied to dimensionless QLP/TARS flux, TASOC `FLUX_CORR` (ppm
-stored as dimensionless), legacy stitched relative flux, or background columns.
+stored as dimensionless), or background columns.
 
 Cutout provenance must say that 20.44 makes magnitudes commensurable with
 SPOC **on the same unit**. A user mask aperture sum is not SPOC pipeline
@@ -71,59 +85,71 @@ only. `FLUX_CORR` is CBV residual in **ppm**, stored here as dimensionless
 does not currently receive the 20.44 instrument pair unless we decide that
 explicitly later.
 
-### 1.3 Stitching
+### 1.3 One product per retrieve
 
-The archive page (`/tess_lc`) does **not** stitch sectors. Retrieve copies
-native pipeline flux from the selected search row. There is no
-`LightCurveCollection.stitch()` path and no `metadata['stitched']` on
-new products.
-
-Older VOTables that still carry `stitched=true` (relative flux
-normalisation) are ingested defensively: PhotCal keeps passband metadata
-and omits pipeline zero points, and magnitude conversion is refused. We
-do not invent zero points for those files. 
+The archive page (`/tess_lc`) retrieves **one** search row. It does not
+merge sectors or products, and there is no stitching of any kind: no
+`LightCurveCollection.stitch()`, no `stitched` flag, no relative-flux
+normalisation. Old VOTables that carry `stitched=true` get no special
+handling (the remaining code was removed in Ticket 22, phase 1).
 
 ### 1.4 Background
 
 Background time series (for example `SAP_BKG`, `FLUX_BKG`) are not target
-photometry. Magnitude conversion is refused. A missing background **error**
-column does not hide the background radio; `flux_err` is then NaN.
+photometry. They carry their own role in the issued VOTable
+(`instr.background`, no `phot.flux`) and never receive a magnitude zero
+point. The user may select a background column as the plotted series
+(a "background light curve"); it is never the default. Magnitude conversion
+is refused for it. A background column without an error column has no
+error: the page shows that explicitly and does not invent one.
 
 ---
 
 ## 2. Pipeline products: columns and metadata
 
-MAST/Lightkurve authors do not share one flux column. The archive Search tab
-offers **one selected row**. Flux radios and PhotCal come from an explicit
-registry, not from guessing column names.
+MAST/Lightkurve authors do not share one flux column, and new pipelines
+appear without notice. The archive Search tab offers **one selected row**.
+The provider issues **every column** of the product; the page lets the user
+choose among those that carry a photometric role.
 
-### 2.1 Registry
+### 2.1 What the page offers
 
-`FLUX_COLUMN_REGISTRY` and `BACKGROUND_COLUMN_REGISTRY` in
-`tess_flux_column_registry.py` list, per author (and sometimes sector
-range):
+From the issued VOTable (roles by UCD):
 
-- photometry column and optional error column;
-- calibration class (`physical` electron s-1 vs `normalized_catalog`
-  dimensionless);
-- optional `zp_mag_source` (`TESSMAG` for QLP/TARS photometry columns).
+- columns with a **flux** role (`phot.flux`) or **magnitude** role
+  (`phot.mag`), with the error column that shares their PhotCal group;
+- **background** columns (`instr.background`), selectable explicitly;
+- columns with no role are **not** selectable (they remain in the issued
+  table and in any export).
 
-Unknown authors fail at ingest. We do not invent `PDCSAP_FLUX` for a generic
-HLSP.
+The default choice is made **by the page**, from the column the provider
+marked as the Lightkurve target flux (`FLUX_ORIGIN`), not from a table of
+author names. The provider never chooses.
 
-### 2.2 How ingest uses the file
+### 2.2 How the page uses the file
 
-`tess_lc_builder.create_lc_from_selected_rows` downloads via
-`lightkurve_cache`, then `apply_flux_column_selection`. Flux **units** on
-`CurveDash` follow the selected Lightkurve column, except:
+1. The page calls the provider with the product identity it has from its
+   own search table (TIC, sector, author, exptime; the same payload as the
+   Discovery `lc_key`).
+2. The provider downloads or reuses the FITS in the shared Lightkurve
+   cache, repairs a truncated cached file once, reads it (generic HLSPs
+   such as TARS without `quality_bitmask`), checks that time is BTJD / TDB,
+   and issues the VOTable.
+3. The page reads the chosen column, its error column (if any), its unit
+   and its PhotCal group from that VOTable. Nothing is derived from the
+   author tag; nothing is invented (no unit default, no NaN error column,
+   no substitute sector).
+4. The VOTable carries the pointer to the original FITS
+   (`mast_obs_collection`, `mast_obs_id`, `mast_product_filename`); the page
+   stores it for **Download MAST FITS** (Ticket 21).
 
-- QLP and TARS stay dimensionless even if Lightkurve labels differ;
-- **ppm** is stored as dimensionless;
-- other physical units (electron / s) are preserved via
-  `serialise_lightkurve_flux_unit`.
+### 2.2a Page code path (current)
 
-`resolve_photcal` in `tess.py` then attaches PhotCal from author and
-optional TESSMAG collected from product `meta`.
+`/tess_lc` does not use the `lc_discovery` plugin. It searches with
+Lightkurve, reads the cached FITS through `lightkurve_cache`, and selects
+the column in `tess_flux_column_registry` (the old registry). One row per
+Retrieve; no stitching. Ticket 22 phases 2 and 3 were reverted on the page
+by the developer; any column-choice redesign must be agreed first.
 
 ### 2.3 Pipeline notes (as implemented)
 
@@ -136,7 +162,8 @@ optional TESSMAG collected from product `meta`.
 | TGLC, GSFC-ELEANOR-LITE, Kepler | See registry | Not TESSMAG-20.44; TGLC may cite GAIAMAG in notes |
 
 TARS FITS is a generic `TIME`+`FLUX` HLSP. Retrieve must not pass
-`quality_bitmask` into Lightkurve’s generic reader (Ticket 18).
+`quality_bitmask` into Lightkurve’s generic reader (Ticket 18); the
+provider downloads it with astroquery and reads it with `lk.read(path)`.
 
 ### 2.4 Cutouts versus archive
 
@@ -150,11 +177,16 @@ Archive HLSPs keep author-specific columns and the rules in §1–2.3.
 
 ### 2.5 What we do not do
 
-- Silent fallbacks or dummy flux errors (NaN is allowed when the file has
-  no error column).
-- Applying 20.44 to normalised QLP/TARS flux.
+- Silent fallbacks, defaults or invented values: no unit default, no flux
+  error column (formula or NaN) when the file has none, no substitute
+  sector, no author-based PhotCal.
+- Stitching, merging sectors or products.
+- Applying 20.44 to normalised QLP/TARS flux, or to any column whose file
+  unit is not electron s-1 or counts per second.
 - Applying TESSMAG PhotCal to TASOC `FLUX_CORR` ppm.
 - Treating TESSMAG as a SPOC-style electron s-1 zero point.
+- Choosing the plotted column in the provider, or offering columns that have
+  no role.
 
 For background extraction details on SPOC/QLP/cutout, see
 [tess_background_lightkurve.md](tess_background_lightkurve.md).

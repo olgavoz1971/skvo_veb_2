@@ -98,31 +98,6 @@ def test_tess_export():
     assert "zeroPointReferenceMagnitude" in xml_qlp_cal
     assert "11.42" in xml_qlp_cal
 
-    lcd_stitched = CurveDash(
-        name="TIC 159717514",
-        lookup_name="My Target",
-        jd=jd,
-        flux=flux,
-        flux_err=flux_err,
-        label=np.array([40, 41, 41], dtype=np.uint8),
-        time_unit="d",
-        timescale="tdb",
-        flux_unit="relative flux",
-    )
-    lcd_stitched.metadata['ra'] = 256.698
-    lcd_stitched.metadata['dec'] = -54.050
-    lcd_stitched.metadata['authors'] = ["SPOC"]
-    lcd_stitched.metadata['sectors'] = ["40", "41"]
-    lcd_stitched.metadata['flux_origins'] = ["pdcsap"]
-    lcd_stitched.metadata['stitched'] = True
-    lcd_stitched.metadata['photcal'] = resolve_tess_photcal(lcd_stitched.metadata['authors'], stitched=True)
-
-    xml_stitched = export_curvedash(lcd_stitched, 'votable_binary', profile='tess').decode('utf-8')
-    assert "zeroPointFlux" not in xml_stitched
-    assert "zeroPointReferenceMagnitude" not in xml_stitched
-    assert "effectiveWavelength" in xml_stitched
-    assert "Photometric zero points are omitted" in xml_stitched
-
     buf_spoc = io.BytesIO(export_curvedash(lcd, 'votable_binary', profile='tess'))
     lc = VOLightCurve(buf_spoc)
     assert len(lc) == 3

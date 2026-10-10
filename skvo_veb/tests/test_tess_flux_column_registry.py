@@ -16,7 +16,6 @@ from skvo_veb.utils.tess_flux_column_registry import (
     default_flux_option_label,
     get_photometry_spec,
     list_available_photometry_specs,
-    merge_flux_radio_options,
     normalize_lc_column,
     storage_flux_unit_for_selection,
 )
@@ -107,25 +106,6 @@ def test_build_flux_radio_options_includes_default_and_explicit_columns():
     assert "sap_flux" in values
 
 
-def test_merge_flux_radio_options_keeps_default_first():
-    """Merged multi-row options keep default flux first."""
-    a = build_flux_radio_options(
-        "SPOC",
-        4,
-        colnames=["pdcsap_flux", "pdcsap_flux_err", "sap_flux", "sap_flux_err"],
-        default_origin="pdcsap_flux",
-    )
-    b = build_flux_radio_options(
-        "QLP",
-        60,
-        colnames=["sap_flux", "sap_flux_err", "det_flux", "det_flux_err"],
-        default_origin="det_flux",
-    )
-    merged = merge_flux_radio_options([a, b])
-    assert merged[0]["value"] == FLUX_METHOD_DEFAULT
-    values = {opt["value"] for opt in merged}
-    assert "sap_flux" in values
-    assert "det_flux" in values
 
 
 def test_build_flux_radio_options_single_qlp_includes_background():
@@ -215,19 +195,6 @@ def test_apply_flux_column_selection_missing_column_raises():
         apply_flux_column_selection(lc, "SPOC", 4, "sap_flux")
 
 
-def test_effective_flux_method_for_selection_multi_row_forces_default():
-    """Multi-row builds ignore a stale single-row flux radio value."""
-    from skvo_veb.utils.tess_lc_builder import effective_flux_method_for_selection
-
-    rows = [{"#": 0, "author": "QLP"}, {"#": 1, "author": "QLP"}]
-    assert (
-        effective_flux_method_for_selection(rows, None, "sap_flux")
-        == FLUX_METHOD_DEFAULT
-    )
-    assert (
-        effective_flux_method_for_selection(rows, None, FLUX_METHOD_BACKGROUND)
-        == FLUX_METHOD_DEFAULT
-    )
 
 
 def test_build_flux_radio_options_gsfc_eleanor_lite():

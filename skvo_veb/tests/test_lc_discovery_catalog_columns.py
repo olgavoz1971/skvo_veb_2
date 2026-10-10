@@ -54,6 +54,34 @@ def test_catalog_columns_respect_object_class_capability():
     assert "object_class" not in _fields(without_class)
 
 
+def test_catalog_extra_columns_append_after_filter():
+    """Provider extras appear after Filter with the declared headers."""
+    extras = (
+        SimpleNamespace(field="extra_a", header="A"),
+        SimpleNamespace(field="extra_b", header="B"),
+    )
+    defs = catalog_column_defs_for_capabilities(
+        _caps(catalog_extra_columns=extras)
+    )
+    fields = _fields(defs)
+    assert fields[fields.index("filter_name") + 1] == "extra_a"
+    assert fields[fields.index("filter_name") + 2] == "extra_b"
+    by_field = {col["field"]: col for col in defs}
+    assert by_field["extra_a"]["headerName"] == "A"
+    assert by_field["extra_b"]["headerName"] == "B"
+
+
+def test_tess_catalog_extra_columns():
+    """TESS discovery shows Sector, Exp, and Author; other missions do not."""
+    tess_fields = _fields(catalog_column_defs_for_mission("tess"))
+    i = tess_fields.index("filter_name")
+    assert tess_fields[i + 1 : i + 4] == ["sector", "exp", "author"]
+    asassn_fields = _fields(catalog_column_defs_for_mission("asassn"))
+    assert "sector" not in asassn_fields
+    assert "exp" not in asassn_fields
+    assert "author" not in asassn_fields
+
+
 def test_catalog_columns_respect_n_points_capability():
     """N column appears only when epoch counts are part of discovery metadata."""
     with_n = catalog_column_defs_for_capabilities(
@@ -104,3 +132,27 @@ def test_numeric_catalog_columns_use_display_formatters_and_raw_export():
     assert ra_col["valueFormatter"] == {"function": "lcDiscoveryFmtRaDec(params)"}
     assert ra_col["useValueFormatterForExport"] is False
     assert ra_col["cellClass"] == "lc-discovery-catalog-cell-numeric"
+
+
+def test_object_column_is_first_and_widths_are_fixed():
+    """Object is first and unpinned; other columns have deterministic widths."""
+    defs = catalog_column_defs_for_capabilities(_caps())
+    assert defs[0]["field"] == "object_name"
+    assert "pinned" not in defs[0]
+    assert defs[1]["field"] == "distance_arcsec"
+    assert "pinned" not in defs[1]
+    for col in defs[1:]:
+        assert col["width"] >= col["minWidth"]
+        assert col["width"] <= col["maxWidth"]
+
+
+def test_extra_column_width_is_provider_declared_or_narrow_default():
+    """Extras use the declared width, else the narrow host default."""
+    extras = (
+        SimpleNamespace(field="extra_a", header="A", width=56),
+        SimpleNamespace(field="extra_b", header="B"),
+    )
+    defs = catalog_column_defs_for_capabilities(_caps(catalog_extra_columns=extras))
+    by_field = {col["field"]: col for col in defs}
+    assert by_field["extra_a"]["width"] == 56
+    assert by_field["extra_b"]["width"] == 64

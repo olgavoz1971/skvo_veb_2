@@ -80,7 +80,7 @@ from skvo_veb.utils.lc_session_cache import (
 )
 from skvo_veb.utils.tess_lc_builder import (
     create_lc_from_selected_rows,
-    effective_flux_method_for_selection,
+    flux_radio_options_for_rows,
 )
 from skvo_veb.utils.tess_flux_column_registry import FLUX_METHOD_DEFAULT
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
@@ -303,6 +303,15 @@ def layout():
             dbc.Tab(label='Plot', children=[
                 dbc.Row([
                     dbc.Col([
+                        html.Details([
+                            html.Summary('Flux options', style={'font-size': group_label_font_size}),
+                            dcc.RadioItems(  # type : ignore
+                                id='flux_tess_lc_srv_switch',
+                                options=[],   # type: ignore
+                                value=FLUX_METHOD_DEFAULT,
+                                labelStyle=switch_label_style,
+                            ),
+                        ], style={'marginBottom': '5px'}),  # Flux options
                         dbc.Switch(
                             id='mag_view_tess_lc_srv_switch',
                             label='Magnitude',
@@ -857,6 +866,54 @@ def restore_lc_srv_search_table(search_store, current_rows):
 
 
 @callback(
+    Output('flux_tess_lc_srv_switch', 'options'),
+    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('data_tess_lc_srv_table', 'selectedRows'),
+    State('data_tess_lc_srv_table', 'rowData'),
+    State('store_tess_lc_search_result', 'data'),
+    State('flux_tess_lc_srv_switch', 'value'),
+    prevent_initial_call=True,
+)
+def update_flux_radio_options(selected_rows, table_data, search_store, current_value):
+    """Updates flux-column radio choices from registry metadata for the selected row.
+
+    Args:
+        selected_rows (list): Selected AgGrid rows.
+        table_data (list): Full AgGrid row data.
+        search_store (dict): Serialised TESS search result.
+        current_value (str): Currently chosen flux method.
+
+    Returns:
+        tuple: Radio options and the value to keep or reset to the default.
+
+    Raises:
+        PreventUpdate: When nothing is selected or no options are available.
+    """
+    if not selected_rows:
+        raise PreventUpdate
+    options = flux_radio_options_for_rows(selected_rows, table_data, search_store)
+    if not options:
+        raise PreventUpdate
+    if len(selected_rows) > 1:
+        return options, FLUX_METHOD_DEFAULT
+    allowed = {opt['value'] for opt in options}
+    if current_value in allowed:
+        return options, dash.no_update
+    return options, FLUX_METHOD_DEFAULT
+
+
+@callback(
+    Output('flux_tess_lc_srv_switch', 'options', allow_duplicate=True),
+    Output('flux_tess_lc_srv_switch', 'value', allow_duplicate=True),
+    Input('store_tess_lc_search_result', 'data'),
+    prevent_initial_call=True,
+)
+def reset_flux_on_new_search(_search_store):
+    """Resets the flux choice when a new MAST search replaces the sector table."""
+    return [], FLUX_METHOD_DEFAULT
+
+
+@callback(
     Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
     Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
     Input('store_user_tab_id_tess_lc_srv', 'data'),
@@ -918,6 +975,7 @@ def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXI
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
         selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
+        flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
         search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
@@ -926,7 +984,7 @@ def plot_lc(js_lightcurve: str, phase_view: bool, time_axis_mode: str = TIME_AXI
     ),
     prevent_initial_call=True
 )
-def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, metadata,
+def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, flux_method, metadata,
                            search_store, phase_view, period, epoch):
     if n_clicks is None:
         raise PreventUpdate
@@ -935,9 +993,6 @@ def replot_selected_curves(n_clicks, user_tab_id, selected_rows, table_data, met
         period = safe_float(period)
         epoch_abs = absolute_jd_from_display_epoch(epoch, jd0)
         epoch = epoch_abs if epoch_abs is not None else epoch
-        flux_method = effective_flux_method_for_selection(
-            selected_rows, table_data, FLUX_METHOD_DEFAULT
-        )
         lc = create_lc_from_selected_rows(
             selected_rows,
             table_data,
@@ -1492,6 +1547,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
         user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
         selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
         table_data=State('data_tess_lc_srv_table', 'data'),
+        flux_method=State('flux_tess_lc_srv_switch', 'value'),
         metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
         search_store=State('store_tess_lc_search_result', 'data'),
         phase_view=State('fold_tess_lc_srv_switch', 'value'),
@@ -1501,7 +1557,7 @@ def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
              (Output('cancel_download_tess_lc_srv_button', 'disabled'), False, True)],
     cancel=[Input('cancel_download_tess_lc_srv_button', 'n_clicks')],
     prevent_initial_call=True)
-def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, metadata,
+def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, flux_method, metadata,
                                search_store, phase_view):
     """
     This method checks for the presence of light curves in the local cache.
@@ -1527,9 +1583,6 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     try:
         # Store the loaded light curve into dcc.Store
         # Store a loaded light curve on the server side in the DiskCache instead
-        flux_method = effective_flux_method_for_selection(
-            selected_rows, table_data, FLUX_METHOD_DEFAULT
-        )
         payload = create_lc_from_selected_rows(
             selected_rows,
             table_data,

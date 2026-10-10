@@ -1,30 +1,72 @@
-"""Tests for Lightcurve Discovery Aladin helpers."""
+"""Tests for Lightcurve Discovery Aladin and selection helpers."""
+
+import pytest
 
 from skvo_veb.utils.lc_discovery_aladin import (
     aladin_fov_degrees,
     aladin_marker_name,
     aladin_target_from_metadata,
-    catalog_row_from_cell_clicked,
     catalog_rows_to_aladin_stars,
-    find_catalog_row_by_aladin_name,
+    rows_for_source,
+    selection_after_map_click,
 )
 from skvo_veb.utils.lc_discovery_search import SEARCH_MODE_CONE
 
 
-def test_catalog_rows_to_aladin_stars_uses_aladin_name():
-    """Each table row becomes one Aladin marker keyed by its display name."""
-    rows = [
-        {
-            "lc_key": "gaia:1",
-            "aladin_name": "Gaia DR3 1 (G)",
-            "object_name": "Gaia DR3 1",
-            "filter_name": "G",
-            "ra_deg": 10.0,
-            "dec_deg": 20.0,
-        }
-    ]
-    stars = catalog_rows_to_aladin_stars(rows)
-    assert stars == [{"name": "Gaia DR3 1 (G)", "ra": 10.0, "dec": 20.0}]
+def _row(lc_key, object_name, ra=10.0, dec=-5.0):
+    """Builds a minimal catalogue row dict for tests."""
+    return {
+        "lc_key": lc_key,
+        "object_name": object_name,
+        "ra_deg": ra,
+        "dec_deg": dec,
+    }
+
+
+TESS_A = _row("tess:a", "TIC 1")
+TESS_B = _row("tess:b", "TIC 1")
+GAIA_G = _row("gaia:g", "Gaia DR3 1", 1.0, 2.0)
+GAIA_ONE = _row("gaia:one", "Gaia DR3 2", 3.0, 4.0)
+ROWS = [TESS_A, TESS_B, GAIA_G, GAIA_ONE]
+
+
+def test_marker_name_is_object_name_not_lc_key():
+    """The sky source identity is object_name, never lc_key."""
+    assert aladin_marker_name(TESS_A) == "TIC 1"
+    with pytest.raises(ValueError):
+        aladin_marker_name({"lc_key": "x"})
+
+
+def test_one_marker_per_source():
+    """Products of one source share a single marker."""
+    stars = catalog_rows_to_aladin_stars(ROWS)
+    assert [star["name"] for star in stars] == ["TIC 1", "Gaia DR3 1", "Gaia DR3 2"]
+    assert stars[0] == {"name": "TIC 1", "ra": 10.0, "dec": -5.0}
+
+
+def test_rows_for_source_and_first_index():
+    """Rows group by object_name in table order."""
+    assert rows_for_source(ROWS, "TIC 1") == [TESS_A, TESS_B]
+    assert rows_for_source(ROWS, "nope") == []
+    assert rows_for_source(ROWS, None) == []
+
+
+def test_map_click_keeps_selection_of_same_source():
+    """A selected row of the clicked source stays selected."""
+    assert selection_after_map_click(ROWS, "TIC 1", [TESS_B]) is None
+
+
+def test_map_click_selects_first_row_of_source():
+    """A clicked source selects its first row, also for multi-row sources."""
+    assert selection_after_map_click(ROWS, "TIC 1", None) == [TESS_A]
+    assert selection_after_map_click(ROWS, "TIC 1", [GAIA_G]) == [TESS_A]
+    assert selection_after_map_click(ROWS, "Gaia DR3 2", [TESS_A]) == [GAIA_ONE]
+
+
+def test_map_click_unknown_source_fails():
+    """A source without rows raises instead of guessing."""
+    with pytest.raises(ValueError):
+        selection_after_map_click(ROWS, "nope", None)
 
 
 def test_aladin_target_prefers_search_centre():
@@ -43,28 +85,3 @@ def test_aladin_fov_uses_cone_radius_diameter():
         "radius_unit": "arcmin",
     }
     assert aladin_fov_degrees(metadata, []) == 2.0 * 120.0 / 3600.0
-
-
-def test_find_catalog_row_by_aladin_name():
-    """Aladin marker names round-trip to AgGrid rows."""
-    row = {
-        "lc_key": "gaia:42",
-        "aladin_name": "Gaia DR3 42 (G)",
-        "object_name": "Gaia DR3 42",
-        "filter_name": "G",
-        "ra_deg": 1.0,
-        "dec_deg": 2.0,
-    }
-    assert find_catalog_row_by_aladin_name([row], aladin_marker_name(row)) is row
-
-
-def test_catalog_row_from_cell_clicked_uses_row_id():
-    """AgGrid cell clicks resolve rows through ``getRowId`` / ``lc_key``."""
-    row = {
-        "lc_key": "gaia:42",
-        "aladin_name": "Gaia DR3 42 (G)",
-        "ra_deg": 1.0,
-        "dec_deg": 2.0,
-    }
-    resolved = catalog_row_from_cell_clicked({"rowId": "gaia:42"}, [row])
-    assert resolved is row

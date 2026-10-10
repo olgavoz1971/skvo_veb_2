@@ -41,9 +41,9 @@ from skvo_veb.utils.lc_discovery_aladin import (
     aladin_remount_key,
     aladin_selected_star_from_row,
     aladin_target_from_metadata,
-    catalog_row_from_cell_clicked,
     catalog_rows_to_aladin_stars,
-    find_catalog_row_by_aladin_name,
+    rows_for_source,
+    selection_after_map_click,
 )
 from skvo_veb.utils.lc_discovery_load import (
     catalog_row_for_lc_key,
@@ -106,7 +106,6 @@ LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF = {
     'filter': False,
     'floatingFilter': False,
     'sortable': True,
-    'unSortIcon': True,
     'suppressHeaderFilterButton': True,
     'suppressHeaderMenuButton': True,
     'resizable': True,
@@ -523,11 +522,17 @@ def _search_tools_panel():
                 open=True,
             ),
         ],
-        lg=3,
-        md=4,
-        sm=5,
+
+        lg=2,
+        md=3,
+        sm=4,
         xs=12,
         style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'},
+        # lg=3,
+        # md=4,
+        # sm=5,
+        # xs=12,
+        # style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'},
     )
 
 
@@ -627,17 +632,17 @@ def _search_results_panel():
                 className='small text-warning mb-2',
                 style={'display': 'none'},
             ),
-            dbc.Row(
+            html.Div(
                 [
-                    dbc.Col(
-                        html.Div(
+                    html.Div(
+                        [
                             dag.AgGrid(
                                 id='lc_discovery_catalog_table',
                                 columnDefs=_discovery_catalog_column_defs(
                                     _default_mission_id()
                                 ),
                                 rowData=[],
-                                columnSize='autoSize',
+                                columnSize=None,
                                 defaultColDef=LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF,
                                 dashGridOptions={
                                     'theme': 'themeBalham',
@@ -646,7 +651,7 @@ def _search_results_panel():
                                     'rowSelection': {
                                         'mode': 'singleRow',
                                         'checkboxes': False,
-                                        # 'enableClickSelection': True,
+                                        'enableClickSelection': True,
                                     },
                                     'animateRows': False,
                                     'pagination': False,
@@ -664,14 +669,10 @@ def _search_results_panel():
                                 className='lc-discovery-catalog-aggrid ag-theme-balham',
                                 style={'height': '100%', 'width': '100%'},
                             ),
-                            className='lc-discovery-catalog-grid',
-                        ),
-                        lg=7,
-                        md=7,
-                        sm=12,
-                        xs=12,
+                        ],
+                        className='lc-discovery-catalog-grid',
                     ),
-                    dbc.Col(
+                    html.Div(
                         [
                             html.Div(
                                 _lc_discovery_aladin_placeholder(
@@ -686,24 +687,23 @@ def _search_results_panel():
                                 className='lc-discovery-aladin-hint text-muted mb-0',
                             ),
                         ],
-                        lg=5,
-                        md=5,
-                        sm=12,
-                        xs=12,
                         className='lc-discovery-aladin-col',
                     ),
                 ],
-                className='g-2 lc-discovery-catalog-body-row',
+                className='lc-discovery-catalog-body-row',
+                # Runtime value from the same constant as the Aladin applet size.
+                style={
+                    '--lc-discovery-aladin-width': f'{_LC_DISCOVERY_ALADIN_WIDTH}px'
+                },
             ),
             html.Div(id='lc_discovery_catalog_alert'),
             catalog_help_pop,
         ],
-        lg=9,
-        md=8,
-        sm=7,
+        lg=10,
+        md=9,
+        sm=8,
         xs=12,
     )
-
 
 def _discovery_empty_figure():
     """Returns the initial empty lightcurve figure with lasso selection enabled.
@@ -985,7 +985,11 @@ def _lightcurve_graph_panel():
         sm=8,
         xs=12,
     )
-
+        # lg=2,
+        # md=3,
+        # sm=4,
+        # xs=12,
+        # style={'padding': '10px', 'background': 'Silver', 'border-radius': '5px'},
 
 def layout():
     """Returns the Lightcurve Discovery page layout.
@@ -1043,7 +1047,7 @@ def layout():
             dcc.Store(id='store_lc_discovery_lc_revision', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_catalog', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_selected_key', **SESSION_STORE),
-            dcc.Store(id='store_lc_discovery_highlight_name', **SESSION_STORE),
+            dcc.Store(id='store_lc_discovery_focus_source', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_resolved_target', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_selected_perm', data=[]),
             dcc.Store(id='store_lc_discovery_zoom'),
@@ -1231,7 +1235,9 @@ def submit_catalog_search(
 
 @callback(
     Output('lc_discovery_aladin_container', 'children'),
-    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_focus_source', 'data', allow_duplicate=True),
+    Output('lc_discovery_catalog_table', 'selectedRows', allow_duplicate=True),
     Input('store_lc_discovery_resolved_target', 'data'),
     Input('store_lc_discovery_catalog', 'data'),
     prevent_initial_call='initial_duplicate',
@@ -1248,7 +1254,8 @@ def refresh_lc_discovery_aladin(search_metadata, catalog_store):
         catalog_store (list[dict], optional): Serialised catalogue row dicts.
 
     Returns:
-        tuple: Fresh Aladin view (or placeholder) and cleared highlight store.
+        tuple: Fresh Aladin view (or placeholder), then cleared product key,
+        focus source, and table selection.
 
     Raises:
         PreventUpdate: When neither store has content to show.
@@ -1261,117 +1268,104 @@ def refresh_lc_discovery_aladin(search_metadata, catalog_store):
         'store_lc_discovery_catalog',
     ):
         raise PreventUpdate
-    return _build_lc_discovery_aladin_view(rows, search_metadata), None
+    return _build_lc_discovery_aladin_view(rows, search_metadata), None, None, []
 
 
 @callback(
-    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
     Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
-    Input('lc_discovery_catalog_table', 'cellClicked'),
+    Output('store_lc_discovery_focus_source', 'data', allow_duplicate=True),
     Input('lc_discovery_catalog_table', 'selectedRows'),
-    State('store_lc_discovery_highlight_name', 'data'),
-    State('lc_discovery_catalog_table', 'rowData'),
+    State('store_lc_discovery_focus_source', 'data'),
     prevent_initial_call=True,
 )
-def update_lc_discovery_highlight_from_table(
-    cell_clicked,
-    selected_rows,
-    current_highlight_name,
-    row_data,
-):
-    """Records the active catalogue row from the AgGrid table only.
+def update_lc_discovery_selection_state(selected_rows, current_focus_source):
+    """Derives the Retrieve product and focused source from the table selection.
 
-    Kept separate from the Aladin ``selectedStar`` callback so restoring
-    catalogue ``rowData`` after navigation does not require ``lc_discovery_aladin``
-    to already exist in the layout.
+    The selected row (``lc_key``) is the only product identity. Selecting a row
+    also focuses its source (``object_name``). An empty selection clears the
+    product but leaves the focused source, so a map click that clears the
+    selection keeps its focus.
 
     Args:
-        cell_clicked (dict, optional): AgGrid ``cellClicked`` event payload.
-        selected_rows (list[dict]): AgGrid selected rows.
-        current_highlight_name (str, optional): Current highlight marker name.
-        row_data (list[dict]): Current AgGrid catalogue rows.
+        selected_rows (list[dict], optional): AgGrid selected rows.
+        current_focus_source (str, optional): Current focused source.
 
     Returns:
-        tuple: Marker name and ``lc_key`` for the highlighted row.
-
-    Raises:
-        PreventUpdate: When the highlight is unchanged or cannot be resolved.
+        tuple: Selected ``lc_key`` (or ``None``) and the focus source
+        (or ``no_update``).
     """
-    if not ctx.triggered:
-        raise PreventUpdate
-
-    triggered_prop = ctx.triggered[0]['prop_id']
-    _, _, triggered_field = triggered_prop.partition('.')
-
-    row = None
-    if triggered_field == 'cellClicked':
-        row = catalog_row_from_cell_clicked(cell_clicked, row_data or [])
-    elif selected_rows:
-        row = selected_rows[0]
-    if row is None:
-        raise PreventUpdate
-    if row.get('ra_deg') is None or row.get('dec_deg') is None:
-        raise PreventUpdate
-    highlight_name = aladin_marker_name(row)
-    lc_key = row.get('lc_key')
-    if highlight_name == current_highlight_name:
-        raise PreventUpdate
-    return highlight_name, lc_key
+    if not selected_rows:
+        return None, no_update
+    row = selected_rows[0]
+    source = aladin_marker_name(row)
+    return row.get('lc_key'), (no_update if source == current_focus_source else source)
 
 
 @callback(
-    Output('store_lc_discovery_highlight_name', 'data', allow_duplicate=True),
-    Output('store_lc_discovery_selected_key', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_focus_source', 'data', allow_duplicate=True),
+    Output('lc_discovery_catalog_table', 'selectedRows', allow_duplicate=True),
+    Output('lc_discovery_catalog_table', 'scrollTo', allow_duplicate=True),
     Input('lc_discovery_aladin', 'selectedStar'),
-    State('store_lc_discovery_highlight_name', 'data'),
     State('lc_discovery_catalog_table', 'rowData'),
+    State('lc_discovery_catalog_table', 'selectedRows'),
+    State('store_lc_discovery_focus_source', 'data'),
     prevent_initial_call=True,
 )
-def update_lc_discovery_highlight_from_aladin(
+def update_lc_discovery_focus_from_aladin(
     selected_star,
-    current_highlight_name,
     row_data,
+    selected_rows,
+    current_focus_source,
 ):
-    """Records the active catalogue row from an Aladin marker click.
+    """Focuses a source after a map marker click and adjusts the table selection.
+
+    Keeps a selected row of the same source; otherwise selects the first row of
+    the source and scrolls to it by row id.
 
     Args:
         selected_star (dict, optional): Aladin ``selectedStar`` payload.
-        current_highlight_name (str, optional): Current highlight marker name.
         row_data (list[dict]): Current AgGrid catalogue rows.
+        selected_rows (list[dict], optional): Current table selection.
+        current_focus_source (str, optional): Current focused source.
 
     Returns:
-        tuple: Marker name and ``lc_key`` for the highlighted row.
+        tuple: Focus source, new ``selectedRows`` (or ``no_update``), and
+        ``scrollTo`` for the first row of the source.
 
     Raises:
-        PreventUpdate: When the highlight is unchanged or cannot be resolved.
+        PreventUpdate: When the click does not resolve to a catalogue source.
     """
     if not selected_star or not selected_star.get('name') or not row_data:
         raise PreventUpdate
-    highlight_name = str(selected_star['name'])
-    matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
-    if matched_row is None:
+    source = str(selected_star['name'])
+    if not rows_for_source(row_data, source):
         raise PreventUpdate
-    if highlight_name == current_highlight_name:
+    new_selection = selection_after_map_click(row_data, source, selected_rows)
+    if new_selection is None and source == current_focus_source:
         raise PreventUpdate
-    return highlight_name, matched_row.get('lc_key')
+    shown_row = selected_rows[0] if new_selection is None else new_selection[0]
+    return (
+        no_update if source == current_focus_source else source,
+        no_update if new_selection is None else new_selection,
+        {'rowId': shown_row['lc_key']},
+    )
 
 
 @callback(
     Output('lc_discovery_aladin', 'selectedStar', allow_duplicate=True),
-    Input('store_lc_discovery_highlight_name', 'data'),
+    Input('store_lc_discovery_focus_source', 'data'),
     State('lc_discovery_catalog_table', 'rowData'),
     State('lc_discovery_aladin', 'selectedStar'),
     prevent_initial_call=True,
 )
-def sync_lc_discovery_highlight_to_aladin(highlight_name, row_data, current_star):
-    """Highlights an Aladin marker when the shared store changes from a table click.
+def sync_lc_discovery_focus_to_aladin(source, row_data, current_star):
+    """Selects the Aladin marker of the focused source.
 
-    Map clicks are already handled inside the Aladin component; this callback runs
-    only for table-driven highlight changes. It is registered against a dynamic id
-    (``suppress_callback_exceptions``); it only runs once Aladin is mounted.
+    Registered against a dynamic id (``suppress_callback_exceptions``); it only
+    runs once Aladin is mounted.
 
     Args:
-        highlight_name (str, optional): Shared marker name from the highlight store.
+        source (str, optional): Focused source (``object_name``).
         row_data (list[dict]): Current AgGrid catalogue rows.
         current_star (dict, optional): Current Aladin ``selectedStar`` payload.
 
@@ -1379,17 +1373,16 @@ def sync_lc_discovery_highlight_to_aladin(highlight_name, row_data, current_star
         dict: Updated Aladin ``selectedStar`` payload.
 
     Raises:
-        PreventUpdate: When the map already shows the requested marker.
+        PreventUpdate: When the map already shows the source or it is unknown.
     """
-    if not highlight_name or not row_data:
+    if not source or not row_data:
         raise PreventUpdate
-    if current_star and current_star.get('name') == highlight_name:
+    if current_star and current_star.get('name') == source:
         raise PreventUpdate
-
-    matched_row = find_catalog_row_by_aladin_name(row_data, highlight_name)
-    if matched_row is None:
+    source_rows = rows_for_source(row_data, source)
+    if not source_rows:
         raise PreventUpdate
-    return aladin_selected_star_from_row(matched_row)
+    return aladin_selected_star_from_row(source_rows[0])
 
 
 clientside_callback(
@@ -1409,17 +1402,6 @@ clientside_callback(
     Output('lc_discovery_time_max_input', 'placeholder'),
     Input('lc_discovery_time_max_format_select', 'value'),
 )
-
-clientside_callback(
-    ClientsideFunction(
-        namespace='clientside',
-        function_name='lcDiscoveryCatalogHighlightRules',
-    ),
-    Output('lc_discovery_catalog_table', 'dashGridOptions'),
-    Input('store_lc_discovery_highlight_name', 'data'),
-    prevent_initial_call=True,
-)
-
 
 @callback(
     output=dict(

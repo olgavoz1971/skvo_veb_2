@@ -19,31 +19,29 @@ logger = logging.getLogger(__name__)
 DEFAULT_ALADIN_TARGET = "0 0 0 +0 0 0"
 DEFAULT_ALADIN_FOV_DEG = 0.1
 _MIN_ALADIN_FOV_DEG = 0.01
+_SOURCE_SPREAD_WARN_ARCSEC = 10.0
 _CONE_SEARCH_MODES = frozenset({SEARCH_MODE_CONE, SEARCH_MODE_SIMBAD_CONE})
 
 
 def aladin_marker_name(row: dict) -> str:
-    """Returns a stable Aladin marker name for one catalogue row.
+    """Returns the sky-source identity of one catalogue row.
+
+    The source is ``object_name``; it names the Aladin marker and groups table
+    rows of one star. The product identity for Retrieve is ``lc_key``, never this.
 
     Args:
         row (dict): AgGrid row dict from ``catalog_rows_for_aggrid``.
 
     Returns:
-        str: Marker identifier used for table–map synchronisation.
+        str: ``object_name`` of the row.
+
+    Raises:
+        ValueError: When the row has no ``object_name``.
     """
-    explicit_name = row.get("aladin_name")
-    if explicit_name:
-        return str(explicit_name)
-
-    lc_key = row.get("lc_key")
-    if lc_key:
-        return str(lc_key)
-
-    object_name = str(row.get("object_name") or "object")
-    filter_name = str(row.get("filter_name") or "")
-    if filter_name:
-        return f"{object_name} ({filter_name})"
-    return object_name
+    object_name = row.get("object_name")
+    if not object_name:
+        raise ValueError("Catalogue row is missing object_name.")
+    return str(object_name)
 
 
 def aladin_remount_key(search_metadata: dict | None, rows: list[dict]) -> str:
@@ -69,12 +67,16 @@ def aladin_remount_key(search_metadata: dict | None, rows: list[dict]) -> str:
             ]
         )
     for row in rows[:3]:
-        parts.append(str(row.get("lc_key") or row.get("object_name") or ""))
+        parts.append(str(row.get("lc_key") or ""))
     return "|".join(parts)
 
 
 def catalog_rows_to_aladin_stars(rows: list[dict]) -> list[dict]:
     """Builds Aladin ``stars`` payloads from Discovery catalogue rows.
+
+    One marker is emitted per source (``object_name``) using the position of its
+    first row. A later row of the same source more than ``_SOURCE_SPREAD_WARN_ARCSEC``
+    away is logged as a provider contract violation.
 
     Args:
         rows (list[dict]): AgGrid ``rowData`` entries.
@@ -83,24 +85,31 @@ def catalog_rows_to_aladin_stars(rows: list[dict]) -> list[dict]:
         list[dict]: Markers with ``name``, ``ra``, and ``dec`` keys.
     """
     stars: list[dict] = []
+    by_name: dict[str, dict] = {}
     for row in rows:
         ra_deg = row.get("ra_deg")
         dec_deg = row.get("dec_deg")
         if ra_deg is None or dec_deg is None:
             continue
-        try:
-            stars.append(
-                {
-                    "name": aladin_marker_name(row),
-                    "ra": float(ra_deg),
-                    "dec": float(dec_deg),
-                }
-            )
-        except (TypeError, ValueError):
-            logger.warning(
-                "Skipping Aladin marker for row with invalid coordinates: %r",
-                row.get("object_name"),
-            )
+        name = aladin_marker_name(row)
+        ra_val = float(ra_deg)
+        dec_val = float(dec_deg)
+        known = by_name.get(name)
+        if known is not None:
+            separation = SkyCoord(
+                ra=known["ra"], dec=known["dec"], unit="deg", frame="icrs"
+            ).separation(SkyCoord(ra=ra_val, dec=dec_val, unit="deg", frame="icrs"))
+            if separation.arcsec > _SOURCE_SPREAD_WARN_ARCSEC:
+                logger.warning(
+                    "Source %r has rows %.1f arcsec apart; one object_name must "
+                    "identify one sky position.",
+                    name,
+                    separation.arcsec,
+                )
+            continue
+        star = {"name": name, "ra": ra_val, "dec": dec_val}
+        by_name[name] = star
+        stars.append(star)
     return stars
 
 
@@ -209,50 +218,49 @@ def aladin_selected_star_from_row(row: dict) -> dict:
     }
 
 
-def find_catalog_row_by_aladin_name(rows: list[dict], marker_name: str) -> dict | None:
-    """Finds the catalogue row matching an Aladin marker name.
+def rows_for_source(rows: list[dict], source_name: str | None) -> list[dict]:
+    """Lists the catalogue rows that belong to one sky source.
 
     Args:
         rows (list[dict]): Current AgGrid ``rowData``.
-        marker_name (str): Marker ``name`` from Aladin ``selectedStar``.
+        source_name (str, optional): Source identity (``object_name``).
 
     Returns:
-        dict or None: Matching row when found.
+        list[dict]: Rows with that ``object_name``, in table order.
     """
-    if not marker_name:
-        return None
-    for row in rows:
-        if aladin_marker_name(row) == marker_name:
-            return row
-    return None
+    if not source_name:
+        return []
+    return [row for row in rows if aladin_marker_name(row) == source_name]
 
 
-def catalog_row_from_cell_clicked(
-    cell_clicked: dict | None,
-    row_data: list[dict],
-) -> dict | None:
-    """Resolves a catalogue row from an AgGrid ``cellClicked`` event payload.
+def selection_after_map_click(
+    rows: list[dict],
+    source_name: str,
+    selected_rows: list[dict] | None,
+) -> list[dict] | None:
+    """Decides the table selection after a click on a map marker.
+
+    A selected row that already belongs to the source stays selected; otherwise
+    the first row of the source is selected so the user always sees a marked row.
 
     Args:
-        cell_clicked (dict, optional): AgGrid ``cellClicked`` event data.
-        row_data (list[dict]): Current AgGrid ``rowData``.
+        rows (list[dict]): Current AgGrid ``rowData``.
+        source_name (str): Clicked marker name (``object_name``).
+        selected_rows (list[dict], optional): Currently selected table rows.
 
     Returns:
-        dict or None: Matching catalogue row when found.
+        list[dict] or None: New ``selectedRows`` value, or ``None`` when the
+        current selection already belongs to the source and must stay.
+
+    Raises:
+        ValueError: When the source has no row in ``rows``.
     """
-    if not cell_clicked or not row_data:
+    if selected_rows and aladin_marker_name(selected_rows[0]) == source_name:
         return None
-
-    row_id = cell_clicked.get("rowId")
-    if row_id is not None:
-        for row in row_data:
-            if row.get("lc_key") == row_id:
-                return row
-
-    row_index = cell_clicked.get("rowIndex")
-    if isinstance(row_index, int) and 0 <= row_index < len(row_data):
-        return row_data[row_index]
-    return None
+    source_rows = rows_for_source(rows, source_name)
+    if not source_rows:
+        raise ValueError(f"No catalogue row for source {source_name!r}.")
+    return [source_rows[0]]
 
 
 def _target_from_degrees(ra_deg: float, dec_deg: float, *, precision: int) -> str:

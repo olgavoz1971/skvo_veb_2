@@ -207,20 +207,29 @@
     line-height: 1.45;
 }
 
-.lc-discovery-catalog-grid {
-    height: var(--lc-discovery-panel-height);
-    width: 100%;
-    min-height: 0;
-    overflow-x: auto;
+/* Table takes all free width; Aladin keeps its own fixed width and wraps
+ * under the table when the panel is too narrow for both. */
+.lc-discovery-catalog-body-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--lc-discovery-space-md);
 }
 
-.lc-discovery-catalog-body-row {
-    align-items: stretch;
+.lc-discovery-catalog-grid {
+    flex: 1 1 28rem;
+    min-width: 0;
+    height: var(--lc-discovery-panel-height);
+    min-height: 0;
+    overflow-x: auto;
 }
 
 .lc-discovery-aladin-col {
     display: flex;
     flex-direction: column;
+    flex: 0 0 var(--lc-discovery-aladin-width, 400px);
+    width: var(--lc-discovery-aladin-width, 400px);
+    max-width: 100%;
     gap: var(--lc-discovery-space-md);
     min-width: 0;
 }
@@ -321,9 +330,11 @@
     flex-direction: row;
 }
 
-.lc-discovery-catalog-aggrid .lc-discovery-row-highlight {
-    background-color: #fff3cd !important;
+/* Strong: the one selected product that Retrieve will fetch. */
+.lc-discovery-catalog-aggrid .ag-row-selected {
+    background-color: #ffe08a !important;
     font-weight: 600;
+    box-shadow: inset 3px 0 0 #d39e00;
 }
 
 .lc-discovery-graph-wrap {

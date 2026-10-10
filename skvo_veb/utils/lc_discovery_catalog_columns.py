@@ -57,37 +57,64 @@ def _numeric_column(*, formatter: str, **col_def: Any) -> dict[str, Any]:
     return merged
 
 
+# Deterministic widths in pixels. Autosizing is not used: it measures only the
+# rendered rows and so makes widths depend on what is scrolled into view.
+_WIDTH_XS = 52
+_WIDTH_S = 60
+_WIDTH_M = 72
+_WIDTH_L = 84
+_WIDTH_XL = 110
+_EXTRA_COLUMN_WIDTH = 64
+_EXTRA_COLUMN_MIN_WIDTH = 44
+_EXTRA_COLUMN_MAX_WIDTH = 120
+
+
+def _fixed_width(width: int) -> dict[str, int]:
+    """Returns width keys that keep a column rigid yet user-resizable.
+
+    Args:
+        width (int): Initial width in pixels.
+
+    Returns:
+        dict: ``width``, ``minWidth``, and ``maxWidth`` entries.
+    """
+    return {
+        "width": width,
+        "minWidth": max(40, width - 16),
+        "maxWidth": width + 56,
+    }
+
+
 _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
-    "distance_arcsec": _numeric_column(
-        formatter="lcDiscoveryFmtSep",
-        field="distance_arcsec",
-        headerName="Sep (″)",
-        type="numericColumn",
-        sortable=True,
-        minWidth=55,
-        maxWidth=100,
-    ),
     "object_name": _text_column(
         field="object_name",
         headerName="Object",
         sortable=True,
-        minWidth=100,
-        width=200,
+        # pinned="left",
+        **_fixed_width(_WIDTH_XL),
+        # flex=1,
+        # minWidth=110,
+        # maxWidth=220,
+    ),
+    "distance_arcsec": _numeric_column(
+        formatter="lcDiscoveryFmtSep",
+        field="distance_arcsec",
+        headerName="Sep (\u2033)",
+        type="numericColumn",
+        sortable=True,
+        **_fixed_width(_WIDTH_S),
     ),
     "filter_name": _text_column(
         field="filter_name",
         headerName="Filter",
         sortable=True,
-        minWidth=80,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_L),
     ),
     "object_class": _text_column(
         field="object_class",
         headerName="Type",
         sortable=True,
-        minWidth=64,
-        maxWidth=96,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_M),
     ),
     "ra_deg": _numeric_column(
         formatter="lcDiscoveryFmtRaDec",
@@ -95,8 +122,7 @@ _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
         headerName="RA",
         type="numericColumn",
         sortable=True,
-        minWidth=90,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_L),
     ),
     "dec_deg": _numeric_column(
         formatter="lcDiscoveryFmtRaDec",
@@ -104,8 +130,7 @@ _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
         headerName="Dec",
         type="numericColumn",
         sortable=True,
-        minWidth=90,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_L),
     ),
     "t_min": _numeric_column(
         formatter="lcDiscoveryFmtMjd",
@@ -113,9 +138,7 @@ _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
         headerName="t_min",
         type="numericColumn",
         sortable=True,
-        width=68,
-        minWidth=68,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_M),
     ),
     "t_max": _numeric_column(
         formatter="lcDiscoveryFmtMjd",
@@ -123,19 +146,15 @@ _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
         headerName="t_max",
         type="numericColumn",
         sortable=True,
-        width=68,
-        minWidth=68,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_M),
     ),
     "mag": _numeric_column(
         formatter="lcDiscoveryFmtMag",
         field="mag",
-        headerName="⟨mag⟩",
+        headerName="\u27e8mag\u27e9",
         type="numericColumn",
         sortable=True,
-        minWidth=64,
-        maxWidth=80,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_S),
     ),
     "n_points": _numeric_column(
         formatter="lcDiscoveryFmtNPoints",
@@ -143,15 +162,13 @@ _CATALOG_COLUMN_DEFS: dict[str, dict[str, Any]] = {
         headerName="N",
         type="numericColumn",
         sortable=True,
-        width=52,
-        maxWidth=60,
-        suppressSizeToFit=True,
+        **_fixed_width(_WIDTH_XS),
     ),
 }
 
 _CATALOG_COLUMN_ORDER: tuple[str, ...] = (
-    "distance_arcsec",
     "object_name",
+    "distance_arcsec",
     "filter_name",
     "object_class",
     "ra_deg",
@@ -161,6 +178,22 @@ _CATALOG_COLUMN_ORDER: tuple[str, ...] = (
     "mag",
     "n_points",
 )
+
+
+def _extra_column_widths(width: int | None) -> dict[str, int]:
+    """Returns width keys for a provider extra column.
+
+    Args:
+        width (int, optional): Provider-declared width in pixels.
+
+    Returns:
+        dict: ``width``, ``minWidth``, and ``maxWidth`` entries.
+    """
+    return {
+        "width": int(width) if width else _EXTRA_COLUMN_WIDTH,
+        "minWidth": _EXTRA_COLUMN_MIN_WIDTH,
+        "maxWidth": _EXTRA_COLUMN_MAX_WIDTH,
+    }
 
 
 def catalog_column_defs_for_capabilities(
@@ -194,11 +227,29 @@ def catalog_column_defs_for_capabilities(
     if capabilities.discovery_catalog_includes_n_points:
         include_fields.add("n_points")
 
+    extras = tuple(getattr(capabilities, "catalog_extra_columns", ()) or ())
+    extra_after_filter: list[dict[str, Any]] = []
+    for extra in extras:
+        field = getattr(extra, "field", None)
+        header = getattr(extra, "header", None)
+        if not field or not header:
+            continue
+        extra_after_filter.append(
+            _text_column(
+                field=str(field),
+                headerName=str(header),
+                sortable=True,
+                **_extra_column_widths(getattr(extra, "width", None)),
+            )
+        )
+
     column_defs: list[dict[str, Any]] = []
     for field in _CATALOG_COLUMN_ORDER:
         if field not in include_fields:
             continue
         column_defs.append(copy.deepcopy(_CATALOG_COLUMN_DEFS[field]))
+        if field == "filter_name":
+            column_defs.extend(extra_after_filter)
     return column_defs
 
 

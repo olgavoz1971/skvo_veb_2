@@ -46,8 +46,8 @@ TESS_TIMEORIGIN = 2457000.0  # Lightkurve BTJD offset (ingest/plot only; not VOT
 # https://tess.mit.edu/public/tesstransients/pages/readme.html
 # Zero-point uncertainty 0.05 mag. Vega system (TESS defined to match Cousins I).
 # Use only when stored flux is electron s-1 (SPOC, TESS-SPOC, user TPF/FFI
-# aperture sums). Do not apply to dimensionless QLP/TARS flux, ppm, legacy
-# stitched relative flux, or background columns.
+# aperture sums). Do not apply to dimensionless QLP/TARS flux, ppm,
+# or background columns.
 #
 # Normalised (dimensionless) pipeline lightcurves: QLP and TARS. PhotCal uses
 # header TESSMAG from Lightkurve metadata when it is present and finite:
@@ -171,7 +171,6 @@ def instrument_electron_s_photcal() -> dict:
 
 def resolve_photcal(
     authors,
-    stitched: bool = False,
     tess_mag: float | None = None,
 ) -> dict:
     """Builds serialisable photcal GROUP metadata for TESS archive lightcurves.
@@ -179,14 +178,12 @@ def resolve_photcal(
     Filter passband fields are always stored. SPOC and TESS-SPOC
     curves use the shared instrument electron s-1 zero point. QLP and TARS
     curves use ``tess_mag`` from Lightkurve ``TESSMAG`` header
-    metadata when supplied. Legacy stitched VOTables and pipelines without
+    metadata when supplied. Pipelines without
     calibration metadata omit zero points but retain filter identification
     for export and future multicolour work.
 
     Args:
         authors (str or list of str): Pipeline author tag(s) from Lightkurve.
-        stitched (bool): True for ingested VOTables that recorded relative
-            sector stitching. The archive retrieve path never sets this.
         tess_mag (float, optional): ``TESSMAG`` from downloaded QLP or TARS
             product header.
 
@@ -194,8 +191,6 @@ def resolve_photcal(
         dict: Full photcal GROUP fields appropriate for serialised storage.
     """
     meta = filter_group_meta()
-    if stitched:
-        return meta
     if is_spoc_pipeline(authors):
         return instrument_electron_s_photcal()
     if uses_tessmag_catalog_photcal(authors):
@@ -274,7 +269,7 @@ def archive_flux_unit_for_pipeline(authors, lightkurve_flux_unit) -> str | None:
 def validate_tess_magnitude_conversion(lcd) -> None:
     """Checks that a TESS archive lightcurve may be converted to magnitudes.
 
-    Legacy stitched curves and products without zero-point metadata must not be converted;
+    Products without zero-point metadata must not be converted;
     unit mismatches are left to ``PhotCal`` and surface as conversion errors.
 
     Args:
@@ -289,11 +284,6 @@ def validate_tess_magnitude_conversion(lcd) -> None:
     if lcd.metadata.get("is_background_flux"):
         raise PipeException(
             "Cannot convert to magnitude: background columns are not target photometry."
-        )
-
-    if lcd.metadata.get("stitched"):
-        raise PipeException(
-            "Cannot convert to magnitude: stitched TESS lightcurves have no flux zero point."
         )
 
     photcal = lcd.metadata.get("photcal") or {}
@@ -477,35 +467,26 @@ def attach_tess_archive_export_provenance(lcd) -> None:
     """
     meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
     lcd.metadata = meta
-    from skvo_veb.utils.lc_bridge import _is_stitched_lightcurve, _parse_list_meta
+    from skvo_veb.utils.lc_bridge import _parse_list_meta
 
     authors = meta.get("authors", [])
     if not authors and meta.get("author"):
         authors = [meta.get("author")]
     pipeline_str = ", ".join(_parse_list_meta(authors) or []) if authors else "Unknown"
-    is_stitched = _is_stitched_lightcurve(lcd)
     tic_id = lcd.name or lcd.lookup_name or "Unknown Target"
     sectors = _parse_list_meta(meta.get("sectors")) or []
     flux_origins = _parse_list_meta(meta.get("flux_origins")) or []
     methods_str = ", ".join(dict.fromkeys(flux_origins)) if flux_origins else "unknown"
     sectors_str = ", ".join(sectors) if sectors else "unknown"
-    calibration_note = (
-        " Photometric zero points are omitted because sector stitching invalidates "
-        "pipeline flux calibration."
-        if is_stitched
-        else ""
-    )
     votable_description = (
         f"TESS space telescope lightcurve for target {tic_id}, "
         f"processed via the {pipeline_str} pipeline. "
         f"Photometry method(s): {methods_str}."
-        f"{calibration_note}"
     )
     table_description = (
         f"Photometric time-series observations of {tic_id} from the TESS mission. "
         f"Data produced by the {pipeline_str} pipeline. "
         f"Sectors: {sectors_str}. Photometry method(s): {methods_str}."
-        f"{calibration_note}"
     )
     meta[METADATA_KEY_FILE_COMMENTS] = [table_description]
     meta[METADATA_KEY_VO_ENVELOPE] = {
