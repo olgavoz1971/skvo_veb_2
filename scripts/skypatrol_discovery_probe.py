@@ -373,7 +373,7 @@ def run_fetch_gaia_band(
 ) -> None:
     """Downloads a lightcurve and reports band filter columns (legacy page path).
 
-    Mirrors ``request_asassn.load_asassn_lightcurve`` Gaia branch with
+    Mirrors the Gaia branch of the former ``request_asassn.load_asassn_lightcurve`` (removed) with
     ``download=True``, then slices ``phot_filter``.
 
     Args:

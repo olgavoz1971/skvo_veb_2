@@ -3143,10 +3143,18 @@ which filters; retrieve one curve and plot it. Findings:
       (warn that some missions cannot filter by time at search; offer them as possible
       sources only; fetching each curve to check is slow, never for a long list).
       Postponed: a Simbad resolver in the package.
-- [ ] **Phase C: multi-mission search.** Decide on a `search_all(...)` that returns
-      one table with `mission_id` and a coverage status per row (inside the window,
-      outside, unknown), versus a documented recipe. Open: how unsupported search
-      kinds and missions that reject a window are reported (never skipped silently).
+- [x] **Phase C: multi-mission search (done, as a skill recipe only).** Decision: no
+      `search_all(...)` for now. The skill `lc-discovery` section "Searching several
+      missions" sets the default goal "return every light curve that could possibly
+      contain at least one point in the window; better extra than missed", and rules:
+      never drop a mission silently ("not supported" is not "no data"; tell the user
+      and ask); pass the window only where the mission filters by time, mark the rest
+      "unknown coverage" (possible sources); never fetch light curves in bulk to check
+      (heavy traffic and time; ask the user); a failing mission does not stop the run
+      but is reported with its message; report truncation from
+      `discovery_may_be_truncated`; once Ticket 24 coverage exists, skip a mission only
+      when its stated coverage explicitly excludes the request (say why), otherwise do
+      not skip and warn. Includes a worked example. Postponed: a public `search_all`.
 - [ ] **Phase D: reading and plotting recipe.** Decide between a skill recipe
       (select by UCD, take time from `TIMESYS` as an astropy `Time`, pair errors,
       state which column is plotted) and a public reader that returns the whole
@@ -3177,5 +3185,362 @@ which filters; retrieve one curve and plot it. Findings:
 
 ### Status
 
-**Open.** Phases A and B done (see above). Phases C, D and E wait for the developer's
+**Open.** Phases A, B and C done (see above). Phases D and E wait for the developer's
 explicit request.
+
+---
+
+## Ticket 24 — lc_discovery (SEPARATE PACKAGE): space and time coverage attributes on every provider
+
+**Applies to the separate package** `/home/voz/projects/UPJS/lc_discovery`, **not** to this
+application. Recorded here because this is the developer's task list. Nothing in `skvo_veb`
+is to change for it, except where the host later reads the new fields.
+
+**Think a lot before implementing.** This changes the public `MissionDescriptor` that
+`list_missions()` returns. Discuss names, types and missing-data behaviour with the
+developer first. Do not start without an explicit request. No silent fallbacks; no
+invented footprints or dates. Use `TO CONFIRM` until a bound is checked.
+
+### Why this ticket exists
+
+Ticket 23 Phase A added a free-text `description` (bands, time coverage, sky in prose).
+That is enough for a human to read. An agent that must decide *before search* whether
+a mission can possibly cover a requested sky position or time window still has to parse
+English. The per-row catalogue fields `t_min` / `t_max` are only the start and end of
+that one time series, and they exist only after a search (sometimes only after `fetch`).
+They are not the mission's coverage.
+
+### What to add (intent)
+
+A **mandatory structured coverage attribute on every provider**, returned by
+`list_missions()`, covering the archive or survey as a whole (not one product):
+**space, time and spectrum** (with the waveband term). The free-text `description`
+stays; it does not replace these attributes.
+
+### Approach: follow the IVOA Registry model (decided 2026-10-16)
+
+We follow the way the VO Registry describes coverage, on purpose: in the future
+candidate providers will also be found through the Registry (and TAPRegExt), so the
+package should speak the same model. References (read on 2026-10-16):
+
+- **VODataService 1.2**, IVOA Recommendation 2021-11-02, section 3.2 "Coverage in Space,
+  Time, and Spectrum", element `vs:Coverage`:
+  <https://www.ivoa.net/documents/VODataService/20211102/REC-VODataService-1.2.html>
+  - `spatial`: a MOC in the ASCII serialisation, ICRS; at least order 6 (about 1 deg);
+    keep it to a few dozen kB; a finer MOC goes to a separate `footprint` URL. All sky
+    is written `0/0-11` (example in the document).
+  - `temporal`: one or more intervals, two MJD numbers each, TDB at the solar system
+    barycentre; a union; authors pad the limits (the time resolution of the Registry is
+    about 10 minutes). The NED example uses an arbitrary upper limit of 100000 for
+    "ongoing acquisition".
+  - `spectral`: intervals in joules (messenger energy), a union, solar system barycentre.
+  - `waveband`: a term from the IVOA messenger vocabulary (Radio, Infrared, Optical, ...).
+  - `regionOfRegard`: an angle in degrees by which a positional query is blurred.
+  - `STCResourceProfile` is deprecated.
+- **RegTAP 1.2**, IVOA Recommendation 2024-10-02, sections 8.15 to 8.17 (tables
+  `rr.stc_spatial`, `rr.stc_temporal`, `rr.stc_spectral`) and the query example in
+  section 10.13; time is compared with `ivo_interval_overlaps`, space with `CONTAINS` /
+  `INTERSECTS` on the MOC (same overlap idea as our product time filter):
+  <https://www.ivoa.net/documents/RegTAP/20241002/REC-RegTAP-1.2.html>
+- **MOC 2.0**, IVOA Recommendation 2022-07-27 (the MOC and its ASCII serialisation):
+  <https://www.ivoa.net/documents/MOC/index.html>
+
+Decisions:
+
+1. **Registry model.** Coverage entry with `spatial` (MOC string), `temporal`
+   (MJD intervals, union), `spectral` (joules, union) and `waveband` (messenger term).
+   `regionOfRegard`: **not included** (developer, 2026-10-16: no use for it so far).
+2. **Spectral and waveband are included.** The data come from the filter lists of the
+   providers; where a limit is not known, ask the developer (`TO CONFIRM`).
+3. **MOC library.** The package stores the IVOA **string** only and has no MOC
+   dependency (Option A). The skill describes how an agent can read the string with a
+   MOC library (for example MOCpy) when it needs to test a position; the package does
+   not require it.
+4. **Where the spatial MOC comes from:**
+   - All-sky missions (the Gaia providers, ASAS-SN): all sky, as the Registry does it
+     (`0/0-11`, or the full-sky MOC of the chosen order). Gaia epoch photometry only for
+     sources flagged as having it; that is a source selection, not a sky restriction,
+     and goes in the description.
+   - ZTF and Pan-STARRS1: the sky north of about -30 deg declination, declared as a MOC.
+   - OGLE, UPJS and the personal collections: taken from the Registry records, which
+     already describe them. Retrieved **once** and stored in the provider config (the
+     mission plug-in approach); not fetched at runtime. Note the Registry record they
+     came from.
+   - TESS: one MOC for the whole mission, built from the sector footprints (see
+     "TESS sectors" below).
+   - **One spatial coverage and one temporal coverage per mission**, as in the Registry
+     (no per-sector, per-field or per-collection entries; for a mission made of several
+     collections the union is declared).
+5. **Ongoing surveys:** the upper limit is 100000 MJD (as in the Registry example).
+6. **Mandatory but possibly empty.** A provider must declare each coverage part; an
+   explicit "unknown" is allowed (shown as `TO CONFIRM` in the notes), a missing
+   declaration is an error. An unknown coverage never makes the agent skip a mission
+   (see the multi-mission rules): it warns the user.
+7. **Time system and rounding.** TDB MJD as in the Registry. Timing is not precise:
+   round the start **down** and the end **up** to whole days (extend the window).
+
+### TESS sectors (to design)
+
+Need a spatial MOC and temporal intervals of the TESS sectors. Ideas, to discuss:
+
+- **From MAST footprints (preferred idea).** The TESS full-frame images in MAST carry an
+  `s_region` polygon per camera and CCD. Query them with `pyvo` (TAP, obscore or CAOM),
+  union the polygons per sector into a MOC, and union the sectors for the whole mission.
+  These are the real footprints, with no pointing arithmetic of our own.
+- **From a pointing table.** The published sector pointings (RA, Dec, roll per sector;
+  four cameras of 24 x 24 deg) plus a camera model. More work and more risk of error;
+  the `tesswcs` / `tess-point` packages model the cameras, but they would be one more
+  dependency for a build step only. Only if the MAST footprints are not enough.
+- **Time.** A single interval for the whole mission: from the start of the first
+  sector (rounded down to a whole day) to 100000 MJD while the mission is ongoing. No
+  intervals per sector.
+- **Build step, not runtime.** A script run by the developer (outside the package
+  dependencies, MOCpy allowed there) writes the MOC string and the intervals into the
+  provider; it is re-run when new sectors appear. The note states "valid up to sector N".
+- **Registry approach kept.** One spatial coverage and one temporal coverage for the
+  mission, as in the Registry. The MOC therefore does not say which sector covers which
+  part of the sky; this is accepted (a time-and-space MOC of MOC 2.0 is not used).
+
+### Second item: relations between providers (same data, subsets)
+
+**Implemented (2026-10-16)** in the package: descriptor fields `data_group`, `is_subset`,
+`subset_description`, `group_rank` (mandatory class attributes on every provider,
+read by `descriptor()`), group checks in `list_missions()` (`validate_mission_groups`),
+`tests/test_mission_groups.py`, provider template section 2.2, README table, both
+skills (multi-mission rules and loop example). Groups today: ARI (rank 1) and AIP
+(rank 2) full, VEB subset of `gaia_dr3_epoch_photometry`; all other missions alone.
+`subset_description` of VEB has `TO CONFIRM` for the exact selection. The coverage
+part of this ticket is still open.
+
+Some providers serve the same content, so an agent that loops over all missions gets
+duplicates and wastes requests. Agreed with the developer (2026-10-16):
+
+- **Formal, mandatory fields on the descriptor** (and in the provider template, so a
+  new provider must state them; a provider without them fails in `list_missions()`,
+  like a missing `description`). No dependence between providers (no `subset_of=<id>`):
+  - `data_group`: id of the shared content, for example `gaia_dr3_epoch_photometry`.
+    A provider with unique content uses its own `mission_id`.
+  - `is_subset`: bool. ARI `False`; VEB `True`.
+  - `subset_description`: text, used when `is_subset` is true (for example "all
+    eclipsing-binary candidates from ...").
+  - `group_rank`: integer among the non-subset members (lower = ask first).
+  The shared TAP host does not matter; different collections on one service are
+  different data (UPJS serves OGLE, Gaia VEB, UPJS and personal collections).
+- **Package checks (a test):** ranks are unique among the non-subset members of a
+  group; a subset needs at least one non-subset member in its group.
+- **Current groups:** `gaia_dr3_ari`, `gaia_dr3_aip` serve the same Gaia DR3 epoch
+  photometry. `gaia_dr3_veb` is a true subset of both (eclipsing binaries only,
+  confirmed by the developer). No other groups exist today.
+- **Rank:** the developer's decision per provider (not speed or caching). The package
+  does not state a reason and the template gives no rank rule; the rank is a plain
+  number. Today ARI is ranked before AIP.
+- **Agent rules (for the skill, after the fields exist):**
+  - Same data: ask the lowest rank; move to the next one if the first one **fails**
+    or **does not support** the requested search kind (unsupported is not "no data",
+    but between mirrors the next rank can answer; report it). An empty answer is an
+    answer. Say which one answered.
+  - Subset: **inform the user** that the mission is a subset (with its
+    `subset_description`). By default it is asked **last**, and skipped when a
+    non-subset member of its group answered (say so: "skipped, already covered by the
+    group"). If the user asks explicitly for what the subset holds (for example
+    eclipsing binaries), the agent **suggests starting the search with that subset**,
+    but does **not limit** the loop to it: if the subset fails, or returns nothing
+    (the star may simply not be in the subset), the agent continues with the
+    non-subset members of the group and says so.
+  - **Report subset-only results.** Whenever rows come from a subset alone (the
+    non-subset members were skipped, failed or not asked), the agent tells the user
+    that the result covers only the subset (with its `subset_description`) and may be
+    incomplete. This matters most for a cone search: neighbouring stars outside the
+    subset are missing, so the field looks emptier than it is.
+  - If no non-subset member answered: warn the user and go on with the subset mission
+    (no stop); say it covers only part of the sources.
+  - Fetch failure: the failover covers search only. If a fetch fails, report the error;
+    the skill may suggest that the user repeat the search on another member of the
+    group (the `lc_key` values differ), but the agent does not do it silently.
+  - Deduplicate rows by archive id when rows from a group arrive together.
+  - Advice for the skill: use the subset mission on purpose when the user wants
+    eclipsing binaries specifically, and say why.
+
+### Still open (discuss before any code)
+
+- **Spectral limits per provider (decided):** the filters come from the photcal that
+  every issued light curve already carries (filter identifier; see the provider notes).
+  The photcal gives one effective wavelength per filter, but the Registry wants
+  intervals, so the interval limits are taken from the **SVO Filter Profile Service** for
+  the same filter identifier (the identifiers are SVO ids), retrieved once and stored in
+  the provider config (like the MOCs). No invented widths. Convert to joules with
+  `astropy.units` (spectral equivalencies), not by hand; round outward as for time.
+  The spectral coverage of a mission is the union of its filters' intervals. Where a
+  filter has no SVO profile, ask the developer (`TO CONFIRM`).
+- **Field names (decided):** one small coverage object that mirrors the Registry's
+  `vs:Coverage` element (spatial, temporal, spectral, waveband), stored on the
+  descriptor.
+- **Relation to search:** the coverage is a cheap pre-filter ("this mission cannot have
+  points in 2010"). It does not replace `supports_discovery_time_filter` or the overlap
+  test on product `t_min` / `t_max`.
+- **Skills and docs:** after the fields exist, `lc-discovery` must say: read coverage
+  from the descriptor first, do not guess from the description text; skip a mission only
+  if its declared coverage excludes the request (say why); an unknown coverage is never
+  a reason to skip. The docs state that the model follows the VO Registry, with the
+  references above, and the skill explains how to test a MOC string with a MOC library.
+
+### Status
+
+### Coverage values and work plan (agreed 2026-10-16)
+
+Coverage object: `MissionCoverage(spatial, temporal, spectral, waveband)`, all four
+required, `None` = unknown (module `lc_discovery/coverage.py`). "End date" means the end of
+that day. The UPJS-served missions (`ogle_ocvs`, `upjs_ts`, `personal_ts`, `gaia_dr3_veb`)
+take their space and time from the UPJS TAP (astro.upjs), retrieved once and stored in the
+provider config; `gaia_dr3_veb` is all sky with the same time as ARI and AIP.
+
+| Provider | Space | Time (MJD) |
+|---|---|---|
+| `gaia_dr3_ari`, `gaia_dr3_aip`, `gaia_dr3_veb` | all sky | 56863 to 57902 (25 Jul 2014 to 28 May 2017) |
+| `asassn` | all sky | 56293 (1 Jan 2013) to 100000 |
+| `ztf_dr24` | dec > -30 deg | 58178 (1 Mar 2018) to 60971 (end of 22 Oct 2025) |
+| `panstarrs1_dr2` | dec > -30 deg | 55197 (start of 2010) to 56748 (end of 31 Mar 2014) |
+| `tess` | MOC from `tess-point` sector pointings (all sky at order 6) | 58324 (25 Jul 2018) to 100000 |
+| `ogle_ocvs`, `upjs_ts`, `personal_ts` | UPJS TAP | UPJS TAP |
+
+Waveband is "Optical" for all (TESS included). Spectral intervals: SVO filter limits.
+
+Build script: `lc_discovery/tools/`, shipped with the package but **not** a public method.
+It uses `pyvo` and MOCpy, which the package itself does not require (an optional extra, for
+example `tools`, to be added with the script). Note: `src/lc_discovery/tap/client.py`
+imports `pyvo` but `pyvo` is not listed in `pyproject.toml` dependencies; to be checked.
+
+Work plan (in order):
+
+1. [x] **Done 2026-10-16.** Dataclass, mandatory `coverage` attribute, validation,
+   tests (`tests/test_mission_coverage.py`), provider template section 2.3, README, provider
+   skill. All providers declare `None` (nothing claimed yet).
+2. [x] **Done 2026-10-16.** Simple values declared in the providers: Gaia ARI, AIP and VEB
+   (all sky, 56863 to 57902; shared in `shared/gaia_dr3_coverage.py`); ASAS-SN (all sky,
+   56293 to 100000); PS1 (zone above -30 deg, 55197 to 56748); ZTF
+   (zone above -30 deg; time `None` until the end of DR24 is confirmed); TESS (time 58324
+   to 100000; space `None` until step 4). The zone is the MOC string in
+   `shared/sky_zones.py` (order 6, built with MOCpy `from_zone`; none of 400000 random
+   points above -30 deg was outside it; it reaches a little south of -30 deg). Constants
+   `ALL_SKY_MOC` and `ONGOING_MJD_END` in `coverage.py`. Tests extended (201 pass).
+3. [x] **Done 2026-10-16 (OGLE time and spectrum still open).** The UPJS records are in
+   RegTAP (`http://reg.g-vo.org/tap`, ivoids `ivo://astro.upjs/<x>/q/ssa`). Tool
+   `lc_discovery/tools/fetch_registry_coverage.py` (pyvo; not a package dependency)
+   reads `rr.stc_spatial`, `rr.stc_temporal`, `rr.stc_spectral` and writes
+   `providers/<mission>/registry_coverage.py` with the ivoid, the service and the date.
+   Stored for `upjs_ts` (time 58726 to 59520) and `personal_ts` (36804 to 59496), both
+   with Registry spectral intervals. Gaia ARI, AIP and VEB: all sky, 56863 to 57902 and
+   the Registry spectral interval of `gaiadr3_eb/q/ssa` (shared constant). **OGLE: the
+   Registry record has no coverage rows**; the MOC supplied by the developer is stored in
+   `providers/ogle_ocvs/coverage_data.py`; time and spectrum are `None` (question below).
+   Waveband "Optical" is declared for all ten providers. Tests extended (207 pass).
+   Update 2026-10-16: OGLE time declared as 48622 (1 Jan 1992) to 100000 (open end); ZTF
+   DR24 ends 22 Oct 2025 (MJD 60971). OGLE spectrum confirmed (step 6).
+4. [x] **Done 2026-10-16 (changed approach).** TESS space is built by
+   `lc_discovery/tools/build_tess_coverage.py` from `tess-point` (`tess_stars2px`: sector
+   pointings and the camera focal-plane model), not from MAST footprints: outlines of all
+   16 CCDs per sector, united over the 134 regular sectors (special 3I/ATLAS pointing left
+   out) into `providers/tess/coverage_data.py`. Result: the union covers the whole sky at
+   order 6 (77% after sector 26, 92% after 55, 100% at 134, planned sectors included), so
+   the declared MOC is all sky and TESS space can never exclude a target. Needs `tess-point`
+   (installed into the project `.venv`; not a package dependency).
+5. [x] **Done 2026-10-16.** `lc_discovery/tools/build_sky_zones.py` (MOCpy, not a package
+   dependency) now generates `shared/sky_zones.py` from declared declination bands (today
+   one: dec above -30 deg, used by ZTF and PS1). The regenerated MOC string is identical to
+   the one built by hand earlier; tests unchanged (207 pass). A new zone is one more entry
+   in `ZONES`.
+6. [x] **Done 2026-10-16 (rough values).** `lc_discovery/tools/fetch_filter_coverage.py`
+   (pyvo) reads `filters.main` (`ivo://astro.upjs/filters/q/main`) and writes
+   `shared/filter_spectral_coverage.py` (joules, via `astropy.units.spectral`). The table
+   lacks the survey filters, so developer-chosen stand-ins are used and written into the
+   module: ASAS-SN = Bessell V + SDSS g (3798 to 6875 A); ZTF = SDSS g r i (3798 to 8400 A);
+   PS1 = SDSS g r i plus the developer-given limits of z (8030 to 9350 A) and y (9100 to 10878 A),
+   union 3798 to 10878 A; TESS = TESS filter (5803 to 11171 A); OGLE =
+   Bessell V + I (4733 to 9167 A). Used by the five providers; tests extended (208 pass).
+7. [x] **Done 2026-10-16.** Skill `lc-discovery`: rule 7 and a new section "Coverage of a
+   mission" (how to test space with a MOC library, time overlap, spectrum, waveband; skip
+   only on explicit exclusion; `None` never skips; coverage is mission-wide and approximate;
+   report every skip). Provider skill, provider guide (tools table in 2.3) and README
+   updated. Optional extra `tools = [pyvo, mocpy, tess-point]` added to `pyproject.toml`.
+
+### Status
+
+**Done 2026-10-16 (steps 1 to 7).** Nothing open in the coverage data. Resolved later the same day: OGLE spectrum (Bessell V and I stand-ins) confirmed by the developer; PS1 z and y limits given by the developer; ASAS-SN
+start confirmed as 1 Jan 2013; `pyvo` added to the package dependencies. TESS space is all sky (it cannot exclude a target; a per-target test would need
+`tess-point`).
+
+---
+
+## Ticket 25: VSX resolver for variable stars unknown to Simbad (lc_discovery)
+
+**Done 2026-10-16.** `lc_discovery/scripts/vsx_resolve.py` (new `scripts/` folder for
+agent-facing helpers, not public API): one request to the VSX `api.object` view (XML), returns
+name, OID, J2000 position, type, period, epoch, magnitudes; an unknown name raises
+`VsxNotResolvedError`. No HTML scraping (the "Other names" list is not read; its entries are
+VSX spellings, often not Simbad identifiers) and no contact address in requests (User-Agent
+`lc_discovery`). Skill `lc-discovery`, section "Variable stars that Simbad does not know":
+VSX name, then position, then Simbad cone search (few arcsec), then Simbad `main_id` and
+identifiers, then `archive_id_from_identifiers` or a cone search; zero or several Simbad
+matches go to the user; report that the position came from VSX. Tested on
+`TCP J23580961+5502508` (Simbad name lookup fails; the cone search gives
+`Gaia DR3 1993876650919517440`). Tests: `tests/test_vsx_resolve_script.py` (parsing, no network).
+VizieR `B/vsx` for bulk lookups is deliberately left out. 
+
+**Simbad helper, done 2026-10-16.** `lc_discovery/scripts/simbad_resolve.py` (extra `scripts`,
+needs `astroquery`): `resolve_simbad_name(name)` and `find_simbad_objects(ra, dec, radius)`,
+both returning the existing `SimbadResolveResult` payload (main id, identifiers, ICRS
+position), so the result goes straight into `archive_id_from_identifiers`. Fail-fast: unknown
+name or empty position raises `SimbadNotResolvedError`; no Sesame fallback (unlike the host
+`skvo_veb/utils/simbad_resolver.py`, which has one); a position search returns all objects
+inside the radius with separations and fails if there are more than `max_candidates`, instead
+of cutting the list. Tested live: `AA And` (V* AA And, Gaia DR3 1936512041221649536) and the
+VSX position of `TCP J23580961+5502508` (one object, 0.03 arcsec). Skill updated (Finding an
+object, step 2; VSX section, step 1). Tests: `tests/test_simbad_resolve_script.py` (no network).
+
+---
+
+## Ticket 26: search-row columns in descriptions, skill rules for reading them (lc_discovery)
+
+**Done 2026-10-16.** Trigger: in a user test an agent fetched three ZTF VOTables to measure
+them, ignoring most search-result columns (ZTF rows already carry `n_points`, `mag`, `filter_name`;
+`t_min` and `t_max` are empty, so the time span needs a fetch). Changes: every mission
+description now ends with a `Search row columns:` paragraph (filled and empty columns, meaning,
+rows per star), checked against real searches (AA And region); provider guide section 2.1
+point 8 and the provider skill require it for new missions; test
+`tests/test_mission_descriptions.py` checks that each description has it. Skill `lc-discovery`:
+new sections "What a search row tells you" (every column is meaningful, read the table and the
+paragraph, show useful columns, answer from the table before fetching, say what "longest"
+means) and "Plotting a fetched light curve (advice)" (scatter, inverted magnitude axis,
+calendar dates via astropy, filter in the title). Also fixed the ZTF description: time
+coverage 1 March 2018 to 22 October 2025. Not verified live: columns of `ogle_ocvs`,
+`upjs_ts`, `personal_ts` (no objects near the test star); their paragraphs come from the code.
+
+---
+
+## Ticket 27: ASAS-SN provider depends on the maintainer's Sky Patrol fork (lc_discovery)
+
+**Done 2026-10-16.** Trigger: the ASAS-SN download failed with "integer division or modulo by
+zero" because the archive's `get_block_servers` returned `[]` (a server-side outage); fixed in
+the fork `olgavoz1971/skypatrol` (explicit `ConnectionError`), commit pushed by the developer.
+Package: extra `asassn = ["skypatrol @ git+https://github.com/olgavoz1971/skypatrol.git@master"]`
+in `pyproject.toml`; the `ImportError` of `skypatrol_client.py` names the fork and why; the ASAS-SN
+description, `docs/providers/asassn.md` (section 0), the README and the skill (Errors) say that
+upstream is not enough. The host app still needs `skypatrol` (old page `lightcurve_asassn.py`,
+`request_asassn.py`), so its `requirements.txt` line stays. Note: with an unchanged version
+number `pip` keeps the old copy; reinstall with `--force-reinstall --no-deps`.
+
+---
+
+## Ticket 28: remove the old ASAS-SN page (host app)
+
+**Done 2026-10-16.** Removed `skvo_veb/pages/lightcurve_asassn.py` (already unregistered, marked
+obsolete) and `skvo_veb/utils/request_asassn.py` (its only user; pickle cache `ASASSN_CACHE_DIR`).
+Kept: `skvo_veb/utils/mission_config/asassn.py` and `tests/test_asassn_export.py` (used by
+`lc_bridge` for the Discovery export profile `asassn`), `requirements.txt` `skypatrol` line (now
+needed only by the `lc_discovery` ASAS-SN provider and `scripts/skypatrol_discovery_probe.py`).
+Docs updated: `docs/caching_architecture.md` (section C), `docs/production_apache_celery.md`
+(`ASASSN_CACHE_DIR` line). Checked: the app imports, 59 related tests pass. Possible clean-up
+(not done): `resolve_target_identifier` in `mission_config/asassn.py` and some `my_tools`
+helpers were used by the old page; the first is still used by the export profile. The server
+environment may still define `ASASSN_CACHE_DIR`; it is now unused.
+

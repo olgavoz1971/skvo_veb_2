@@ -57,10 +57,8 @@ The caching mechanisms are split into three dedicated subsystems depending on th
   * **FITS Storage:** High-level Target Pixel Files (TPF) and Full Frame Image (FFI) cutouts are stored as standard `.fits` files (`save_tpf_fits`, `save_ffi_fits`).
   * **Corrupted Cache Healing:** If a download is corrupted (e.g., incomplete network streams), the wrapper automatically resolves the file path on disk, clears the corrupted file, and retries the MAST query, ensuring the cache is self-healing.
 
-### C. The ASAS-SN Public Data Cache
-* **Underlying Technology:** Direct file serialization (`pickle`).
-* **Location Configuration:** Specified by the `ASASSN_CACHE_DIR` environment variable.
-* **Role:** Caches ASAS-SN physical lightcurves under `asassn_lc_{gaia_id}.pkl` using `pandas.DataFrame.to_pickle` to avoid repeated remote VO service lookups.
+### C. The ASAS-SN Public Data Cache (removed)
+The old ASAS-SN page and its pickle cache (`ASASSN_CACHE_DIR`, `asassn_lc_{gaia_id}.pkl`) were removed on 2026-10-16. ASAS-SN light curves are now fetched through the `lc_discovery` provider, which keeps no cache of its own.
 
 ---
 
