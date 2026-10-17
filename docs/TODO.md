@@ -3580,7 +3580,7 @@ Phases:
    functions rebuild on every page load.
 2. [ ] **T2 `/tess_lc` popovers.** Clean cache and ReRetrieve first (texts below), then
    Radius (replaces the tooltip), group `?` for Search, Plot, Flux options, Folding and
-   Periodogram, individual `?` for Object and Resolve, Append, Magnitude, MJD or Date, rePlot,
+   Periodogram, individual `?` for Object and Resolve, Magnitude, MJD or Date, rePlot,
    Trim selected, Download MAST FITS, Period, Epoch, Fold, Recalc phase, Shift to min and the
    periodogram parameters. Acceptance: no `dbc.Tooltip` left.
 3. [ ] **T3 `/tess` popovers.** FFI or TPF, Clean cache, Radius, Size, Mask (Auto or
@@ -3670,6 +3670,13 @@ silent radius fallbacks in both Clean cache callbacks (`None` on `/tess_lc`, `11
   targets are orphaned (see `docs/server_cache_cleanup.md`). Tests:
   `tests/test_tess_cache_extract_coords.py`. Known, not changed: a comma pair such as
   `346.3, 47.6` is not parsed as coordinates (falls through to a name lookup).
+
+- [x] B11 `/tess_lc`: removed the Upload button, the Append switch and the `handle_upload`
+  callback, plus the imports only they used (`base64`, `io`, `ingest_lightcurve_file`,
+  `format_user_upload_error`, `resolve_catalog_epoch`). Left on purpose: `CurveDash.get_extension_list`
+  (no caller now), `tests/volightcurve/test_tess_upload.py` (tests the `lc_bridge` round trip, not
+  the page), and the imports that were already unused before (`ClientsideFunction`, `LightkurveError`,
+  `jd0_tess`, `lk`, `pd`, `re`, `safe_none`; `safe_none` kept by decision).
 
 **Status 2026-10-17:** The earlier UI attempt on `/tess_lc` and the T1 helper were reverted by
 the developer (the `?` click caused jerking and a visible page reload that was not reproduced

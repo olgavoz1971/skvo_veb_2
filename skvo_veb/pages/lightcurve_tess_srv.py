@@ -11,8 +11,6 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
-import base64
-import io
 from pathlib import Path
 
 import lightkurve
@@ -46,8 +44,6 @@ from skvo_veb.utils.curve_dash import CurveDash
 from skvo_veb.utils.lc_bridge import (
     export_curvedash,
     build_curvedash_title,
-    format_user_upload_error,
-    ingest_lightcurve_file,
     export_file_extension,
 )
 from skvo_veb.utils.mission_config.tess import apply_tess_phot_domain_view
@@ -61,7 +57,6 @@ from skvo_veb.utils.lc_config import (
     TIME_AXIS_MJD,
     absolute_jd_from_display_epoch,
     display_epoch_offset,
-    resolve_catalog_epoch,
 )
 from skvo_veb.utils.lc_figure import build_curvedash_scatter_figure
 from skvo_veb.utils.lc_interaction import (
@@ -215,17 +210,6 @@ def layout():
                                        size="sm", disabled=True),
                             dbc.Button('Clean Cache', id='clean_cache_tess_lc_srv_button', size="sm", outline=True, color='warning'),
                         ], direction='horizontal', gap=2, style=stack_wrap_style),
-                        dbc.Stack([
-                            dcc.Upload(
-                                id='upload_tess_lc_srv',
-                                children=dbc.Button('Upload', size="sm"),
-                                multiple=False,
-                                # accept='.csv,.fits,.txt',
-                                accept=','.join(f'.{ext}' for ext in CurveDash.get_extension_list()),
-                            ),
-                            dbc.Switch(id='switch_append_tess_lc_srv', label='Append', value=False,
-                                       label_style=switch_label_style, persistence=False),
-                        ], direction='horizontal', gap=2, style=stack_wrap_style),  # upload
                         wrap_with_spinner(
                             html.Div(
                                 id='div_tess_lc_srv_tools_alert',
@@ -1958,89 +1942,6 @@ def use_period(period_number, period_list):
 #     Input('clear_epoch_btn', 'n_clicks'),
 #     prevent_initial_call=True
 # )
-
-
-@callback(
-    output=dict(
-        user_tab_id=Output('store_user_tab_id_tess_lc_srv', 'data', allow_duplicate=True),
-        lightcurve=Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),  # dummy
-        message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
-        graph_tab_disabled=Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
-        active_tab=Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
-        period_val=Output('period_tess_lc_srv_input', 'value', allow_duplicate=True),
-        epoch_val=Output('epoch_tess_lc_srv_input', 'value', allow_duplicate=True),
-    ),
-    inputs=dict(contents=Input('upload_tess_lc_srv', 'contents')),
-    state=dict(
-        filename=State('upload_tess_lc_srv', 'filename'),
-        append=State('switch_append_tess_lc_srv', 'value'),
-        js_lightcurve=State('store_tess_lightcurve_lc_srv', 'data'),
-        phase_view=State('fold_tess_lc_srv_switch', 'value'),
-        user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
-    ),
-    prevent_initial_call=True)
-def handle_upload(contents, filename, append, js_lightcurve, phase_view, user_tab_id):
-    output_keys = list(ctx.outputs_grouping.keys())
-    output = {key: dash.no_update for key in output_keys}
-    if contents is None:
-        raise PreventUpdate
-    try:
-        extension = Path(filename).suffix[1:]
-        content_type, content_string = contents.split(',')
-        decoded = base64.b64decode(content_string)
-
-        file_obj = io.BytesIO(decoded)
-
-        # 1. Ingest via bridge (VOTable or tabular formats)
-        lcd = ingest_lightcurve_file(file_obj, filename)
-
-        # 3. Handle append state and serialization
-        try:
-            if append and user_tab_id:
-                lcd_stored = CurveDash.from_serialized(read_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id))
-
-                if lcd_stored.lightcurve is None:
-                    logger.warning('lightcurve_tess: handle upload: no stored lightcurves found')
-                    lc = lcd.serialize()
-                else:
-                    lcd_stored.append(lcd)
-                    lc = lcd_stored.serialize()
-            else:
-                lc = lcd.serialize()
-        except Exception as e:
-            raise PipeException(f'lightcurve_tess: handle_upload: problem extracting stored lightcurve {e}')
-
-        # 4. Save to server-side cache and update UI targets
-        if user_tab_id is None:
-            user_tab_id = generate_user_tab_id()
-            output['user_tab_id'] = user_tab_id
-        write_serialized_lc(TESS_LC_SRV_NAMESPACE, user_tab_id, lc)
-        if not append:
-            clear_page_blob(
-                TESS_LC_SRV_NAMESPACE, user_tab_id, TESS_MAST_FITS_POINTER_BLOB
-            )
-        output['lightcurve'] = str(uuid.uuid4())
-        output['graph_tab_disabled'] = False
-        output['active_tab'] = 'tess_lc_srv_graph_tab'
-        output['message_results'] = 'Success, switch to the next Tab'
-        
-        period = lcd.metadata.get('period')
-        epoch = resolve_catalog_epoch(lcd.metadata.get('epoch'))
-        output['period_val'] = period if period is not None else dash.no_update
-        if epoch is not None:
-            output['epoch_val'] = display_epoch_offset(epoch, jd0)
-        else:
-            output['epoch_val'] = dash.no_update
-        set_props('div_tess_lc_srv_download_alert', {'children': None})
-    except Exception as e:
-        logger.warning('lightcurve_tess.handle_upload: %s', e, exc_info=True)
-        alert_message = status_alert(format_user_upload_error(e), 'warning')
-        output['graph_tab_disabled'] = True
-        output['message_results'] = ''
-        set_props('div_tess_lc_srv_download_alert', {'children': alert_message})
-    if phase_view:
-        set_props('fold_tess_lc_srv_switch', {'value': False})
-    return output
 
 
 if __name__ == '__main__':  # So this is a local version
