@@ -17,6 +17,8 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
+FRESH_MESSAGE_DURATION_MS = 60_000  # how long the "fresh data from MAST" message stays visible
+
 import aladin_lite_react_component
 import astropy.units as u
 import dash_bootstrap_components as dbc
@@ -151,13 +153,16 @@ def layout():
                                     html.H3("Search results", id="table_tess_header"),
                                     dbc.Stack([
                                         dbc.Label('Size', html_for='size_ffi_input',
-                                                  style={'width': '7em', 'marginBottom': 0}),
-                                        dcc.Input(id='size_ffi_input', type='number', min=1, value=11,
-                                                  style={'width': '11em'}),
-                                        dbc.Button('Retrieve sector', id='download_sector_button', size="sm",
-                                                   style={'width': '100%'}),
-                                        dbc.Button('Cancel', id='cancel_download_sector_button', size="sm",
-                                                   style={'width': '100%'}),
+                                                  style={'width': '3em', 'marginBottom': 0}),
+                                        dcc.Input(id='size_ffi_input', type='number', min=1, max=100, step=1, value=11,
+                                                  style={'width': '7em'}),
+                                        dbc.Button('Retrieve sector', id='download_sector_button', size="sm"),
+                                                #    style={'width': '100%'}),
+                                        dbc.Button('ReRetrieve', id='purge_redownload_sector_button', size="sm",
+                                                   outline=True, color='warning'),
+                                                    # style={'width': '100%'}),
+                                        dbc.Button('Cancel', id='cancel_download_sector_button', size="sm"),
+                                                #    style={'width': '100%'}),
                                     ], direction='horizontal', gap=2),
                                 ], style={'display': 'flex', 'justifyContent': 'space-between',
                                           'alignItems': 'center', 'width': '100%'}
@@ -746,6 +751,25 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
     if n_clicks is None:
         raise PreventUpdate
 
+    return _retrieve_selected_sector(selected_rows, pixel_di, size)
+
+
+def _retrieve_selected_sector(selected_rows, pixel_di, size, *, fresh_from_mast=False):
+    """Loads the selected cutout, opens the Plot tab and clears the previous curves.
+
+    Shared by Retrieve sector and ReRetrieve so both behave the same. With ``fresh_from_mast``
+    the cached copy of the selected cutout is replaced by a new MAST download, and a message
+    describing the fresh data is shown below the search results.
+
+    Args:
+        selected_rows: AgGrid selected row dicts.
+        pixel_di: Serialised search result store payload.
+        size: FFI cutout size in pixels.
+        fresh_from_mast (bool): Replace the cached copy of the selected cutout by a new download.
+
+    Returns:
+        dict: Values for the outputs of the calling callback, keyed by output name.
+    """
     logger.info(f"tess_cutout.download_sector: Starting retrieve/load operation. Requested Cutout Size: {size}")
     if selected_rows:
         row = selected_rows[0]
@@ -760,7 +784,8 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         if not selected_rows:
             raise PipeException('Please select a row first')
         
-        pixel_metadata, pixel_data = tess_processor.download_selected_pixel(selected_rows[0], search_result_di, size)
+        pixel_metadata, pixel_data = tess_processor.download_selected_pixel(
+            selected_rows[0], search_result_di, size, fresh_from_mast=fresh_from_mast)
 
         lookup_name = pixel_di.get('lookup_name', None)  # restore user's lookup name of the object
         if not lookup_name or (lookup_name == pixel_metadata['target']):
@@ -781,7 +806,14 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         output['sector_results'] = 'Success. Switch to the next Tab'
         output['graph_tab_disabled'] = False
         output['active_tab'] = 'tess_graph_tab'
-        set_props('div_tess_download_alert', {'children': '', 'style': {'display': 'none'}})
+        if fresh_from_mast:
+            set_props('div_tess_download_alert', {
+                'children': message.status_alert(
+                    tess_processor.fresh_pixel_summary(selected_rows[0], size), 'info',
+                    duration_ms=FRESH_MESSAGE_DURATION_MS),
+                'style': {'display': 'block'}})
+        else:
+            set_props('div_tess_download_alert', {'children': '', 'style': {'display': 'none'}})
 
         empty_fig = _empty_lightcurve_figure()
         output['lc1'] = None
@@ -804,6 +836,76 @@ def download_sector(n_clicks, selected_rows, pixel_di, size):
         set_props('div_tess_download_alert', {'children': alert_message, 'style': {'display': 'block'}})
 
     return output
+
+
+@callback(
+    output=dict(
+        pixel_metadata=Output('store_pixel_metadata', 'data', allow_duplicate=True),
+        wcs=Output('wcs_store', 'data', allow_duplicate=True),
+        aladin_target=Output('aladin_tess', 'target', allow_duplicate=True),
+        px_graph=Output('px_tess_graph', 'figure', allow_duplicate=True),
+        sector_results=Output('download_sector_result', 'children', allow_duplicate=True),
+        graph_tab_disabled=Output('tess_graph_tab', 'disabled', allow_duplicate=True),
+        active_tab=Output('tess_tabs', 'active_tab', allow_duplicate=True),
+        lc1=Output('store_tess_cutout_lightcurve', 'data', allow_duplicate=True),
+        lc2=Output('lc2_store', 'data', allow_duplicate=True),
+        lc3=Output('lc3_store', 'data', allow_duplicate=True),
+        lc_metadata=Output('store_tess_cutout_lightcurve_metadata', 'data', allow_duplicate=True),
+        selection_bounds=Output('store_tess_cutout_selection_bounds', 'data', allow_duplicate=True),
+        fig1=Output('curve_graph_1', 'figure', allow_duplicate=True),
+        fig2=Output('curve_graph_2', 'figure', allow_duplicate=True),
+        fig3=Output('curve_graph_3', 'figure', allow_duplicate=True),
+    ),
+    inputs=dict(n_clicks=Input('purge_redownload_sector_button', 'n_clicks')),
+    state=dict(
+        selected_rows=State('data_tess_table', 'selectedRows'),
+        pixel_di=State('store_search_result', 'data'),
+        size=State('size_ffi_input', 'value'),
+    ),
+    running=[(Output('purge_redownload_sector_button', 'disabled'), True, False),
+             (Output('download_sector_button', 'disabled'), True, False),
+             (Output('cancel_download_sector_button', 'disabled'), False, True)],
+    cancel=[Input('cancel_download_sector_button', 'n_clicks')],
+    background=background_callback,
+    prevent_initial_call=True
+)
+def reretrieve_sector(n_clicks, selected_rows, pixel_di, size):
+    """Deletes the cached copies of the selected cutout, downloads it again and opens the Plot tab.
+
+    Behaves like Retrieve sector (spinner, Cancel, switch to the Plot tab) but forces a new
+    download from MAST. The search results table is not touched.
+
+    Args:
+        n_clicks: ReRetrieve click count.
+        selected_rows: AgGrid selected row dicts.
+        pixel_di: Serialised search result store payload.
+        size: FFI cutout size in pixels.
+
+    Returns:
+        dict: Values for the callback outputs.
+    """
+    if n_clicks is None:
+        raise PreventUpdate
+
+    return _retrieve_selected_sector(selected_rows, pixel_di, size, fresh_from_mast=True)
+
+
+@callback(
+    Output('div_tess_download_alert', 'children', allow_duplicate=True),
+    Output('div_tess_download_alert', 'style', allow_duplicate=True),
+    Input('data_tess_table', 'selectedRows'),
+    prevent_initial_call=True,
+)
+def clear_download_alert_on_selection(_selected_rows):
+    """Removes the retrieve message below the table when another row is selected.
+
+    Args:
+        _selected_rows: AgGrid selected row dicts (trigger only).
+
+    Returns:
+        tuple: Empty message and hidden style for the message slot.
+    """
+    return '', {'display': 'none'}
 
 
 @callback(
@@ -1808,6 +1910,7 @@ def search(n_clicks, pixel_type, obj_name, ra, dec, radius, resolved_coords):
     output['ra_out'] = no_update
     output['dec_out'] = no_update
     output['resolved_out'] = no_update
+    set_props('div_tess_download_alert', {'children': '', 'style': {'display': 'none'}})  # old retrieve message
 
     try:
         target, search_mode = _resolve_search_target(obj_name, ra, dec, resolved_coords)
@@ -1963,10 +2066,11 @@ def restore_tess_cutout_tabs(pixel_metadata, lc1, wcs_dict):
         ra=State('ra_tess_input', 'value'),
         dec=State('dec_tess_input', 'value'),
         radius=State('radius_tess_input', 'value'),
+        resolved_coords=State('store_resolved_coords', 'data'),
     ),
     prevent_initial_call=True
 )
-def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
+def handle_clean_cache(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     """Deletes server-side TESS cache files for the current search target.
 
     Args:
@@ -1975,6 +2079,7 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
         ra: Right ascension in degrees (optional).
         dec: Declination in degrees (optional).
         radius (float): Cache key search radius for coordinate targets.
+        resolved_coords (dict): Cached resolver output from ``store_resolved_coords``.
 
     Returns:
         dict: Success or error alert for the search panel.
@@ -1982,34 +2087,38 @@ def handle_clean_cache(n_clicks, obj_name, ra, dec, radius):
     if n_clicks is None:
         raise PreventUpdate
 
-    if obj_name and str(obj_name).strip():
-        target = str(obj_name).strip()
-    elif _has_coord(ra) and _has_coord(dec):
-        target = f"{_coord_text(ra)} {_coord_text(dec)}"
-    else:
+    try:
+        target, _ = _resolve_search_target(obj_name, ra, dec, resolved_coords)
+    except PipeException as e:
         return {
-            'alert_message': message.warning_alert("Please enter an object name or RA/DEC coordinates first to clean their cache."),
+            'alert_message': message.status_alert(str(e), 'warning'),
             'alert_style': {'display': 'block'}
         }
 
+    notes = []
     try:
-        rad_val = float(radius) if radius else 11.0
-    except ValueError:
+        rad_val = float(radius)
+        if rad_val <= 0:
+            raise ValueError('non-positive radius')
+    except (TypeError, ValueError):
         rad_val = 11.0
+        notes.append("The radius was empty or not a valid positive number, so the default 11 was used.")
 
     try:
         deleted_count = cache.delete_target_cache(target, radius=rad_val)
         msg_text = f"Cache cleaned successfully for '{target}'. {deleted_count} cached file(s) deleted."
+        if notes:
+            msg_text = f"{msg_text} {' '.join(notes)}"
         logger.info(f"handle_clean_cache: {msg_text}")
         return {
-            'alert_message': message.info_alert(msg_text),
+            'alert_message': message.status_alert(msg_text, 'warning' if notes else 'info'),
             'alert_style': {'display': 'block'}
         }
     except Exception as e:
         err_msg = f"Failed to clean cache for '{target}': {e}"
         logger.error(f"handle_clean_cache: {err_msg}", exc_info=True)
         return {
-            'alert_message': message.warning_alert(err_msg),
+            'alert_message': message.status_alert(err_msg, 'warning'),
             'alert_style': {'display': 'block'}
         }
 

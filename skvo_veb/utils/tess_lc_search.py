@@ -13,6 +13,7 @@ from skvo_veb.utils.my_tools import PipeException
 logger = logging.getLogger(__name__)
 
 CACHE_PREFIX = 'lc_search_metadata'
+LOOKUP_CACHE_PREFIX = 'lc_native_id_lookup'
 
 
 def parse_native_id_from_target(target: str) -> str | None:
@@ -184,21 +185,111 @@ def fetch_comprehensive_search(native_id: str) -> lk.SearchResult:
     return result
 
 
-def search_lightcurves_cached(
+def _lookup_cache_kwargs(target: str, radius: float | None, search_mode: str) -> dict:
+    """Build the normalised cache key of the query-to-native-id lookup.
+
+    The key deliberately has no ``target`` entry, so the cache layer stores it under a plain
+    hash name and never applies its coordinate tolerance (which could return a neighbour).
+
+    Args:
+        target (str): Object name or coordinate string.
+        radius (float | None): Cone radius in arcsec, or None.
+        search_mode (str): Search mode of the query.
+
+    Returns:
+        dict: Keyword arguments for the ``tess_cache`` functions.
+    """
+    return dict(query=' '.join(str(target).split()).lower(), radius=radius, search_mode=search_mode)
+
+
+def get_cached_native_id(target: str, radius: float | None = None, search_mode: str = 'object_name') -> str | None:
+    """Return the native id remembered for this query, if any.
+
+    Args:
+        target (str): Object name or coordinate string.
+        radius (float | None): Cone radius in arcsec, or None.
+        search_mode (str): Search mode of the query.
+
+    Returns:
+        str | None: Native id such as ``TIC:123``, or None if the query was never resolved.
+    """
+    return cache.load(LOOKUP_CACHE_PREFIX, **_lookup_cache_kwargs(target, radius, search_mode))
+
+
+def delete_cached_native_id(target: str, radius: float | None = None, search_mode: str = 'object_name') -> bool:
+    """Forget the native id remembered for this query.
+
+    Args:
+        target (str): Object name or coordinate string.
+        radius (float | None): Cone radius in arcsec, or None.
+        search_mode (str): Search mode of the query.
+
+    Returns:
+        bool: True if a remembered id existed and was removed.
+    """
+    return cache.delete_cached(LOOKUP_CACHE_PREFIX, **_lookup_cache_kwargs(target, radius, search_mode))
+
+
+def resolve_native_id(
     target: str,
     radius: float | None = None,
     search_mode: str = 'object_name',
     resolved_coords: dict | None = None,
-) -> tuple[lk.SearchResult, str]:
-    """
-    Search TESS/Kepler light-curve metadata with a native-id keyed cache.
+) -> str:
+    """Resolve the native mission identifier (e.g. ``TIC:123``) for a search target.
 
-    Cone searches are filtered to the closest unique object, then a comprehensive
-    sector/author query is executed once and cached under the native mission id.
+    A TIC or KIC id typed by the user is parsed directly. Otherwise the id remembered for the
+    same query is used; if there is none, one lightweight MAST query is made, the closest or
+    dominant object is chosen and the answer is remembered on the server.
+
+    Args:
+        target (str): Object name or coordinate string.
+        radius (float | None): Cone radius in arcsec, or None for a name search.
+        search_mode (str): ``'object_name'`` or a coordinate mode.
+        resolved_coords (dict | None): Previously resolved coordinates of the target.
+
+    Returns:
+        str: Native id in the form ``PREFIX:number``.
+
+    Raises:
+        PipeException: If MAST returns no data for the target.
+    """
+    native_id = parse_native_id_from_target(target)
+    if native_id is not None:
+        return native_id
+
+    native_id = get_cached_native_id(target, radius, search_mode)
+    if native_id is not None:
+        logger.info('[CACHE HIT] native_id=%r remembered for target=%r', native_id, target)
+        return native_id
+
+    native_id = _resolve_native_id_from_mast(target, radius, search_mode, resolved_coords)
+    cache.save(native_id, LOOKUP_CACHE_PREFIX, **_lookup_cache_kwargs(target, radius, search_mode))
+    return native_id
+
+
+def _resolve_native_id_from_mast(
+    target: str,
+    radius: float | None,
+    search_mode: str,
+    resolved_coords: dict | None,
+) -> str:
+    """Query MAST once and pick the native id of the closest or dominant object.
+
+    Args:
+        target (str): Object name or coordinate string.
+        radius (float | None): Cone radius in arcsec, or None for a name search.
+        search_mode (str): ``'object_name'`` or a coordinate mode.
+        resolved_coords (dict | None): Previously resolved coordinates of the target.
+
+    Returns:
+        str: Native id in the form ``PREFIX:number``.
+
+    Raises:
+        PipeException: If MAST returns no data for the target.
     """
     query_coord = _query_coord_from_inputs(target, search_mode, resolved_coords)
-
-    native_id = parse_native_id_from_target(target)
+    native_id = None
     is_cone = radius is not None and radius > 0
 
     if native_id is None:
@@ -221,6 +312,35 @@ def search_lightcurves_cached(
         else:
             native_id = _dominant_native_id(initial)
             logger.info('[SEARCH LC] Resolved native_id=%r from initial search', native_id)
+
+    return native_id
+
+
+def delete_cached_search(native_id: str) -> bool:
+    """Delete the cached sector list (search metadata) of one object.
+
+    Args:
+        native_id (str): Native id in the form ``PREFIX:number``.
+
+    Returns:
+        bool: True if a cached sector list existed and was removed.
+    """
+    return cache.delete_cached(CACHE_PREFIX, native_id=native_id)
+
+
+def search_lightcurves_cached(
+    target: str,
+    radius: float | None = None,
+    search_mode: str = 'object_name',
+    resolved_coords: dict | None = None,
+) -> tuple[lk.SearchResult, str]:
+    """
+    Search TESS/Kepler light-curve metadata with a native-id keyed cache.
+
+    Cone searches are filtered to the closest unique object, then a comprehensive
+    sector/author query is executed once and cached under the native mission id.
+    """
+    native_id = resolve_native_id(target, radius, search_mode, resolved_coords)
 
     cached = cache.load(CACHE_PREFIX, native_id=native_id)
     if cached is not None:

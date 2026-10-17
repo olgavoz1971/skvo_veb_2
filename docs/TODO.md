@@ -3544,3 +3544,135 @@ Docs updated: `docs/caching_architecture.md` (section C), `docs/production_apach
 helpers were used by the old page; the first is still used by the export profile. The server
 environment may still define `ASASSN_CACHE_DIR`; it is now unused.
 
+---
+
+## Ticket 29: help popovers and UI consistency on the TESS pages (host app)
+
+**Opened 2026-10-17.** Pages: `skvo_veb/pages/lightcurve_tess_srv.py` (`/tess_lc`) and
+`skvo_veb/pages/tess_cutout.py` (`/tess`). The two pages use `dbc.Tooltip` (hover, one on
+`/tess_lc`, seven on `/tess`) while the other pages use a click-triggered `?` with a popover.
+Goal: the same `?` on both TESS pages, written for a remote user who knows nothing about
+the server internals. Rules: `.cursor/rules/dash-page-ui.mdc`. Process agreed with the
+developer: discuss, ticket, discuss each phase, code only on explicit permission, no commits
+until asked.
+
+Decisions (2026-10-17):
+- One `?` per group, plus an individual `?` on non-obvious items (every flatten parameter,
+  periodogram parameters, period and epoch, Shift to min).
+- One shared helper in `skvo_veb/components/help.py`; neutral CSS classes in
+  `assets/style.css`. `gp_for_oc.py` and `lightcurve_discovery.py` keep their own copies
+  until a later migration ticket.
+- Popover texts are user-facing, British English, sentence case, and must be checked
+  against what the code really does before use.
+
+Phases:
+
+1. [x] **T1 Shared help component. Done 2026-10-17 (8 tests pass; not yet used by any page).** `components/help.py`: `click_help(prefix, help_id,
+   title, body, placement='bottom')` returning `(button, popover)`; IDs
+   `{prefix}_help_{help_id}_btn` and `..._popover`; body as string or list of components;
+   `trigger='legacy'`; `role='button'`, `tabIndex=0`, `aria-label`. CSS `page-help-btn` and
+   `page-help-popover` in the new `assets/page_help.css` (same look as the existing
+   `lc-discovery-help-*`; `style.css` is a minified Bootstrap copy, so it is not used).
+   Acceptance: opens on click, closes on outside click, reachable by keyboard, slugs
+   validated (bad prefix or id raises `ValueError`), no page migrated, unit tests in
+   `skvo_veb/tests/test_help_component.py`. Uniqueness of IDs across the app is the caller's
+   job (distinct prefix per page); a global duplicate registry was rejected because layout
+   functions rebuild on every page load.
+2. [ ] **T2 `/tess_lc` popovers.** Clean cache and ReRetrieve first (texts below), then
+   Radius (replaces the tooltip), group `?` for Search, Plot, Flux options, Folding and
+   Periodogram, individual `?` for Object and Resolve, Append, Magnitude, MJD or Date, rePlot,
+   Trim selected, Download MAST FITS, Period, Epoch, Fold, Recalc phase, Shift to min and the
+   periodogram parameters. Acceptance: no `dbc.Tooltip` left.
+3. [ ] **T3 `/tess` popovers.** FFI or TPF, Clean cache, Radius, Size, Mask (Auto or
+   Handmade, pipe or thresh, threshold), Plot options (Scale, Sum, Frame), Curve tools
+   (Sub bkg, Flatten with window, break gap, order and Display each), Curve 1 to 3, Compare,
+   and a page-level `?` replacing the `dcc.Markdown` instruction block. Acceptance: all seven
+   `dbc.Tooltip` removed.
+4. [ ] **T4 CSS tokens for both pages.** Page class, new `assets/tess_cutout.css`, extend
+   `assets/tess_lc_srv.css`; remove inline styles, the `Silver` background and fixed pixel
+   heights (use `clamp()`).
+5. [ ] **T5 Button roles and sentence case.** Clean cache secondary outline, no `warning`
+   colour, Cancel as danger outline, `size="sm"`, sentence-case labels and accordion titles.
+
+Draft texts (to verify against the code before T2 and T3):
+- **Clean cache:** "Removes the saved copies of this target's data from our server: the
+  list of sectors and the downloaded files. Use it if the results look outdated or
+  incomplete. The next search will fetch everything again from the archive, so it may take
+  longer. The target is taken from the Object, or RA, DEC and Radius, fields above."
+  To check: `tess_cache.delete_target_cache` (what is removed, matching by coordinates); the
+  claim that uploaded files are not affected; the radius used on each page.
+- **ReRetrieve:** "Deletes our saved copy of the selected sector(s) and downloads it again
+  from the MAST archive. Use it if a sector failed to load or looks corrupted. Select at
+  least one row in the table first. It does not draw the curve; use Retrieve curve
+  afterwards." To check: `lightkurve_cache.purge_and_redownload_row`.
+- **FFI or TPF:** TPF is a small image cut-out recorded for this star (only for stars chosen
+  for it, best time resolution); FFI is a cut-out we make from the full-sky images (any
+  star, coarser sampling, cut-out size in pixels).
+
+Deferred (not approved): plot-sidebar restructure and `/tess` layout (description column,
+three open accordions), removal of commented-out code and the invalid `display: row`,
+silent radius fallbacks in both Clean cache callbacks (`None` on `/tess_lc`, `11.0` on
+`/tess`; against the fail-fast rule, to be discussed), migration of `gp_for_oc.py` and
+`lightcurve_discovery.py` to the shared helper.
+
+**Backend and caching phase (no UI change), approved 2026-10-17:**
+- [x] B1 `tess_lc_search.resolve_native_id` (split out of `search_lightcurves_cached`),
+  `tess_lc_search.delete_cached_search`, `tess_cache.delete_cached`; tests in
+  `tests/test_tess_lc_search_cache_clean.py` (4 pass).
+- [x] B2 `/tess_lc` Clean cache removes the sector list plus `delete_target_cache`; the alert
+  reports both. Downloaded MAST FITS are never touched by Clean cache (decision: they are
+  removed per light curve by ReRetrieve).
+- [x] B4 Invalid Clean cache radius gives a warning alert and uses the default 11 (both
+  pages; on `/tess_lc` an empty radius stays "no cone"). Approved by the developer as an
+  explicit exception to the fail-fast rule.
+- [x] B5 `/tess` Clean cache now uses the shared `tess_processor.resolve_search_target`
+  with `store_resolved_coords`, like `/tess_lc` (same target as the search).
+- [x] B6 `tess_lc_search.resolve_native_id` remembers query to native id (prefix
+  `lc_native_id_lookup`, key: normalised query, radius, search mode; no `target` key, so no
+  coordinate tolerance) and skips the MAST lookup on repeats. Clean cache on `/tess_lc`
+  forgets the entry too. 7 tests pass.
+
+- [x] B7 ReRetrieve (`/tess_lc`) now runs the same path as Retrieve curve
+  (`_retrieve_selected_curve(..., fresh_from_mast=True)`): purges the cached FITS of the selected
+  row, downloads it again, plots it and switches to the Plot tab; same spinner and Cancel. It no
+  longer writes to the search alert, so the results table is not covered by the spinner. The
+  message "Fresh data downloaded from MAST: TIC, sector, author, exposure" appears below the
+  table for 60 s (`status_alert(..., duration_ms=...)`), and is cleared by a new Search, a new
+  row selection or the next Retrieve. Tests: `tests/test_tess_reretrieve.py`.
+
+- [x] B8 Same for `/tess`: new ReRetrieve button next to Retrieve sector. It deletes every
+  cached copy of the selected cutout (SPOC TPF: Lightkurve cache `mastDownload`; FFI: our
+  `ffi_data` FITS plus the Lightkurve `tesscut` file for that sector, size and position),
+  then runs the Retrieve sector path (`_retrieve_selected_sector(..., fresh_from_mast=True)`),
+  same spinner, Cancel and tab switch. Message below the table for 60 s; cleared by a new
+  Search or a new row selection. Clean cache still never touches TPF or cutout downloads
+  made by Lightkurve. Tests: `tests/test_tess_cutout_reretrieve.py`. Not yet checked live
+  against MAST.
+
+- [x] B9 `/tess` cutouts: one shared copy, in the Lightkurve cache (option B, multiuser safe).
+  Our `ffi_data` copy is no longer written or read (it also matched up to 72 arcsec and
+  +-1 px away from the request). `lightkurve_cache.fetch_tesscut_pixel_file`: lookup by sector,
+  exact size and position (0.001 deg); a miss or ReRetrieve downloads into a private temporary
+  folder inside the cache directory and moves the file in with an atomic rename; a per-sector
+  `flock` makes simultaneous requests share one download; an unreadable cached file is
+  removed and downloaded again (logged); a failed download leaves the old file untouched.
+  ReRetrieve of an FFI row therefore never leaves a moment without a file (other users keep
+  working). SPOC TPF: unchanged (purge, then download). `LIGHTKURVE_CACHE_DIR` in `.env` is
+  applied at start-up (`configure_lightkurve_cache_dir`); add it to `/var/www/flask/.env`.
+  Manual cleanup guide: `docs/server_cache_cleanup.md`. Cleanup policy (age limit) deferred.
+  Tests: `tests/test_tess_cutout_reretrieve.py` (all mocked; real cache lookup and read of a
+  cached cutout checked by hand; a real MAST download was not run).
+
+- [x] B10 `tess_cache.extract_coords` read sexagesimal RA (`23:05:22.84 +47:40:34.72`) as degrees
+  (23.09 instead of 346.35 deg), so the new cutout lookup never matched and every Retrieve
+  downloaded again. Strings with colons, h/d/m/s letters or four or more numbers are now read as
+  hours and degrees first; decimal pairs stay degrees. Old coordinate-named cache files of such
+  targets are orphaned (see `docs/server_cache_cleanup.md`). Tests:
+  `tests/test_tess_cache_extract_coords.py`. Known, not changed: a comma pair such as
+  `346.3, 47.6` is not parsed as coordinates (falls through to a name lookup).
+
+**Status 2026-10-17:** The earlier UI attempt on `/tess_lc` and the T1 helper were reverted by
+the developer (the `?` click caused jerking and a visible page reload that was not reproduced
+in headless tests); T1 files no longer exist. T2 to T5 are on hold; the UI must be redesigned
+from the `lightcurve_processor.py` pattern before any new attempt.
+

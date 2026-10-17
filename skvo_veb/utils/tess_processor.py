@@ -9,6 +9,7 @@ import astropy.units as u
 from lightkurve import search_targetpixelfile, search_tesscut, LightkurveError
 from astropy.table import Table
 
+from skvo_veb.utils import lightkurve_cache
 from skvo_veb.utils import tess_cache as cache
 from skvo_veb.utils.my_tools import PipeException
 
@@ -46,46 +47,76 @@ def get_ffi(target):
     return ffi
 
 
-def download_selected_pixel(pixel_args, search_result_di, size):
+def _restore_pixel_search(search_result_di):
+    """Rebuilds the Lightkurve search result from its stored dictionary.
+
+    Args:
+        search_result_di (dict): Column-wise search result table from the page store.
+
+    Returns:
+        lightkurve.SearchResult: The restored search result.
     """
-    Retrieves selected pixel data based on SearchResult and target size.
-    With AgGrid, pixel_args is directly the selected row dict.
-    Logs explicitly if cache is used or if remote MAST is queried.
-    """
-    # Restore SearchResults
     search_result_table = Table.from_pandas(pd.DataFrame.from_dict(search_result_di))
-    pixel = lightkurve.SearchResult(search_result_table)
-    
+    return lightkurve.SearchResult(search_result_table)
+
+
+def fresh_pixel_summary(pixel_args, size):
+    """Describes a freshly downloaded cutout for the user.
+
+    Args:
+        pixel_args (dict): Selected table row with ``target``, ``mission``, ``author`` and ``exptime``.
+        size (int): FFI cutout size in pixels (shown for FFI rows only).
+
+    Returns:
+        str: One-sentence message naming target, sector, author, exposure time and cutout size.
+    """
+    parts = [str(pixel_args['target']), str(pixel_args['mission']), str(pixel_args['author']),
+             f"{pixel_args['exptime']} s"]
+    if pixel_args.get('author', '') == 'TESScut':
+        parts.append(f"{size}x{size} pixels")
+    return f"Fresh data downloaded from MAST: {', '.join(parts)}. The cutout is ready on the Plot tab."
+
+
+def download_selected_pixel(pixel_args, search_result_di, size, fresh_from_mast=False):
+    """Retrieves the selected FFI cutout or SPOC TPF.
+
+    Both kinds live only in the shared Lightkurve cache, so every user and worker of the
+    server reuses one copy. With ``fresh_from_mast`` the cached copy is replaced by a new
+    MAST download.
+
+    Args:
+        pixel_args (dict): Selected table row (AgGrid row dict with ``#`` and ``author``).
+        search_result_di (dict): Column-wise search result table from the page store.
+        size (int): FFI cutout size in pixels (used for FFI rows only).
+        fresh_from_mast (bool): Ignore the cached copy and download a new one.
+
+    Returns:
+        tuple: ``(pixel_args_out, pixel_data)`` with ``pixel_type`` added to the row.
+
+    Raises:
+        ValueError: If the row index is invalid.
+        PipeException: If the target position of an FFI row cannot be determined or the
+            download fails.
+    """
+    pixel = _restore_pixel_search(search_result_di)
+
     row_idx = pixel_args['#']
     if len(pixel) <= row_idx:
         raise ValueError("Invalid selected row index.")
-        
+
     if pixel_args.get('author', '') == 'TESScut':
-        kwargs = {
-            'target_name': pixel.target_name[row_idx],
-            'mission': pixel.mission[row_idx],
-            'size': size
-        }
-        pixel_data = cache.load_ffi_fits(**kwargs)
-        if pixel_data is not None:
-            logger.info(f"download_selected_pixel: Cache HIT for FFI cutout. 'Retrieve sector' (FFI FITS) found in local cache for target_name={kwargs['target_name']!r}, size={size}")
-        else:
-            logger.info(f"download_selected_pixel: Cache MISS for FFI cutout. Querying remote MAST cutout service for target_name={kwargs['target_name']!r}, size={size}...")
-            pixel_data = pixel[row_idx].download(cutout_size=size)
-            cache.save_ffi_fits(pixel_data, **kwargs)
+        target_name = pixel.target_name[row_idx]
+        target_coord = cache.extract_coords(target_name)
+        if target_coord is None:
+            raise PipeException(f"Cannot determine the position of '{target_name}' to find its cutout.")
+        pixel_data = lightkurve_cache.fetch_tesscut_pixel_file(
+            pixel, row_idx, size, target_coord, force_fresh=fresh_from_mast)
         pixel_args_out = dict(pixel_args)
         pixel_args_out['pixel_type'] = 'FFI'
     else:
-        # Check if SPOC TPF exists in lightkurve cache
-        download_dir = pixel[row_idx]._default_download_dir()
-        table = pixel[row_idx].table
-        path = os.path.join(
-            download_dir.rstrip("/"),
-            "mastDownload",
-            table["obs_collection"][0],
-            table["obs_id"][0],
-            table["productFilename"][0],
-        )
+        if fresh_from_mast:
+            lightkurve_cache.purge_spoc_tpf(pixel, row_idx)
+        path = lightkurve_cache.spoc_tpf_cache_path(pixel, row_idx)
         if os.path.exists(path):
             logger.info(f"download_selected_pixel: SPOC TPF cache HIT. 'Retrieve sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
         else:
@@ -96,7 +127,6 @@ def download_selected_pixel(pixel_args, search_result_di, size):
         except LightkurveError as e:
             logger.warning(f'download_selected_pixel exception: {e}')
             # Clean corrupted cache and retry
-            # Build the filename of cached lightcurve. See lightkurve/search.py
             logger.warning(f'Removing corrupted cache: {path}')
             if os.path.isfile(path):
                 os.remove(path)

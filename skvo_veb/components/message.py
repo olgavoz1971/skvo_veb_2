@@ -27,7 +27,7 @@ STATUS_ALERT_DURATION_MS = 4000
 _STATUS_ALERT_TIMED_COLORS = frozenset({"info", "success"})
 
 
-def status_alert(message: str, color: str) -> dbc.Alert:
+def status_alert(message: str, color: str, duration_ms: int | None = None) -> dbc.Alert:
     """Builds a dismissable status alert with Processor timing rules.
 
     Every message is dismissable. Info and success use
@@ -38,13 +38,19 @@ def status_alert(message: str, color: str) -> dbc.Alert:
     Args:
         message (str): User-facing text.
         color (str): Bootstrap alert colour (e.g. ``info``, ``warning``).
+        duration_ms (int, optional): Auto-dismiss time in milliseconds that
+            overrides the colour default (use for messages that must stay
+            readable longer, even for warning or danger).
 
     Returns:
         dash_bootstrap_components.Alert: Alert component for a feedback slot.
     """
-    duration = (
-        STATUS_ALERT_DURATION_MS if color in _STATUS_ALERT_TIMED_COLORS else None
-    )
+    if duration_ms is not None:
+        duration = duration_ms
+    else:
+        duration = (
+            STATUS_ALERT_DURATION_MS if color in _STATUS_ALERT_TIMED_COLORS else None
+        )
     return dbc.Alert(
         message,
         color=color,
@@ -70,7 +76,9 @@ def warning_alert(arg: Exception | str):
             ``str()`` is shown (traceback when ``DEBUG_EXCEPTION`` is true).
 
     Returns:
-        dbc.Alert: Warning-coloured alert with preserved newlines.
+        dbc.Alert: Dismissable warning-coloured alert with preserved newlines.
+        It stays until closed or replaced (the fresh ``key`` re-opens it after
+        a previous dismissal).
     """
     if not isinstance(arg, BaseException):
         message = arg
@@ -78,7 +86,14 @@ def warning_alert(arg: Exception | str):
         message = traceback.format_exc()
     else:
         message = str(arg).strip() or arg.__class__.__name__
-    return dbc.Alert(f'{message}', color='warning', style={'white-space': 'pre-wrap'})
+    return dbc.Alert(
+        f'{message}',
+        color='warning',
+        dismissable=True,
+        is_open=True,
+        style={'white-space': 'pre-wrap'},
+        key=str(uuid.uuid4()),
+    )
 
 
 def info_alert(message: str):

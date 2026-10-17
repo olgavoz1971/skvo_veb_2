@@ -81,7 +81,11 @@ from skvo_veb.utils.lc_session_cache import (
 from skvo_veb.utils.tess_lc_builder import (
     create_lc_from_selected_rows,
     flux_radio_options_for_rows,
+    fresh_retrieve_summary,
+    purge_cached_fits_of_selected_row,
 )
+
+FRESH_MESSAGE_DURATION_MS = 60_000  # how long the "fresh data from MAST" message stays visible
 from skvo_veb.utils.tess_flux_column_registry import FLUX_METHOD_DEFAULT
 from skvo_veb.utils.mission_config.tess import TESS_TIMEORIGIN as jd0_tess
 
@@ -636,6 +640,9 @@ def resolve_coordinates_lc_srv(n_clicks, obj_name):
     return output
 
 
+DEFAULT_CLEAN_CACHE_RADIUS = 11.0  # used by Clean cache when the radius field holds an invalid value
+
+
 @callback(
     output=dict(
         alert_message=Output('div_tess_lc_srv_tools_alert', 'children', allow_duplicate=True),
@@ -661,17 +668,36 @@ def handle_clean_cache_lc_srv(n_clicks, obj_name, ra, dec, radius, resolved_coor
             'alert_message': status_alert(str(e), 'warning'),
         }
 
+    notes = []
     try:
         rad_val = float(radius) if radius else None
+        if rad_val is not None and rad_val <= 0:
+            raise ValueError('non-positive radius')
     except ValueError:
-        rad_val = None
+        rad_val = DEFAULT_CLEAN_CACHE_RADIUS
+        notes.append(f"The radius was not a valid positive number, so the default {DEFAULT_CLEAN_CACHE_RADIUS:g} was used.")
 
     try:
+        sector_list_deleted = False
+        try:
+            native_id = tess_lc_search.resolve_native_id(
+                target, radius=rad_val, search_mode=search_mode, resolved_coords=resolved_coords)
+            sector_list_deleted = tess_lc_search.delete_cached_search(native_id)
+            tess_lc_search.delete_cached_native_id(target, radius=rad_val, search_mode=search_mode)
+        except PipeException as e:
+            notes.append(f"The sector list was not removed because the object could not be identified: {e}")
         deleted_count = cache.delete_target_cache(target, radius=rad_val)
-        msg_text = f"Cache cleaned successfully for '{target}'. {deleted_count} cached file(s) deleted."
+        msg_text = (
+            f"Cache cleaned for '{target}'. Sector list: "
+            f"{'removed' if sector_list_deleted else 'was not cached'}. "
+            f"{deleted_count} other cached file(s) deleted. Downloaded light-curve FITS files are not affected "
+            f"(use ReRetrieve for a single light curve)."
+        )
+        if notes:
+            msg_text = f"{msg_text} {' '.join(notes)}"
         logger.info(f"handle_clean_cache_lc_srv: {msg_text}")
         return {
-            'alert_message': status_alert(msg_text, 'info'),
+            'alert_message': status_alert(msg_text, 'warning' if notes else 'info'),
         }
     except Exception as e:
         err_msg = f"Failed to clean cache for '{target}': {e}"
@@ -717,6 +743,7 @@ def basic_search(n_clicks, obj_name, ra, dec, radius, resolved_coords):
     output['ra_out'] = dash.no_update
     output['dec_out'] = dash.no_update
     output['resolved_out'] = dash.no_update
+    set_props('div_tess_lc_srv_download_alert', {'children': None})  # a new search ends the old retrieve message
 
     try:
         target, search_mode = tess_processor.resolve_search_target(obj_name, ra, dec, resolved_coords)
@@ -1513,55 +1540,6 @@ def trim_srv_lightcurve(n_clicks, selection_bounds, user_tab_id, phase_view, tim
 
 @callback(
     output=dict(
-        message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
-        alert_message=Output('div_tess_lc_srv_search_alert', 'children', allow_duplicate=True),
-    ),
-    inputs=dict(n_clicks=Input('purge_redownload_tess_lc_srv_button', 'n_clicks')),
-    state=dict(
-        selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
-        search_store=State('store_tess_lc_search_result', 'data'),
-    ),
-    running=[(Output('purge_redownload_tess_lc_srv_button', 'disabled'), True, False)],
-    background=background_callback,
-    prevent_initial_call=True,
-)
-def purge_redownload_selected_rows(n_clicks, selected_rows, search_store):
-    if n_clicks is None:
-        raise PreventUpdate
-
-    if not selected_rows:
-        return {
-            'message_results': '',
-            'alert_message': status_alert('Select at least one table row to purge and re-retrieve.', 'warning'),
-        }
-
-    try:
-        search_result = tess_lc_search.restore_search_result(search_store)
-        summaries = []
-        for row in selected_rows:
-            row_idx = row['#']
-            was_purged, lc = lightkurve_cache.purge_and_redownload_row(search_result, row_idx)
-            label = getattr(lc, 'LABEL', None) or f'sector {getattr(lc, "SECTOR", "?")}'
-            action = 'purged and re-retrieved' if was_purged else 're-retrieved (no local cache file found)'
-            summaries.append(f'Row {row_idx}: {action} - {label}')
-            logger.info(f"purge_redownload_selected_rows: Completed row {row_idx}: {action}")
-
-        msg = 'Fresh MAST retrieve completed:\n' + '\n'.join(summaries)
-        logger.info(f'purge_redownload_selected_rows: {msg}')
-        return {
-            'message_results': msg,
-            'alert_message': status_alert(msg, 'info'),
-        }
-    except Exception as exc:
-        logger.error(f'purge_redownload_selected_rows failed: {exc}', exc_info=True)
-        return {
-            'message_results': '',
-            'alert_message': status_alert(str(exc), 'warning'),
-        }
-
-
-@callback(
-    output=dict(
         user_tab_id=Output('store_user_tab_id_tess_lc_srv', 'data'),
         lightcurve=Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),  # dummy Storage
         message_results=Output('download_tess_lc_srv_result', 'children'),
@@ -1600,6 +1578,31 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     if n_clicks is None:
         raise PreventUpdate
 
+    return _retrieve_selected_curve(
+        user_tab_id, selected_rows, table_data, flux_method, metadata, search_store, phase_view)
+
+
+def _retrieve_selected_curve(user_tab_id, selected_rows, table_data, flux_method, metadata, search_store,
+                             phase_view, *, fresh_from_mast=False):
+    """Builds the plotted light curve of the selected row and switches to the Plot tab.
+
+    Shared by Retrieve curve and ReRetrieve so both behave the same. With ``fresh_from_mast`` the
+    cached MAST FITS of the selected row is deleted first, so the curve is built from a new
+    download, and a message describing the fresh data is shown below the search results.
+
+    Args:
+        user_tab_id (str, optional): Session tab id; a new one is generated if missing.
+        selected_rows (list): Selected AgGrid rows.
+        table_data (list): Full AgGrid row data.
+        flux_method (str): Chosen flux method.
+        metadata (dict): Target metadata of the search.
+        search_store (dict): Serialised TESS search result.
+        phase_view (bool): Whether the folded view switch is on.
+        fresh_from_mast (bool): Purge the cached FITS of the selected row before building.
+
+    Returns:
+        dict: Values for the outputs of the calling callback, keyed by output name.
+    """
     output_keys = list(ctx.outputs_grouping.keys())
     output = {key: dash.no_update for key in output_keys}
 
@@ -1611,6 +1614,8 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     output['periodogram_results_row_style'] = {'display': 'none'}
     output['pg_row_style'] = {'display': 'none'}
     try:
+        if fresh_from_mast:
+            row = purge_cached_fits_of_selected_row(selected_rows, table_data, search_store)
         # Store the loaded light curve into dcc.Store
         # Store a loaded light curve on the server side in the DiskCache instead
         payload = create_lc_from_selected_rows(
@@ -1639,10 +1644,12 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
         output['active_tab'] = 'tess_lc_srv_graph_tab'
         output['message_results'] = 'Success, switch to the next Tab'
         time_warning = lcd_built.metadata.get('time_warning')
-        set_props(
-            'div_tess_lc_srv_download_alert',
-            {'children': status_alert(time_warning, 'warning') if time_warning else None},
-        )
+        notices = []
+        if fresh_from_mast:
+            notices.append(status_alert(fresh_retrieve_summary(row), 'info', duration_ms=FRESH_MESSAGE_DURATION_MS))
+        if time_warning:
+            notices.append(status_alert(time_warning, 'warning'))
+        set_props('div_tess_lc_srv_download_alert', {'children': notices or None})
     except Exception as e:
         logger.warning(f'lightcurve_tess.download_tess_curve {e}')
         alert_message = status_alert(str(e), 'warning')
@@ -1652,6 +1659,79 @@ def download_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data,
     if phase_view:
         set_props('fold_tess_lc_srv_switch', {'value': False})  # this triggers callbacks, hanging on the switch
     return output
+
+
+@callback(
+    output=dict(
+        user_tab_id=Output('store_user_tab_id_tess_lc_srv', 'data', allow_duplicate=True),
+        lightcurve=Output('store_tess_lightcurve_lc_srv', 'data', allow_duplicate=True),
+        message_results=Output('download_tess_lc_srv_result', 'children', allow_duplicate=True),
+        graph_tab_disabled=Output('tess_lc_srv_graph_tab', 'disabled', allow_duplicate=True),
+        active_tab=Output('tess_lc_srv_tabs', 'active_tab', allow_duplicate=True),
+        periodogram_results_row_style=Output('tess_lc_srv_periodogram_results_row', 'style', allow_duplicate=True),
+        pg_row_style=Output('tess_lc_srv_periodogram_row', 'style', allow_duplicate=True),
+        period_val=Output('period_tess_lc_srv_input', 'value', allow_duplicate=True),
+        epoch_val=Output('epoch_tess_lc_srv_input', 'value', allow_duplicate=True),
+    ),
+    inputs=dict(n_clicks=Input('purge_redownload_tess_lc_srv_button', 'n_clicks')),
+    state=dict(
+        user_tab_id=State('store_user_tab_id_tess_lc_srv', 'data'),
+        selected_rows=State('data_tess_lc_srv_table', 'selectedRows'),
+        table_data=State('data_tess_lc_srv_table', 'data'),
+        flux_method=State('flux_tess_lc_srv_switch', 'value'),
+        metadata=State('store_tess_lightcurve_lc_srv_metadata', 'data'),
+        search_store=State('store_tess_lc_search_result', 'data'),
+        phase_view=State('fold_tess_lc_srv_switch', 'value'),
+    ),
+    background=background_callback,
+    running=[(Output('purge_redownload_tess_lc_srv_button', 'disabled'), True, False),
+             (Output('download_tess_lc_srv_button', 'disabled'), True, False),
+             (Output('cancel_download_tess_lc_srv_button', 'disabled'), False, True)],
+    cancel=[Input('cancel_download_tess_lc_srv_button', 'n_clicks')],
+    prevent_initial_call=True)
+def reretrieve_tess_lc_srv_curve(n_clicks, user_tab_id, selected_rows, table_data, flux_method, metadata,
+                                 search_store, phase_view):
+    """Deletes the cached MAST file of the selected row, downloads it again and plots it.
+
+    Behaves like Retrieve curve (spinner, Cancel, switch to the Plot tab) but forces a new
+    download from MAST. The search results table is not touched.
+
+    Args:
+        n_clicks (int): ReRetrieve click count.
+        user_tab_id (str, optional): Session tab id.
+        selected_rows (list): Selected AgGrid rows.
+        table_data (list): Full AgGrid row data.
+        flux_method (str): Chosen flux method.
+        metadata (dict): Target metadata of the search.
+        search_store (dict): Serialised TESS search result.
+        phase_view (bool): Whether the folded view switch is on.
+
+    Returns:
+        dict: Values for the callback outputs.
+    """
+    if n_clicks is None:
+        raise PreventUpdate
+
+    return _retrieve_selected_curve(
+        user_tab_id, selected_rows, table_data, flux_method, metadata, search_store, phase_view,
+        fresh_from_mast=True)
+
+
+@callback(
+    Output('div_tess_lc_srv_download_alert', 'children', allow_duplicate=True),
+    Input('data_tess_lc_srv_table', 'selectedRows'),
+    prevent_initial_call=True,
+)
+def clear_tess_lc_srv_download_alert_on_selection(_selected_rows):
+    """Removes the retrieve message below the table when another row is selected.
+
+    Args:
+        _selected_rows (list): Selected AgGrid rows (trigger only).
+
+    Returns:
+        None: Clears the message slot.
+    """
+    return None
 
 
 @callback(Output('download_tess_lc_srv_lightcurve', 'data'),  # ------ Download -----

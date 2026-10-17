@@ -20,6 +20,25 @@ COORD_TOLERANCE_DEG = 0.02  # ~1.2 arcminutes (about 3-4 TESS pixels)
 SIZE_TOLERANCE = 1         # size tolerance for FFI cutouts (in pixels)
 
 
+def _is_sexagesimal(text):
+    """Tells whether a coordinate string is written in sexagesimal notation.
+
+    Parameters:
+    -----------
+    text : str
+        Coordinate string such as ``'23:05:22.84 +47:40:34.72'`` or ``'23h05m22.84s +47d40m34.7s'``.
+
+    Returns:
+    --------
+    bool
+        True if it uses colons, h/d/m/s unit letters, or four or more numeric fields
+        (hours minutes seconds and degrees arcmin arcsec), where RA is in hours.
+    """
+    return (':' in text
+            or re.search(r'\d\s*[hdms\u00b0\'"]', text, flags=re.IGNORECASE) is not None
+            or len(re.findall(r'[+-]?\d+(?:\.\d+)?', text)) >= 4)
+
+
 def extract_coords(val):
     """
     Attempts to extract an astropy SkyCoord from a string or object.
@@ -40,8 +59,10 @@ def extract_coords(val):
     except Exception:
         pass
 
-    # 2. Try general coordinate string parsing (handles space or colon separated values)
-    for unit in [(u.deg, u.deg), (u.hourangle, u.deg)]:
+    # 2. Try general coordinate string parsing (handles space or colon separated values).
+    # Sexagesimal RA is in hours (23:05:22.84 is 346.35 deg), so it must not be read as degrees.
+    units = [(u.hourangle, u.deg), (u.deg, u.deg)] if _is_sexagesimal(val_str) else [(u.deg, u.deg), (u.hourangle, u.deg)]
+    for unit in units:
         try:
             return SkyCoord(val_str, unit=unit)
         except Exception:
@@ -530,6 +551,33 @@ def load_lightcurve_collection(tar_filename):
         except Exception:
             pass
     return lc_collection
+
+
+def delete_cached(prefix, extension='dill', **kwargs):
+    """Delete the single cache entry that ``load`` would return for these arguments.
+
+    Parameters:
+    -----------
+    prefix : str
+        The cache prefix identifier.
+    extension : str, optional
+        File extension of the entry (``'dill'`` or ``'fits'``).
+    **kwargs : dict
+        Metadata defining the cache entry (same as for ``save`` and ``load``).
+
+    Returns:
+    --------
+    bool
+        True if a file was found and removed, False if nothing was cached.
+    """
+    filename = _find_cached_file(prefix, extension=extension, **kwargs)
+    if not filename:
+        filename = _get_cache_filename(prefix, extension=extension, **kwargs)
+    if filename and os.path.exists(filename):
+        os.remove(filename)
+        logger.info(f"Clean Cache: Deleted {filename}")
+        return True
+    return False
 
 
 def delete_target_cache(target, radius=None, size=None):

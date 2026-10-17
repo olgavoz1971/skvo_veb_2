@@ -241,6 +241,72 @@ def _absolute_jd_from_lightcurve(lc) -> tuple[np.ndarray, str, str | None]:
     return jd, scale or None, warning
 
 
+def _single_selected_row(selected_rows, table_data) -> dict:
+    """Returns the one selected table row as a dict.
+
+    Args:
+        selected_rows (list): Selected AgGrid rows (dicts) or row indices.
+        table_data (list): Full AgGrid row data, needed when indices are supplied.
+
+    Returns:
+        dict: The selected row.
+
+    Raises:
+        PipeException: If nothing or more than one row is selected.
+    """
+    if not selected_rows:
+        raise PipeException('Search for the lightcurves first and try again')
+    if isinstance(selected_rows[0], dict):
+        selected_data = selected_rows
+    else:
+        if not table_data:
+            raise PipeException('Search for the lightcurves first and try again')
+        selected_data = [table_data[i] for i in selected_rows]
+    if len(selected_data) != 1:
+        raise PipeException('Select exactly one search row: each retrieve builds one product.')
+    return selected_data[0]
+
+
+def purge_cached_fits_of_selected_row(selected_rows, table_data, search_store) -> dict:
+    """Deletes the cached MAST FITS file of the single selected search row.
+
+    The next retrieve of that row then downloads a fresh copy from MAST.
+
+    Args:
+        selected_rows (list): Selected AgGrid rows (dicts) or row indices.
+        table_data (list): Full AgGrid row data.
+        search_store (dict): Serialised search result the row numbers refer to.
+
+    Returns:
+        dict: The selected row.
+
+    Raises:
+        PipeException: If not exactly one row is selected or the search data is missing.
+    """
+    row = _single_selected_row(selected_rows, table_data)
+    if not search_store:
+        raise PipeException('Search for the lightcurves first and try again')
+    search_result = tess_lc_search.restore_search_result(search_store)
+    was_purged = lightkurve_cache.purge_lightkurve_cached_fits(search_result, row['#'])
+    logger.info('purge_cached_fits_of_selected_row: row %s, cached file removed: %s', row['#'], was_purged)
+    return row
+
+
+def fresh_retrieve_summary(row: dict) -> str:
+    """Describes a freshly downloaded light curve for the user.
+
+    Args:
+        row (dict): Selected table row with ``target``, ``mission``, ``author`` and ``exptime``.
+
+    Returns:
+        str: One-sentence message naming the target, sector, author and exposure time.
+    """
+    return (
+        f"Fresh data downloaded from MAST: TIC {row['target']}, {row['mission']}, "
+        f"{row['author']}, {row['exptime']} s. The light curve is plotted on the Plot tab."
+    )
+
+
 def create_lc_from_selected_rows(
     selected_rows,
     table_data,

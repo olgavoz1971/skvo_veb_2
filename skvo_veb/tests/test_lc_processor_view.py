@@ -1228,3 +1228,6 @@ def test_status_alert_duration_and_dismissable():
     danger = status_alert("Smooth fit failed.", "danger")
     assert danger.dismissable is True
     assert danger.duration is None
+    long_info = status_alert("Fresh data.", "info", duration_ms=60000)
+    assert long_info.duration == 60000
+    assert status_alert("Slow warning.", "warning", duration_ms=60000).duration == 60000

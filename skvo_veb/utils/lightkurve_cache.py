@@ -1,9 +1,15 @@
+import fcntl
 import io
 import logging
 import os
+import re
+import shutil
+import tempfile
 from typing import Literal
 
+import astropy.units as u
 import lightkurve as lk
+from astropy.coordinates import SkyCoord
 from lightkurve import LightkurveError
 from lightkurve.config import get_cache_dir
 
@@ -560,3 +566,195 @@ def purge_and_redownload_row(search_result: lk.SearchResult, row_idx: int):
     was_purged = purge_lightkurve_cached_fits(search_result, row_idx)
     lc = download_lightcurve_row(search_result, row_idx)
     return was_purged, lc
+
+
+_TESSCUT_FILE_PATTERN = re.compile(
+    r'^tess-s(?P<sector>\d{4})-\d+-\d+_(?P<ra>[+-]?\d+(?:\.\d+)?)_(?P<dec>[+-]?\d+(?:\.\d+)?)'
+    r'_(?P<nx>\d+)x(?P<ny>\d+)_astrocut\.fits$'
+)
+TESSCUT_MATCH_TOLERANCE_DEG = 0.001  # the same match radius Lightkurve uses when it reuses a cutout
+
+
+def spoc_tpf_cache_path(search_result: lk.SearchResult, row_idx: int) -> str:
+    """Builds the path where Lightkurve caches the SPOC target pixel file of one row.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result table.
+        row_idx (int): Row index in the search result.
+
+    Returns:
+        str: Expected path of the cached TPF (the file may not exist).
+    """
+    row = search_result[row_idx]
+    table = row.table
+    return os.path.join(
+        row._default_download_dir().rstrip('/'),
+        'mastDownload',
+        table['obs_collection'][0],
+        table['obs_id'][0],
+        table['productFilename'][0],
+    )
+
+
+def purge_spoc_tpf(search_result: lk.SearchResult, row_idx: int) -> bool:
+    """Deletes the Lightkurve-cached SPOC target pixel file of one search row.
+
+    Args:
+        search_result (lk.SearchResult): Parent search result table.
+        row_idx (int): Row index in the search result.
+
+    Returns:
+        bool: True if a cached file existed and was removed.
+
+    Raises:
+        PipeException: If the file exists but cannot be deleted.
+    """
+    path = spoc_tpf_cache_path(search_result, row_idx)
+    if not os.path.isfile(path):
+        logger.info('[PURGE TPF] No cached file for row %s (%s)', row_idx, path)
+        return False
+    try:
+        os.remove(path)
+    except OSError as exc:
+        raise PipeException(f'Failed to delete cached TPF file {path}: {exc}') from exc
+    logger.info('[PURGE TPF] Deleted cached file: %s', path)
+    return True
+
+
+def find_cached_tesscut_files(download_dir: str, sector: int, size: int, target_coord: SkyCoord) -> list[str]:
+    """Lists the cached TESScut FFI cutouts of one sector, size and position.
+
+    Lightkurve reuses a cached cutout when sector, pixel size and position (within
+    ``TESSCUT_MATCH_TOLERANCE_DEG``) match, so exactly those files are returned.
+
+    Args:
+        download_dir (str): Lightkurve download directory (the cutouts are in its ``tesscut`` folder).
+        sector (int): TESS sector number.
+        size (int): Cutout side length in pixels.
+        target_coord (SkyCoord): Position the cutout was made for.
+
+    Returns:
+        list[str]: Paths of matching files, closest position first.
+    """
+    tesscut_dir = os.path.join(download_dir, 'tesscut')
+    if not os.path.isdir(tesscut_dir):
+        return []
+    found = []
+    for fname in os.listdir(tesscut_dir):
+        match = _TESSCUT_FILE_PATTERN.match(fname)
+        if not match:
+            continue
+        if int(match['sector']) != int(sector) or int(match['nx']) != int(size) or int(match['ny']) != int(size):
+            continue
+        file_coord = SkyCoord(ra=float(match['ra']) * u.deg, dec=float(match['dec']) * u.deg)
+        separation = target_coord.separation(file_coord).deg
+        if separation <= TESSCUT_MATCH_TOLERANCE_DEG:
+            found.append((separation, os.path.join(tesscut_dir, fname)))
+    return [path for _, path in sorted(found)]
+
+
+def _read_tesscut_file(path: str, row):
+    """Opens a cached cutout file as a TESS target pixel file.
+
+    Args:
+        path (str): Path of the cutout FITS file.
+        row (lk.SearchResult): One-row search result the cutout belongs to.
+
+    Returns:
+        lightkurve.TessTargetPixelFile: The opened cutout.
+    """
+    return lk.read(path, quality_bitmask='default', targetid=row.table['targetid'][0])
+
+
+def fetch_tesscut_pixel_file(search_result: lk.SearchResult, row_idx: int, size: int,
+                             target_coord: SkyCoord, *, force_fresh: bool = False):
+    """Returns the FFI cutout of one search row from the shared cache, downloading it if needed.
+
+    The shared Lightkurve ``tesscut`` folder is the only copy. Because several workers
+    and users share it, a download goes into a private temporary folder inside the cache
+    directory and is moved into place with an atomic rename, so nobody reads a partial
+    file and a refresh never leaves a moment without a file. A per-sector lock makes
+    simultaneous requests for the same cutout wait for one download.
+
+    Args:
+        search_result (lk.SearchResult): Parent TESScut search result.
+        row_idx (int): Row index in the search result.
+        size (int): Cutout side length in pixels.
+        target_coord (SkyCoord): Position of the requested cutout.
+        force_fresh (bool): Ignore the cached file and download a new one from MAST.
+
+    Returns:
+        lightkurve.TessTargetPixelFile: The cutout (its ``path`` is the shared file).
+
+    Raises:
+        PipeException: If the download fails or produces no cutout file.
+    """
+    row = search_result[row_idx]
+    sector = int(row.table['sequence_number'][0])
+    size = int(size)
+    download_dir = get_lightkurve_cache_dir()
+    tesscut_dir = os.path.join(download_dir, 'tesscut')
+    os.makedirs(tesscut_dir, exist_ok=True)
+
+    lock_path = os.path.join(tesscut_dir, f'.lock_s{sector:04d}_{size}x{size}')
+    with open(lock_path, 'w') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)  # released when the file is closed
+        cached = find_cached_tesscut_files(download_dir, sector, size, target_coord)
+        if cached and not force_fresh:
+            try:
+                logger.info('[CUTOUT CACHE HIT] %s', cached[0])
+                return _read_tesscut_file(cached[0], row)
+            except Exception as exc:
+                logger.warning('[CUTOUT CACHE] Cached file %s is unreadable (%s); removing it and downloading again',
+                               cached[0], exc)
+                os.remove(cached[0])
+                cached = cached[1:]
+
+        logger.info('[CUTOUT CACHE %s] Downloading sector %s, %sx%s px from MAST',
+                    'REFRESH' if force_fresh else 'MISS', sector, size, size)
+        tmp_dir = tempfile.mkdtemp(dir=download_dir, prefix='.tmp_tesscut_')
+        try:
+            try:
+                row.download(download_dir=tmp_dir, cutout_size=size)
+            except Exception as exc:
+                raise PipeException(f'Cutout download from MAST failed: {exc}') from exc
+            produced = [f for f in os.listdir(os.path.join(tmp_dir, 'tesscut')) if f.endswith('_astrocut.fits')] \
+                if os.path.isdir(os.path.join(tmp_dir, 'tesscut')) else []
+            if len(produced) != 1:
+                raise PipeException(f'MAST returned {len(produced)} cutout files for one row; expected exactly one.')
+            destination = os.path.join(tesscut_dir, produced[0])
+            os.replace(os.path.join(tmp_dir, 'tesscut', produced[0]), destination)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        for old_path in cached:  # older copies of the same cutout under a slightly different name
+            if os.path.abspath(old_path) != os.path.abspath(destination) and os.path.exists(old_path):
+                os.remove(old_path)
+                logger.info('[CUTOUT CACHE] Removed superseded file %s', old_path)
+        return _read_tesscut_file(destination, row)
+
+
+def configure_lightkurve_cache_dir() -> str | None:
+    """Applies ``LIGHTKURVE_CACHE_DIR`` from the environment as the Lightkurve cache directory.
+
+    Lightkurve does not read the environment itself. When the variable is unset, the
+    Lightkurve default (``~/.lightkurve/cache`` of the running user) stays in force.
+
+    Returns:
+        str | None: The configured directory, or None when the variable is unset.
+
+    Raises:
+        PipeException: If the directory cannot be created or written.
+    """
+    path = os.getenv('LIGHTKURVE_CACHE_DIR', '').strip()
+    if not path:
+        return None
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        raise PipeException(f'LIGHTKURVE_CACHE_DIR {path!r} cannot be created: {exc}') from exc
+    if not os.access(path, os.W_OK):
+        raise PipeException(f'LIGHTKURVE_CACHE_DIR {path!r} is not writable by this process.')
+    lk.conf.cache_dir = path
+    logger.info('Lightkurve cache directory set to %s', path)
+    return path

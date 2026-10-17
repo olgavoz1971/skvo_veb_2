@@ -2,6 +2,10 @@ from skvo_veb.logging_config import configure_logging
 
 configure_logging()
 
+from skvo_veb.utils.lightkurve_cache import configure_lightkurve_cache_dir
+
+configure_lightkurve_cache_dir()
+
 import logging
 import dash
 import dash_bootstrap_components as dbc
