@@ -117,12 +117,76 @@ def test_fetch_cutout_requires_exactly_one_downloaded_file(cache_root):
         lightkurve_cache.fetch_tesscut_pixel_file(search, 0, 11, COORD)
 
 
-def test_purge_spoc_tpf_deletes_cached_file(tmp_path):
-    path = _touch(tmp_path, 'tpf.fits')
-    with mock.patch.object(lightkurve_cache, 'spoc_tpf_cache_path', return_value=str(path)):
-        assert lightkurve_cache.purge_spoc_tpf(object(), 0) is True
-        assert not path.exists()
-        assert lightkurve_cache.purge_spoc_tpf(object(), 0) is False
+TPF_REL = os.path.join('mastDownload', 'TESS', 'obs1', 'tpf.fits')
+
+
+def _tpf_search(cache_root):
+    """A one-row SPOC search stand-in whose cache path is ``<cache_root>/mastDownload/TESS/obs1/tpf.fits``."""
+    search, row = _search_row()
+    return search, row, mock.patch.object(lightkurve_cache, 'spoc_tpf_cache_path',
+                                          return_value=str(cache_root / TPF_REL))
+
+
+def _fake_tpf_download(content):
+    """Returns a ``download`` replacement that writes the TPF below the given download folder."""
+    def download(download_dir):
+        _touch((Path(download_dir) / TPF_REL).parent, 'tpf.fits', content)
+    return download
+
+
+def test_fetch_tpf_cache_hit_does_not_download(cache_root):
+    _touch((cache_root / TPF_REL).parent, 'tpf.fits')
+    search, row, path_patch = _tpf_search(cache_root)
+    with path_patch, mock.patch.object(lightkurve_cache.lk, 'read', return_value='TPF'):
+        assert lightkurve_cache.fetch_spoc_tpf(search, 0) == 'TPF'
+    row.download.assert_not_called()
+
+
+def test_fetch_tpf_miss_downloads_into_temp_folder_then_publishes(cache_root):
+    search, row, path_patch = _tpf_search(cache_root)
+    row.download.side_effect = _fake_tpf_download(b'new')
+    with path_patch, mock.patch.object(lightkurve_cache.lk, 'read', return_value='TPF'):
+        lightkurve_cache.fetch_spoc_tpf(search, 0)
+    assert (cache_root / TPF_REL).read_bytes() == b'new'
+    assert row.download.call_args.kwargs['download_dir'] != str(cache_root)
+    assert not [p for p in os.listdir(cache_root) if p.startswith('.tmp_tpf_')]
+
+
+def test_fetch_tpf_refresh_replaces_cached_file(cache_root):
+    _touch((cache_root / TPF_REL).parent, 'tpf.fits', b'old')
+    search, row, path_patch = _tpf_search(cache_root)
+    row.download.side_effect = _fake_tpf_download(b'fresh')
+    with path_patch, mock.patch.object(lightkurve_cache.lk, 'read', return_value='TPF'):
+        lightkurve_cache.fetch_spoc_tpf(search, 0, force_fresh=True)
+    assert (cache_root / TPF_REL).read_bytes() == b'fresh'
+
+
+def test_fetch_tpf_unreadable_cached_file_is_removed_and_downloaded_again(cache_root):
+    _touch((cache_root / TPF_REL).parent, 'tpf.fits', b'broken')
+    search, row, path_patch = _tpf_search(cache_root)
+    row.download.side_effect = _fake_tpf_download(b'good')
+    with path_patch, mock.patch.object(lightkurve_cache.lk, 'read',
+                                       side_effect=[OSError('truncated'), 'ok', 'TPF']):
+        assert lightkurve_cache.fetch_spoc_tpf(search, 0) == 'TPF'
+    assert (cache_root / TPF_REL).read_bytes() == b'good'
+
+
+def test_fetch_tpf_incomplete_download_is_never_published(cache_root):
+    _touch((cache_root / TPF_REL).parent, 'tpf.fits', b'old')
+    search, row, path_patch = _tpf_search(cache_root)
+    row.download.side_effect = _fake_tpf_download(b'half')
+    with path_patch, mock.patch.object(lightkurve_cache.lk, 'read', side_effect=OSError('too small')):
+        with pytest.raises(PipeException, match='cannot be opened'):
+            lightkurve_cache.fetch_spoc_tpf(search, 0, force_fresh=True)
+    assert (cache_root / TPF_REL).read_bytes() == b'old'
+    assert not [p for p in os.listdir(cache_root) if p.startswith('.tmp_tpf_')]
+
+
+def test_fetch_tpf_download_error_is_reported(cache_root):
+    search, row, path_patch = _tpf_search(cache_root)
+    row.download.side_effect = RuntimeError('504')
+    with path_patch, pytest.raises(PipeException, match='504'):
+        lightkurve_cache.fetch_spoc_tpf(search, 0)
 
 
 def _pixel_search(author_names=('TIC 1',)):
@@ -150,16 +214,14 @@ def test_download_selected_pixel_ffi_fails_when_position_unknown():
             tess_processor.download_selected_pixel({'#': 0, 'author': 'TESScut'}, {}, 11)
 
 
-def test_download_selected_pixel_tpf_fresh_purges_before_download(tmp_path):
+def test_download_selected_pixel_tpf_uses_shared_tpf_cache_and_passes_fresh_flag():
     search = _pixel_search()
-    search.__getitem__.return_value.download.return_value = 'TPF'
     with mock.patch.object(tess_processor, '_restore_pixel_search', return_value=search), \
-            mock.patch.object(tess_processor.lightkurve_cache, 'spoc_tpf_cache_path',
-                              return_value=str(tmp_path / 'x.fits')), \
-            mock.patch.object(tess_processor.lightkurve_cache, 'purge_spoc_tpf') as purge:
+            mock.patch.object(tess_processor.lightkurve_cache, 'fetch_spoc_tpf',
+                              return_value='TPF') as fetch:
         args, data = tess_processor.download_selected_pixel(
             {'#': 0, 'author': 'SPOC'}, {}, 11, fresh_from_mast=True)
-    purge.assert_called_once_with(search, 0)
+    assert fetch.call_args.kwargs == {'force_fresh': True}
     assert data == 'TPF' and args['pixel_type'] == 'TPF'
 
 

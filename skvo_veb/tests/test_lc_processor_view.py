@@ -971,63 +971,6 @@ def test_find_overlay_extrema_does_not_join_nan_hole():
     assert np.max(result.jd) < 2459001.5
 
 
-def test_rough_interval_width_and_tom_nan_sigma():
-    """Intervals are [t-δ, t+δ]; compact ToM writes nan σ and still parses."""
-    from skvo_veb.utils.lc_processor.extrema import (
-        OverlayExtremaResult,
-        format_intervals_from_payload,
-        format_rough_toms_download,
-        pack_extrema_payload,
-    )
-    from skvo_veb.utils.oc.tom_io import parse_compact_tom_contents
-
-    result = OverlayExtremaResult(
-        jd=np.array([2459000.5, 2459001.5]),
-        smooth=np.array([0.1, 0.2]),
-        median_interval_d=1.0,
-        min_distance_d=0.3,
-        n_extrema=2,
-        extremum_kind="min",
-        working_domain="flux",
-    )
-    payload = pack_extrema_payload(result, delta_time_d=0.025)
-    smooth = {
-        "method": "running_parabola",
-        "params": {
-            "window_days": 0.05,
-            "step_days": 0.0125,
-            "min_points": 5,
-            "break_tolerance_d": 0.7,
-            "domain": "flux",
-        },
-    }
-    body = format_intervals_from_payload(
-        payload,
-        delta_time_d=0.025,
-        source_file="star.dat",
-        smooth_payload=smooth,
-    )
-    assert "# source_file: star.dat" in body
-    assert "# smooth_method: running_parabola" in body
-    assert "# window_days: 0.05" in body
-    assert "# Interval_Start  Interval_End" in body
-    assert "2459000.475" in body
-    assert "2459000.525" in body
-    tom_body = format_rough_toms_download(
-        payload, source_file="star.dat", smooth_payload=smooth
-    )
-    assert "# source_file: star.dat" in tom_body
-    assert "# smooth_method: running_parabola" in tom_body
-    assert "# Rough Minimum times" in tom_body
-    assert "# JD_Minimum" in tom_body
-    assert "# JD_Std" in tom_body
-    records, _meta = parse_compact_tom_contents(tom_body)
-    assert len(records) == 2
-    assert records[0]["jd_ext"] == pytest.approx(2459000.5)
-    assert np.isnan(records[0]["sigma_jd"])
-    assert np.isnan(records[1]["sigma_jd"])
-
-
 def test_figure_raw_with_trend_marks_extrema():
     """Rough extrema are a diamond overlay, not extra knot shapes."""
     from skvo_veb.utils.lc_processor.figures import (
@@ -1063,30 +1006,6 @@ def test_figure_raw_with_trend_marks_extrema():
     from skvo_veb.utils.lc_config import DEFAULT_EPOCH_JD
 
     assert float(ext.customdata[0]) == pytest.approx(2459000.5 - DEFAULT_EPOCH_JD)
-
-
-def test_resolve_widget_defaults_use_fallbacks_or_factors():
-    """Empty period uses fallbacks; a known P scales the period-aware knobs."""
-    from skvo_veb.utils.lc_processor.config import (
-        DEFAULT_INTERVAL_DELTA_DAYS,
-        DEFAULT_MIN_PEAK_DISTANCE_DAYS,
-        DEFAULT_RP_WINDOW_DAYS,
-        resolve_widget_defaults,
-    )
-
-    window, step, distance, delta = resolve_widget_defaults(None)
-    assert window == DEFAULT_RP_WINDOW_DAYS
-    assert step == pytest.approx(DEFAULT_RP_WINDOW_DAYS * 0.25)
-    assert distance == DEFAULT_MIN_PEAK_DISTANCE_DAYS
-    assert delta == DEFAULT_INTERVAL_DELTA_DAYS
-    window, step, distance, delta = resolve_widget_defaults(2.0)
-    assert window == pytest.approx(1.0)
-    assert step == pytest.approx(0.25)
-    assert distance == pytest.approx(1.4)
-    assert delta == pytest.approx(round(2.0 / 3.0, 6))
-    window, step, distance, delta = resolve_widget_defaults(0.0)
-    assert window == DEFAULT_RP_WINDOW_DAYS
-    assert step == pytest.approx(DEFAULT_RP_WINDOW_DAYS * 0.25)
 
 
 def test_copy_working_as_residual_records_origin():

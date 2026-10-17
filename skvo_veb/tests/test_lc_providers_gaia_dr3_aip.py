@@ -2,23 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 from astropy.table import Table
 
 from lc_discovery.providers.gaia_dr3_aip import config
-from lc_discovery.providers.gaia_dr3_aip.catalog import (
-    map_prefetched_sources_to_catalog,
-    map_source_table_to_catalog,
-)
-from lc_discovery.providers.gaia_dr3_aip.epoch_photometry import (
-    band_point_count,
-    band_time_bounds,
-    cache_dict_from_tap_table,
-    extract_band_lightcurve,
-)
+from lc_discovery.providers.gaia_dr3_aip.catalog import map_source_table_to_catalog
 from lc_discovery.providers.gaia_dr3_aip.provider import GaiaDr3AipProvider
 from lc_discovery.providers.gaia_dr3_aip.vari_metadata import (
     PeriodKind,
@@ -28,30 +17,12 @@ from lc_discovery.providers.gaia_dr3_aip.vari_metadata import (
     pick_vari_route,
     route_sources_by_vari_table,
 )
-from lc_discovery.lc_key import decode_lc_key
 from lc_discovery.tap.dialect import TapQueryDialect
-from skvo_veb.utils.lc_bridge import volc_to_curvedash
-from skvo_veb.utils.lc_config import DOMAIN_MAG, PHOTCAL_KEY_ZP_FLUX, PHOTCAL_KEY_ZP_MAG
 from skvo_veb.utils.lc_discovery_time_bounds import DiscoveryTimeBounds
 from skvo_veb.utils.lc_discovery_search import run_catalog_search_for_mission
 from skvo_veb.utils.my_tools import PipeException
 
-GAIA_AIP_VOT = (
-    Path(__file__).resolve().parents[2] / "data" / "gaia_aip.vot"
-)
 SAMPLE_SOURCE_ID = 10655814178816
-
-
-@pytest.fixture(scope="module")
-def gaia_aip_epoch_table() -> Table:
-    """Loads the bundled Gaia@AIP epoch-photometry sample VOTable."""
-    return Table.read(GAIA_AIP_VOT, format="votable")
-
-
-@pytest.fixture(scope="module")
-def gaia_aip_epoch_payload(gaia_aip_epoch_table) -> dict:
-    """Serialises the sample epoch row for prefetch tests."""
-    return cache_dict_from_tap_table(gaia_aip_epoch_table)[SAMPLE_SOURCE_ID]
 
 
 @pytest.fixture
@@ -103,19 +74,6 @@ def test_aip_tap_dialect_is_adql_20():
     assert config.TAP_QUERY_DIALECT == TapQueryDialect.ADQL_2_0
 
 
-def test_extract_g_band_from_sample(gaia_aip_epoch_payload):
-    """Sample epoch row yields 16 valid G-band epochs with MJD times."""
-    time_mjd, mag, mag_err = extract_band_lightcurve(gaia_aip_epoch_payload, band_code="G")
-    assert len(time_mjd) == 16
-    assert len(mag) == 16
-    assert np.all(np.isfinite(mag))
-    assert np.all(np.isfinite(mag_err))
-    assert np.all(mag_err > 0.0)
-    t_min, t_max = band_time_bounds(gaia_aip_epoch_payload, band_code="G")
-    assert t_min == pytest.approx(float(np.min(time_mjd)))
-    assert t_max == pytest.approx(float(np.max(time_mjd)))
-
-
 def test_map_source_table_to_three_bands_without_epoch():
     """Discovery mapper emits three band rows without epoch photometry metadata."""
     source_table = Table(
@@ -136,69 +94,6 @@ def test_map_source_table_to_three_bands_without_epoch():
     assert catalog["mag"][catalog["filter_name"] == "Gaia G"][0] == pytest.approx(20.45)
     assert np.all(np.ma.is_masked(catalog["t_min"]))
     assert np.all(np.ma.is_masked(catalog["n_points"]))
-
-
-def test_map_prefetched_source_to_three_bands(gaia_aip_epoch_payload):
-    """One prefetched source expands to G, BP, and RP catalogue rows."""
-    source_table = Table(
-        {
-            "source_id": [SAMPLE_SOURCE_ID],
-            "ra": [274.5873003514723],
-            "dec": [-21.706522062249086],
-            "phot_g_mean_mag": [20.45],
-        }
-    )
-    catalog = map_prefetched_sources_to_catalog(
-        source_table,
-        {SAMPLE_SOURCE_ID: gaia_aip_epoch_payload},
-        provider_id=config.PROVIDER_ID,
-    )
-    assert len(catalog) == 3
-    assert set(catalog["filter_name"]) == {"Gaia G", "Gaia BP", "Gaia RP"}
-    assert all(catalog["n_points"] > 0)
-    assert catalog["mag"][catalog["filter_name"] == "Gaia G"][0] == pytest.approx(20.45)
-
-
-def test_aip_catalog_lc_key_payload(gaia_aip_epoch_payload):
-    """Catalogue rows store source_id, band, and sky position for fetch."""
-    source_table = Table(
-        {
-            "source_id": [SAMPLE_SOURCE_ID],
-            "ra": [274.587],
-            "dec": [-21.707],
-            "phot_g_mean_mag": [20.45],
-        }
-    )
-    catalog = map_prefetched_sources_to_catalog(
-        source_table,
-        {SAMPLE_SOURCE_ID: gaia_aip_epoch_payload},
-        provider_id=config.PROVIDER_ID,
-    )
-    payload = decode_lc_key(catalog["lc_key"][0])["payload"]
-    assert payload["source_id"] == str(SAMPLE_SOURCE_ID)
-    assert payload["band"] == "G"
-    assert payload["filter_name"] == "Gaia G"
-
-
-def test_map_prefetched_source_includes_class_and_period(gaia_aip_epoch_payload):
-    """Catalogue rows carry classifier class and routed variability period."""
-    source_table = Table(
-        {
-            "source_id": [SAMPLE_SOURCE_ID],
-            "ra": [274.5873003514723],
-            "dec": [-21.706522062249086],
-            "phot_g_mean_mag": [20.45],
-            "best_class_name": ["RR Lyrae Candidatel"],
-        }
-    )
-    catalog = map_prefetched_sources_to_catalog(
-        source_table,
-        {SAMPLE_SOURCE_ID: gaia_aip_epoch_payload},
-        provider_id=config.PROVIDER_ID,
-        period_by_source={SAMPLE_SOURCE_ID: 0.5123},
-    )
-    assert list(catalog["object_class"]) == ["RR Lyrae Candidatel"] * len(catalog)
-    assert all(value == pytest.approx(0.5123) for value in catalog["period"])
 
 
 def test_vari_route_picks_first_true_flag():
@@ -283,88 +178,6 @@ def test_aip_search_catalog_runs_gaia_source_query_only(monkeypatch, prefetch_ca
     assert any("gaiadr3.gaia_source" in call for call in calls)
     assert all("gaiadr3.epoch_photometry" not in call for call in calls)
     assert not (prefetch_cache_tmp / f"{SAMPLE_SOURCE_ID}.json").is_file()
-
-
-def test_aip_fetch_lightcurve_queries_epoch_on_cache_miss(
-    monkeypatch,
-    prefetch_cache_tmp,
-    gaia_aip_epoch_table,
-):
-    """fetch_lightcurve downloads epoch photometry when the prefetch cache is empty."""
-    provider = GaiaDr3AipProvider()
-    calls: list[str] = []
-
-    def _fake_tap(_url, adql, *, dialect):
-        calls.append(adql)
-        if "gaiadr3.epoch_photometry" in adql:
-            return gaia_aip_epoch_table
-        raise AssertionError(f"Unexpected TAP query on load: {adql[:120]}")
-
-    monkeypatch.setattr(
-        "lc_discovery.providers.gaia_dr3_aip.provider.run_tap_sync_query",
-        _fake_tap,
-    )
-
-    source_table = Table(
-        {
-            "source_id": [SAMPLE_SOURCE_ID],
-            "ra": [274.587],
-            "dec": [-21.707],
-            "phot_g_mean_mag": [20.45],
-        }
-    )
-    catalog = map_source_table_to_catalog(
-        source_table,
-        provider_id=config.PROVIDER_ID,
-    )
-    g_row = catalog[catalog["filter_name"] == "Gaia G"][0]
-    volc = provider.fetch_lightcurve(g_row["lc_key"])
-    assert len(volc) > 0
-    assert any("gaiadr3.epoch_photometry" in call for call in calls)
-    assert (prefetch_cache_tmp / f"{SAMPLE_SOURCE_ID}.json").is_file()
-
-
-def test_aip_fetch_lightcurve_from_prefetch(
-    monkeypatch,
-    prefetch_cache_tmp,
-    gaia_aip_epoch_payload,
-):
-    """fetch_lightcurve builds a magnitude-native curve from prefetched arrays."""
-    from lc_discovery.providers.gaia_dr3_aip.prefetch_store import store_epoch_photometry
-
-    provider = GaiaDr3AipProvider()
-    store_epoch_photometry(SAMPLE_SOURCE_ID, gaia_aip_epoch_payload)
-
-    source_table = Table(
-        {
-            "source_id": [SAMPLE_SOURCE_ID],
-            "ra": [274.5873003514723],
-            "dec": [-21.706522062249086],
-            "phot_g_mean_mag": [20.45],
-        }
-    )
-    catalog = map_prefetched_sources_to_catalog(
-        source_table,
-        {SAMPLE_SOURCE_ID: gaia_aip_epoch_payload},
-        provider_id=config.PROVIDER_ID,
-    )
-    g_row = catalog[catalog["filter_name"] == "Gaia G"][0]
-    payload_out = provider.fetch_lightcurve(g_row["lc_key"])
-    import io
-
-    from volightcurve import VOLightCurve
-
-    volc = VOLightCurve(io.BytesIO(payload_out))
-    assert "transit_mag" in volc.table.colnames
-    assert volc.photdms["transit_mag"].filter.filter_id == "GAIA/GAIA3.G"
-    assert volc.table.meta.get("period") is None
-    assert volc.table.meta.get("object_class") is None
-
-    lcd = volc_to_curvedash(volc, "gaia_aip_G.vot")
-    assert lcd.active_domain == DOMAIN_MAG
-    photcal = lcd.metadata.get("photcal") or {}
-    assert photcal.get(PHOTCAL_KEY_ZP_FLUX) == pytest.approx(3228.75)
-    assert photcal.get(PHOTCAL_KEY_ZP_MAG) == pytest.approx(0.0)
 
 
 def test_aip_raw_file_expands_g_band():

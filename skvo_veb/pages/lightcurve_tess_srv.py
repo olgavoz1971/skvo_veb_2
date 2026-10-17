@@ -338,6 +338,7 @@ def layout():
                                             options=EXPORT_FORMAT_OPTIONS,
                                             value=DEFAULT_EXPORT_FORMAT,
                                             id='select_tess_lc_srv_format',
+                                            # style={'width': '50%'},
                                             className='tess-lc-srv-export-format',
                                         ),
                                         dbc.Button(

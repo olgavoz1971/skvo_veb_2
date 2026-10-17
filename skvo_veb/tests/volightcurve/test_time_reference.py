@@ -142,7 +142,7 @@ def test_export_rewrites_epoch_with_mjd_timeorigin():
     roundtrip = VOLightCurve(io.BytesIO(exported))
 
     exported_epoch = float(roundtrip.table.meta["epoch"])
-    exported_obs = float(roundtrip.table["obs_time"][0])
+    exported_obs = float(roundtrip.table["jd"][0])
     assert roundtrip.timesys.timeorigin == pytest.approx(JD_TO_MJD)
     assert exported_obs + JD_TO_MJD == pytest.approx(obs_offset_days + gaia_style_origin)
     assert exported_epoch + JD_TO_MJD == pytest.approx(epoch_offset + gaia_style_origin)

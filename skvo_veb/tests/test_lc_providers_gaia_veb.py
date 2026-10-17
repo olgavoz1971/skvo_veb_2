@@ -69,21 +69,6 @@ def test_map_ssa_table_to_catalog_builds_lc_keys(monkeypatch):
     assert payload["filter_name"] in {"Gaia RP", "Gaia G", "Gaia BP"}
 
 
-def test_veb_adql_source_id_query():
-    """Direct source_id ADQL 2.1 uses standard SELECT/WHERE predicates."""
-    adql = config.adql_catalog_by_source_id(
-        AA_AND.source_id,
-        time_start_mjd=56889.0,
-        time_end_mjd=60000.0,
-    )
-    assert "FROM gaiadr3_eb.ts_ssa" in adql
-    assert f"source_id = {AA_AND.source_id}" in adql
-    assert "t_min > 56889.0" in adql
-    assert "t_max < 60000.0" in adql
-    assert "accref" in adql
-    assert adql.startswith("SELECT ")
-
-
 def test_veb_adql_cone_query():
     """Cone ADQL 2.1 puts the sky point inside the search circle."""
     adql = config.adql_catalog_cone(

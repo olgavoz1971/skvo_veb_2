@@ -1,4 +1,3 @@
-import os
 import logging
 from functools import lru_cache
 
@@ -6,7 +5,7 @@ import numpy as np
 import pandas as pd
 import lightkurve
 import astropy.units as u
-from lightkurve import search_targetpixelfile, search_tesscut, LightkurveError
+from lightkurve import search_targetpixelfile, search_tesscut
 from astropy.table import Table
 
 from skvo_veb.utils import lightkurve_cache
@@ -114,23 +113,7 @@ def download_selected_pixel(pixel_args, search_result_di, size, fresh_from_mast=
         pixel_args_out = dict(pixel_args)
         pixel_args_out['pixel_type'] = 'FFI'
     else:
-        if fresh_from_mast:
-            lightkurve_cache.purge_spoc_tpf(pixel, row_idx)
-        path = lightkurve_cache.spoc_tpf_cache_path(pixel, row_idx)
-        if os.path.exists(path):
-            logger.info(f"download_selected_pixel: SPOC TPF cache HIT. 'Retrieve sector' (SPOC TPF) found in local Lightkurve cache at path={path!r}")
-        else:
-            logger.info(f"download_selected_pixel: SPOC TPF cache MISS. Retrieving from MAST... 'Retrieve sector' (SPOC TPF) NOT found in local cache.")
-
-        try:
-            pixel_data = pixel[row_idx].download()
-        except LightkurveError as e:
-            logger.warning(f'download_selected_pixel exception: {e}')
-            # Clean corrupted cache and retry
-            logger.warning(f'Removing corrupted cache: {path}')
-            if os.path.isfile(path):
-                os.remove(path)
-            pixel_data = pixel[row_idx].download()
+        pixel_data = lightkurve_cache.fetch_spoc_tpf(pixel, row_idx, force_fresh=fresh_from_mast)
 
         pixel_args_out = dict(pixel_args)
         pixel_args_out['pixel_type'] = 'TPF'

@@ -6,7 +6,7 @@
     --tess-lc-srv-space-xs: 0.25rem;
     --tess-lc-srv-space-sm: 0.375rem;
     --tess-lc-srv-space-md: 0.75rem;
-    --tess-lc-srv-text-sm: 0.85rem;
+    --tess-lc-srv-text-sm: 0.80rem;
 }
 
 /* .tess-lc-srv-section-label {
@@ -35,11 +35,12 @@
 }
 
 .tess-lc-srv-export-format {
-    width: 40%;
+    width: 50%;
     min-width: 0;
     font-size: var(--tess-lc-srv-text-sm);
 }
 
 .tess-lc-srv-export-download {
-    width: 60%;
+    width: 50%;
 }
+

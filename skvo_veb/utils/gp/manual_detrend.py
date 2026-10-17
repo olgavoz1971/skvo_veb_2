@@ -8,7 +8,7 @@ import logging
 import astropy.units as u
 import numpy as np
 
-from skvo_veb.utils.lc_bridge import _jd0_from_packet_meta, photcal_from_metadata
+from skvo_veb.utils.lc_bridge import _jd0_from_packet_meta
 from skvo_veb.utils.lc_config import DOMAIN_FLUX, DOMAIN_MAG, DEFAULT_EPOCH_JD
 from skvo_veb.utils.lc_interaction import line_y_at_jd, plot_x_to_jd
 from skvo_veb.utils.gp.flux import resolve_gp_photcal
@@ -18,14 +18,21 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_photcal(meta: dict):
-    """Returns ``PhotCal`` from transport meta.
+    """Returns a checked ``PhotCal`` from transport meta.
 
-    Does not invent zero points when the stored calibration is incomplete.
+    Needed only when the view domain differs from the native domain. All
+    zero points are verified; none are invented.
+
+    Args:
+        meta (dict): Transport packet ``meta`` block.
+
+    Returns:
+        PhotCal: Complete calibration for mag/flux conversion.
+
+    Raises:
+        PhotCalError: When a zero point is missing or inconsistent.
     """
-    try:
-        return photcal_from_metadata(meta.get("photcal"))
-    except ValueError:
-        return resolve_gp_photcal(meta)
+    return resolve_gp_photcal(meta)
 
 
 def _view_values_native_column(
@@ -39,10 +46,11 @@ def _view_values_native_column(
     """Maps stored column values into the active Mag/Flux view domain."""
     y = np.asarray(v, dtype=float)
     err = np.asarray(e, dtype=float) if has_err and e is not None else None
-    flux_unit = pc.zp_flux.unit
 
     if view_mode == native_domain:
         return y, err
+
+    flux_unit = pc.zp_flux.unit
 
     if view_mode == DOMAIN_FLUX and native_domain == DOMAIN_MAG:
         mag_q = y * u.mag
@@ -155,7 +163,7 @@ def apply_manual_linear_detrend(
     native_domain = meta.get("active_domain") or DOMAIN_MAG
     has_err = packet["schema"]["error"] is not None
     jd0 = _jd0_from_packet_meta(meta) or 0.0
-    pc = _resolve_photcal(meta)
+    pc = None if view_mode == native_domain else _resolve_photcal(meta)
 
     jd_a = plot_x_to_jd(anchor_a[0], time_axis_mode, display_epoch)
     jd_b = plot_x_to_jd(anchor_b[0], time_axis_mode, display_epoch)

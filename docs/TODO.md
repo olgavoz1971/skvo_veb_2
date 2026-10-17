@@ -25,16 +25,17 @@ give it the next unused ID. When a ticket is done, move its row to
 | 13 | volightcurve: §8 product validation on ingest (structure + cells) | Open |
 | 14 | volightcurve: preserve VO column names; UCD-aware export; label/sector ingest | Open |
 | 15 | Calibration stays correct when a page changes the light curve | Open |
-| 16 | TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber) | Open |
-| 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Open |
 | 19 | TESS photcal: mag column plus absolute flux (Jy) on VOTable export | Open |
 | 20 | TESS search Exptime: ghelp for cadence vs CRM effective time | Open |
 | 22 | TESS page: use the ``lc_discovery`` issued VOTable; column choice by role; no invented values | Open |
+| 29 | Help popovers and UI consistency on the TESS pages (host app) | Open (backend B1 to B12 done; UI phases T2 to T5 on hold) |
 
 ## Done
 
 | ID | Title | Status |
 |----|-------|--------|
+| 18 | TESS archive: honest retrieve errors, generic HLSP read, TARS profile | Done (Phases 1 to 3) |
+| 16 | TESS cutout: lock shared Lightkurve TPF downloads (no concurrent clobber) | Done (SPOC TPF and FFI) |
 | 21 | Export original TESS pipeline light-curve FITS from the server cache | Done |
 | 17 | TESS archive: remove all stitching from ``/tess_lc`` | Done |
 | 8 | volightcurve owns lightcurve file I/O; preserve metadata on all formats | Done (Phases 0–3) |
@@ -2489,7 +2490,11 @@ photometry or silently ignore the error.
 
 ### Status
 
-**Open.** No code.
+**Done 2026-10-17 (under Ticket 29, B9 and B12).** `lightkurve_cache.fetch_spoc_tpf` (SPOC TPF) and
+`fetch_tesscut_pixel_file` (FFI) use a per-product `flock`, download into a private temp
+folder, open the file there, then publish with `os.replace`. The unreadable-file purge runs only
+under the lock. Not covered: other code that calls Lightkurve `download()` directly on the
+shared tree. Live MAST check not run.
 
 ---
 
@@ -3682,4 +3687,6 @@ silent radius fallbacks in both Clean cache callbacks (`None` on `/tess_lc`, `11
 the developer (the `?` click caused jerking and a visible page reload that was not reproduced
 in headless tests); T1 files no longer exist. T2 to T5 are on hold; the UI must be redesigned
 from the `lightcurve_processor.py` pattern before any new attempt.
-
+- [x] B12 `/tess`: SPOC TPF retrieve goes through `fetch_spoc_tpf` (Ticket 16). ReRetrieve no longer
+  deletes the file first: the new file replaces the old one only after it opens. `purge_spoc_tpf` and
+  the old purge-and-retry in `download_selected_pixel` were removed. Six new tests.

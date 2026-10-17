@@ -182,6 +182,23 @@ def test_export_after_flux_detrend_preserves_string_labels():
     assert export_curvedash(lcd, "ascii.ecsv")
 
 
+def test_domain_change_detrend_requires_all_zero_points():
+    """Detrending in the other domain needs a complete calibration; none is invented."""
+    import pytest
+    from volightcurve.photcal_check import PhotCalError
+
+    jds = [2450000.0, 2450001.0]
+    payload = _minimal_flux_packet([2.0, 2.4], jds)
+    with pytest.raises(PhotCalError, match="zp_flux"):
+        apply_manual_linear_detrend(
+            payload,
+            view_mode="mag",
+            anchor_a=(jds[0] - DEFAULT_EPOCH_JD, 17.0),
+            anchor_b=(jds[1] - DEFAULT_EPOCH_JD, 17.0),
+            time_axis_mode="mjd",
+        )
+
+
 def test_apply_export_ephemeris_overrides_ingest_metadata():
     """Sidebar P / Epoch win over empty ingest transport meta."""
     payload = _minimal_flux_packet([1.0, 1.1], [2450000.0, 2450001.0])

@@ -596,31 +596,6 @@ def spoc_tpf_cache_path(search_result: lk.SearchResult, row_idx: int) -> str:
     )
 
 
-def purge_spoc_tpf(search_result: lk.SearchResult, row_idx: int) -> bool:
-    """Deletes the Lightkurve-cached SPOC target pixel file of one search row.
-
-    Args:
-        search_result (lk.SearchResult): Parent search result table.
-        row_idx (int): Row index in the search result.
-
-    Returns:
-        bool: True if a cached file existed and was removed.
-
-    Raises:
-        PipeException: If the file exists but cannot be deleted.
-    """
-    path = spoc_tpf_cache_path(search_result, row_idx)
-    if not os.path.isfile(path):
-        logger.info('[PURGE TPF] No cached file for row %s (%s)', row_idx, path)
-        return False
-    try:
-        os.remove(path)
-    except OSError as exc:
-        raise PipeException(f'Failed to delete cached TPF file {path}: {exc}') from exc
-    logger.info('[PURGE TPF] Deleted cached file: %s', path)
-    return True
-
-
 def find_cached_tesscut_files(download_dir: str, sector: int, size: int, target_coord: SkyCoord) -> list[str]:
     """Lists the cached TESScut FFI cutouts of one sector, size and position.
 
@@ -732,6 +707,67 @@ def fetch_tesscut_pixel_file(search_result: lk.SearchResult, row_idx: int, size:
                 os.remove(old_path)
                 logger.info('[CUTOUT CACHE] Removed superseded file %s', old_path)
         return _read_tesscut_file(destination, row)
+
+
+def fetch_spoc_tpf(search_result: lk.SearchResult, row_idx: int, *, force_fresh: bool = False):
+    """Returns the SPOC target pixel file of one search row from the shared cache.
+
+    A download goes into a private temporary folder inside the cache directory, the
+    file is opened there to prove it is complete, and only then is it moved onto the
+    final Lightkurve path with an atomic rename. A path that exists is therefore always
+    complete. A per-product ``flock`` makes simultaneous requests wait for one download
+    and then read the finished file. An unreadable cached file is removed only while the
+    lock is held, so another worker's in-flight download is never deleted.
+
+    Args:
+        search_result (lk.SearchResult): Parent TPF search result.
+        row_idx (int): Row index in the search result.
+        force_fresh (bool): Ignore the cached file and download a new one from MAST.
+
+    Returns:
+        lightkurve.TargetPixelFile: The pixel file (its ``path`` is the shared file).
+
+    Raises:
+        PipeException: If the download fails, produces no file, or the new file cannot be opened.
+    """
+    final_path = spoc_tpf_cache_path(search_result, row_idx)
+    row = search_result[row_idx]
+    download_dir = get_lightkurve_cache_dir()
+    mast_dir = os.path.join(download_dir, 'mastDownload')
+    os.makedirs(os.path.dirname(final_path), exist_ok=True)
+    os.makedirs(mast_dir, exist_ok=True)
+
+    lock_path = os.path.join(mast_dir, f'.lock_tpf_{os.path.basename(final_path)}')
+    with open(lock_path, 'w') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)  # released when the file is closed
+        if os.path.isfile(final_path) and not force_fresh:
+            try:
+                logger.info('[TPF CACHE HIT] %s', final_path)
+                return lk.read(final_path, quality_bitmask='default')
+            except Exception as exc:
+                logger.warning('[TPF CACHE] Cached file %s is unreadable (%s); removing it and downloading again',
+                               final_path, exc)
+                os.remove(final_path)
+
+        logger.info('[TPF CACHE %s] Downloading %s from MAST', 'REFRESH' if force_fresh else 'MISS',
+                    os.path.basename(final_path))
+        tmp_dir = tempfile.mkdtemp(dir=download_dir, prefix='.tmp_tpf_')
+        try:
+            try:
+                row.download(download_dir=tmp_dir)
+            except Exception as exc:
+                raise PipeException(f'Target pixel file download from MAST failed: {exc}') from exc
+            produced = os.path.join(tmp_dir, os.path.relpath(final_path, download_dir))
+            if not os.path.isfile(produced):
+                raise PipeException(f'MAST download produced no file {os.path.basename(final_path)}.')
+            try:
+                lk.read(produced, quality_bitmask='default')  # prove completeness before publishing
+            except Exception as exc:
+                raise PipeException(f'The downloaded target pixel file cannot be opened: {exc}') from exc
+            os.replace(produced, final_path)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        return lk.read(final_path, quality_bitmask='default')
 
 
 def configure_lightkurve_cache_dir() -> str | None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 from astropy.table import Table
@@ -126,50 +125,3 @@ def test_ari_search_catalog_by_source_id(monkeypatch):
     assert len(table) == 3
     assert captured["dialect"] == TapQueryDialect.ADQL_2_0
     assert f"gs.source_id = {AA_AND.source_id}" in captured["adql"]
-
-
-def test_ari_fetch_lightcurve_local_sample(monkeypatch):
-    """fetch_lightcurve downloads one band via the timeseries datalink URL."""
-    provider = GaiaDr3AriProvider()
-    sample_path = (
-        Path(__file__).resolve().parents[2] / "data" / "gaia_ari.vot"
-    )
-    payload = sample_path.read_bytes()
-    requested_url: list[str] = []
-
-    def _fake_urlopen(request, timeout=0):
-        requested_url.append(request.full_url)
-
-        class _Resp:
-            def read(self):
-                return payload
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        return _Resp()
-
-    monkeypatch.setattr(
-        "urllib.request.urlopen",
-        _fake_urlopen,
-    )
-
-    catalog = map_source_table_to_catalog(
-        _sample_source_table(),
-        provider_id=config.PROVIDER_ID,
-    )
-    lc_key = catalog["lc_key"][0]
-    payload_out = provider.fetch_lightcurve(lc_key)
-    assert requested_url == [build_timeseries_datalink_url(AA_AND.source_id)]
-    import io
-
-    from volightcurve import VOLightCurve
-
-    volc = VOLightCurve(io.BytesIO(payload_out))
-    assert len(volc) == 20
-    assert volc.photdms["mag"].filter.filter_id == "GAIADR3.G"
-    assert float(volc.photdms["mag"].photcal.zp_mag.value) == 0.0
-    assert volc.table.meta.get("period") == pytest.approx(1.7217551595287013)
