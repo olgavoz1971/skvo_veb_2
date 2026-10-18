@@ -1386,17 +1386,15 @@ def _column_has_finite_value(volc: VOLightCurve, name: str) -> bool:
     return bool(np.isfinite(values).any())
 
 
-def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
-    """Finds the primary photometry column in an ingested table.
-
-    Prefers a magnitude column that still has a finite value. If magnitude is
-    entirely NaN and flux is not, flux is selected.
+def _photometry_columns_by_domain(volc: VOLightCurve) -> tuple[list[str], list[str]]:
+    """Lists the magnitude and flux columns of a lightcurve table.
 
     Args:
         volc (VOLightCurve): Parsed lightcurve container.
 
     Returns:
-        str or None: Column name for flux or magnitude values.
+        tuple[list[str], list[str]]: Magnitude column names and flux column
+        names, in table order (a literal ``mag`` or ``flux`` column first).
     """
     mag_cols = []
     if "mag" in volc.table.colnames:
@@ -1410,6 +1408,101 @@ def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
     for name in get_flux_colnames(volc.table):
         if name not in flux_cols:
             flux_cols.append(name)
+    return mag_cols, flux_cols
+
+
+def list_photometry_candidates(volc: VOLightCurve) -> list[dict]:
+    """Lists the photometry columns the user may choose as the plotted series.
+
+    Magnitude and flux columns are both offered. Columns without a single
+    finite value are left out (they would give an empty curve). Background
+    columns are not photometry columns and are never listed.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+
+    Returns:
+        list[dict]: One dict per candidate with keys ``column`` (str),
+        ``domain`` (``"mag"`` or ``"flux"``), ``unit`` (str, may be empty),
+        ``filter`` (str, may be empty) and ``default`` (bool, the column
+        ``volc_to_curvedash`` uses when no choice is made).
+    """
+    mag_cols, flux_cols = _photometry_columns_by_domain(volc)
+    default_col = _resolve_photometry_column(volc)
+    photdms = getattr(volc, "photdms", None) or {}
+    candidates = []
+    for domain, columns in (("mag", mag_cols), ("flux", flux_cols)):
+        for name in columns:
+            if not _column_has_finite_value(volc, name):
+                continue
+            unit = volc.table[name].unit
+            photdm = photdms.get(str(name).strip().lower())
+            candidates.append(
+                {
+                    "column": name,
+                    "domain": domain,
+                    "unit": str(unit) if unit is not None else "",
+                    "filter": (photdm.filter_name or "") if photdm is not None else "",
+                    "default": name == default_col,
+                }
+            )
+    return candidates
+
+
+def paired_error_column(volc: VOLightCurve, primary_col: str) -> str | None:
+    """Finds the uncertainty column that belongs to a chosen photometry column.
+
+    Providers give a photometry column and its error column the same
+    ``photcal`` GROUP reference, so the pair is the error column (same domain)
+    whose ``PhotDM`` is the same object as the photometry column's. This is not
+    an IVOA rule. When the lightcurve has no such reference, the pairing is
+    accepted only if it is unambiguous: one candidate column and one error
+    column in that domain. Otherwise no error column is returned; another
+    column's errors are never borrowed.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        primary_col (str): Chosen photometry column name.
+
+    Returns:
+        str or None: Error column name, or ``None`` when there is none.
+
+    Raises:
+        ValueError: If several error columns share the photometry column's
+            ``photcal`` reference.
+    """
+    is_mag = is_mag_column(volc.table, primary_col)
+    error_cols = volc.get_mag_error_colnames() if is_mag else volc.get_flux_error_colnames()
+    photdms = getattr(volc, "photdms", None) or {}
+    photdm = photdms.get(str(primary_col).strip().lower())
+    if photdm is not None:
+        shared = [c for c in error_cols if photdms.get(str(c).strip().lower()) is photdm]
+        if len(shared) == 1:
+            return shared[0]
+        if len(shared) > 1:
+            raise ValueError(
+                f"Several error columns share the calibration of {primary_col!r}: {shared}."
+            )
+    mag_cols, flux_cols = _photometry_columns_by_domain(volc)
+    domain_cols = mag_cols if is_mag else flux_cols
+    if len(domain_cols) == 1 and len(error_cols) == 1:
+        return error_cols[0]
+    return None
+
+
+def _resolve_photometry_column(volc: VOLightCurve) -> str | None:
+    """Finds the primary photometry column in an ingested table.
+
+    Prefers a magnitude column that still has a finite value. If magnitude is
+    entirely NaN and flux is not, flux is selected.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+
+    Returns:
+        str or None: Column name for flux or magnitude values.
+    """
+    mag_cols, flux_cols = _photometry_columns_by_domain(volc)
 
     finite_mag = [name for name in mag_cols if _column_has_finite_value(volc, name)]
     finite_flux = [name for name in flux_cols if _column_has_finite_value(volc, name)]
@@ -1482,7 +1575,87 @@ def _apply_tabular_meta_to_curvedash(lcd, meta: dict) -> None:
             lcd.metadata[key] = meta[key]
 
 
-def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool = True):
+METADATA_KEY_PHOTOMETRY_SOURCE = "photometry_source"
+
+
+def _photometry_source_meta(
+    volc: VOLightCurve,
+    phot_col: str,
+    err_col: str | None,
+    *,
+    kept: list[str | None],
+) -> dict:
+    """Records which source column became the plotted photometry series.
+
+    ``CurveDash`` keeps one photometry series under the generic name ``flux``
+    or ``mag``; this record says where it came from and what was left out, so
+    an export can state it.
+
+    Args:
+        volc (VOLightCurve): Parsed lightcurve container.
+        phot_col (str): Source photometry column that was used.
+        err_col (str, optional): Source error column that was used.
+        kept (list[str | None]): Source columns carried into ``CurveDash``.
+
+    Returns:
+        dict: JSON-serialisable record with ``column``, ``unit``, ``filter``,
+        ``error_column`` and ``omitted_columns``.
+    """
+    unit = volc.table[phot_col].unit
+    photdms = getattr(volc, "photdms", None) or {}
+    photdm = photdms.get(str(phot_col).strip().lower())
+    kept_set = {str(c) for c in kept if c}
+    return {
+        "column": str(phot_col),
+        "unit": str(unit) if unit is not None else "",
+        "filter": (photdm.filter_name or "") if photdm is not None else "",
+        "error_column": str(err_col) if err_col else "",
+        "omitted_columns": [c for c in volc.table.colnames if c not in kept_set],
+    }
+
+
+def photometry_source_description(meta: dict, original: str | None) -> str | None:
+    """Builds the export description that states which source column is kept.
+
+    The description of the source product often says that all columns are
+    issued, which is no longer true after one photometry column was chosen.
+    The statement about the kept column comes first and the original text is
+    quoted as the description of the source product.
+
+    Args:
+        meta (dict): ``CurveDash.metadata``.
+        original (str, optional): Description carried over from the source
+            VOTable.
+
+    Returns:
+        str or None: New description, or ``original`` when the metadata holds
+        no photometry-source record.
+    """
+    source = meta.get(METADATA_KEY_PHOTOMETRY_SOURCE)
+    if not source:
+        return original
+    details = [part for part in (source.get("unit"), source.get("filter")) if part]
+    text = f"This file holds one photometry series: column '{source['column']}'"
+    if details:
+        text += f" ({', '.join(details)})"
+    text += " of the source product"
+    if source.get("error_column"):
+        text += f", with its uncertainty from column '{source['error_column']}'"
+    text += "."
+    omitted = source.get("omitted_columns") or []
+    if omitted:
+        text += f" Other columns of the source product are not included: {', '.join(omitted)}."
+    if original:
+        text += f" Description of the source product: {original}"
+    return text
+
+
+def volc_to_curvedash(
+    volc: VOLightCurve,
+    filename: str,
+    preserve_photcal: bool = True,
+    primary_col: str | None = None,
+):
     """Converts a VOLightCurve instance into a CurveDash instance.
 
     Resolves columns, reconstructs absolute Julian dates from ``obs_time`` and
@@ -1500,9 +1673,17 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         filename (str): The name of the uploaded file.
         preserve_photcal (bool): Unused; kept for call-site compatibility.
             PhotCal is always taken from ``volc``.
+        primary_col (str, optional): Photometry column chosen by the user. It
+            must be one of ``list_photometry_candidates``; its error column is
+            found by ``paired_error_column``. ``None`` keeps the default
+            column and error-column rules.
 
     Returns:
         CurveDash: The populated CurveDash instance.
+
+    Raises:
+        ValueError: If no time or photometry column is found, or
+            ``primary_col`` is not a photometry column of ``volc``.
     """
     from skvo_veb.utils.curve_dash import CurveDash
 
@@ -1519,9 +1700,22 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     time_col = time_cols[0]
     jd_absolute = _absolute_jd_from_time_column(volc, time_col)
 
-    phot_col = _resolve_photometry_column(volc)
-    if not phot_col:
-        raise ValueError("No photometry (flux or magnitude) column found in the uploaded file.")
+    if primary_col is None:
+        phot_col = _resolve_photometry_column(volc)
+        if not phot_col:
+            raise ValueError("No photometry (flux or magnitude) column found in the uploaded file.")
+        err_col = None  # resolved below with the legacy rule
+    else:
+        allowed = [c["column"] for c in list_photometry_candidates(volc)]
+        if primary_col not in allowed:
+            raise ValueError(
+                f"{primary_col!r} is not a photometry column of this lightcurve; "
+                f"available: {allowed}."
+            )
+        phot_col = primary_col
+        err_col = paired_error_column(volc, phot_col)
+        if err_col is None:
+            logger.warning("No error column pairs with photometry column %r.", phot_col)
 
     phot_vals = volc[phot_col]
     if hasattr(phot_vals, 'value'):
@@ -1535,7 +1729,8 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
     )
     photcal_meta = _extract_photcal_meta(volc, phot_col)
 
-    err_col = _resolve_photometry_error_column(volc, phot_col)
+    if primary_col is None:
+        err_col = _resolve_photometry_error_column(volc, phot_col)
 
     if err_col:
         err_vals = volc[err_col]
@@ -1617,6 +1812,12 @@ def volc_to_curvedash(volc: VOLightCurve, filename: str, preserve_photcal: bool 
         lcd.metadata["label_column_ucd"] = label_ucd or DEFAULT_LABEL_UCD
     lcd.metadata['ra'] = meta.get('ra')
     lcd.metadata['dec'] = meta.get('dec')
+    lcd.metadata[METADATA_KEY_PHOTOMETRY_SOURCE] = _photometry_source_meta(
+        volc,
+        phot_col,
+        err_col,
+        kept=[time_col, phot_col, err_col, label_col],
+    )
     for key in ("facility_name", "instrument_name", "lookup_name", "ztf_oid", "user_search_target"):
         if key in meta:
             lcd.metadata[key] = meta.get(key)
@@ -2028,6 +2229,8 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         table_description = votable_description
     if votable_description is None:
         votable_description = table_description
+    table_description = photometry_source_description(meta, table_description)
+    votable_description = photometry_source_description(meta, votable_description)
 
     kwargs = {
         "table_name": str(table_name),

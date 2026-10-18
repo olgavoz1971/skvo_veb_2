@@ -47,10 +47,11 @@ from skvo_veb.utils.lc_discovery_aladin import (
 )
 from skvo_veb.utils.lc_discovery_load import (
     catalog_row_for_lc_key,
-    curvedash_from_catalog_row,
+    curvedash_with_candidates,
     discovery_export_basename,
     fetch_discovery_votable_bytes,
     mission_id_from_catalog_row,
+    photometry_select_options,
 )
 from skvo_veb.utils.lc_discovery_catalog_columns import (
     catalog_column_defs_for_mission,
@@ -95,9 +96,11 @@ register_page(
 
 stack_wrap_style = {'marginBottom': '5px', 'flexWrap': 'wrap'}
 mission_label_style = {'display': 'block', 'padding': '2px'}
-label_font_size = '0.8em'
+label_font_size = '1.0em'
 switch_label_style_vert = {'display': 'block', 'padding': '2px', 'font-size': label_font_size}
 row_class_name = 'd-flex g-2 justify-content-end align-items-end'
+group_label_font_size = '1.2em'
+
 
 LC_DISCOVERY_PAGE_NAMESPACE = 'lc_discovery'
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
@@ -757,16 +760,29 @@ def _lightcurve_tools_panel():
     """
     return dbc.Col(
         [
-            dbc.Label(
-                'Lightcurve tools',
-                style={'display': 'flex', 'justify-content': 'center'},
-            ),
-            dbc.Button(
-                'rePlot curve',
-                id='lc_discovery_replot_button',
-                size='sm',
-                disabled=True,
-                style={'width': '100%', 'marginBottom': '5px'},
+            # dbc.Label(
+            #     'Lightcurve tools',
+            #     style={'display': 'flex', 'justify-content': 'center'},
+            # ),
+            html.Div(
+                [
+                    dbc.Label(
+                        'Photometry column',
+                        html_for='lc_discovery_photometry_select', # lll
+                        style={'display': 'block', 'padding': '2px',
+                                'font-size': group_label_font_size},
+                        # className='lc-discovery-photometry-label',
+                    ),
+                    dbc.Select(
+                        id='lc_discovery_photometry_select',
+                        options=[],
+                        value=None,
+                        size='sm',
+                    ),
+                ],
+                id='lc_discovery_photometry_block',
+                className='lc-discovery-photometry-block',
+                style={'display': 'none'},
             ),
             dbc.Switch(
                 id='lc_discovery_mag_switch',
@@ -794,7 +810,7 @@ def _lightcurve_tools_panel():
             ),
             html.Details(
                 [
-                    html.Summary('Folding', style={'font-size': label_font_size}),
+                    html.Summary('Folding', style={'font-size': group_label_font_size}),
                     dbc.Stack(
                         [
                             dbc.Label(
@@ -858,7 +874,7 @@ def _lightcurve_tools_panel():
                         gap=2,
                     ),
                 ],
-                open=True,
+                open=False,
                 style={'marginBottom': '1px'},
             ),
             html.Div(
@@ -870,23 +886,28 @@ def _lightcurve_tools_panel():
                     ),
                 ],
                 id='lc_discovery_fold_controls',
-                style={'min-height': '30px'},
+                # style={'min-height': '30px', 'margin-bottom': '0.75rem'},
+                style={'margin-bottom': '0.5rem'},
+
             ),
             html.Div(
                 [
+                    dbc.Label('Export', 
+                                style={'display': 'block', 'padding': '2px', 
+                                    'font-size': group_label_font_size}),
                     dbc.Stack(
                         [
                             dbc.Select(
                                 options=EXPORT_FORMAT_OPTIONS,
                                 value=DEFAULT_EXPORT_FORMAT,
                                 id='lc_discovery_export_format_select',
-                                style={'width': '40%', 'font-size': label_font_size},
+                                style={'width': '50%', 'font-size': label_font_size},
                             ),
                             dbc.Button(
                                 'Download',
                                 id='lc_discovery_download_button',
                                 size='sm',
-                                style={'width': '60%'},
+                                style={'width': '50%', 'font-size': label_font_size},
                             ),
                         ],
                         direction='horizontal',
@@ -897,7 +918,8 @@ def _lightcurve_tools_panel():
                         id='lc_discovery_download_full_button',
                         color='primary',
                         size='sm',
-                        className='w-100',
+                        # className='w-100',
+                        style={'width': '100%', 'font-size': label_font_size},
                         disabled=True,
                     ),
                 ],
@@ -1004,13 +1026,7 @@ def layout():
                 className='text-primary text-left fs-4 fs-md-3 lc-discovery-page-title',
             ),
             html.P(
-                [
-                    'Cone search across archive missions, then plot and export in one workflow. ',
-                    html.Span(
-                        'ASAS-SN still has its dedicated page.',
-                        className='d-block d-sm-inline',
-                    ),
-                ],
+                'Cone search across archive missions, then plot and export in one workflow.',
                 className='text-muted lc-discovery-intro',
                 style={'marginBottom': '12px'},
             ),
@@ -1049,6 +1065,7 @@ def layout():
             dcc.Store(id='store_lc_discovery_selected_key', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_focus_source', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_resolved_target', **SESSION_STORE),
+            dcc.Store(id='store_lc_discovery_photometry_choice', **SESSION_STORE),
             dcc.Store(id='store_lc_discovery_selected_perm', data=[]),
             dcc.Store(id='store_lc_discovery_zoom'),
             dcc.Store(id='store_lc_discovery_clientside'),
@@ -1589,26 +1606,6 @@ def toggle_lc_discovery_fetch_buttons(lc_key):
 
 
 @callback(
-    Output('lc_discovery_replot_button', 'disabled'),
-    Input('store_lc_discovery_lc_revision', 'data'),
-    Input('store_lc_discovery_user_tab_id', 'data'),
-)
-def toggle_lc_discovery_replot_button(_revision, user_tab_id):
-    """Enables rePlot once a lightcurve is cached for this session.
-
-    Args:
-        _revision (str, optional): Plot revision token (dependency only).
-        user_tab_id (str, optional): Session cache key.
-
-    Returns:
-        bool: ``True`` while no cached lightcurve exists.
-    """
-    if not user_tab_id or not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
-        return True
-    return False
-
-
-@callback(
     output=dict(
         plot_alert_message=Output('lc_discovery_plot_alert', 'children', allow_duplicate=True),
         fold_controls_style=Output('lc_discovery_fold_controls', 'style', allow_duplicate=True),
@@ -1625,6 +1622,7 @@ def toggle_lc_discovery_replot_button(_revision, user_tab_id):
         active_tab=Output('lc_discovery_tabs', 'active_tab', allow_duplicate=True),
         selected_perm=Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
         zoom=Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
+        photometry_choice=Output('store_lc_discovery_photometry_choice', 'data', allow_duplicate=True),
     ),
     inputs=dict(
         download_clicks=Input('lc_discovery_fetch_button', 'n_clicks'),
@@ -1657,9 +1655,10 @@ def fetch_lc_discovery_lightcurve(
 ):
     """Fetches the highlighted catalogue row via the public ``fetch`` API.
 
-    ``curvedash_from_catalog_row`` calls ``lc_discovery.fetch`` and converts
+    ``curvedash_with_candidates`` calls ``lc_discovery.fetch`` and converts
     VOTable bytes through ``VOLightCurve``. The resulting ``CurveDash`` is held
-    in the per-session plot store for interactive tools.
+    in the per-session plot store for interactive tools. The choosable
+    photometry columns go to ``store_lc_discovery_photometry_choice``.
 
     Args:
         download_clicks (int): Retrieve button click count.
@@ -1701,6 +1700,7 @@ def fetch_lc_discovery_lightcurve(
             active_tab=no_update,
             selected_perm=no_update,
             zoom=no_update,
+            photometry_choice=no_update,
         )
 
     if mission_id and mission_id_from_catalog_row(catalog_row) != mission_id:
@@ -1723,16 +1723,23 @@ def fetch_lc_discovery_lightcurve(
             active_tab=no_update,
             selected_perm=no_update,
             zoom=no_update,
+            photometry_choice=no_update,
         )
 
     fold_controls_style = {'display': 'block', 'min-height': '30px'}
     fold_warning_style = {'display': 'none'}
 
     try:
-        lcd = curvedash_from_catalog_row(
+        lcd, candidates, chosen_column = curvedash_with_candidates(
             catalog_row,
             force_refresh=force_refresh,
         )
+        photometry_choice = {
+            'lc_key': lc_key,
+            'catalog_row': catalog_row,
+            'candidates': candidates,
+            'value': chosen_column,
+        }
         lcd.folded_view = bool(phase_view)
 
         period = lcd.period
@@ -1772,6 +1779,7 @@ def fetch_lc_discovery_lightcurve(
             active_tab='lc_discovery_plot_tab',
             selected_perm=[],
             zoom=None,
+            photometry_choice=photometry_choice,
         )
     except Exception as exc:
         logger.warning('lightcurve_discovery.fetch_lc_discovery_lightcurve: %s', exc)
@@ -1791,36 +1799,8 @@ def fetch_lc_discovery_lightcurve(
             active_tab=no_update,
             selected_perm=no_update,
             zoom=no_update,
+            photometry_choice=no_update,
         )
-
-
-@callback(
-    output=dict(
-        revision=Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
-    ),
-    inputs=dict(replot_clicks=Input('lc_discovery_replot_button', 'n_clicks')),
-    state=dict(user_tab_id=State('store_lc_discovery_user_tab_id', 'data')),
-    prevent_initial_call=True,
-)
-def replot_lc_discovery_lightcurve(replot_clicks, user_tab_id):
-    """Refreshes the plot from the in-session ``CurveDash`` without re-fetching.
-
-    Args:
-        replot_clicks (int): rePlot button click count.
-        user_tab_id (str, optional): Session plot-store key.
-
-    Returns:
-        dict: New plot revision token.
-
-    Raises:
-        PreventUpdate: When no cached lightcurve exists.
-    """
-    if not replot_clicks or not user_tab_id:
-        raise PreventUpdate
-    if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
-        raise PreventUpdate
-    set_props('lc_discovery_plot_alert', {'children': None})
-    return dict(revision=_bump_lc_revision())
 
 
 @callback(
@@ -1997,6 +1977,97 @@ def toggle_lc_discovery_mag_view(show_magnitude, user_tab_id):
             return no_update, lcd.active_domain == DOMAIN_MAG
         except Exception:
             return no_update, False
+
+
+@callback(
+    Output('lc_discovery_photometry_select', 'options'),
+    Output('lc_discovery_photometry_select', 'value'),
+    Output('lc_discovery_photometry_block', 'style'),
+    Input('store_lc_discovery_photometry_choice', 'data'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+)
+def show_lc_discovery_photometry_select(choice, user_tab_id):
+    """Fills the photometry-column dropdown from the stored candidates.
+
+    The dropdown is shown only when the loaded lightcurve offers more than one
+    photometry column and a working curve is cached for this session.
+
+    Args:
+        choice (dict, optional): ``store_lc_discovery_photometry_choice`` data
+            (``candidates`` and the active ``value``).
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        tuple: Select options, selected column, and the block style.
+    """
+    hidden = {'display': 'none'}
+    if not choice or not user_tab_id:
+        return [], None, hidden
+    if not has_cached_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id):
+        return [], None, hidden
+    candidates = choice.get('candidates') or []
+    if len(candidates) < 2:
+        return [], None, hidden
+    return photometry_select_options(candidates), choice.get('value'), {}
+
+
+@callback(
+    Output('store_lc_discovery_lc_revision', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_photometry_choice', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
+    Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
+    Input('lc_discovery_photometry_select', 'value'),
+    State('store_lc_discovery_photometry_choice', 'data'),
+    State('store_lc_discovery_user_tab_id', 'data'),
+    prevent_initial_call=True,
+)
+def change_lc_discovery_photometry_column(column, choice, user_tab_id):
+    """Rebuilds the working curve on the photometry column chosen by the user.
+
+    The cached VOTable is parsed again and ``CurveDash`` is rebuilt on the new
+    column. Point edits are dropped (the valid rows differ between columns);
+    period, epoch, and the fold flag are kept from the previous curve.
+
+    Args:
+        column (str, optional): Column selected in the dropdown.
+        choice (dict, optional): ``store_lc_discovery_photometry_choice`` data
+            (``catalog_row``, ``candidates``, active ``value``).
+        user_tab_id (str, optional): Session cache key.
+
+    Returns:
+        tuple: New revision token, updated choice, cleared selection, cleared zoom.
+
+    Raises:
+        PreventUpdate: When nothing changes (same column or no curve loaded).
+    """
+    if not column or not choice or not user_tab_id:
+        raise PreventUpdate
+    if column == choice.get('value'):
+        raise PreventUpdate
+    try:
+        previous = CurveDash.from_serialized(
+            read_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id)
+        )
+        lcd, _candidates, used_column = curvedash_with_candidates(
+            choice['catalog_row'],
+            primary_col=column,
+        )
+        lcd.period = previous.period
+        lcd.period_unit = previous.period_unit
+        lcd.epoch = previous.epoch
+        lcd.folded_view = previous.folded_view
+        write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
+        set_props('lc_discovery_plot_alert', {'children': None})
+        logger.info('Discovery photometry column changed to %s.', used_column)
+        return _bump_lc_revision(), {**choice, 'value': used_column}, [], None
+    except Exception as exc:
+        logger.warning('lightcurve_discovery.change_lc_discovery_photometry_column: %s', exc)
+        set_props(
+            'lc_discovery_plot_alert',
+            {'children': status_alert(str(exc), 'warning')},
+        )
+        set_props('lc_discovery_photometry_select', {'value': choice.get('value')})
+        return no_update, no_update, no_update, no_update
 
 
 @callback(

@@ -3690,3 +3690,132 @@ from the `lightcurve_processor.py` pattern before any new attempt.
 - [x] B12 `/tess`: SPOC TPF retrieve goes through `fetch_spoc_tpf` (Ticket 16). ReRetrieve no longer
   deletes the file first: the new file replaces the old one only after it opens. `purge_spoc_tpf` and
   the old purge-and-retry in `download_selected_pixel` were removed. Six new tests.
+
+---
+
+## Ticket 29: skill advice from the multi-star TESS test (lc_discovery)
+
+**Done 2026-10-18.** Trigger: a naive agent, asked which of nine stars have TESS light curves,
+kept only a summary of the search result (so it searched again for follow-up questions) and
+showed a table of counts (products, sectors, pipelines) without exposure time and dates. Skill
+`lc-discovery`, section "What a search row tells you": item 3 rewritten (show every column that
+has a value except `lc_key`; empty columns named in one line; constant columns stated once; no
+ranking or product recommendation unless asked; a summary must not reduce columns to a count);
+new item 6 (save every search table as ECSV, tell the path, answer follow-ups from the file;
+checked that `meta` including tuples survives an ECSV round trip) and item 7 (many targets: one
+line per target that still uses the columns, targets with no rows named explicitly, full table on
+request). New section "Folded light curves: period and epoch": look for `period` and `epoch`
+PARAMs in the VOTable first, then VSX through `scripts/vsx_resolve.py`; never invent a period;
+epoch optional; always tell the user the source of each element; check the time system (VSX
+epochs are JD, TESS is BTJD) and the epoch type (minimum for eclipsing, usually maximum for
+pulsating). Not done: a worked check of the TESS example against live data.
+
+
+**Update 2026-10-18 (verification).** Nine-star TESS example checked against live data: seven stars
+resolve through Simbad to a TIC and return rows as in the skill example. Fold test attempted with
+a hardcoded offset (BTJD guessed), which was wrong: the issued TESS time column is MJD-like
+(about 58738 for sector 16); the provider writes TIMESYS (`refposition`, `timescale`,
+`timeorigin`) and the agent must read it, not assume. VSX facts (VizieR B/vsx, AAVSO forum): the
+epoch is documented as HJD, old entries are JD, some BJD; the web service returns a bare number
+with no label (so no time-system field in `vsx_resolve.py`). Testing the epoch against the data is
+not meaningful (changing periods, other effects). Skill `lc-discovery` changed: new section
+"Respect the metadata of the product" (never hardcode or assume offset, time scale, zero point or
+unit unless the user asks; TIMESYS/COOSYS/PHOTCAL hints; `volightcurve` recommended, not required;
+non-Pogson magnitude systems); folded-curve items 5 and 6 rewritten. Cross-mission time
+consistency postponed until a real use case. Not done: ECSV round-trip with real rows was not
+read (the run was cut), corrected fold test not repeated; the second problem raised by the user
+is postponed.
+
+---
+
+## Ticket 30: choice of the photometry column on the discovery page
+
+**Status:** implemented 2026-10-18 (not yet checked in the browser by the developer).
+
+**Problem.** A light curve issued by `lc_discovery` is a calibrated multi-column VOTable. TESS SPOC
+carries `sap_flux` and `pdcsap_flux` (plus a background column), other providers carry other sets
+of magnitude and flux columns. The app takes one of them: `pack_volc_to_json(lc, primary_col=None,
+error_col=None)` in `skvo_veb/utils/lc_bridge.py` defaults to the first magnitude column, else the
+first flux column. For TESS SPOC this is `pdcsap_flux` only because it is listed first. The user
+cannot choose.
+
+**Constraints (agreed with the developer).**
+- No change to `CurveDash` and no multi-column serialised data. The selection is made once, at the
+  getting stage, between the VOTable parse and the `CurveDash` build.
+- Minimal change to data structure and flow. Scope: `lightcurve_discovery.py` only. `lc_processor`
+  (uploads) later, reusing the same helper.
+- Must stay cheap on the server (user files may have tens of thousands of rows).
+- No global state; the only new state is the chosen column name in a small `dcc.Store`.
+
+**Decision: option A, re-parse on every switch.** Changing the column re-reads the (already cached)
+VOTable bytes, parses to `VOLightCurve`, and rebuilds the `CurveDash`. No new server cache.
+Option B (a `flask_caching` entry holding the parsed `VOLightCurve` keyed by `lc_key`) is the
+fallback if the developer's own timing on a large VOTable shows the parse is too slow.
+
+**Plan.**
+1. **Candidate listing (utils, pure function).** Given a `VOLightCurve`, return the candidate
+   photometry columns: name, domain (mag or flux), unit, UCD, filter and magnitude system from the
+   `PHOTCAL` group. Use `volightcurve` discovery (`get_mag_colnames`, `get_flux_colnames`), not
+   name guessing. Background columns (UCD `instr.background`) are not candidates.
+2. **Error column pairing.** The error column of a chosen photometry column is the error-UCD
+   column with the same `PHOTCAL` reference. This is not an IVOA standard, but our providers
+   write it consistently. If no column is found, report "no error column for this photometry
+   column"; never borrow another column's errors. Check first how `volightcurve` exposes the
+   reference per error column (`photdms` is keyed by photometry column).
+3. **Bridge.** `volc_to_curvedash` gets an optional `primary_col` (and the paired `error_col`) and
+   forwards it to `pack_volc_to_json`, which already accepts both. Default behaviour unchanged.
+4. **Loader.** `curvedash_from_catalog_row` (`skvo_veb/utils/lc_discovery_load.py`) accepts the
+   optional column and passes it to the bridge; `drop_invalid_photometry_rows` keeps working on the
+   active domain.
+5. **Page.** A "Photometry column" dropdown in the lightcurve tools panel, filled by the fetch
+   callback with the candidates (label: column, unit, filter). Hidden when there is one candidate,
+   so single-column missions look as today. The page UI rules in `.cursor/rules/dash-page-ui.mdc`
+   apply (one widget pattern, sentence-case British English copy).
+6. **Callback.** One new callback, one input (the dropdown): rebuild the curve with that column,
+   write the serialised curve, bump `store_lc_discovery_lc_revision`. Same spinner pattern as the
+   fetch; make it a background callback only if the developer's timing shows it is slow.
+7. **Tests.** Candidate listing and pairing for a multi-column VOTable (TESS SPOC style) and a
+   single-column one; missing error column; default column unchanged when no choice is given;
+   switching the column changes `flux` and `flux_err` consistently and the unit and photcal follow.
+
+**Known consequences.**
+- Switching the column resets point edits (deleted points) and the fold state: `SAP` and `PDCSAP`
+  can be missing at different rows, so row indices do not map between columns. The UI says so.
+- The default (first magnitude column, else first flux column) stays; TESS therefore starts with
+  `pdcsap_flux` as before.
+
+**Decisions on the former open questions (developer, 2026-10-18).**
+- The dropdown mixes magnitude and flux columns.
+- Background columns are not offered (decision: discarded). Candidates are magnitude and flux
+  photometry columns only.
+- Scope: `lightcurve_discovery.py` only. Other pages that load user files (`lc_processor` and
+  similar) can reuse the same candidate-listing helper and the optional `primary_col` bridge
+  argument later; that is a separate ticket.
+
+**Implementation notes (2026-10-18).**
+- `lc_bridge.py`: `list_photometry_candidates`, `paired_error_column`, `_photometry_columns_by_domain`;
+  `volc_to_curvedash(..., primary_col=None)` (default path unchanged; an explicit column is
+  validated and takes its error column through the shared `PhotDM`; when no pairing exists the
+  curve has no errors and a warning is logged).
+- `lc_discovery_load.py`: `curvedash_with_candidates` (parse once, choose the column, return
+  curve, candidates and used column), `photometry_select_options`; `curvedash_from_catalog_row`
+  is a wrapper. A choice equal to the default goes through the unchanged default path.
+- Page: `lc_discovery_photometry_select` (hidden below two candidates), store
+  `store_lc_discovery_photometry_choice` (lc_key, the catalogue row, candidates, active column),
+  callbacks `show_lc_discovery_photometry_select` and `change_lc_discovery_photometry_column`
+  (re-parses the cached VOTable, keeps period, epoch and fold flag from the previous curve,
+  clears the point selection and zoom, drops point edits). The mag switch follows through the
+  existing revision sync. CSS in `assets/lc_discovery.css`.
+- Tests: `skvo_veb/tests/test_lc_photometry_choice.py`. Full suite: 644 passed.
+- The page intro no longer mentions the removed ASAS-SN page (fixed 2026-10-18).
+
+**Update 2026-10-18 (export description).** The VOTable exported from the discovery page kept the
+source product description ("All registered flux and background columns ... are issued"), which
+is false after one photometry column was chosen, and the FIELD is named `flux` without telling
+which source column it is. `lc_bridge.py`: `volc_to_curvedash` records
+`metadata['photometry_source']` (source column, unit, filter, error column, columns not carried);
+`build_votable_kwargs_from_metadata` prefixes the table and VOTable descriptions with a statement
+of the kept column and quotes the original text as "Description of the source product".
+Curves without that record (TESS and ASAS-SN pages) are unchanged. Not done: ECSV/CSV exports do
+not carry this statement. Seen on the way: the TESS `sap_bkg` column is picked as the per-epoch
+label column by `get_label_colnames` (it is carried into `CurveDash`, not omitted).

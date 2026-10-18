@@ -89,8 +89,8 @@ Successful loads are logged server-side; the plot tab reflects the loaded curve.
 
 - **Type:** Bootstrap alert via `status_alert` (dismissable; warning sticky).
 - **Appears:** Plot / fold / mag / delete / download failures on the Light curve tab.
-- **Hidden:** Cleared to empty `children` on successful replot, fold, mag switch,
-  delete, or download.
+- **Hidden:** Cleared to empty `children` on a successful plot refresh, fold, mag switch,
+  photometry column change, delete, or download.
 
 `lc_discovery_fold_warning_label` remains a plain visibility-toggled label when
 period is missing after fetch — not a `status_alert`.

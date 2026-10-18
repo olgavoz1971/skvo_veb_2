@@ -13,7 +13,11 @@ import logging
 
 from lc_discovery import fetch
 from skvo_veb.utils.curve_dash import CurveDash
-from skvo_veb.utils.lc_bridge import valid_photometry_row_mask, volc_to_curvedash
+from skvo_veb.utils.lc_bridge import (
+    list_photometry_candidates,
+    valid_photometry_row_mask,
+    volc_to_curvedash,
+)
 from skvo_veb.utils.lc_config import JD_TO_MJD
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from volightcurve import VOLightCurve
@@ -183,12 +187,81 @@ def apply_catalog_folding_hints(lcd: CurveDash, catalog_row: dict) -> None:
         lcd.epoch = time_offset_to_absolute_jd(float(epoch), JD_TO_MJD)
 
 
+def photometry_select_options(candidates: list[dict] | None) -> list[dict]:
+    """Builds ``dbc.Select`` options for the photometry-column dropdown.
+
+    Args:
+        candidates (list[dict], optional): Output of ``list_photometry_candidates``.
+
+    Returns:
+        list[dict]: Options with ``value`` the column name and ``label`` made
+        of the column name, the unit, and the filter when known.
+    """
+    options = []
+    for cand in candidates or []:
+        details = [part for part in (cand.get('unit'), cand.get('filter')) if part]
+        label = cand['column']
+        if details:
+            label = f"{label} ({', '.join(details)})"
+        options.append({'label': label, 'value': cand['column']})
+    return options
+
+
+def curvedash_with_candidates(
+    catalog_row: dict,
+    *,
+    force_refresh: bool = False,
+    primary_col: str | None = None,
+) -> tuple[CurveDash, list[dict], str | None]:
+    """Fetches one catalogue row and builds ``CurveDash`` on the chosen column.
+
+    The VOTable is parsed once here; the photometry column is chosen at this
+    point (the default rule when ``primary_col`` is ``None``), so ``CurveDash``
+    only ever holds one photometry series.
+
+    Args:
+        catalog_row (dict): One AgGrid catalogue row dict with ``lc_key``.
+        force_refresh (bool): When true, bypass any provider-side cache.
+        primary_col (str, optional): Photometry column chosen by the user.
+
+    Returns:
+        tuple: ``(lcd, candidates, column)``: the lightcurve, the choosable
+        photometry columns (see ``list_photometry_candidates``) and the name
+        of the column that was used (``None`` when the table has no listed
+        candidate, for example a legacy ``phot`` column).
+
+    Raises:
+        PipeException: When the row is incomplete or fetch fails.
+        ValueError: When ``primary_col`` is not a photometry column.
+    """
+    lc_key = catalog_row.get('lc_key')
+    if not lc_key:
+        raise PipeException('Catalogue row is missing lc_key.')
+
+    volc = fetch_discovery_volightcurve(
+        lc_key,
+        force_refresh=force_refresh,
+    )
+    candidates = list_photometry_candidates(volc)
+    default_col = next((c['column'] for c in candidates if c['default']), None)
+    explicit = None if primary_col in (None, default_col) else primary_col
+    lcd = volc_to_curvedash(
+        volc,
+        _volc_filename_from_catalog_row(catalog_row),
+        preserve_photcal=True,
+        primary_col=explicit,
+    )
+    apply_catalog_folding_hints(lcd, catalog_row)
+    drop_invalid_photometry_rows(lcd)
+    return lcd, candidates, (primary_col or default_col)
+
+
 def curvedash_from_catalog_row(
     catalog_row: dict,
     *,
     force_refresh: bool = False,
 ) -> CurveDash:
-    """Fetches and converts one catalogue row to ``CurveDash``.
+    """Fetches and converts one catalogue row to ``CurveDash`` (default column).
 
     Args:
         catalog_row (dict): One AgGrid catalogue row dict with ``lc_key``.
@@ -200,21 +273,10 @@ def curvedash_from_catalog_row(
     Raises:
         PipeException: When the row is incomplete or fetch fails.
     """
-    lc_key = catalog_row.get('lc_key')
-    if not lc_key:
-        raise PipeException('Catalogue row is missing lc_key.')
-
-    volc = fetch_discovery_volightcurve(
-        lc_key,
+    lcd, _candidates, _column = curvedash_with_candidates(
+        catalog_row,
         force_refresh=force_refresh,
     )
-    lcd = volc_to_curvedash(
-        volc,
-        _volc_filename_from_catalog_row(catalog_row),
-        preserve_photcal=True,
-    )
-    apply_catalog_folding_hints(lcd, catalog_row)
-    drop_invalid_photometry_rows(lcd)
     return lcd
 
 
