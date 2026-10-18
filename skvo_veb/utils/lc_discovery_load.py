@@ -8,8 +8,10 @@ Pipeline:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
+from importlib.metadata import version as _package_version
 
 from lc_discovery import fetch
 from skvo_veb.utils.curve_dash import CurveDash
@@ -19,11 +21,14 @@ from skvo_veb.utils.lc_bridge import (
     volc_to_curvedash,
 )
 from skvo_veb.utils.lc_config import JD_TO_MJD
+from skvo_veb.utils.lc_session_cache import get_lc_user_cache
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from volightcurve import VOLightCurve
 from volightcurve.time_reference import time_offset_to_absolute_jd
 
 logger = logging.getLogger(__name__)
+
+_VOTABLE_CACHE_EXPIRE_SECONDS = 86400
 
 
 def catalog_row_for_lc_key(row_data: list[dict] | None, lc_key: str | None) -> dict | None:
@@ -74,18 +79,38 @@ def discovery_export_basename(lcd: CurveDash) -> str:
     return sanitize_filename(f'lc_discovery_{title}')
 
 
+def _votable_cache_key(lc_key: str) -> str:
+    """Builds the shared cache key of one fetched Discovery VOTable.
+
+    The key holds the ``lc_discovery`` version, so a package update never
+    serves a product issued by an older version.
+
+    Args:
+        lc_key (str): Serialised fetch handle from a catalogue row.
+
+    Returns:
+        str: Cache key string.
+    """
+    digest = hashlib.sha256(lc_key.encode('utf-8')).hexdigest()
+    return f"lc_discovery_votable_{_package_version('lc-discovery')}_{digest}"
+
+
 def fetch_discovery_votable_bytes(
     lc_key: str,
     *,
     force_refresh: bool = False,
 ) -> bytes:
-    """Fetches the mission VOTable product as returned by ``lc_discovery.fetch``.
+    """Returns the mission VOTable product, from the shared server cache when present.
 
-    This is the archive/enrich bytes before ``VOLightCurve`` or ``CurveDash``.
+    The bytes of public archive data are kept once on the server (not per
+    browser tab), so a repeat retrieve, a switch of the photometry column or a
+    full-VOTable download do not call the provider, and through it the archive,
+    again. ``force_refresh`` bypasses the cache and replaces the entry.
 
     Args:
         lc_key (str): Serialised fetch handle from a catalogue row.
-        force_refresh (bool): When true, bypass any provider-side cache.
+        force_refresh (bool): When true, bypass the server cache and any
+            provider-side cache.
 
     Returns:
         bytes: VOTable payload.
@@ -96,12 +121,25 @@ def fetch_discovery_votable_bytes(
     if not lc_key:
         raise PipeException('Select a catalogue row before loading.')
 
+    cache = get_lc_user_cache()
+    cache_key = _votable_cache_key(lc_key)
+    if not force_refresh:
+        cached = cache.get(cache_key, default=None)
+        if cached is not None:
+            logger.info(
+                'Discovery VOTable bytes from server cache lc_key=%s nbytes=%s',
+                lc_key[:32],
+                len(cached),
+            )
+            return cached
+
     try:
         payload = fetch(lc_key, force_refresh=force_refresh)
     except ValueError as exc:
         raise PipeException(str(exc)) from exc
+    cache.set(cache_key, payload, expire=_VOTABLE_CACHE_EXPIRE_SECONDS)
     logger.info(
-        'Discovery VOTable bytes lc_key=%s nbytes=%s force_refresh=%s',
+        'Discovery VOTable bytes fetched lc_key=%s nbytes=%s force_refresh=%s',
         lc_key[:32],
         len(payload),
         force_refresh,

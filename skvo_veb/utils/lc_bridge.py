@@ -2341,6 +2341,10 @@ def _curvedash_to_export_volc(lcd) -> VOLightCurve:
     if lcd.title and tab.meta.get("title") is None:
         tab.meta["title"] = lcd.title
     envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
+    if meta.get(METADATA_KEY_PHOTOMETRY_SOURCE):
+        # The source description may claim that all columns are issued.
+        for key in (VO_ENVELOPE_KEY_TABLE_DESCRIPTION, VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION):
+            envelope[key] = photometry_source_description(meta, envelope.get(key))
     if envelope:
         tab.meta["vo_envelope"] = envelope
 

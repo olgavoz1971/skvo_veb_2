@@ -133,7 +133,8 @@ def test_veb_metadata_survives_curvedash_plot_title_and_export():
     exported = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
     xml = exported.decode("utf-8", errors="ignore")
     assert 'name="Gaia DR3 1936512041221649536"' in xml
-    assert "Gaia DR3 epoch photometry from UPJS VEB archive." in xml
+    # The writer wraps long DESCRIPTION text across lines.
+    assert "Gaia DR3 epoch photometry from UPJS VEB archive." in " ".join(xml.split())
     assert 'name="bibcode"' in xml
     assert "2023A&amp;A...674A...1G" in xml or "2023A&A...674A...1G" in xml
 

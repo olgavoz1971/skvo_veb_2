@@ -925,6 +925,18 @@ def _lightcurve_tools_panel():
                 ],
                 className='lc-discovery-export-stack',
             ),
+            html.Div(
+                wrap_with_spinner(
+                    html.Div(
+                        id='lc_discovery_photometry_spinner_target',
+                        className='lc-discovery-photometry-busy',
+                    ),
+                    size='sm',
+                    color='primary',
+                    spinner_style=SPINNER_STYLE_COMPACT,
+                ),
+                className='lc-discovery-photometry-spinner-row',
+            ),
         ],
         lg=2,
         md=3,
@@ -2016,6 +2028,7 @@ def show_lc_discovery_photometry_select(choice, user_tab_id):
     Output('store_lc_discovery_photometry_choice', 'data', allow_duplicate=True),
     Output('store_lc_discovery_selected_perm', 'data', allow_duplicate=True),
     Output('store_lc_discovery_zoom', 'data', allow_duplicate=True),
+    Output('lc_discovery_photometry_spinner_target', 'children'),
     Input('lc_discovery_photometry_select', 'value'),
     State('store_lc_discovery_photometry_choice', 'data'),
     State('store_lc_discovery_user_tab_id', 'data'),
@@ -2035,7 +2048,9 @@ def change_lc_discovery_photometry_column(column, choice, user_tab_id):
         user_tab_id (str, optional): Session cache key.
 
     Returns:
-        tuple: New revision token, updated choice, cleared selection, cleared zoom.
+        tuple: New revision token, updated choice, cleared selection, cleared
+        zoom, and an empty child for the spinner slot (the spinner shows while
+        this callback runs).
 
     Raises:
         PreventUpdate: When nothing changes (same column or no curve loaded).
@@ -2059,7 +2074,7 @@ def change_lc_discovery_photometry_column(column, choice, user_tab_id):
         write_serialized_lc(LC_DISCOVERY_PAGE_NAMESPACE, user_tab_id, lcd.serialize())
         set_props('lc_discovery_plot_alert', {'children': None})
         logger.info('Discovery photometry column changed to %s.', used_column)
-        return _bump_lc_revision(), {**choice, 'value': used_column}, [], None
+        return _bump_lc_revision(), {**choice, 'value': used_column}, [], None, ''
     except Exception as exc:
         logger.warning('lightcurve_discovery.change_lc_discovery_photometry_column: %s', exc)
         set_props(
@@ -2067,7 +2082,7 @@ def change_lc_discovery_photometry_column(column, choice, user_tab_id):
             {'children': status_alert(str(exc), 'warning')},
         )
         set_props('lc_discovery_photometry_select', {'value': choice.get('value')})
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update, no_update
 
 
 @callback(

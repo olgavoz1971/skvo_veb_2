@@ -9,6 +9,7 @@ import pytest
 
 from skvo_veb.utils.lc_bridge import (
     build_votable_kwargs_from_metadata,
+    export_curvedash,
     list_photometry_candidates,
     paired_error_column,
     volc_to_curvedash,
@@ -110,3 +111,11 @@ def test_export_description_for_default_column(volc):
     lcd = volc_to_curvedash(volc, "tess.vot")
     kwargs = build_votable_kwargs_from_metadata(lcd)
     assert "column 'pdcsap_flux'" in kwargs["table_description"]
+
+
+def test_exported_votable_description_names_the_chosen_source_column(volc):
+    """The file written by the page's Download button carries the statement."""
+    lcd = volc_to_curvedash(volc, "tess.vot", primary_col="sap_flux")
+    payload = " ".join(export_curvedash(lcd, "votable").decode("utf-8", errors="replace").split())
+    assert "This file holds one photometry series: column 'sap_flux'" in payload
+    assert "Description of the source product: All registered flux" in payload

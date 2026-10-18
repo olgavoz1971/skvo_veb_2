@@ -3819,3 +3819,25 @@ of the kept column and quotes the original text as "Description of the source pr
 Curves without that record (TESS and ASAS-SN pages) are unchanged. Not done: ECSV/CSV exports do
 not carry this statement. Seen on the way: the TESS `sap_bkg` column is picked as the per-epoch
 label column by `get_label_colnames` (it is carried into `CurveDash`, not omitted).
+
+**Correction (2026-10-18).** The first export-description change went into
+`build_votable_kwargs_from_metadata`, which the discovery page's Download does not use (it goes
+through `export_curvedash` and `_curvedash_to_export_volc`, which writes the `vo_envelope`
+descriptions). The statement is now applied in `_curvedash_to_export_volc`; a test exports through
+`export_curvedash` and reads the written VOTable. A curve cached before this change has no
+`photometry_source` record, so it must be retrieved again.
+
+**Update 2026-10-18 (server cache of the fetched VOTable).** Found while testing with wifi off:
+changing the photometry column hung. The assumption behind "option A, no new cache" was wrong:
+`lc_discovery.fetch` for TESS runs a live MAST search on every call
+(`tess_fetch._unique_search_result`) because the path of the cached FITS comes from the search
+result, and then rebuilds the VOTable from the FITS. Only the FITS is cached, not the issued
+VOTable. Fix in the app (option 1): `fetch_discovery_votable_bytes` in `lc_discovery_load.py`
+keeps the fetched bytes in the shared server `diskcache` (`get_lc_user_cache`, `USER_CACHE_DIR`,
+not per tab), key `lc_discovery_votable_<lc-discovery version>_<sha256(lc_key)>`, 24 h expiry
+(diskcache size limit and eviction apply). Retrieve, a column switch and "Download entire votable"
+read it; "Re-retrieve" (`force_refresh`) bypasses and replaces it; failures are not cached.
+Tests in `test_lc_discovery_load.py` (650 passed). Still open, separate `lc_discovery` ticket:
+make the TESS provider local-first (put the FITS pointer into `lc_key` at search time so a cached
+product opens without a MAST search, also offline). Other providers were not checked for the
+same per-call archive request; with the app cache they are hit once per product and day.

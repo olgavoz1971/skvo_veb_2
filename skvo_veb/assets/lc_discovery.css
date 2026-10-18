@@ -398,3 +398,17 @@
 .lc-discovery-photometry-label {
     margin-bottom: 0;
 }
+
+/* Spinner slot under the export buttons: reserved height, so showing it moves nothing. */
+.lc-discovery-photometry-spinner-row {
+    display: flex;
+    justify-content: center;
+    min-height: 2rem;
+    margin-top: var(--lc-discovery-space-xl);
+}
+
+.lc-discovery-photometry-busy {
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+}
