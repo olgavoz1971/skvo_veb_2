@@ -64,7 +64,7 @@
 .lc-discovery-catalog-header-row {
     display: flex;
     flex-wrap: wrap;
-    justify-content: space-between;
+    justify-content: flex-start; /* buttons follow the title, not the panel edge */
     align-items: center;
     gap: var(--lc-discovery-space-md);
     margin-bottom: var(--lc-discovery-space-md);
@@ -75,7 +75,7 @@
     align-items: center;
     gap: 0.35rem;
     min-width: 0;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
 }
 
 .lc-discovery-catalog-header-actions {
@@ -84,6 +84,13 @@
     gap: var(--lc-discovery-space-md);
     flex-shrink: 0;
     flex-wrap: wrap;
+}
+
+/* The spinner slot keeps its width when idle, so the buttons never move. */
+.lc-discovery-catalog-header-actions > :first-child {
+    flex: 0 0 2rem;
+    width: 2rem;
+    height: 2rem;
 }
 
 .lc-discovery-catalog-title {

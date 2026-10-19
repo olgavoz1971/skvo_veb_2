@@ -35,6 +35,7 @@ from skvo_veb.utils.lc_config import (
     TIME_AXIS_MJD,
     display_epoch_offset,
 )
+from skvo_veb.utils.lc_discovery_layout import catalog_grid_width_px
 from skvo_veb.utils.lc_discovery_aladin import (
     aladin_fov_degrees,
     aladin_marker_name,
@@ -673,6 +674,7 @@ def _search_results_panel():
                                 style={'height': '100%', 'width': '100%'},
                             ),
                         ],
+                        id='lc_discovery_catalog_grid_wrap',
                         className='lc-discovery-catalog-grid',
                     ),
                     html.Div(
@@ -1260,6 +1262,29 @@ def submit_catalog_search(
         row_data,
         outcome.to_store_dict(),
     )
+
+
+@callback(
+    Output('lc_discovery_catalog_grid_wrap', 'style'),
+    Input('lc_discovery_catalog_table', 'columnState'),
+)
+def fit_lc_discovery_catalog_grid_width(column_state):
+    """Caps the table box at the width of its visible columns.
+
+    Removes the blank strip right of the last column, so the Aladin applet sits
+    right after the table. Column widths are not changed.
+
+    Args:
+        column_state (list[dict], optional): AgGrid ``columnState``.
+
+    Returns:
+        dict: ``maxWidth`` style for the grid wrapper, or ``no_update`` while the
+        column state is empty.
+    """
+    width = catalog_grid_width_px(column_state)
+    if width is None:
+        return no_update
+    return {'maxWidth': f'{width}px'}
 
 
 @callback(
