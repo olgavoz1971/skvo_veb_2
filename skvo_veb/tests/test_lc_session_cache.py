@@ -45,3 +45,34 @@ def test_missing_entry_fails_fast(session_cache_dir):
     assert not has_cached_lc('tess_lc_srv', 'missing')
     with pytest.raises(PipeException, match='Session cache is empty'):
         read_serialized_lc('tess_lc_srv', 'missing')
+
+
+def test_concurrent_reads_of_a_large_payload_never_miss(session_cache_dir):
+    """Many callbacks read one large light curve at once; none may see an empty cache.
+
+    Reads extend the expiry. If that rewrote the value, a reader opening the old
+    file would get a false miss for payloads stored as files.
+    """
+    import threading
+    import time
+
+    payload = 'x' * 2_000_000
+    write_serialized_lc('gp_for_oc', 'tab-big', payload)
+    stop = threading.Event()
+    misses: list[str] = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                read_serialized_lc('gp_for_oc', 'tab-big')
+            except PipeException as exc:
+                misses.append(str(exc))
+
+    threads = [threading.Thread(target=reader) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    time.sleep(3)
+    stop.set()
+    for thread in threads:
+        thread.join()
+    assert misses == []

@@ -8,6 +8,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# File name stored with the upload when several timing files are merged.
+MERGED_UPLOAD_NAME = "merged"
+
 
 def _sigma_jd_for_store(value: Any) -> float | None:
     """Returns a JSON-safe timing uncertainty for ``dcc.Store`` payloads.
@@ -192,3 +195,148 @@ def records_to_arrays(records: list[dict]) -> tuple[Any, Any]:
         stored = _sigma_jd_for_store(row.get("sigma_jd"))
         sigma_jd.append(float("nan") if stored is None else stored)
     return jd_ext, sigma_jd
+
+
+def tag_records(records: list[dict], source: str) -> list[dict]:
+    """Returns copies of ToM records marked with the file they came from.
+
+    Args:
+        records (list[dict]): ``jd_ext`` / ``sigma_jd`` records.
+        source (str): Source label, normally the timing file name.
+
+    Returns:
+        list[dict]: New records with a ``source`` key.
+    """
+    return [{**row, "source": source} for row in records]
+
+
+def _upload_store(files: list[dict], records: list[dict]) -> dict:
+    """Builds the upload store from per-file entries and the merged records.
+
+    Args:
+        files (list[dict]): Entries with ``name``, ``n`` and ``metadata_lines``.
+        records (list[dict]): All records, tagged with ``source``.
+
+    Returns:
+        dict: ``filename``, ``records``, ``metadata_lines`` and ``files``. The
+        file name is ``MERGED_UPLOAD_NAME`` when more than one file is loaded.
+        Comment lines of a merged store are grouped under one header per file.
+    """
+    if len(files) == 1:
+        filename = files[0]["name"]
+        metadata_lines = list(files[0]["metadata_lines"])
+    else:
+        filename = MERGED_UPLOAD_NAME
+        metadata_lines = []
+        for entry in files:
+            metadata_lines.append(f"# ---- source file: {entry['name']} ----")
+            metadata_lines.extend(entry["metadata_lines"])
+    return {
+        "filename": filename,
+        "records": records,
+        "metadata_lines": metadata_lines,
+        "files": files,
+    }
+
+
+def new_upload_store(
+    filename: str, records: list[dict], metadata_lines: list[str]
+) -> dict:
+    """Builds the upload store for one freshly loaded timing file.
+
+    Args:
+        filename (str): Uploaded file name.
+        records (list[dict]): Parsed ``jd_ext`` / ``sigma_jd`` records.
+        metadata_lines (list[str]): ``#`` comment lines of the file.
+
+    Returns:
+        dict: Store with ``filename``, ``records`` (tagged), ``metadata_lines``
+        and ``files``.
+    """
+    tagged = tag_records(records, filename)
+    files = [
+        {"name": filename, "n": len(tagged), "metadata_lines": list(metadata_lines)}
+    ]
+    return _upload_store(files, tagged)
+
+
+def append_upload_store(
+    existing: dict | list | None,
+    filename: str,
+    records: list[dict],
+    metadata_lines: list[str],
+) -> tuple[dict, int, int]:
+    """Appends one timing file to the loaded upload store.
+
+    A ToM that already exists in the store with the same ``jd_ext`` and the
+    same ``sigma_jd`` is an exact duplicate and is skipped. Near duplicates
+    are kept. The result is sorted by ``jd_ext``.
+
+    Args:
+        existing (dict | list | None): Current ``store-oc-uploaded-toms``.
+        filename (str): Name of the file being appended.
+        records (list[dict]): Parsed ``jd_ext`` / ``sigma_jd`` records.
+        metadata_lines (list[str]): ``#`` comment lines of the file.
+
+    Returns:
+        tuple: ``(store, n_added, n_skipped)``. The store is unchanged when
+        every record was an exact duplicate.
+
+    Raises:
+        ValueError: If ``existing`` is a legacy list payload without file names.
+    """
+    if not existing:
+        return new_upload_store(filename, records, metadata_lines), len(records), 0
+    if isinstance(existing, list) or "records" not in existing:
+        raise ValueError(
+            "The loaded timings are in an old format. Clear them and load again."
+        )
+    old_records = list(existing["records"])
+    files = [dict(entry) for entry in existing.get("files") or []]
+    if not files:
+        old_name = existing.get("filename") or "earlier timings"
+        old_records = [
+            row if row.get("source") else {**row, "source": old_name}
+            for row in old_records
+        ]
+        files = [
+            {
+                "name": old_name,
+                "n": len(old_records),
+                "metadata_lines": list(existing.get("metadata_lines") or []),
+            }
+        ]
+    known = {(row["jd_ext"], row.get("sigma_jd")) for row in old_records}
+    fresh = [
+        row for row in records if (row["jd_ext"], row.get("sigma_jd")) not in known
+    ]
+    skipped = len(records) - len(fresh)
+    if not fresh:
+        return _upload_store(files, old_records), 0, skipped
+    files.append(
+        {"name": filename, "n": len(fresh), "metadata_lines": list(metadata_lines)}
+    )
+    merged = old_records + tag_records(fresh, filename)
+    merged.sort(key=lambda row: row["jd_ext"])
+    logger.info(
+        "Appended %s ToM(s) from %s (%s exact duplicate(s) skipped)",
+        len(fresh),
+        filename,
+        skipped,
+    )
+    return _upload_store(files, merged), len(fresh), skipped
+
+
+def upload_summary_text(store: dict) -> str:
+    """Describes the loaded upload store for the status chip.
+
+    Args:
+        store (dict): Store from ``new_upload_store`` or ``append_upload_store``.
+
+    Returns:
+        str: The file name for one file, otherwise ``N files, M ToMs``.
+    """
+    files = store.get("files") or []
+    if len(files) > 1:
+        return f"{len(files)} files, {len(store['records'])} ToMs"
+    return str(store.get("filename") or "timings.dat")

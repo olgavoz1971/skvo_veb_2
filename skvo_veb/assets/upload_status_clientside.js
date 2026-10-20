@@ -5,6 +5,12 @@
 window.dash_clientside = Object.assign({}, window.dash_clientside, {
     skvoUpload: {
         busyCaption: function (filename) {
+            if (Array.isArray(filename)) {
+                filename =
+                    filename.length > 1
+                        ? filename.length + " files"
+                        : filename[0];
+            }
             const name =
                 filename && String(filename).trim()
                     ? String(filename).trim()

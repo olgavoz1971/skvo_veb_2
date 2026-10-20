@@ -61,14 +61,17 @@ def compose_lc_cache_key(page_namespace: str, user_tab_id: str) -> str:
     return f'{page_namespace}_{user_tab_id}_data'
 
 
-def _touch_cache_key(user_key: str, user_data) -> None:
-    """Refreshes sliding expiry for one cache key.
+def _touch_cache_key(user_key: str) -> None:
+    """Extends the sliding expiry of one cache key without rewriting its value.
+
+    A rewrite (``set``) replaces the stored file of a large payload, and a
+    concurrent reader that is opening the old file then sees a false miss.
+    ``touch`` only updates the expiry time.
 
     Args:
         user_key (str): Disk cache key.
-        user_data: Payload already read from that key.
     """
-    get_lc_user_cache().set(user_key, user_data, expire=_CACHE_EXPIRE_SECONDS)
+    get_lc_user_cache().touch(user_key, expire=_CACHE_EXPIRE_SECONDS)
 
 
 def has_cached_lc(page_namespace: str, user_tab_id: str | None) -> bool:
@@ -111,7 +114,7 @@ def read_serialized_lc(page_namespace: str, user_tab_id: str | None) -> str:
             user_tab_id,
         )
         raise PipeException('Please, retrieve the lightcurve. Session cache is empty')
-    _touch_cache_key(user_key, user_data)
+    _touch_cache_key(user_key)
     return user_data
 
 
@@ -124,7 +127,7 @@ def write_serialized_lc(page_namespace: str, user_tab_id: str, serialized: str) 
         serialized (str): JSON string from ``CurveDash.serialize()``.
     """
     user_key = compose_lc_cache_key(page_namespace, user_tab_id)
-    _touch_cache_key(user_key, serialized)
+    get_lc_user_cache().set(user_key, serialized, expire=_CACHE_EXPIRE_SECONDS)
     logger.info(
         'lc_session_cache.write_serialized_lc: namespace=%s tab=%s',
         page_namespace,

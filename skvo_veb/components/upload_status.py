@@ -124,7 +124,12 @@ def upload_failure_detail(title: str, body: str) -> html.Div:
     )
 
 
-def upload_slot(upload_id: str, button_label: str, detail_index: str) -> html.Div:
+def upload_slot(
+    upload_id: str,
+    button_label: str,
+    detail_index: str,
+    multiple: bool = False,
+) -> html.Div:
     """Builds one data-bar slot: load control, chip area, and ``?`` toggle.
 
     Args:
@@ -132,6 +137,8 @@ def upload_slot(upload_id: str, button_label: str, detail_index: str) -> html.Di
             ``<upload_id>-text``.
         button_label (str): Sentence-case button label.
         detail_index (str): ``index`` shared with the matching detail collapse.
+        multiple (bool): Allow selecting several files; ``contents`` and
+            ``filename`` are then lists.
 
     Returns:
         dash.html.Div: Slot ready for a data bar.
@@ -140,6 +147,7 @@ def upload_slot(upload_id: str, button_label: str, detail_index: str) -> html.Di
         [
             dcc.Upload(
                 id=upload_id,
+                multiple=multiple,
                 children=html.Div(
                     [
                         dbc.Button(

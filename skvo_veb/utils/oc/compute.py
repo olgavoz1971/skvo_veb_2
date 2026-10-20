@@ -65,7 +65,8 @@ def compute_step1_oc(
     Returns:
         dict: JSON-safe arrays and ephemeris metadata for plot and export.
         Non-finite timing σ values are stored as ``None`` (not ``NaN``) so
-        ``dcc.Store`` round-trips safely.
+        ``dcc.Store`` round-trips safely. ``point_source`` lists the ``source``
+        label of each record (``None`` when a record has none).
 
     Raises:
         ValueError: If ``p0`` is not positive or ``records`` is empty.
@@ -105,6 +106,7 @@ def compute_step1_oc(
             float(value) if math.isfinite(float(value)) else None
             for value in sigma_jd
         ],
+        "point_source": [row.get("source") for row in records],
         "n": int(len(cycle_e)),
         "rms_d": rms,
         "rms_s": rms * SECONDS_PER_DAY,

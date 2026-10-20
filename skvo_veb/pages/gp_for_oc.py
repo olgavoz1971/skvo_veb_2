@@ -604,8 +604,11 @@ from skvo_veb.utils.oc.period_correct import (
     normalize_fit_range,
 )
 from skvo_veb.utils.oc.tom_io import (
+    append_upload_store,
+    new_upload_store,
     parse_compact_tom_contents,
     toms_from_review_store,
+    upload_summary_text,
     uploaded_toms_from_store,
 )
 from skvo_veb.utils.gp.plot_data import (
@@ -737,9 +740,12 @@ def _read_gp_transport_json(user_tab_id: str | None) -> str | None:
     Returns:
         str | None: Opaque VOLightCurve transport JSON, or ``None``.
     """
-    if not user_tab_id or not has_cached_lc(GP_PAGE_NAMESPACE, user_tab_id):
+    if not user_tab_id:
         return None
-    return read_serialized_lc(GP_PAGE_NAMESPACE, user_tab_id)
+    try:
+        return read_serialized_lc(GP_PAGE_NAMESPACE, user_tab_id)
+    except PipeException:
+        return None
 
 
 def _write_gp_transport_json(user_tab_id: str | None, transport_json: str) -> str:
@@ -2559,6 +2565,38 @@ def _oc_source_title(source: str | None) -> str:
     return "O-C"
 
 
+# One marker colour per timing source (D3 qualitative palette, cycled).
+OC_SOURCE_COLOURS = [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#17becf",
+    "#bcbd22",
+    "#7f7f7f",
+    "#d62728",
+]
+
+
+def _oc_point_sources(payload: dict, n_points: int) -> list:
+    """Returns the source label of every plotted O-C point.
+
+    Args:
+        payload (dict): ``compute_step1_oc`` payload.
+        n_points (int): Number of plotted points.
+
+    Returns:
+        list: One label per point; ``None`` for all points when the payload has
+        no source information.
+    """
+    stored = payload.get("point_source")
+    if not stored or len(stored) != n_points:
+        return [None] * n_points
+    return list(stored)
+
+
 def _build_oc_figure(
     payload: dict,
     *,
@@ -2608,44 +2646,44 @@ def _build_oc_figure(
             row.extend(["—", "—"])
         hover_custom.append(row)
 
-    marker_style = dict(size=8)
-    fig = go.Figure()
+    sources = _oc_point_sources(payload, len(cycle_e))
+    labels = list(dict.fromkeys(sources))
+    multi = len(labels) > 1
     finite = np.isfinite(sigma_jd)
-    if np.any(finite):
-        fig.add_trace(
-            go.Scatter(
-                x=cycle_e[finite],
-                y=oc_days[finite],
+    fig = go.Figure()
+    for label_index, label in enumerate(labels):
+        in_source = np.array([item == label for item in sources])
+        marker_style = dict(size=8)
+        if multi:
+            marker_style["color"] = OC_SOURCE_COLOURS[
+                label_index % len(OC_SOURCE_COLOURS)
+            ]
+        trace_name = str(label) if multi else "O-C"
+        for with_sigma in (True, False):
+            mask = in_source & (finite if with_sigma else ~finite)
+            if not np.any(mask):
+                continue
+            trace = dict(
+                x=cycle_e[mask],
+                y=oc_days[mask],
                 mode="markers",
                 marker=marker_style,
-                error_y=dict(
+                customdata=[hover_custom[i] for i in np.where(mask)[0]],
+                hovertemplate=hover,
+                name=trace_name,
+                legendgroup=trace_name,
+            )
+            if with_sigma:
+                trace["error_y"] = dict(
                     type="data",
-                    array=sigma_jd[finite],
+                    array=sigma_jd[mask],
                     visible=True,
                     thickness=1,
                     width=3,
                     color="grey",
-                ),
-                customdata=[hover_custom[i] for i in np.where(finite)[0]],
-                hovertemplate=hover,
-                name="O-C",
-                legendgroup="oc",
-            )
-        )
-    if np.any(~finite):
-        fig.add_trace(
-            go.Scatter(
-                x=cycle_e[~finite],
-                y=oc_days[~finite],
-                mode="markers",
-                marker=marker_style,
-                customdata=[hover_custom[i] for i in np.where(~finite)[0]],
-                hovertemplate=hover,
-                name="O-C",
-                legendgroup="oc",
-                showlegend=not np.any(finite),
-            )
-        )
+                )
+            trace["showlegend"] = False
+            fig.add_trace(go.Scatter(**trace))
     fig.add_hline(y=0.0, line_dash="dash", line_color="grey", line_width=1)
     window = normalize_fit_range(fit_range)
     if window is not None:
@@ -2816,8 +2854,21 @@ sidebar_oc = html.Div(
         ),
         html.Div(
             [
-                upload_slot("upload-oc-toms", "Load timings", "oc-toms"),
+                upload_slot("upload-oc-toms", "Load timings", "oc-toms", multiple=True),
                 upload_detail_collapse("oc-toms"),
+                dbc.Switch(
+                    id="oc-toms-append-switch",
+                    value=False,
+                    label="Append to loaded timings",
+                    className="mt-1",
+                ),
+                dbc.Button(
+                    "Clear loaded timings",
+                    id="oc-toms-clear-btn",
+                    color="link",
+                    size="sm",
+                    className="p-0",
+                ),
             ],
             className="gp-sidebar-group",
         ),
@@ -6600,44 +6651,110 @@ def update_oc_export_filename(source, gp_store, mavka_store, parabola_store, upl
     Output(upload_detail_id("oc-toms"), "children"),
     Output("oc-tom-source", "value"),
     Output("oc-export-filename", "value", allow_duplicate=True),
+    Output("oc-sidebar-feedback", "children", allow_duplicate=True),
     Input("upload-oc-toms", "contents"),
     State("upload-oc-toms", "filename"),
+    State("oc-toms-append-switch", "value"),
+    State("store-oc-uploaded-toms", "data"),
     prevent_initial_call=True,
 )
-def upload_oc_toms(contents, filename):
-    """Parses a compact GP/MAVKA/parabola ToM file and selects the Upload source."""
-    if contents is None:
+def upload_oc_toms(contents, filename, append, current_store):
+    """Parses one or several compact ToM files and selects the Upload source.
+
+    With the append switch on, the files are merged into the loaded timings
+    (exact duplicates are skipped); otherwise the first file replaces them and
+    the remaining files are merged into it. Any unreadable file stops the whole
+    batch and nothing is stored.
+
+    Args:
+        contents: List of ``dcc.Upload`` base64 contents.
+        filename: List of uploaded file names.
+        append: Append switch value.
+        current_store: Current ``store-oc-uploaded-toms`` payload.
+
+    Returns:
+        tuple: Store, status chip, failure detail, source radio, export stem,
+        and an optional notice about skipped duplicates.
+    """
+    if not contents:
         raise PreventUpdate
+    contents_list = contents if isinstance(contents, list) else [contents]
+    names_list = filename if isinstance(filename, list) else [filename]
+    current_name = None
     try:
-        _content_type, content_string = contents.split(",", 1)
-        decoded = base64.b64decode(content_string)
-        text = decoded.decode("utf-8")
-        records, metadata_lines = parse_compact_tom_contents(text)
-        logger.info("O-C timings upload: %s (%s ToMs)", filename, len(records))
+        store = current_store if append else None
+        total_added = 0
+        total_skipped = 0
+        for item, item_name in zip(contents_list, names_list):
+            current_name = item_name or "timings.dat"
+            _content_type, content_string = item.split(",", 1)
+            text = base64.b64decode(content_string).decode("utf-8")
+            records, metadata_lines = parse_compact_tom_contents(text)
+            logger.info(
+                "O-C timings upload: %s (%s ToMs)", current_name, len(records)
+            )
+            if store is None:
+                store = new_upload_store(current_name, records, metadata_lines)
+                total_added += len(records)
+            else:
+                store, n_added, n_skipped = append_upload_store(
+                    store, current_name, records, metadata_lines
+                )
+                total_added += n_added
+                total_skipped += n_skipped
+        notice = None
+        if total_skipped:
+            notice = status_alert(
+                f"{total_skipped} exact duplicate ToM(s) skipped; "
+                f"{total_added} added.",
+                "info",
+            )
         return (
-            {
-                "filename": filename,
-                "records": records,
-                "metadata_lines": metadata_lines,
-            },
-            _gp_upload_status(filename or "timings.dat", tone="ok"),
+            store,
+            _gp_upload_status(upload_summary_text(store), tone="ok"),
             None,
             "upload",
-            oc_default_export_stem(filename),
+            oc_default_export_stem(store["filename"]),
+            notice,
         )
     except Exception as exc:
-        logger.error("O-C timings upload failed: %s", filename)
+        logger.error("O-C timings upload failed: %s", current_name)
         logger.error(traceback.format_exc())
         return (
             no_update,
-            _gp_upload_status(filename or "timings.dat", tone="error"),
+            _gp_upload_status(current_name or "timings.dat", tone="error"),
             upload_failure_detail(
                 "Timings upload failed",
-                str(exc),
+                f"{current_name}: {exc}",
             ),
             no_update,
             no_update,
+            no_update,
         )
+
+
+@callback(
+    Output("store-oc-uploaded-toms", "data", allow_duplicate=True),
+    Output("upload-oc-toms-text", "children", allow_duplicate=True),
+    Output(upload_detail_id("oc-toms"), "children", allow_duplicate=True),
+    Output("upload-oc-toms", "contents"),
+    Input("oc-toms-clear-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_oc_toms(n_clicks):
+    """Empties the loaded timings so the next file starts a new list.
+
+    The upload ``contents`` are reset so the same file can be loaded again.
+
+    Args:
+        n_clicks: Clear button click count.
+
+    Returns:
+        tuple: Empty store, placeholder chip, empty detail, reset contents.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    return None, upload_placeholder(), None, None
 
 
 @callback(

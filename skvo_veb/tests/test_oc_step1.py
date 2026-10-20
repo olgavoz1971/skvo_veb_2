@@ -328,3 +328,124 @@ def test_compute_step1_oc_rejects_bad_period():
             p0=0.0,
             source="gp",
         )
+
+
+def _rows(*pairs):
+    """Builds ToM records from ``(jd_ext, sigma_jd)`` pairs."""
+    return [{"jd_ext": jd, "sigma_jd": sigma} for jd, sigma in pairs]
+
+
+def test_append_merges_sorts_tags_and_skips_exact_duplicates():
+    """Appended ToMs are merged, tagged by file, sorted; exact duplicates skipped."""
+    from skvo_veb.utils.oc.tom_io import append_upload_store, new_upload_store
+
+    first = new_upload_store("a.dat", _rows((10.0, 0.1), (30.0, 0.1)), ["# a"])
+    store, added, skipped = append_upload_store(
+        first, "b.dat", _rows((20.0, 0.2), (30.0, 0.1), (30.0, 0.3)), ["# b"]
+    )
+    assert (added, skipped) == (2, 1)
+    assert [row["jd_ext"] for row in store["records"]] == [10.0, 20.0, 30.0, 30.0]
+    assert [row["source"] for row in store["records"]] == ["a.dat", "b.dat", "a.dat", "b.dat"]
+    assert store["filename"] == "merged"
+    assert store["metadata_lines"] == [
+        "# ---- source file: a.dat ----",
+        "# a",
+        "# ---- source file: b.dat ----",
+        "# b",
+    ]
+
+
+def test_append_to_nothing_equals_new_load_and_all_duplicates_change_nothing():
+    """First append starts the list; re-appending the same rows adds nothing."""
+    from skvo_veb.utils.oc.tom_io import append_upload_store, upload_summary_text
+
+    store, added, skipped = append_upload_store(None, "a.dat", _rows((1.0, None)), [])
+    assert (added, skipped, store["filename"]) == (1, 0, "a.dat")
+    again, added, skipped = append_upload_store(store, "b.dat", _rows((1.0, None)), [])
+    assert (added, skipped) == (0, 1)
+    assert [entry["name"] for entry in again["files"]] == ["a.dat"]
+    assert upload_summary_text(again) == "a.dat"
+
+
+def test_append_rejects_legacy_list_store():
+    """A store without file names cannot be extended silently."""
+    from skvo_veb.utils.oc.tom_io import append_upload_store
+
+    with pytest.raises(ValueError, match="old format"):
+        append_upload_store(_rows((1.0, 0.1)), "b.dat", _rows((2.0, 0.1)), [])
+
+
+def test_merged_store_names_export_merged_oc_and_summary():
+    """Merged timings export as merged_oc and are summarised by count."""
+    from skvo_veb.utils.oc.tom_io import append_upload_store, new_upload_store, upload_summary_text
+
+    store, _, _ = append_upload_store(
+        new_upload_store("a.dat", _rows((1.0, 0.1)), []), "b.dat", _rows((2.0, 0.1)), []
+    )
+    assert oc_default_export_stem_for_source("upload", uploaded=store) == "merged_oc"
+    assert upload_summary_text(store) == "2 files, 2 ToMs"
+
+
+def test_compute_carries_point_source_and_figure_colours_sources():
+    """O-C points are coloured per source with the same marker size."""
+    from skvo_veb.pages.gp_for_oc import OC_SOURCE_COLOURS, _build_oc_figure
+
+    records = [
+        {"jd_ext": 2458749.0, "sigma_jd": 1e-4, "source": "a.dat"},
+        {"jd_ext": 2458750.02, "sigma_jd": None, "source": "b.dat"},
+        {"jd_ext": 2458751.0, "sigma_jd": 1e-4, "source": "a.dat"},
+    ]
+    payload = compute_step1_oc(records, t0_jd=2458749.0, p0=1.0, source="upload")
+    assert payload["point_source"] == ["a.dat", "b.dat", "a.dat"]
+    fig = _build_oc_figure(payload)
+    colours = {trace.name: trace.marker.color for trace in fig.data}
+    assert colours == {"a.dat": OC_SOURCE_COLOURS[0], "b.dat": OC_SOURCE_COLOURS[1]}
+    assert all(trace.marker.size == 8 for trace in fig.data)
+    assert fig.layout.showlegend is False
+
+
+def test_single_source_figure_keeps_default_colour_and_no_legend():
+    """One source plots exactly as before: default colour, no legend."""
+    from skvo_veb.pages.gp_for_oc import _build_oc_figure
+
+    records = [{"jd_ext": 2458749.0, "sigma_jd": 1e-4, "source": "a.dat"}]
+    fig = _build_oc_figure(compute_step1_oc(records, t0_jd=2458749.0, p0=1.0, source="upload"))
+    assert fig.layout.showlegend is False
+    assert all(trace.marker.color is None for trace in fig.data)
+    assert [trace.name for trace in fig.data] == ["O-C"]
+
+
+def _upload_contents(text: str) -> str:
+    """Encodes text like a ``dcc.Upload`` data URL."""
+    import base64
+
+    return "data:text/plain;base64," + base64.b64encode(text.encode()).decode()
+
+
+def test_upload_callback_merges_several_files_and_names_bad_file():
+    """Several files merge into one store; a bad file stops the whole batch."""
+    from skvo_veb.pages.gp_for_oc import upload_oc_toms
+
+    a = _upload_contents("2458750.0 0.001\n2458751.0 0.001\n")
+    b = _upload_contents("2458751.0 0.001\n2458752.0 0.001\n")
+    out = upload_oc_toms([a, b], ["a.dat", "b.dat"], False, None)
+    store = out[0]
+    assert store["filename"] == "merged"
+    assert [r["jd_ext"] for r in store["records"]] == [
+        2458750.0,
+        2458751.0,
+        2458752.0,
+    ]
+    assert out[5] is not None  # one duplicate skipped
+
+    bad = _upload_contents("not a timing file\n")
+    out = upload_oc_toms([a, bad], ["a.dat", "bad.dat"], False, None)
+    assert out[0] is dash_no_update()
+    assert "bad.dat" in str(out[2])
+
+
+def dash_no_update():
+    """Returns Dash's ``no_update`` sentinel."""
+    from dash import no_update
+
+    return no_update

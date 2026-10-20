@@ -3841,3 +3841,121 @@ Tests in `test_lc_discovery_load.py` (650 passed). Still open, separate `lc_disc
 make the TESS provider local-first (put the FITS pointer into `lc_key` at search time so a cached
 product opens without a MAST search, also offline). Other providers were not checked for the
 same per-call archive request; with the app cache they are hit once per product and day.
+
+## Ticket 31: programmatic access (MCP server and HTTP API) over a shared service layer
+
+**Status:** proposal 2026-10-18, discussion only, nothing implemented. Open decisions are listed at the end.
+
+**Goal.** Give agents (MCP) and programs (HTTP) access to the capabilities of `lc_discovery` and
+`volightcurve` on the production server, next to the Dash site, without three separate
+implementations. Starting with light curve discovery; later packages must fit the same scheme.
+
+**What we found in the current code.**
+- `lc_discovery` offers primitives only (`list_missions`, `search`, `resolve_target`,
+  `archive_id_from_identifiers`, `fetch`, `purge_cache`). The real workflow lives in the host app:
+  `run_catalog_search` (coordinates, else name: provider resolve, Simbad, archive id, Simbad cone,
+  main-name retry) in `skvo_veb/utils/lc_discovery_search.py`. It is tied to the UI (status
+  callbacks, markdown, `PipeException`).
+- The same workflow exists a third time as prose advice in the skill ("Finding an object"), so an
+  agent re-invents it on every run. Simbad resolution exists in the host
+  (`skvo_veb/utils/simbad_resolver.py`) and in `lc_discovery/scripts/simbad_resolve.py`.
+- Other host logic that an API also needs: the server cache of fetched VOTable bytes
+  (`fetch_discovery_votable_bytes`, Ticket 30), listing photometry columns and pairing the error
+  column (`lc_bridge.list_photometry_candidates`, `paired_error_column`; this is VOTable knowledge
+  and belongs in `volightcurve`).
+- `import skvo_veb` runs `skvo_veb/__init__.py`, which builds the whole Dash app, Celery manager
+  and pages. Another process (MCP, API) cannot reuse any `skvo_veb.utils` function without booting
+  Dash. The shared logic therefore must leave the host package.
+- Production: Apache `mod_wsgi` daemon (5 threads) serves Dash at `/igebc`; Redis + Celery serve
+  `background=True` callbacks; `/var/www/flask/.env`; shared `diskcache` in `USER_CACHE_DIR`.
+  mod_wsgi cannot serve an MCP streamable-HTTP endpoint (ASGI, streaming).
+- `personal_ts` reads `personal.*` tables in a database. It must not be exposed publicly by default.
+
+**Decision 1: one service layer, three thin adapters (not three implementations).**
+```
+ Dash page (WSGI)      MCP adapter        HTTP adapter (optional)
+        \                  |                  /
+         \                 |                 /
+          service layer (no Dash, no web framework, no UI text)
+             |                         |
+        lc_discovery              volightcurve
+```
+- Dash calls the service layer in process. It does not call our own HTTP API (extra hop, loses
+  background callbacks and shared memory, adds a failure mode).
+- MCP and HTTP adapters are in one ASGI process, each a few dozen lines per operation, because they
+  only translate arguments, results and errors.
+- Python users who only want the code can `pip install lc_discovery`. The HTTP API exists for
+  users who want our server cache and our Simbad/VSX resolution. Build it only if a real user asks;
+  the MCP server is the first adapter.
+
+**Decision 2: where the service layer lives.** In `lc_discovery` itself (module such as
+`lc_discovery.workflow`), not in a new package, because we are alone and the workflow is the
+package's missing half. Contents:
+- `find_lightcurves(target | ra, dec, missions, radius, time bounds, ...) -> SearchResult` (the
+  moved `run_catalog_search`, returning data and a list of "what was tried" records, never
+  markdown or status callbacks).
+- Simbad resolver moved from the host (optional extra `simbad`, needs `astroquery`); the host and
+  the script import it from there. No fallback to another resolver (AGENTS: fail fast).
+- Product cache for fetched VOTable bytes (injected cache object or `LC_DISCOVERY_CACHE_DIR`), so
+  Dash, MCP and the API hit the same files. Cache key as in Ticket 30.
+- A typed error family (`DiscoveryError` with a stable `code` and a user-readable message) replacing
+  `PipeException` in this path. Adapters map it: Dash alert, MCP `isError` content, HTTP 4xx, or
+  502 for an archive that is down.
+- `volightcurve` gains `list_photometry_candidates`, `paired_error_column`, and a `describe()`
+  summary (rows, time span, TIMESYS, columns with UCD/unit/photcal). The host keeps only CurveDash,
+  Plotly and the export wording.
+- The host then shrinks to adapters; the Dash behaviour must not change (existing tests are the
+  safety net).
+
+**Decision 3: MCP surface (small, summaries first).**
+- Tools: `list_missions` (with coverage), `resolve_object`, `search_lightcurves`,
+  `fetch_lightcurve` (returns a summary and a reference, not the table), `get_lightcurve_points`
+  (server-side column choice, time window, `max_points`; never more than a hard cap),
+  `describe_lightcurve`. Later: fold with a given period and epoch, photcal conversions through
+  `volightcurve`.
+- Light curves of tens of thousands of rows must not pass through the model context. Full products
+  are exposed as an MCP resource or a token-protected download URL (VOTable, as `fetch` already
+  produces); tools return counts, columns and a link.
+- The guidance in `SKILL.md` becomes the server `instructions` and an MCP prompt/resource, so any
+  client gets it without copying a skill file. The rule "respect the metadata, never assume
+  offset, time scale or zero point" stays the first line.
+- Public missions only by default (allow-list in settings). `personal_ts` and other private
+  sources only behind an explicit setting and a token scope.
+
+**Decision 4: deployment on the existing server.**
+- Separate systemd unit (like `celery-skvo-veb-2.service`) running an ASGI server (uvicorn) on
+  `127.0.0.1:<port>`, same virtualenv and `.env`, `stateless_http` MCP mode (no session affinity).
+- Apache reverse-proxies one path (for example `/igebc/mcp` and `/igebc/api`, or a separate
+  host name) with `mod_proxy_http`, buffering off for the streaming response, longer timeouts. The
+  ProxyPass lines must win over `WSGIScriptAlias /igebc`; to be tested on the server, not assumed.
+- Shared `USER_CACHE_DIR` diskcache is process-safe; size limit (1 GiB) is shared with session
+  blobs, so the product cache needs its own directory or limit before public use.
+- Slow archive calls (MAST can take a minute): run blocking calls in a thread pool with a
+  concurrency limit; on timeout raise an explicit error telling the client to retry (the warmed
+  cache answers the second call). No job queue in the first version; the service layer stays
+  callable from a Celery task if needed later.
+- Access control: bearer tokens from the environment (hashed, one per user), per-token rate limit,
+  request logging through the standard logger. Full OAuth is out of scope until there is a reason.
+  The cache protects the archives from repeated calls but not from many different objects.
+
+**Order of work (each step is releasable and keeps Dash working).**
+1. Move the workflow, resolver, product cache and error family into `lc_discovery`; host imports
+   them. Remove the duplicates (host `simbad_resolver`, script). Tests move with the code.
+2. Move photometry-column helpers and `describe()` into `volightcurve`; host imports them.
+3. MCP adapter with `list_missions`, `resolve_object`, `search_lightcurves`, `fetch_lightcurve`,
+   `get_lightcurve_points`; run locally over stdio and test with an MCP client.
+4. Deployment: systemd unit, Apache proxy, tokens, rate limit, cache limits; check from a remote
+   client.
+5. Only on demand: HTTP adapter mirroring the same operations (VOTable for tables); TESS
+   local-first provider (separate `lc_discovery` ticket, Ticket 30 note).
+
+**Risks.** Step 1 touches the live search path (regression risk, covered by 650 tests); the
+`mcp` and ASGI dependencies enter `requirements.txt` with loose lower bounds only; a public
+endpoint adds an abuse surface (tokens and limits before it is advertised); Apache path
+precedence unverified.
+
+**Open decisions for the developer.**
+- Is the service layer inside `lc_discovery` (proposed) or a separate package?
+- MCP under `/igebc/mcp` or on its own host name?
+- Public missions only, or tokens with a scope for private ones?
+- Does the HTTP API wait for a real user (proposed)?
