@@ -3959,3 +3959,240 @@ precedence unverified.
 - MCP under `/igebc/mcp` or on its own host name?
 - Public missions only, or tokens with a scope for private ones?
 - Does the HTTP API wait for a real user (proposed)?
+
+### Ticket 31, addendum A (DRAFT, 2026-10-22): layers, the outer level, minimal steps
+
+**DRAFT. This addendum must be discussed with the developer before any code is written. Nothing
+here is decided. It amends the first text of Ticket 31 where they differ.**
+
+**Agreed layers (after discussion).**
+1. Archives (MAST, ZTF, ASAS-SN, Pan-STARRS1, OGLE, Gaia, UPJS TAP, personal collections).
+2. `lc_discovery`: an independent client library with provider plug-ins and a local cache. It is
+   installed and used on its own by any script with internet access. It must never depend on Dash,
+   MCP, ASGI or any web framework. `volightcurve` follows the same rule (out of scope for now).
+3. Servers that use it as one component among others: the Dash application (the web application
+   server for browser users) now; an MCP server and an optional HTTP API later. These live in the
+   host repository or a small separate one, never inside `lc_discovery`.
+4. Users: browsers, agents, programs.
+
+**Corrections to the first text.**
+- No provider in `lc_discovery` logs in (no credentials, tokens or login in the source); all are
+  anonymous and the data are public. `personal_ts` is the developer's public TAP service. The idea
+  of private missions behind token scopes is dropped. A server token, if any, only limits abuse of
+  the archives through the server's address; it does not protect confidential data. Whether the
+  first version needs tokens at all is open; a rate limit is the main protection.
+- Terms of use and citation conditions (for example ASAS-SN Sky Patrol, ZTF) and archive
+  rate limits were not checked and are a to-do before a public endpoint.
+- Adapters (MCP, HTTP) are not part of `lc_discovery`.
+
+**Approach to agents (discussed).** Primitives plus a skill plus example scripts is the right base
+for a dialog with a researcher, because the agent composes the steps and the researcher can steer
+it. Its weakness: each agent re-implements the same outer logic, results vary, and a client without
+the skill file never sees the rules. Rule of thumb for what goes where:
+- Deterministic, one right answer (resolution order, caching, error classification): code.
+- Needs judgement (which mission, which column, period and epoch, what the data mean, respect the
+  metadata of the product): skill.
+If the skill contains an algorithm that every agent must follow identically, it is code in prose.
+Two additions help the dialog: every step returns a trace ("what was tried, what was found"), and
+errors name the next options, so the agent can explain a failure to the researcher.
+
+**The outer level.** It already exists in three copies (host `run_catalog_search`, the
+`simbad_resolve.py` and `vsx_resolve.py` scripts, and prose in the skill). Proposal: build it once
+as small named steps in the same repository as `lc_discovery`, in a separate namespace and an
+optional extra (Simbad needs `astroquery`), so the core stays a pure primitive client. No UI text,
+no framework. Each step returns data and a trace. A convenience cascade may call the steps, but it
+is not the only way in. Dash shows the trace as status text; an MCP server exposes the steps as
+separate tools so the agent decides the order; scripts import them.
+
+**Proposed minimal set of steps (to be discussed).** Existing primitives are unchanged:
+`list_missions`, `search`, `resolve_target` (mission-specific name), `archive_id_from_identifiers`,
+`fetch`, `purge_cache`.
+1. `resolve_simbad(name)`: position, identifiers, main identifier. Several matches or none is
+   reported as such, never silently chosen. Moved from the host and the script.
+2. `resolve_vsx(name)`: position, period, epoch, type, as VSX publishes them. The epoch is a bare
+   number; the time system is not asserted (see the skill). Moved from the script.
+3. `resolve_position(text)`: parse and validate coordinates (decimal or sexagesimal, with a frame),
+   so "name or coordinates" is decided in one place.
+4. `find_lightcurves(...)`: optional cascade over steps 1 to 3 and the primitives (coordinates give
+   a cone; a name goes through the mission resolver, Simbad, archive id, cone). Returns the search
+   rows, the identity that was used, and the trace.
+5. Error family: `DiscoveryError` with a stable `code` and a readable message, replacing the host
+   `PipeException` on this path; adapters map it (Dash alert, MCP error content, HTTP status).
+
+**Policies that are silent in the host today and must be made explicit (decide each).**
+- When a name search finds nothing, is the main-name retry done automatically or offered?
+- Order between a mission resolver, Simbad and a cone search; which radius, who may change it.
+- Several Simbad matches: stop and ask, or take the first (proposal: stop and report).
+- Whether VSX is consulted automatically when Simbad fails, or only when asked.
+- What the cascade does after the first mission with results (continue or stop).
+
+**Not decided here.** Where the product cache for fetched VOTable bytes lives (package or host),
+what the MCP tool list is, deployment details (see first text of Ticket 31). The photometry-column
+helpers and `describe()` for `volightcurve` stay as written above and are out of scope for this
+addendum.
+
+**Next step.** Discussion only. After agreement: a second addendum with the final step list and
+signatures, then implementation in small releasable steps (Dash behaviour unchanged, 650 tests as
+the safety net).
+
+## Ticket 32 (DRAFT, 2026-10-22): volightcurve (SEPARATE PACKAGE): separate the strict core from interpretation
+
+**DRAFT. Every phase below must be discussed with the developer and agreed before any code is
+written. Nothing here is decided. The work is in the separate repository `volightcurve`; this
+ticket lives here with the other cross-package tickets.**
+
+**Purpose of the package (developer's statement).**
+- A) A strict core: the IVOA light curve annotation proposal plus the parts borrowed from
+  PhotDM that the proposal lacks. Every protocol or agreement that may change sits there and only
+  there. Other code (applications, `lc_discovery`) reads, writes, XML-serialises and converts
+  magnitude and flux only through its public methods.
+- B) Interpretation: reality differs from the protocols, so data that are not VO-compliant must be
+  brought into a form the core accepts, WITHOUT inventing calibration and WITHOUT throwing data away.
+
+**Problem: A and B are mixed.**
+- `lightcurve.py` is one file of about 2350 lines. It holds the strict model (`PhotometryFilter`,
+  `PhotCal`, `PhotDM`, `CooSys`, `TimeSys`), the extraction of declared groups from a VOTable,
+  column discovery, the guessing code (`_promote_to_vo_standards`, `_pickup_*`,
+  `_recover_lc_colnames`, `apply_non_votable_heuristics`), the class `VOLightCurve` and the writer.
+- `VOLightCurve._ingest` serves both worlds, and a declared value and an inferred one end up in the
+  same attribute with no record of which was which.
+- The dividing line is NOT the file format. A third-party VOTable without `PHOTCAL` needs B; a
+  text file with a full header may need little. The line is: VO-compliant (everything the core
+  needs is declared) or not.
+
+**Criterion for where a rule belongs.** Does it use only what the file declares (a UCD, a
+`TIMESYS`, `COOSYS` or `PHOTCAL` group, a FIELD reference, units)? Then it is A. Does it use column
+names, comments, unit text in a header or a convention? Then it is B.
+
+**Principles (agreed in discussion).**
+1. Absent stays absent. A missing zero point, filter, time system or coordinate system is `None`
+   (or an explicit "absent" state) in memory, and it is written back as absent in a round trip.
+   No "all or nothing" requirement: a light curve with magnitudes only and no calibration is valid
+   and must work happily as such.
+2. An operation that needs absent data raises, naming what is missing. Example: magnitude to flux
+   without zero points raises `PhotCalError`; the caller who never converts is never disturbed.
+3. Check methods tell the caller what is missing for a given operation (which zero points, which
+   metadata), before the operation is tried.
+4. Provenance per attribute: declared, inferred (rule and evidence), or absent. Interpretation
+   never writes into the core by stealth; it fills the same model and marks what it inferred.
+5. The dependency runs one way: interpretation imports the core, never the reverse. A strict mode
+   (interpretation off) rejects anything undeclared.
+
+**Findings from a first look (to be verified in phase 0).**
+- *Two models of the calibration?* Not two parallel ones. `PhotCal` is a facade over a nested
+  `ZeroPoint` (`PogsonZeroPoint`, with Asinh and Linear stubs) and `MagnitudeSystem` in
+  `photdm.py`. Leftovers: compatibility aliases (`_zp_flux`, `_zp_mag`, ... on `PhotCal`), a flat
+  constructor path next to the nested one, and `PhotometryFilter` held by both `PhotCal` and
+  `PhotDM` (which also has `filter_id`, `filter_name`, `mag0`). The developer's wish is to check
+  and exclude duplication; the remaining duplication is this surface, and it needs a decision
+  (one canonical path, the other removed or deprecated).
+- *Already in line with the principles:* omitted zero points stay missing; `conversion_problems`
+  and `PhotCalError` exist (`photcal_check.py`).
+- *Possibly in conflict with principle 1 (to verify):* `VOLightCurve.__init__` and `from_table`
+  set `self.timesys = TimeSys()`, whose constructor default is HELIOCENTER, origin 0.0, UTC, and
+  the writer (`time_reference.py`, `default_timesys`) falls back to it. A light curve whose time
+  system is undeclared may therefore be reported, and written, as declared. `CooSys` also defaults
+  to ICRS. Both would invent metadata.
+- `photcal_defaults.py` holds optional defaults (zero-point flux 1.0, reference magnitude 20.0,
+  Vega) "for host applications". It contradicts the spirit of principle 2 even though the writer
+  does not use it. Decide: keep, move out of the package, or delete.
+
+**Proposed approach (structure only; names and layout to be agreed).**
+- Two parts in the same repository and the same wheel (sub-packages), not two packages: the strict
+  core (model, reading of declared metadata, writing, conversions, check methods) and
+  interpretation (everything that uses names, comments or conventions). A thin reader calls
+  interpretation on the input, then hands the result to the core.
+- The model classes carry per-attribute provenance and an explicit absent state.
+- `lightcurve.py` is split along the same line; public import paths stay compatible until the
+  developer decides otherwise.
+- Tests split along the line: core against the specification and fixtures; interpretation against
+  a corpus of untidy real files. Skills split too: reading, writing and converting (core); what is
+  guessed and how to check it (interpretation).
+
+**Phases (each is discussed and agreed before it starts).**
+0. Inventory, no code. List every public name and who uses it (`lc_discovery`, the host
+   `lc_bridge`, scripts). Classify each function and attribute as A or B by the criterion above.
+   Settle the two findings above (calibration surface, invented time and coordinate defaults).
+1. Decisions on the design: how provenance and the absent state are represented; whether the
+   split is two sub-packages; what happens to the compatibility aliases and `photcal_defaults.py`;
+   strict mode behaviour. Output: a short design addendum here.
+2. Core: remove invented defaults, add check methods for time system, coordinate system and
+   calibration (what is missing for which operation), keep round trips faithful to absence.
+3. Move interpretation out of the core; the reader composes the two; provenance recorded.
+4. Downstream: `lc_discovery` and the host use only public core and reader methods
+   (see the next ticket on the relation between `lc_discovery` and `volightcurve`).
+5. Documentation and skills updated; old import paths removed after one release if agreed.
+
+**Safety net.** The existing tests of the package (about 15 modules) and the host suite
+(650 tests) stay green at the end of every phase; round-trip tests for absent values are added
+before the core is changed (phase 2).
+
+**Out of scope here.** The relation between `lc_discovery` and `volightcurve` (next discussion),
+MCP, and any change to the IVOA specification text itself.
+
+## Ticket 33 (DRAFT, 2026-10-22): lc_discovery depends on volightcurve (producer uses the protocol library)
+
+**DRAFT. Every phase must be discussed with the developer and agreed before any code is written.
+Nothing here is decided beyond the direction (option 2). Start slowly. It depends on Ticket 32
+(clean strict core in `volightcurve`) for its later phases. Both repositories are separate.**
+
+**Decision taken.** `lc_discovery` will require `volightcurve`. The dependency runs one way:
+`lc_discovery` imports the strict core of `volightcurve`; `volightcurve` never imports
+`lc_discovery`. `lc_discovery` uses only the strict core (Ticket 32, part A), never the
+interpretation part (part B): a provider knows what it has, declares it, and declares what it does
+not know as absent.
+
+**What we have (checked 2026-10-22).**
+- `lc_discovery` does not import `volightcurve` anywhere; it is not in its `pyproject.toml`. The
+  skill only recommends it, for readers.
+- Five providers build the VOTable XML by hand with ElementTree, each in its own
+  `fetch_metadata.py`, including `TIMESYS` and the `PhotCal` `GROUP` elements: `tess`, `ztf`,
+  `asassn`, `panstarrs1_dr2`, `gaia_dr3_aip`.
+- Five providers patch a VOTable received from a server in `enrich_votable`: `ogle_ocvs`,
+  `gaia_dr3_veb`, `gaia_dr3_ari`, `upjs_ts`, `personal_ts`.
+- `photcal_keys.py` holds dictionary keys (`zp_flux`, `zp_mag`, `mag_sys`, filter keys) that mirror
+  the `PhotCal` arguments of `volightcurve`; nothing enforces that they match.
+- The protocol knowledge is therefore copied about ten times in the producer. A change of the
+  annotation would have to be followed in every provider. The consumers (host `lc_bridge`, agents)
+  already read the products through `volightcurve`.
+
+**Cost to settle before the dependency becomes required.**
+- `volightcurve` depends on `pyOpenSSL` and three GAVO packages installed from tarballs at
+  soft.g-vo.org (not PyPI). `lc_discovery` would inherit them, against the aim of an easy install
+  on any machine. Not yet checked: whether the writing side of the core needs GAVO at all (it may
+  be needed only for reading). If the core can write with astropy alone, the dependency stays light.
+- `volightcurve` is not on PyPI; the dependency would be a git URL (as `skypatrol` already is),
+  with a minimum version.
+- Providers must stop using any default the core currently invents (time system, coordinate
+  system; see Ticket 32). Until then, issuing through the core could write undeclared values as
+  declared.
+
+**Phases (each discussed and agreed before it starts).**
+0. Baseline, no change to any writer. Add `volightcurve` to the dev dependencies of `lc_discovery`
+   only. A test reads every issued product of every provider (recorded or synthetic payloads, no
+   network in the test suite) with `volightcurve` and reports: what parses, what the check methods
+   say is missing (time system, coordinate system, calibration per flux or magnitude column),
+   what differs between providers. Output: a short table of findings in this ticket. This shows
+   today what each provider gets wrong; it is the baseline for everything after.
+1. Decisions, after Ticket 32 phase 0 to 1: the install weight (GAVO on the write path or not),
+   the form of the data a provider hands over (table, units, UCDs, time-system parameters,
+   per-column calibration, with absent as absent), where the provider-level description lives
+   (a small declarative structure per provider, replacing the dictionary keys of
+   `photcal_keys.py`). Output: a design addendum here.
+2. One pilot provider (proposal: `tess`, the richest, with a recorded payload) issues through the
+   core. Its output is compared with the old output: same declared values, nothing added, nothing
+   lost. The strict read test of phase 0 must pass.
+3. The other four hand-built providers, one at a time, each its own release step.
+4. The five `enrich_votable` providers: decide case by case whether to enrich through the core or
+   to leave the server-side VOTable as it is and only validate it (a product issued by our own
+   DaCHS service may be compliant already).
+5. Make the dependency required in `pyproject.toml`; remove `photcal_keys.py` and the duplicated
+   XML code; update the skill (`volightcurve` is then part of the producing side; readers may still
+   use plain astropy and the skill keeps saying so); a strict-read test over all providers stays
+   in the suite for good.
+
+**Safety net.** The `lc_discovery` suite and the host suite (650 tests) stay green at the end of
+every phase. Phases 2 and later compare old and new output before the old writer is removed.
+
+**Out of scope.** The cleaning of `volightcurve` itself (Ticket 32), MCP and the service layer
+(Ticket 31), the local-first TESS provider.
