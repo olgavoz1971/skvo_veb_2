@@ -1,34 +1,25 @@
-"""Photcal coherence policy (Ticket 7 Phase 1).
+"""Photcal coherence policy (Ticket 7 Phase 1, revised by Ticket 34).
 
-Reconciles ``metadata['photcal']`` before mag↔flux conversion:
+Reconciles ``metadata['photcal']`` before mag-flux conversion. **Nothing is
+invented**: a missing zero point stays missing and the user is told so. Suggested
+values (``volightcurve.suggestions``) are offered only through an explicit user
+action (``fill_missing_photcal_form_values``, the "fill" button).
 
-* **Incomplete** ZP pair → fill from ``volightcurve.photcal_defaults`` and warn.
-* **Invalid or mismatched** ``zp_flux_unit`` → flux column unit wins; write
+* **Incomplete** ZP pair -> left as it is, with a warning that names the gap.
+* **Invalid or mismatched** ``zp_flux_unit`` -> flux column unit wins; write
   that unit into photcal and warn explicitly.
-* Never silently demote invalid units inside ``PhotCal`` without this step.
+* **Invalid** ``zp_mag_unit`` -> left as it is, with a warning.
 
-**Dangerous mutators — never call silently.** Both
-:func:`reconcile_curve_photcal` and :func:`reconcile_photcal_dict` **invent**
-missing zero points (``DEFAULT_ZP_FLUX`` / ``DEFAULT_ZP_MAG``) and rewrite
-stored photcal. Callers **must** surface every returned warning to the user
-(``status_alert`` or equivalent). Discarding the warning list is forbidden.
-
-**Allowed invent call sites:**
-
-* :func:`reconcile_photcal_dict` — GP upload (``gp_for_oc`` + ``status_alert``);
-  Processor form Apply (``photcal_dict_from_form_values``).
-  ``gp.flux.resolve_gp_photcal`` does not call it.
-* :func:`reconcile_curve_photcal` — reserved for intentional CurveDash promote
-  with a UI warning path; **not** used by domain switch.
+Callers **must** surface every returned warning to the user (``status_alert`` or
+equivalent). Discarding the warning list is forbidden.
 
 **Domain switch** uses :func:`inspect_curve_photcal` /
 :func:`inspect_photcal_dict` only (via ``lc_bridge.apply_phot_domain_view``).
-Incomplete photcal → refuse conversion; do not invent.
+Incomplete photcal -> refuse conversion.
 
 Unitless values are stored as ``None`` (see ``vo_unit_codec``); UI messages use
 :func:`to_display` so callers never surface bare ``None``.
 """
-
 from __future__ import annotations
 
 import logging
@@ -44,13 +35,7 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
 )
-from volightcurve.photcal_defaults import (
-    DEFAULT_MAG_SYS,
-    DEFAULT_ZP_FLUX,
-    DEFAULT_ZP_FLUX_UNIT,
-    DEFAULT_ZP_MAG,
-    DEFAULT_ZP_MAG_UNIT,
-)
+from volightcurve.suggestions import suggested_calibration
 from volightcurve.vo_unit_codec import to_display, to_internal
 
 logger = logging.getLogger(__name__)
@@ -106,41 +91,21 @@ def _units_equivalent(a: str | None, b: str | None) -> bool:
         return False
 
 
-def _storage_unit_from_flux_column(flux_unit: str | None) -> str | None:
-    """Chooses the photcal ZP flux unit storage value from the flux column.
-
-    Args:
-        flux_unit (str, optional): CurveDash ``metadata['flux_unit']``.
-
-    Returns:
-        str or None: Unit string to store, or ``None`` for dimensionless.
-    """
-    internal = to_internal(flux_unit)
-    if internal is None:
-        return DEFAULT_ZP_FLUX_UNIT
-    parsed = _parse_unit(internal)
-    if parsed is None:
-        return DEFAULT_ZP_FLUX_UNIT
-    if parsed is u.dimensionless_unscaled or parsed == u.dimensionless_unscaled:
-        return DEFAULT_ZP_FLUX_UNIT
-    return internal
-
-
 def reconcile_photcal_dict(
     photcal: dict | None,
     *,
     flux_unit: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Promotes/repairs a serialised photcal dict for application use.
+    """Reconciles the units of a serialised photcal dict and reports gaps.
 
     **Do not call silently.** Returned warnings must be shown to the user.
-    Incomplete ZP pairs are filled from ``photcal_defaults`` — that is an
-    invented calibration, not archive truth.
+    Nothing is invented: a missing zero point stays missing.
 
-    * Incomplete ZP pair → fill application defaults and warn.
+    * Incomplete ZP pair → left as it is; the warning names what is missing.
     * Invalid ZP flux unit → promote to the **concrete** flux column unit when
       available; otherwise leave the declared text and warn.
     * Concrete flux / ZP unit mismatch → flux column wins and warn.
+    * Invalid ZP magnitude unit → left as it is and reported.
     * Missing ``flux_unit`` is **not** treated as dimensionless (never wipe a
       real ZP unit such as ``Jy`` against a phantom empty column unit).
 
@@ -164,29 +129,16 @@ def reconcile_photcal_dict(
 
     zp_flux = pc.get(PHOTCAL_KEY_ZP_FLUX)
     zp_mag = pc.get(PHOTCAL_KEY_ZP_MAG)
-    incomplete = zp_flux is None or zp_mag is None
-    if incomplete:
-        if zp_flux is None:
-            pc[PHOTCAL_KEY_ZP_FLUX] = float(DEFAULT_ZP_FLUX)
-        else:
-            pc[PHOTCAL_KEY_ZP_FLUX] = float(zp_flux)
-        if zp_mag is None:
-            pc[PHOTCAL_KEY_ZP_MAG] = float(DEFAULT_ZP_MAG)
-        else:
-            pc[PHOTCAL_KEY_ZP_MAG] = float(zp_mag)
-        if not pc.get(PHOTCAL_KEY_ZP_MAG_UNIT):
-            pc[PHOTCAL_KEY_ZP_MAG_UNIT] = DEFAULT_ZP_MAG_UNIT
-        if not pc.get(PHOTCAL_KEY_MAG_SYS):
-            pc[PHOTCAL_KEY_MAG_SYS] = DEFAULT_MAG_SYS
-        if PHOTCAL_KEY_ZP_FLUX_UNIT not in pc or pc.get(PHOTCAL_KEY_ZP_FLUX_UNIT) is None:
-            pc[PHOTCAL_KEY_ZP_FLUX_UNIT] = _storage_unit_from_flux_column(flux_unit)
+    missing = [
+        name
+        for name, value in (("zp_flux", zp_flux), ("zp_mag", zp_mag))
+        if value is None
+    ]
+    if missing:
         warnings.append(
-            "Photometric calibration was incomplete (missing zp_flux and/or "
-            "zp_mag). Defaults were applied: "
-            f"zp_flux={pc[PHOTCAL_KEY_ZP_FLUX]} "
-            f"({_unit_label(pc.get(PHOTCAL_KEY_ZP_FLUX_UNIT))}), "
-            f"zp_mag={pc[PHOTCAL_KEY_ZP_MAG]} "
-            f"{pc.get(PHOTCAL_KEY_ZP_MAG_UNIT) or DEFAULT_ZP_MAG_UNIT}"
+            "Photometric calibration is incomplete (missing "
+            f"{' and '.join(missing)}). Nothing was assumed; enter the values or "
+            "apply the suggested ones to convert between magnitude and flux."
         )
         logger.warning("%s", warnings[-1])
 
@@ -238,11 +190,9 @@ def reconcile_photcal_dict(
         try:
             u.Unit(str(zp_mag_unit).strip())
         except (ValueError, TypeError, u.UnitsError, u.UnitTypeError):
-            old = str(zp_mag_unit)
-            pc[PHOTCAL_KEY_ZP_MAG_UNIT] = DEFAULT_ZP_MAG_UNIT
             warnings.append(
-                f"Zeropoint magnitude unit ({old}) is not a valid Astropy unit. "
-                f"We will use '{DEFAULT_ZP_MAG_UNIT}'"
+                f"Zeropoint magnitude unit ({zp_mag_unit}) is not a valid Astropy "
+                "unit. It was left unchanged."
             )
             logger.warning("%s", warnings[-1])
 
@@ -252,14 +202,12 @@ def reconcile_photcal_dict(
 def reconcile_curve_photcal(lcd) -> list[str]:
     """Reconciles ``lcd.metadata['photcal']`` using the flux column unit.
 
-    **Forbidden to call silently.** Mutates session photcal and can invent
-    ``ZP_FLUX`` / ``ZP_MAG`` from ``photcal_defaults``. Every non-empty warning
-    **must** be shown in the UI (``status_alert`` or equivalent).
+    **Forbidden to call silently.** Mutates session photcal units; never invents
+    ``ZP_FLUX`` / ``ZP_MAG``. Every non-empty warning **must** be shown in the UI
+    (``status_alert`` or equivalent).
 
-    Domain switch must **not** call this — use :func:`inspect_curve_photcal`
-    and refuse conversion. Production invent paths use
-    :func:`reconcile_photcal_dict` (GP upload, Processor Apply). This CurveDash
-    wrapper is reserved for an explicit promote-with-warning UI only.
+    Domain switch must **not** call this; use :func:`inspect_curve_photcal`
+    and refuse conversion.
 
     Args:
         lcd: ``CurveDash`` instance (mutated in place).
@@ -407,9 +355,9 @@ def photcal_form_values_from_storage(
 
 
 def fill_missing_photcal_form_values(current: dict[str, Any]) -> dict[str, Any]:
-    """Fills empty editor fields from application defaults; never overwrites.
+    """Fills empty editor fields from the suggested values; never overwrites.
 
-    Populates only missing ``zp_flux``, ``zp_mag``, and ``mag_sys``. Leaves
+    Called only by an explicit user action. Populates only missing ``zp_flux``, ``zp_mag``, and ``mag_sys``. Leaves
     ``filter_name``, ``zp_flux_unit``, and ``flux_unit`` unchanged (blank
     means dimensionless for units, not “please invent Jy”).
 
@@ -417,15 +365,16 @@ def fill_missing_photcal_form_values(current: dict[str, Any]) -> dict[str, Any]:
         current (dict): Current form values (may be partial).
 
     Returns:
-        dict: Copy with gaps filled from ``photcal_defaults``.
+        dict: Copy with gaps filled from ``volightcurve.suggestions``.
     """
+    suggested = suggested_calibration()
     out = dict(current)
     if out.get("zp_flux") is None or out.get("zp_flux") == "":
-        out["zp_flux"] = float(DEFAULT_ZP_FLUX)
+        out["zp_flux"] = float(suggested["zp_flux"])
     if out.get("zp_mag") is None or out.get("zp_mag") == "":
-        out["zp_mag"] = float(DEFAULT_ZP_MAG)
+        out["zp_mag"] = float(suggested["zp_mag"])
     if not str(out.get("mag_sys") or "").strip():
-        out["mag_sys"] = DEFAULT_MAG_SYS
+        out["mag_sys"] = suggested["magnitude_system"]
     return out
 
 
@@ -442,7 +391,7 @@ def apply_photcal_form_values(
     """Builds reconciled photcal + flux column unit from editor form values.
 
     Does not rescale photometry: flux column unit is metadata only. ZP
-    magnitude unit is always ``DEFAULT_ZP_MAG_UNIT`` (``mag``).
+    magnitude unit is always ``mag``.
 
     Args:
         filter_name: Form passband label (written to ``filter_name`` metadata).
@@ -466,7 +415,7 @@ def apply_photcal_form_values(
     pc[PHOTCAL_KEY_ZP_FLUX] = _parse_optional_float(zp_flux)
     pc[PHOTCAL_KEY_ZP_FLUX_UNIT] = to_internal(zp_flux_unit)
     pc[PHOTCAL_KEY_ZP_MAG] = _parse_optional_float(zp_mag)
-    pc[PHOTCAL_KEY_ZP_MAG_UNIT] = DEFAULT_ZP_MAG_UNIT
+    pc[PHOTCAL_KEY_ZP_MAG_UNIT] = suggested_calibration()["zp_mag_unit"]
     sys_text = str(mag_sys).strip() if mag_sys not in (None, "") else ""
     if sys_text:
         pc[PHOTCAL_KEY_MAG_SYS] = sys_text

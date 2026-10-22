@@ -699,13 +699,13 @@ class CurveDash:
         return self.metadata.get('photcal', {})
 
     def reconcile_photcal(self) -> list[str]:
-        """Fills missing zero points from the shared suggested constants.
+        """Reconciles stored photcal units and reports missing zero points.
 
-        This is the session entry for recovery. Callers must show every
-        returned warning. Domain conversion does not call this.
+        Nothing is invented. Callers must show every returned warning. Domain
+        conversion does not call this.
 
         Returns:
-            list[str]: Warnings describing each invented or rewritten field.
+            list[str]: Warnings describing each rewritten or missing field.
         """
         from skvo_veb.utils.photcal_coherence import reconcile_curve_photcal
 

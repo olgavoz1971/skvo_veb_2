@@ -4196,3 +4196,736 @@ every phase. Phases 2 and later compare old and new output before the old writer
 
 **Out of scope.** The cleaning of `volightcurve` itself (Ticket 32), MCP and the service layer
 (Ticket 31), the local-first TESS provider.
+
+### Ticket 32, addendum A (2026-10-22): phase 0 inventory of `volightcurve` (read-only, nothing changed)
+
+Source: `volightcurve` at the baseline `v0.1.0` (commit 85d048f). Line numbers refer to that commit.
+Criterion A (strict core): uses only what the file declares. B (interpretation): uses column
+names, comments, unit text or conventions. "Mixed" means one function does both.
+
+**1. Module and function classification.**
+
+| Where | What | Class |
+|---|---|---|
+| `photdm.py` | `ZeroPoint`, `PogsonZeroPoint`, `AsinhZeroPoint`, `LinearFluxZeroPoint`, `MagnitudeSystem` | A |
+| `photcal_check.py` | `PhotCalError`, `inspect_conversion_photcal` | A |
+| `vo_unit_codec.py` | `to_wire`, `to_internal`, `to_display`, constants | A |
+| `lightcurve.py` | `PhotometryFilter`, `PhotCal` (conversions, `conversion_problems`) | A |
+| `lightcurve.py` | `PhotDM`, `TimeSys`, `CooSys` | A with invented defaults (section 2) |
+| `lightcurve.py` | `extract_photdm`, `extract_coosys`, `extract_timesys`, GAVO tree helpers | A (reading declared groups) |
+| `lightcurve.py` | `get_time/mag/flux/error_colnames`, `find_columns_by_ucd`, `is_mag_column`, `is_flux_column`, `column_main_role` | A when the UCD is declared; the name fallbacks inside (`is_observation_time_column`, `is_magnitude_phot_column`) are B |
+| `lightcurve.py` | `get_label_colnames`, `assign_label_column_ucd`, `assign_photometry_column_semantics` | Mixed (assigns UCDs the file did not declare) |
+| `lightcurve.py` | `_promote_to_vo_standards` (UCD and unit from column names), `_recover_lc_colnames` (positional names), `_pickup_*` (JD0, period, epoch, filter from comments), `apply_non_votable_heuristics` | B |
+| `lightcurve.py` | `VOLightCurve` (`_ingest_votable`, `_ingest`, `from_table`) | Mixed (section 3) |
+| `lightcurve.py` | `VOLightCurve.add_flux_column_from_mag`, `add_mag_column_from_flux`, `write_votable`, `write_vo_lightcurve` | A with invented defaults and limits (section 4) |
+| `time_reference.py` | `extract_*_from_gavo`, `export_absolute_jd_as_time_offset`, `absolute_jd_to_time_offset` | A with invented defaults |
+| `time_reference.py` | `time_offset_to_absolute_jd` (value above 2400000.5 is taken as absolute JD), `resolve_observation_timesys` (falls back to columns named `obs_time`, `time`, `jd`, `mjd`), `resolve_timesys_for_table_param` ("assumes the same TIMESYS") | Mixed |
+| `io_keywords.py`, `io_meta.py` (comment and flat-meta parsing), `io_dat.py` | `KEY=value` vocabulary, sentinels, `.dat` reading and header rules | B |
+| `io.py` | `read_lightcurve`, `write_lightcurve`, `assemble_volightcurve`, `_votable_kwargs_from_volc` | Facade over both, today without a visible seam |
+| `photcal_defaults.py` | Constants 1.0, 20.0, Vega | Neither: policy for hosts (section 5) |
+
+**2. Metadata invented by the code today (conflicts with "absent stays absent").**
+- `TimeSys()` default: HELIOCENTER, 0.0, UTC (`lightcurve.py` 487). `VOLightCurve.__init__` and
+  `from_table` create it for every curve (1539, 1614).
+- `_timesys_from_gavo_attrs` (`time_reference.py` 39 to 54): a declared `TIMESYS` with no
+  `refposition`, `timescale` or `timeorigin` gets HELIOCENTER, UTC, 0.0. A declared `timeorigin`
+  of 0 and an absent one cannot be told apart.
+- `extract_timesys_metadata_from_gavo` (160 to 163): a VOTable without any `TIMESYS` gets `TimeSys()`
+  as if declared.
+- `_ingest_votable` (1594 to 1595): if `timeorigin` is falsy it is filled from table comments
+  (`_pickup_jd0_from_table`), which returns 0.0 when nothing is found (1213 to 1227). A declared
+  origin of 0 is therefore overwritten by a comment guess.
+- `resolve_observation_timesys` (200): `volc.timesys or TimeSys()`.
+- `PhotDM.filter_id` returns the string "Unknown" without a filter (412); `PhotDM.mag0` returns 0.0
+  without a calibration (441). Both are invented values returned as data.
+- `apply_non_votable_heuristics` (1449): `mag_sys` becomes "Vega" and the magnitude unit "mag"
+  when only some calibration keywords are present.
+- `write_vo_lightcurve` defaults (1971 to 1983): BARYCENTER, TCB, origin 0, magnitude system
+  Vega. A `TIMESYS` is always written, and `magnitudeSystem` is always written. The method
+  `VOLightCurve.write_votable` has different defaults (HELIOCENTER, UTC, 1865 to 1867), so the same
+  light curve is written with a different time system depending on the entry point.
+- `CooSys` default system ICRS exists only in the constructor; `extract_coosys` correctly returns
+  `None` when nothing is declared (good as it is).
+- `PhotometryFilter`: not checked in detail.
+
+**3. Where A and B meet on the VO-compliant path (so file format is not the line).**
+`_ingest_votable` first reads the declared groups (A), then always runs `_promote_to_vo_standards`
+(UCD and units from column names), `assign_label_column_ucd` and the JD0 comment guess (B). A fully
+compliant VOTable is therefore also touched by guesses, and the result does not record which
+values were declared. Only the non-VOTable branch is a clean "B only" path (`from_table`, `.dat`).
+
+**4. Writer limits relevant to Ticket 33.**
+- The writer takes flat keyword arguments, not the `TimeSys`, `PhotDM` or `CooSys` objects; the
+  mapping is in `io._votable_kwargs_from_volc`. The model and the writer are not connected.
+- It writes ONE photcal `GROUP` (`phot_def`) for all photometry columns. Products with several
+  calibrations (TESS SAP and PDCSAP, as `lc_discovery` issues them) cannot be written by it
+  without losing the per-column photcal. A per-column writer is a prerequisite of Ticket 33.
+- It contains TESS-specific names (`sectors`, `flux_origins`, `cutout_source`, `mask_mode`) and
+  always writes `facility_name` and `instrument_name` params (empty when absent).
+- It uses only `astropy.io.votable.tree` (`TimeSys`, `CooSys`, `Group`, `Param`, `FieldRef`).
+
+**5. GAVO.** GAVO is used only to read metadata (`votparse`, `tableparser`, `stanxml`
+walkers). Yet `lightcurve.py` imports `gavo.votable` at module top (lines 19 and 20), so importing
+`volightcurve` for any purpose, writing included, needs the GAVO packages and `pyOpenSSL`.
+Consequence for Ticket 33: the install weight can be removed from a write-only consumer by making
+the GAVO import lazy or by placing the reader in its own module; the write path needs no GAVO.
+(AGENTS.md prefers GAVO for reading VOTables; this does not change.)
+
+**6. Calibration surface (the "two models" question).** One model, not two:
+`PhotCal` holds a `zero_point` (`ZeroPoint`) and a `magnitude_system`; the flat constructor
+arguments and the private aliases `_zp_flux`, `_zp_mag`, `_zp_*_unit_text`, `_zp_*_unit_unparsed`
+exist for compatibility. `PhotDM` repeats `filter_id`, `filter_name` and `mag0` over its nested
+`PhotCal` and `PhotometryFilter`; `PhotCal` also holds a `photometry_filter`, so the filter can be
+reached by two paths. Proposal for phase 1: one canonical path (nested objects), aliases deprecated.
+
+**7. Who uses what (outside `volightcurve`).**
+- `lc_discovery`: nothing (Ticket 33).
+- Host app `lc_bridge`: `VOLightCurve`, `PhotCal`, column discovery helpers,
+  `assign_photometry_column_semantics`, `is_magnitude_phot_column`, `write_vo_lightcurve`,
+  `io.read/write/assemble`, `read_dat_table`, `narrative_file_comments`,
+  `normalise_table_epoch_to_absolute_jd`, `export_absolute_jd_as_time_offset`, unit codec.
+- Host `lc_config`: `photcal_defaults` and `JD_TO_MJD`, `TIME_OFFSET_ABSOLUTE_JD_THRESHOLD`.
+- Host `photcal_coherence.py`: `photcal_defaults`. It FILLS an incomplete zero-point pair with the
+  defaults and warns, which is against the fail-fast rule and the principles of this ticket; it is
+  a host decision to revisit separately, but it is the reason `photcal_defaults.py` cannot just be deleted.
+- Host `curve_dash`, `mission_config/tess`: unit codec. `gp/flux`, `gp/plot_data`: `PhotCal`,
+  `PhotCalError`. `lc_discovery_load`: `VOLightCurve`, `time_offset_to_absolute_jd`.
+- Private names used by scripts and tests: `extract_photdm`, `extract_timesys_metadata_from_gavo`,
+  `_gavo_votable_tree_from_source`. The package exports with `from .lightcurve import *`, so the
+  public surface is partly accidental.
+
+**8. Proposed decisions for phase 1 (to discuss, none taken).**
+1. Representation of absence and provenance: a small marker per attribute (declared, inferred with
+   rule and evidence, absent), kept beside the value, not in a parallel model.
+2. Remove every invented default in section 2; `TimeSys` and `CooSys` fields become optional with
+   `None` as absent; `timeorigin` 0 and absent become distinguishable.
+3. One writer that takes the model (time system, coordinate system, one photcal per column) and
+   writes only what is declared; the flat-keyword function stays as a thin wrapper if still needed.
+4. A reader with an explicit mode: strict (no part B) and tolerant (part B, with provenance).
+   `_ingest_votable` stops running B on top of declared data in strict mode.
+5. Check methods: `missing_for(operation)` style answers for time, coordinates and calibration,
+   built on the existing `conversion_problems`.
+6. `photcal_defaults.py` and the host fill in `photcal_coherence.py`: keep in the host only, or
+   remove; the library must not offer defaults.
+7. Public surface: an explicit `__all__` for core and for interpretation; GAVO import lazy.
+8. Behaviour tests (characterisation) to add BEFORE any change: round trip of an absent time
+   system, an absent calibration, `timeorigin` 0 versus absent, per-column photcal, one entry point
+   per default of section 2.
+
+**Not checked in phase 0.** `PhotometryFilter` internals; `io.py` read path beyond the facade;
+whether existing tests depend on the invented defaults (to be answered by the characterisation tests).
+
+### Ticket 32, addendum B (2026-10-22): phase 1 decisions (agreed in discussion; still no code)
+
+This replaces the "provenance states" idea of the first text and of addendum A section 8. Every
+later phase is still discussed before it starts.
+
+**Principles after discussion.**
+1. A value is present or `None` (absent). There are no declared, inferred or assumed states in the
+   model or in the XML. The product is a compliant VOTable that carries values and descriptions
+   only. A value that the user sets is the user's responsibility.
+2. Interpretation never invents. It reads evidence the file already contains in a loose form: the
+   `KEY=value` comments (`JD0`, `FILTER`, `PERIOD`, `EPOCH`, `ZP_*`), and column roles taken from
+   column names (agreed: this belongs in the interpretation part). Whatever it interpreted adds a
+   plain sentence to the description of the product (as the photometry source sentence of
+   Ticket 30). The sentences travel as description text through `CurveDash` and export.
+3. Reasonable defaults are never written by the library on its own. They exist as a table of
+   SUGGESTIONS (plain data, with a one-line reason each) that a host UI or an agent shows to the
+   user. The user applies them, edits them, or overwrites a declared value, through an explicit
+   action (an input or a button such as "fill the empty fields"). Named profiles are not needed
+   now; one suggestion table is enough.
+4. Automatic interpretation fills only what is absent and never overwrites a declared value
+   (today `_pickup_jd0_from_table` overwrites a declared `timeorigin` of 0). Only an explicit user
+   action overrides a value.
+5. Absent and zero differ: `timeorigin` 0 is a value, `None` is absence.
+
+**Suggestion table (values agreed).** Time system: reference position HELIOCENTER, time scale UTC,
+time origin 0 (for hand-made legacy data). Calibration: reference magnitude `mag0` = 0 (the
+earlier library constant was 20.0; the change affects every flux derived from a magnitude by the
+suggestion, and the host tests that assert the old constants, see Ticket 34), zero point flux
+1.0 dimensionless, magnitude system Vega. These come from `photcal_defaults.py` and from the
+invented defaults listed in addendum A section 2; `photcal_defaults.py` is replaced by the
+suggestion table.
+
+**Decisions.**
+1. No provenance states (see principles).
+2. Remove every invented default in addendum A section 2 from the core: `TimeSys` and `CooSys`
+   fields optional, `PhotDM.filter_id` and `mag0` return `None`, the writer writes a `TIMESYS`
+   only when a time system is declared, and the two writer entry points stop disagreeing.
+3. One writer that takes the model: time system, coordinate system, one photcal per column,
+   only what is present, description sentences appended. The flat-keyword function remains a thin
+   wrapper or is deprecated (decide in the phase that does it).
+4. The reader never invents, so tolerant reading (evidence from comments and names, with
+   description sentences) can stay the default and no breaking change is needed. A strict mode
+   (no reading of names and comments) is kept for tests and for validating products issued by
+   `lc_discovery` (Ticket 33).
+5. Check methods: for each operation, what is missing (time system, coordinate system,
+   calibration per column), built on `conversion_problems`. They are plain data for the host and
+   for agents.
+6. Suggestion table and check methods are data only; they change nothing.
+7. Explicit public surface (`__all__` for core and interpretation); GAVO import lazy, so that a
+   write-only consumer does not need GAVO.
+8. Characterisation tests before any change (absent versus 0 `timeorigin`, absent calibration,
+   per-column photcal, one test per invented default of addendum A section 2).
+
+## Ticket 34 (DRAFT, 2026-10-22): host app: no automatic filling of calibration; ask the user
+
+**DRAFT. To be discussed before any code. Depends on Ticket 32 (suggestion table in
+`volightcurve`); the host can use a local copy of the suggestions until then.**
+
+**Rule (developer).** The application never fills missing zero points or other metadata on its
+own. It shows what is missing and what the suggested values are, and the user decides, with an
+input or a button.
+
+**What we have.**
+- `lightcurve_processor.py`, section Calibration: already the right pattern. The editor shows the
+  fields; the "defaults" action (`fill_missing_photcal_form_values`) only completes EMPTY
+  zero-point fields in the form and never overwrites file values; "Apply calibration" writes them
+  into the curve. Nothing changes except the suggested constants (`mag0` 0).
+- `gp_for_oc.py` (callback around line 4218): calls `reconcile_photcal_dict` automatically on
+  ingest; an incomplete zero-point pair is filled from `photcal_defaults` (1.0, 20.0, Vega) and a
+  warning is shown in `gp-lc-photcal-alert`. A warning after the fact is not enough (developer).
+  `reconcile_photcal_dict` also does other things (unit reconciliation; flux column wins on a unit
+  mismatch), which are not about defaults and need a separate look.
+- `lc_config.py` (`DEFAULT_REFERENCE_MAG`, `DEFAULT_ZP_FLUX_DIMENSIONLESS`) and
+  `test_extrema_modeller_grid.py` assert the old constants.
+
+**Proposal (to be discussed).**
+- `gp_for_oc.py` stops filling on ingest. If the calibration cannot convert, the page shows what
+  is missing (check methods) and a button "Use suggested zero points" that applies the suggestion
+  table to the empty fields only, or the user types values; the GP actions that need the
+  conversion stay disabled until then, with an explicit message. Same wording and pattern as the
+  Calibration section of the processor, ideally the same component.
+- The `mag0` suggestion becomes 0. Before changing it: check which host numbers depend on it
+  (GP length-scale guess, flux display scales, tests), because flux derived from magnitudes
+  with zero point 0 is a very small number for a star of magnitude 12.
+- The separate parts of `reconcile_photcal_dict` (unit reconciliation) stay, or move to
+  `volightcurve` where they belong; decide with Ticket 32.
+
+**Not in scope.** The processor Calibration section (already correct), `lc_discovery`.
+
+### Ticket 32 addendum B and Ticket 34: update 2026-10-22 (suggestion values for observers' files)
+
+**Ground truth (developer).** Compliant providers deliver flux with `zp_flux`, the flux of a
+magnitude-0 star, so `mag0` is silently 0. Observers' ASCII files almost always carry calibrated
+magnitudes; flux is only needed when an operation asks for it.
+
+**Suggestion table for observers' files (agreed; it is a suggestion, never applied by the library).**
+- Magnitude system: Vega.
+- Flux scale: relative flux, dimensionless (no physical unit).
+- `mag0` (reference magnitude): 0.
+- `zp_flux`: 1.0 (dimensionless): a magnitude-0 star has relative flux 1. Chosen over a Jy or
+  counts per second value because a physical unit with a zero point of 1 would claim a calibration
+  nobody made. The flux is then comparable only within this light curve.
+- Time system (legacy hand-made data): HELIOCENTER, UTC, origin 0 (unchanged).
+- The values replace the old 20.0 reference magnitude; old tests that assert the old constants are
+  changed, with the reason noted in the test and here.
+
+**Possible later additions (not now).** AB magnitudes with flux in Jy (zero point 3631 Jy for every
+band) when the user states the system; Vega zero points per filter from a lookup by filter
+identifier (for example the SVO Filter Profile Service).
+
+**Consequence to check (Ticket 34).** Relative flux of a magnitude-12 star is about 1.6e-5.
+Look at the GP length-scale guess, flux display scales and any thresholds in the host that assume
+flux of order 1 or larger; normalise for display or modelling where needed.
+
+**User prompt (proposal, not yet confirmed).** A user working only in magnitudes is never asked.
+When an operation needs the magnitude to flux conversion and the calibration is incomplete, the
+page shows what is missing and offers the suggestion as an explicit choice, for example "Relative
+flux, Vega magnitudes (magnitude 0 = 1, no physical units)" and "Enter my own zero point", with the
+consequence stated in plain words. The wording is deliberately visible ("scare them a little").
+
+### Ticket 32: phase 0 characterisation tests (2026-10-22)
+
+Added `volightcurve/tests/test_characterisation_current_behaviour.py` (27 tests; the package suite
+is now 76 passed, was 49). Nothing in `src/` changed. The tests pin the behaviour of baseline
+`v0.1.0`:
+- `KEEP` tests: behaviour in line with the agreed principles (conversion without zero points
+  raises `PhotCalError` and `conversion_problems` lists what is missing; an absent `COOSYS` stays
+  `None` and is not written; absent zero points are not written; one calibration per column is
+  read from several photcal groups; a declared `TIMESYS` is read exactly; `JD0` and `ZP_FLUX`
+  comments are read as evidence; roles from names are applied and recorded). They must stay true.
+- `INVENTED` tests: current invention, numbered as in addendum A section 2. They pass today and
+  are EXPECTED TO FAIL when phase 2 removes the invention; each is then rewritten to assert the new
+  behaviour (absent as `None`, no element written) with the reason noted. A failing `INVENTED`
+  test is a signal, not a regression.
+- Limit and mixed tests: one photcal group for all photometry columns (the writer limit for
+  Ticket 33); name-based UCD assignment on a compliant VOTable; the absolute-JD threshold.
+
+**Correction to addendum A, section 2, item 2.** A declared `TIMESYS` with missing attributes is
+NOT read as HELIOCENTER and UTC. The GAVO parser supplies its own defaults, so it is read as
+`UNKNOWN`, `UNKNOWN` and origin 0.0 (the HELIOCENTER and UTC fallbacks in
+`_timesys_from_gavo_attrs` are not reached on this path). The string `UNKNOWN` is the VOTable
+vocabulary's own marker and is not an invention by `volightcurve`; the origin 0.0 still is. The
+test records this. The "no `TIMESYS` at all" case does give HELIOCENTER, UTC and 0.0 as written.
+
+**New fact from the tests.** Absent calibration does not survive a round trip: the writer always
+writes `magnitudeSystem` Vega, and the reader returns a `PhotCal` with magnitude system Vega, no zero
+points, and filter identifier "" (an empty string, not `None`) for a file in which none of these was
+declared. Phase 2 must fix both ends.
+
+Not run: tests of the host app (no code there changed). The new file uses only fixtures built
+inside the module, no network.
+
+### Ticket 32: developer corrections of 2026-10-22 (recorded before decision 3)
+
+1. BARYCENTER and TCB must not be defaults anywhere, including the writer. A time system is
+   written only if it is declared.
+2. `facility_name` and `instrument_name` are desirable, not obligatory. When empty they are not
+   written (today they are always written empty; pinned by an `INVENTED` test).
+3. "One photcal group for all photometry columns" is a BIG MISTAKE of the writer. Correct model:
+   different columns may share one photcal, including several flux columns and a flux with its
+   error (the shared reference is the hint "this error belongs to that flux"); a table may hold
+   several photcal groups; a column may have no photcal at all, and no photcal is required for
+   all columns. Today the writer links only the photometry column and never the error column
+   (a new `LIMIT` test pins this: package suite 77 passed).
+
+### Ticket 32: decision 3 discussion, round 1 (2026-10-22)
+
+**Checked against the standard.** VOTable 1.4 schema (`VOTable.v1.4.xsd` shipped with astropy):
+`TIMESYS` has `ID` required, `timescale` required, `refposition` required (no schema default),
+and `timeorigin` "MUST be given unless the time's representation contains a year of a calendar
+era" (values: a number, or `JD-origin` / `MJD-origin`). The IVOA vocabularies of `timescale` and
+`refposition` (ivoa.net/rdf) both contain the term `UNKNOWN`. So the earlier statement "refposition
+and timescale default to UNKNOWN" was wrong for the schema: they are required, and `UNKNOWN` is a
+legal vocabulary value. The `UNKNOWN` seen on reading comes from the GAVO parser. Consequence:
+an unknown time scale or reference position is written as `UNKNOWN`; an unknown `timeorigin`
+has no valid representation (see open question in the next round).
+
+**Developer decisions of this round.**
+- Every flux, magnitude and error column is tied to a photometric calibration (`PhotDM`), possibly
+  an empty one; ONE empty calibration may be shared by all of them. (This withdraws the proposal
+  to create entries only where a calibration is declared.)
+- The writer references the error column in the same photcal group as its flux.
+- The title of the table is part of what the writer takes.
+- All parameters present in the ingested table (a compliant VOTable, or the agreed parameters
+  from commented rows of an ASCII file) are written as table PARAMs; no closed list. Mission names
+  (`sectors`, `flux_origins`, `cutout_source`, `mask_mode`) leave the core writer.
+- A calibration with nothing declared is NOT dropped: the existing "absent value" convention is
+  used (which one exactly is an open question).
+- The group count follows the calibrations: columns with the same calibration share one `GROUP`;
+  extra groups appear only when calibrations really differ (for example SAP and PDCSAP).
+
+### Ticket 32: decision 3 discussion, round 2 (2026-10-22)
+
+**Developer.** TESS SAP and PDCSAP have the same photcal. An unknown `timeorigin` means no `TIMESYS`
+is written (agreed).
+
+**Check of the TESS provider (`lc_discovery`).** It writes one `GROUP` per flux column
+(`photcal_<flux column>`), but for the SPOC family (electron per second) the payload of SAP and
+PDCSAP is identical (same filter, magnitude system and zero points from `config`), so one shared
+calibration is enough. The background columns use a different one (filter only, no zero points).
+Two other cases (`ZP_MAG_TESSMAG`, `_unknown_flux_photcal`) can give a column its own calibration.
+For Ticket 33 pilot: one calibration object for SAP, PDCSAP and their errors, and a separate
+filter-only one for background. Sharing is by calibration object (explicit); the writer does not
+merge groups that merely look alike.
+
+**Absent-value convention (selected).** In memory: `None`. On the wire, by datatype:
+- `double` PARAM or FIELD: `NaN` (the VOTable null for floating point; both readers accept it).
+- `char` PARAM: the empty string.
+The reader maps `NaN` and `""` back to `None`. Not used: `""` for a `double` (the present reader
+fails with `ValueError: could not convert string to float`), `NaN` for text.
+Checked with a small VOTable through the present reader: `NaN` zero points are read as
+`Quantity(nan)`, not `None`, and an empty `magnitudeSystem` is read as "Vega". Both reader
+behaviours must be fixed in phase 2 (map to `None`; never replace an empty magnitude system).
+
+### Ticket 32: decision 3, round 3: target XML layout (2026-10-22, DRAFT for review)
+
+Derived from the agreed rules. Both examples parse with astropy and with the present reader. The
+XSD validation was NOT run (`lxml` is not installed here). They are examples of what the new
+writer should produce, not a specification.
+
+**Rules behind the examples.**
+- One `GROUP name="photcal"` per distinct calibration object. Every flux, magnitude and error
+  column carries `ref` to its group and is listed as `FIELDref` in it; columns that share a
+  calibration share the group; one empty calibration may serve all.
+- A group always carries the four core PARAMs: `filterIdentifier` (char), `zeroPointFlux`
+  (double), `zeroPointReferenceMagnitude` (double, unit `mag`), `magnitudeSystem` (char). An absent
+  value is `NaN` (double) or `""` (char). A `unit` attribute on an absent value is not written,
+  except `mag` on the magnitude, which is fixed by the definition. Optional PARAMs
+  (`filterName`, `effectiveWavelength`, ...) are written only when present.
+- `TIMESYS` only when declared, and only with a known `timeorigin`; `refposition` and `timescale`
+  are written as `UNKNOWN` when unknown. A time column has a `ref` only when a `TIMESYS` exists.
+- No `COOSYS` unless declared. No `facility_name` or `instrument_name` when empty. Any other
+  table parameter present in the ingested table is written as a table `PARAM`.
+
+**Example A: TESS-like product (SAP and PDCSAP share one calibration with their errors;
+background has a filter-only calibration).**
+```xml
+<RESOURCE>
+  <TIMESYS ID="ts" refposition="BARYCENTER" timeorigin="2457000" timescale="TDB"/>
+  <GROUP ID="photcal_target" name="photcal">
+    <PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="TESS/TESS.Red"/>
+    <PARAM name="zeroPointFlux" datatype="double" unit="electron s-1" utype="photDM:PhotCal.zeroPoint.flux.value" value="1.0"/>
+    <PARAM name="zeroPointReferenceMagnitude" datatype="double" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="20.44"/>
+    <PARAM name="magnitudeSystem" datatype="char" arraysize="*" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+    <FIELDref ref="sap_flux"/><FIELDref ref="sap_flux_err"/>
+    <FIELDref ref="pdcsap_flux"/><FIELDref ref="pdcsap_flux_err"/>
+  </GROUP>
+  <GROUP ID="photcal_background" name="photcal">
+    <PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value="TESS/TESS.Red"/>
+    <PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="NaN"/>
+    <PARAM name="zeroPointReferenceMagnitude" datatype="double" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="NaN"/>
+    <PARAM name="magnitudeSystem" datatype="char" arraysize="*" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+    <FIELDref ref="sap_bkg"/>
+  </GROUP>
+  <TABLE name="TIC 394179296 sector 14">
+    <FIELD ID="time" name="time" datatype="double" ucd="time.epoch" unit="d" ref="ts"/>
+    <FIELD ID="sap_flux" name="sap_flux" datatype="double" ucd="phot.flux;em.opt" unit="electron s-1" ref="photcal_target"/>
+    <FIELD ID="sap_flux_err" name="sap_flux_err" datatype="double" ucd="stat.error;phot.flux;em.opt" unit="electron s-1" ref="photcal_target"/>
+    <FIELD ID="pdcsap_flux" name="pdcsap_flux" datatype="double" ucd="phot.flux;em.opt" unit="electron s-1" ref="photcal_target"/>
+    <FIELD ID="pdcsap_flux_err" name="pdcsap_flux_err" datatype="double" ucd="stat.error;phot.flux;em.opt" unit="electron s-1" ref="photcal_target"/>
+    <FIELD ID="sap_bkg" name="sap_bkg" datatype="double" ucd="phot.flux;em.opt" unit="electron s-1" ref="photcal_background"/>
+    <!-- DATA ... -->
+  </TABLE>
+</RESOURCE>
+```
+
+**Example B: observer's file with two columns of magnitudes and nothing declared (no time system,
+one empty calibration shared by the magnitude and its error).**
+```xml
+<RESOURCE>
+  <GROUP ID="photcal" name="photcal">
+    <PARAM name="filterIdentifier" datatype="char" arraysize="*" utype="photDM:PhotometryFilter.identifier" value=""/>
+    <PARAM name="zeroPointFlux" datatype="double" utype="photDM:PhotCal.zeroPoint.flux.value" value="NaN"/>
+    <PARAM name="zeroPointReferenceMagnitude" datatype="double" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="NaN"/>
+    <PARAM name="magnitudeSystem" datatype="char" arraysize="*" utype="photDM:PhotCal.magnitudeSystem.type" value=""/>
+    <FIELDref ref="mag"/><FIELDref ref="mag_err"/>
+  </GROUP>
+  <TABLE name="observer file">
+    <FIELD ID="jd" name="jd" datatype="double" ucd="time.epoch" unit="d"/>
+    <FIELD ID="mag" name="mag" datatype="double" ucd="phot.mag" unit="mag" ref="photcal"/>
+    <FIELD ID="mag_err" name="mag_err" datatype="double" ucd="stat.error;phot.mag" unit="mag" ref="photcal"/>
+    <!-- DATA ... -->
+  </TABLE>
+</RESOURCE>
+```
+
+**What the present reader does with these (to be fixed in phase 2).** Example A is read as
+intended: all five columns get a calibration, errors included, and the time system is TDB,
+BARYCENTER, 2457000. Absent values come back as `Quantity(nan)` and the empty magnitude system as
+"Vega"; in example B the missing time system comes back as HELIOCENTER, UTC, 0.0. In both cases the
+target is `None` (and no time system in B).
+
+**Open for the developer.**
+- Is the fixed set of four PARAMs in every group acceptable, or should absent ones be omitted?
+- `TIMESYS` of a TESS product: does `lc_discovery` keep writing BARYCENTER, TDB, origin 2457000
+  (TESS BTJD) as today? (Not a writer decision; the provider declares it.)
+
+### Ticket 32: decision 3, round 4: corrected target XML (2026-10-22, DRAFT)
+
+Corrected after the developer pointed to a real export (`lc_discovery_TIC_394179296_SPOC_sector_54.xml`).
+
+**Example A (single TESS series; a table with several series simply has more FIELDs and, where calibrations differ, more groups).**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.4" xsi:schemaLocation="http://www.ivoa.net/xml/VOTable/v1.3 http://www.ivoa.net/xml/VOTable/VOTable-1.4.xsd">
+  <DESCRIPTION>One photometry series ... (text of the export description)</DESCRIPTION>
+  <RESOURCE type="results">
+    <TIMESYS ID="ts" refposition="BARYCENTER" timeorigin="2400000.5" timescale="TDB"/>
+    <GROUP ID="photcal_target" name="photcal">
+      <PARAM ID="photcal_target_filterIdentifier" arraysize="*" datatype="char" name="filterIdentifier" ucd="meta.id;instr.filter" utype="photDM:PhotometryFilter.identifier" value="TESS/TESS.Red"/>
+      <PARAM ID="photcal_target_zeroPointFlux" datatype="double" name="zeroPointFlux" ucd="phot.flux;arith.zp" unit="electron.s-1" utype="photDM:PhotCal.zeroPoint.flux.value" value="1"/>
+      <PARAM ID="photcal_target_zeroPointReferenceMagnitude" datatype="double" name="zeroPointReferenceMagnitude" ucd="phot.mag;arith.zp" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="20.44"/>
+      <PARAM ID="photcal_target_magnitudeSystem" arraysize="*" datatype="char" name="magnitudeSystem" ucd="meta.code" utype="photDM:PhotCal.magnitudeSystem.type" value="Vega"/>
+      <PARAM ID="photcal_target_filterName" arraysize="*" datatype="char" name="filterName" ucd="meta.id;instr.filter" utype="photDM:PhotometryFilter.name" value="TESS/TESS.Red"/>
+      <PARAM ID="photcal_target_effectiveWavelength" datatype="double" name="effectiveWavelength" ucd="em.wl.effective" unit="m" utype="photDM:PhotometryFilter.spectralLocation.value" value="7.453e-07"/>
+      <FIELDref ref="flux" utype="adhoc:location"/>
+      <FIELDref ref="flux_err" utype="adhoc:location"/>
+    </GROUP>
+    <TABLE ID="TIC_394179296_SPOC_sector_54" name="TIC 394179296 SPOC sector 54">
+      <DESCRIPTION>The same description text as above, for the table.</DESCRIPTION>
+      <FIELD ID="jd" datatype="double" name="jd" ref="ts" ucd="time.epoch" unit="d"/>
+      <FIELD ID="flux" datatype="double" name="flux" ref="photcal_target" ucd="phot.flux;em.opt" unit="electron.s-1"/>
+      <FIELD ID="flux_err" datatype="double" name="flux_err" ref="photcal_target" ucd="stat.error;phot.flux;em.opt" unit="electron.s-1"/>
+      <PARAM ID="ra" datatype="double" name="ra" ucd="pos.eq.ra" value="289.774789454911"/>
+      <PARAM ID="dec" datatype="double" name="dec" ucd="pos.eq.dec" value="38.3667924544941"/>
+      <PARAM ID="period" datatype="double" name="period" ucd="src.var;time.period" unit="d" value="0.73095"/>
+      <PARAM ID="name" arraysize="*" datatype="char" name="name" ucd="meta.id" value="TIC 394179296 SPOC sector 54"/>
+      <!-- DATA, BINARY or TABLEDATA -->
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>
+```
+
+**Example B (observer file, nothing declared).**
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.4" xsi:schemaLocation="http://www.ivoa.net/xml/VOTable/v1.3 http://www.ivoa.net/xml/VOTable/VOTable-1.4.xsd">
+  <DESCRIPTION>Observer file read with column roles taken from the column names: mag as magnitude, jd as time.</DESCRIPTION>
+  <RESOURCE type="results">
+    <GROUP ID="photcal" name="photcal">
+      <PARAM ID="photcal_filterIdentifier" arraysize="*" datatype="char" name="filterIdentifier" ucd="meta.id;instr.filter" utype="photDM:PhotometryFilter.identifier" value=""/>
+      <PARAM ID="photcal_zeroPointFlux" datatype="double" name="zeroPointFlux" ucd="phot.flux;arith.zp" utype="photDM:PhotCal.zeroPoint.flux.value" value="NaN"/>
+      <PARAM ID="photcal_zeroPointReferenceMagnitude" datatype="double" name="zeroPointReferenceMagnitude" ucd="phot.mag;arith.zp" unit="mag" utype="photDM:PhotCal.zeroPoint.referenceMagnitude.value" value="NaN"/>
+      <PARAM ID="photcal_magnitudeSystem" arraysize="*" datatype="char" name="magnitudeSystem" ucd="meta.code" utype="photDM:PhotCal.magnitudeSystem.type" value=""/>
+      <FIELDref ref="mag" utype="adhoc:location"/>
+      <FIELDref ref="mag_err" utype="adhoc:location"/>
+    </GROUP>
+    <TABLE ID="observer_file" name="observer file">
+      <DESCRIPTION>Observer file read with column roles taken from the column names: mag as magnitude, jd as time.</DESCRIPTION>
+      <FIELD ID="jd" datatype="double" name="jd" ucd="time.epoch" unit="d"/>
+      <FIELD ID="mag" datatype="double" name="mag" ref="photcal" ucd="phot.mag" unit="mag"/>
+      <FIELD ID="mag_err" datatype="double" name="mag_err" ref="photcal" ucd="stat.error;phot.mag" unit="mag"/>
+      <!-- DATA -->
+    </TABLE>
+  </RESOURCE>
+</VOTABLE>
+```
+
+**What the first examples forgot (seen in the real export).**
+- `DESCRIPTION` at the VOTABLE level and in the TABLE (the title of the table is the `TABLE`
+  `name`; the descriptions carry the sentences of interpretation and of the photometry source).
+- `RESOURCE type="results"`, the `xsi:schemaLocation` on `VOTABLE`.
+- `ID` and `ucd` on every PARAM (`meta.id;instr.filter`, `phot.flux;arith.zp`, `phot.mag;arith.zp`,
+  `meta.code`, `em.wl.effective`), and `utype` as in the real file; the optional PARAMs `filterName`
+  and `effectiveWavelength` (present because the provider configuration supplies them).
+- `FIELDref utype="adhoc:location"`.
+- Unit strings on the wire are `electron.s-1` (the unit codec), not `electron s-1`.
+- The `TIMESYS` of the real TESS product is BARYCENTER, TDB, **timeorigin 2400000.5** (the provider
+  writes the time as an MJD-like offset), not 2457000 as written in the first example. Time system
+  and photcal values are the provider's, taken from its configuration; the writer writes what the
+  model carries.
+- Table PARAMs carry `ID`, `ucd` and, where known, a `DESCRIPTION`.
+
+**Seen in the real file, to decide (not changed).**
+- `flux_err` has no `ref` and is not in the photcal group (the error-link rule fixes this).
+- `epoch` is written as `value="0"` with `ref="ts"` while `period` is 0.73095. A zero epoch looks
+  like a value nobody declared; where it comes from (host export) was not traced.
+- Both `filter` (table PARAM) and `filterName` (group PARAM) carry the filter; `facility_name` and
+  `instrument_name` are written empty (to be dropped); `title` ("Display title for the lightcurve
+  figure") and `name` are written as table PARAMs. With "all parameters of the table are PARAMs"
+  these four come from `table.meta`; display-only ones such as `title` should probably not be
+  exported.
+- The data are `BINARY`; the examples above use a placeholder.
+
+### Ticket 32: decision 3, round 5: units on the wire (2026-10-22)
+
+**Developer.** The provider's time system stays as configured (MJD-like offsets are for the user;
+the main rule is a correct `timeorigin`, always). The items `epoch` 0, `filter` next to
+`filterName`, empty `facility_name` and `instrument_name`, and the display-only `title` are
+decisions of the PROVIDER and are out of scope here. Units must be compliant with VOUnits 1.1
+(REC, 2023-12-15).
+
+**What VOUnits 1.1 says (read from the document).**
+- Product of units: only the period `.` (not whitespace, not `*`); no whitespace anywhere;
+  division with `/` (at most one at top level); powers as `s-1` or `s**-1`.
+- `electron.s-1` is therefore correct syntax; `electron s-1` is not valid.
+- `electron` is NOT a known unit (only `eV`, electron volt). Unknown units are syntactically
+  allowed, and a library "should not unilaterally reject" them; only a unit starting with a
+  decimal prefix would need quoting, which `electron` does not. Known "concept" units are `count`
+  / `ct`, `photon` / `ph`, `adu`; the document itself notes that counts and photons are concepts
+  better carried by the UCD than by the unit.
+- The empty string is NOT a valid unit string (change of 1.1). `1` positively indicates a
+  dimensionless quantity. An application may read an empty string as dimensionless, unknown or
+  an error, but the writer should not rely on it.
+- `unknown` and `UNKNOWN` are reserved for "the unit is lost"; an absent `unit` attribute is also
+  possible.
+
+**What volightcurve does today (pinned by two characterisation tests, suite 79 passed).**
+- `VO_DIMENSIONLESS_WIRE = ""`: a dimensionless zero point flux is written as `unit=""`, the
+  pre-1.1 reading. Phase 2: write `1`.
+- `to_internal(Unit dimensionless)` and `to_internal("")` give `None`, but `to_internal("1")`
+  gives `"1"`. Phase 2: all of `1`, `""`, `---` and the dimensionless `Unit` read as `None`.
+- Unit strings are not validated: `"electron s-1"` passes unchanged. astropy's own VOUnit
+  formatter raises for `electron` (not part of the standard) and the codec falls back to the text.
+
+**Proposal (to discuss).**
+1. Keep `electron.s-1` as the provider's choice: valid syntax, an unknown but allowed unit.
+2. A check method on units (per column and per PARAM): reports whitespace or `*` products,
+   empty strings, `unknown` and units that are not in the VOUnits table (informative, not an error),
+   with the wording of the standard.
+3. Write dimensionless as `1`; an absent or unknown unit: no `unit` attribute. Never write `""`.
+4. The suggestion table: relative flux has unit `1`.
+**Decision (2026-10-22): the four points above are ACCEPTED by the developer.** Implementation
+stays in Ticket 32 phase 2; the two OUTDATED unit tests are rewritten then.
+
+**Decision (2026-10-22): the host asks the user for calibration only when a conversion needs it.**
+ACCEPTED by the developer (Ticket 34). The fixed-or-omitted PARAM question is still open.
+
+**Decision (2026-10-22): absent PARAMs are omitted from the photcal group.** ACCEPTED by the developer.
+This replaces the earlier round 4 example of writing `NaN` and `""` for absent values in the
+empty calibration of an observer file: such a group now holds no value PARAMs, only the
+`FIELDref` links. The reader maps a missing PARAM to `None`. The `NaN`/`""` reading stays
+only for tolerance of files written by older versions (to be confirmed in phase 2).
+
+### Ticket 32: decision 3, round 6: PARAMref in the photcal group (2026-10-22)
+
+Reference file: `data/o.xml` (DaCHS, OGLE, VOTable 1.5). Developer instruction: the reader MUST
+understand this layout; the writer is NOT forced to copy it; the MIVOT block at the end is ignored.
+
+What the file shows (checked):
+- `TIMESYS ID="ts"` and `GROUP ID="phot_def" name="photcal"` sit at RESOURCE level, before the TABLE.
+- The group holds one inline `PARAM` (`magnitudeSystem` = Vega), one `FIELDref` (`phot`,
+  `utype="adhoc:location"`) and three `PARAMref` (`fps_filter_id`, `zeropoint`, `ssa_specmid`).
+- The referenced values are ordinary table-level `PARAM`s with an `ID`. The link is by the
+  `utype` on the `PARAMref` (`photDM:...`; the case differs between files, so match
+  case-insensitively).
+- `mag_err` has no `ref` and no `FIELDref`: an error column without its own link (the LIMIT test).
+- The zero point is in `Jy` (a flux zero point of a magnitude, `zp_mag` absent).
+
+Current behaviour: `read_lightcurve` already resolves this file: `photdms["phot"]` has
+`zp_flux=2415.65 Jy`, filter `Generic/Bessell.I`, spectral location `8.02e-07 m`, Vega,
+and the `TIMESYS` (UTC, HELIOCENTER, 2400000.5). So the PARAMref route works today.
+
+Consequences for phase 2 (to keep, not to change):
+1. Reader: a photcal value may be an inline `PARAM` OR a `PARAMref` to a table-level `PARAM`.
+   Both give the same calibration. A missing one gives `None`.
+2. Reader: unknown parts of the file (MIVOT, other `GROUP`s) are ignored without a warning.
+3. Writer: stays with inline `PARAM`s (round 4); no MIVOT.
+4. A characterisation test on `o.xml` (copied into the test data) is proposed, as a KEEP test.
+   Not written yet; waiting for your word.
+
+**Round 6 test added (2026-10-22):** `tests/test_characterisation_current_behaviour.py` has three
+tests on the file `tests/data/ogle_dachs_paramref.xml` (a copy of `data/o.xml`): PARAMref values
+resolved, TIMESYS read as declared, error column without calibration. Suite: 82 passed.
+
+**Decisions (2026-10-22):** (1) the reader keeps accepting the old `NaN` and `""` PARAMs from
+files of earlier versions (read as `None`). (2) The flat writer function stays for one release as a
+deprecated wrapper over the new writer; its docstring is marked deprecated. Open points for
+phase 2 are now closed; step 1 (absent stays `None`) waits for your word to start.
+
+### Ticket 32: phase 2, step 1 done in `volightcurve` (2026-10-22), host not adapted
+
+Changes (uncommitted, in `volightcurve/src`): `TimeSys()` and `MagnitudeSystem()` hold `None`;
+`PhotCal(mag_sys=None)`; `PhotDM.filter_id` and `mag0` return `None` without data;
+`_pickup_jd0_from_table` returns `None`; a `TIMESYS` without `timeorigin` reads `None` (0 stays
+0.0); the reader reads `NaN` and `""` PARAMs as `None` (`_declared_float`, `_declared_text`),
+and no longer invents `filter_id=""` or `spectral_location=0.0`; `time_offset_to_absolute_jd`
+and `absolute_jd_to_time_offset` raise `ValueError` when an offset needs an undeclared origin.
+`UNKNOWN` in `refposition` and `timescale` comes from the GAVO parser (IVOA vocabulary term)
+and is kept as it is. Tests: `test_invented_1` to `5` rewritten as `test_absent_*`, two added;
+`volightcurve` suite 84 passed. The writer is untouched (step 2).
+
+Host effect (checked): before the change the host suite passed (661). After it, 11 tests fail,
+all by one cause: `lc_bridge.py` line 1786 `volc.timesys.timescale.lower()` on a file that
+declares no time scale (`.dat` uploads and similar). Related: line 1304 `jd0 or 0.0` and the
+`+ JD_TO_MJD` guess just below it hide an absent origin. Both belong to Ticket 34 (ask the
+user, no silent fill); not patched, because that is a design decision for the host.
+### Ticket 32: phase 2, step 2 done in `volightcurve` (2026-10-22): the writer
+
+Changes (uncommitted): `write_vo_lightcurve` has no time or magnitude-system defaults.
+`TIMESYS` is written only when `timeorigin` is known (declared position or scale without an
+origin are dropped with a warning; an origin without position or scale writes the vocabulary
+term `UNKNOWN`). `magnitudeSystem` is written only when declared. New argument `photdms`
+(column name to `PhotDM`): one `GROUP name="photcal"` per distinct `PhotDM` object, holding only
+declared PARAMs and a `FIELDref` for each of its columns (flux and error may share one); an empty
+calibration still gives a group; unlisted photometry columns share one empty group; unlisted
+error columns stay unlinked (pairing by name is interpretation, step 5). The flat calibration
+arguments remain for one release and are marked DEPRECATED in the docstrings; they cannot be
+combined with `photdms`. `facility_name` and `instrument_name` are written only with a value.
+`VOLightCurve.write_votable` takes the time system and `photdms` from the instance. In `io.py`
+an unknown origin stays `None` through `write_lightcurve`.
+Tests: `test_invented_6_*` rewritten as `test_written_*`, new `photdms` tests; `volightcurve`
+suite 90 passed. Host: the same 11 failures as after step 1 (cause unchanged, `lc_bridge.py`
+line 1786). `lc_discovery`: 222 passed, 4 failed in `test_lc_providers_cone_search_live.py`
+(live cone search; network, not related to this change, not investigated).
+Not done yet: units on the wire (step 3), the TESS PARAM IDs of the round 4 example (the
+writer writes PARAMs without `ID`), and name-based UCD fallback `phot`/`mag`/`flux` in the writer
+(interpretation, step 5).
+### Ticket 32: phase 2, step 3 done in `volightcurve` (2026-10-22): units on the wire
+
+Changes (uncommitted): `VO_DIMENSIONLESS_WIRE` is `"1"`; `to_wire(None)` gives `1`; the export
+rewrite turns Astropy's `unit="---"` into `unit="1"`; no `unit=""` is written. The reader maps
+`1`, `""` (earlier files), `---` and a dimensionless `Unit` to `None`. An absent or unknown unit
+writes no `unit` attribute. New `inspect_unit_string(text)` returns a `UnitReport` (`errors`,
+`notes`, `ok`): empty string or `---`, the reserved word `unknown`, whitespace, `*` as a product
+sign, a string Astropy cannot parse are errors; a unit outside the VOUnits table (`electron`) is a
+note only. New `VOLightCurve.check_units()` lists findings per `column:<name>` and per
+`photcal:<column>:<PARAM>`; empty when clean; never raises. `electron.s-1` stays as the provider
+wrote it (valid syntax, unknown unit, noted). Astropy already writes the composite as
+`electron.s-1` even from `electron s-1` input.
+Tests: the two OUTDATED unit tests rewritten as `test_units_*`, five added. `volightcurve` suite
+95 passed. `lc_discovery` 216 passed (live cone-search tests deselected). Host: the same 11
+failures as before (`lc_bridge.py` line 1786).
+Not done: the suggestion table with relative flux unit `1` (step 5); the host does not call
+`check_units()` yet.
+### Ticket 34: host fix after steps 1 to 3 of Ticket 32 (2026-10-22)
+
+Done: `lc_bridge.py` (ingest to `CurveDash`) passes `timescale=None` when the file declares no
+time scale, instead of calling `.lower()` on `None`. This is not a fallback: `lc_figure.py`
+and the interval helpers already take `timescale: str | None` and state "never invented".
+Host suite: 661 passed (the 11 failures are gone).
+Still silent and left for the Ticket 34 decision (found by search, not changed):
+- `lc_bridge.py` `_absolute_jd_from_time_column`: `jd0 or 0.0`, then a guess that small values
+  are MJD (`+ JD_TO_MJD`) when the origin is not declared.
+- `lc_bridge.py` line 603: `meta.get("timescale") or "utc"` (transport to `CurveDash`).
+- `lc_bridge.py` line 2239: `... or "TCB"` when exporting.
+These are the places where the host should ask the user (suggestion table, applied explicitly)
+or raise, instead of filling.
+### Ticket 32: phase 2, step 4 done in `volightcurve` (2026-10-22): check methods and raising
+
+Changes (uncommitted): `add_flux_column_from_mag` and `add_mag_column_from_flux` no longer fill a
+NaN column when the calibration is missing and no longer swallow conversion errors: they raise
+`PhotCalError` (with `.problems`) and add no column; the `new_col_name=None` bug (column named
+`None`) is fixed. New check methods, which report and never raise on data:
+`VOLightCurve.conversion_problems(column)` (no calibration, missing `zp_flux` or `zp_mag`,
+unit mismatch; `KeyError` for an unknown column), `VOLightCurve.time_problems()` (undeclared
+origin only when offsets are present, undeclared time scale, undeclared reference position, no
+time column), `PhotDM.conversion_problems()`. `PhotCal.conversion_problems` and the time
+conversion errors (step 1) were already in place.
+Tests: six `test_checked_*` added; `volightcurve` suite 101 passed; host 661 passed;
+`lc_discovery` (live tests deselected) passed.
+Open for step 5 (interpretation split) and Ticket 34: the host still has to call these checks and
+ask the user (see the Ticket 34 list above).
+### Ticket 32: phase 2, step 5 done in `volightcurve` (2026-10-22): interpretation split
+
+Changes (uncommitted):
+- New `interpretation.py` holds all part B code, moved unchanged: `_promote_to_vo_standards`,
+  `_recover_lc_colnames`, `_pickup_*`, `_is_dat_metadata_comment_line`, `_mag0_declared_in_comments`,
+  `apply_non_votable_heuristics`. The core imports it only lazily, from the tolerant reading path.
+  The old private names still resolve from `volightcurve.lightcurve` (module `__getattr__`) for one
+  release; `volightcurve.apply_non_votable_heuristics` still works.
+- Strict mode: `VOLightCurve(file, strict=True)` and `read_lightcurve(..., strict=True)` read only
+  what a VOTable declares (no UCD or unit from names, no label column, no `JD0` from comments) and
+  reject a file that is not a VOTable. Tolerant stays the default.
+- New `suggestions.py` (plain data, applied by nobody): `suggested_time_system()` (HELIOCENTER, UTC,
+  0), `suggested_calibration()` (Vega, `zp_mag` 0, `zp_flux` 1.0 dimensionless), `SUGGESTION_REASONS`
+  (one reason per value), `suggestions_for_missing(volc)` (only the absent fields; changes nothing).
+  `photcal_defaults.py` is marked DEPRECATED; the host still imports it until Ticket 34.
+- GAVO is imported lazily (only in `_gavo_votable_metadata_tree`); importing the package and writing
+  need no GAVO (tested with `gavo` blocked).
+Tests: seven `step 5` tests added; `volightcurve` suite 108 passed; host 661 passed; `lc_discovery`
+(live tests deselected) 216 passed.
+Not done: description sentences that record what interpretation did (the ticket asks for them; today
+the record is `table.meta["promoted_by_name"]` and a warning log); an explicit `__all__` for the
+core and for interpretation (the package still exports through `from .lightcurve import *`);
+moving the name fallbacks inside `is_observation_time_column`, `is_magnitude_phot_column`,
+`resolve_observation_timesys` and the writer's `phot`/`mag`/`flux` fallback into interpretation
+(they are mixed into core functions; each needs its own decision).
+**Decision (2026-10-22): interpretation records in the table description only.** What the
+interpretation did is written as plain sentences into the table DESCRIPTION, and nowhere else (no
+extra meta key, no separate channel). `table.meta["promoted_by_name"]` has no reader and is to be
+removed when the sentences are written. Not implemented yet.
+
+### Ticket 32 phase 2, step 5b: interpretation recorded in the table description (done)
+
+- `table.meta["promoted_by_name"]` is removed. `interpretation.add_interpretation_note` appends one plain sentence per kind to `table.meta["description"]`: "Interpreted from the file, not declared in it (from column names | from column positions | from the header comment | from comments or metadata keywords | from the column values): ...". No `=` in the text, and the same sentence is never added twice.
+- Covered: unit and UCD from column names, column names from the header or position, JD0, period, epoch, filter, zero points, magnitude system and wavelength read from comments or keywords, and the label column UCD (`assign_label_column_ucd` now returns the column name).
+- Writers: the VOTable DESCRIPTION is the envelope text, else the description plus the narrative comments; dat, csv and ecsv write the description as comment lines. Strict mode writes no sentence.
+- Tests: `volightcurve` 113, host 661 (1 skipped), `lc_discovery` 216 (live cone-search tests deselected).
+
+### Ticket 34, host step 1: `_absolute_jd_from_time_column` no longer guesses (done)
+
+- The `jd0 or 0.0` fill and the "small values are MJD" guess are removed. A declared origin is added to relative values; absolute values pass; relative values with no usable origin raise `ValueError` that tells the user to declare or confirm the origin.
+- Tests: `skvo_veb/tests/test_lc_bridge_absolute_jd.py`; host suite unchanged otherwise (661 passed).
+- Next host steps: line 603 `or "utc"`, line 2239 `or "TCB"`, `photcal_coherence.py` defaults, then the prompts using `suggestions_for_missing`.
+
+### Ticket 34, host step 2: timescale and reference position fills removed (done)
+
+- `lc_bridge.py`: the GP lightcurve no longer defaults the timescale to `utc`; the VOTable export no longer defaults the timescale to `TCB` or the reference position to `BARYCENTER`. An absent value stays `None` (the writer then writes `UNKNOWN`). Host suite: 664 passed, 1 skipped.
+- Next: `photcal_coherence.py` defaults, then the prompts using `suggestions_for_missing`.
+
+### Ticket 34, host step 3: `photcal_coherence.py` no longer invents calibration (done)
+
+- `reconcile_photcal_dict` leaves a missing `zp_flux`/`zp_mag` missing and warns ("Nothing was assumed"). It also no longer rewrites an invalid ZP magnitude unit to `mag` (it warns and leaves it). The private flux-unit default helper is removed; the module no longer imports `photcal_defaults`.
+- `fill_missing_photcal_form_values` (the explicit fill button) takes its values from `volightcurve.suggestions` (Vega, 0, relative flux 1) and the alert says "suggested values".
+- Tests added in `test_photcal_form_filter.py`; host suite green.
+- Still open: the GP upload and `lc_bridge` do not yet prompt with `suggestions_for_missing`, `check_units`, `conversion_problems` or `time_problems`; only warnings are shown. That is the last host step.
+
+### Ticket 34, host step 4a: readiness report in `lc_bridge` (done, backend only)
+
+- New `skvo_veb/utils/lc_readiness.py`: `readiness_report(volc, phot_col=None)` returns JSON-safe data from `time_problems`, `check_units`, `conversion_problems(phot_col)` and `suggestions_for_missing` (with the reasons). It changes nothing.
+- `volc_to_curvedash` stores it in `lcd.metadata["readiness"]` (`METADATA_KEY_READINESS`), so it travels with the session curve and can be shown by any page.
+- Tests: `skvo_veb/tests/test_lc_readiness.py`; host suite 668 passed, 1 skipped.
+- Next (4b, UI): show the report on the GP upload and Processor pages, with "apply suggested" actions; and let the upload ask for a time origin instead of failing when `_absolute_jd_from_time_column` raises.

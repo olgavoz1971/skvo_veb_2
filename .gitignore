@@ -53,3 +53,4 @@ tmp/
 *.fits
 *.vot
 *.yaml
+auxiliary/lc_discovery_test/

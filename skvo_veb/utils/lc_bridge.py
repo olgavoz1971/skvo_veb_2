@@ -15,7 +15,7 @@ from skvo_veb.utils.lc_config import (
     EXPORT_FORMATS,
     JD_TO_MJD,
     METADATA_KEY_FILE_COMMENTS,
-    METADATA_KEY_VO_ENVELOPE,
+    METADATA_KEY_READINESS,
     METADATA_KEY_VO_ENVELOPE,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH,
     PHOTCAL_KEY_EFFECTIVE_WAVELENGTH_UNIT,
@@ -34,6 +34,7 @@ from skvo_veb.utils.lc_config import (
     is_votable_export_format,
     votable_binary_encoding,
 )
+from skvo_veb.utils.lc_readiness import readiness_report
 from skvo_veb.utils.my_tools import PipeException, sanitize_filename
 from volightcurve import (
     PhotCal,
@@ -600,7 +601,7 @@ def curvedash_from_transport_json(
 
     active_domain = meta.get("active_domain") or DOMAIN_MAG
     photcal = meta.get("photcal") or {}
-    timescale = (meta.get("timescale") or "utc").lower()
+    timescale = str(meta["timescale"]).lower() if meta.get("timescale") else None
 
     if source_name:
         stem = Path(source_name).stem
@@ -1293,19 +1294,33 @@ def _time_column_to_jd_array(volc: VOLightCurve, time_col: str) -> np.ndarray:
 def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarray:
     """Resolves display or relative time columns to absolute Julian Date.
 
+    The declared time origin is added to the ``obs_time`` column (or to any column
+    whose values are relative). Nothing is guessed: an undeclared origin is not
+    replaced by zero, and small values are not taken for MJD.
+
     Args:
         volc (VOLightCurve): Parsed lightcurve container.
         time_col (str): Column name holding epoch data.
 
     Returns:
         numpy.ndarray: Absolute JD values.
+
+    Raises:
+        ValueError: If the values are still relative (below ``1e6``) after the
+            declared origin is applied, because the origin is undeclared or does not
+            make them absolute. The user must supply the origin.
     """
     jd_vals = _time_column_to_jd_array(volc, time_col)
-    jd0_offset = volc.timesys.jd0 or 0.0
-    if time_col == "obs_time" or (jd0_offset > 0 and np.nanmax(jd_vals) < 1e6):
-        return jd_vals + jd0_offset
-    if jd0_offset == 0.0 and np.nanmax(jd_vals) < 1e6:
-        return jd_vals + JD_TO_MJD
+    jd0_offset = volc.timesys.jd0
+    relative = bool(np.nanmax(jd_vals) < 1e6)
+    if jd0_offset is not None and (time_col == "obs_time" or (jd0_offset > 0 and relative)):
+        jd_vals = jd_vals + jd0_offset
+    if np.nanmax(jd_vals) < 1e6:
+        raise ValueError(
+            f"Time column '{time_col}' holds relative values and the time origin is "
+            f"{'not declared' if jd0_offset is None else f'{jd0_offset} (not absolute)'}. "
+            "Declare the origin (for example JD0) or confirm a suggested one."
+        )
     return jd_vals
 
 
@@ -1783,7 +1798,7 @@ def volc_to_curvedash(
         jd=jd_absolute,
         label=label_vals,
         time_unit="d",
-        timescale=volc.timesys.timescale.lower(),
+        timescale=(volc.timesys.timescale.lower() if volc.timesys.timescale else None),
         photcal=photcal_meta,
         period=meta.get('period'),
         epoch=absolute_epoch,
@@ -1822,6 +1837,7 @@ def volc_to_curvedash(
         if key in meta:
             lcd.metadata[key] = meta.get(key)
     lcd.metadata[METADATA_KEY_VO_ENVELOPE] = _extract_vo_envelope_meta(volc, filename=filename)
+    lcd.metadata[METADATA_KEY_READINESS] = readiness_report(volc, phot_col)
     narrative = narrative_file_comments(
         (volc.table.meta or {}).get("comments"),
         colnames=list(volc.table.colnames),
@@ -1994,8 +2010,8 @@ def apply_phot_domain_view(lcd, show_magnitude: bool) -> list[str]:
     :class:`~skvo_veb.utils.my_tools.PipeException` when the ZP pair is missing
     or units are incoherent. Passband-only / uncalibrated curves stay honest.
 
-    Inventing defaults belongs only in GP upload (``reconcile_photcal_dict`` +
-    UI warning) and Processor form fill/Apply — never here.
+    Nothing is invented anywhere: suggested values reach the photcal only when
+    the user presses the fill button in the Processor form.
 
     Args:
         lcd (CurveDash): Cached lightcurve to mutate.
@@ -2235,8 +2251,9 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
     kwargs = {
         "table_name": str(table_name),
         "filter_identifier": filter_identifier,
-        "refposition": envelope.get("refposition") or "BARYCENTER",
-        "timescale": envelope.get("timescale") or str(meta.get("timescale") or "TCB").upper(),
+        "refposition": envelope.get("refposition"),
+        "timescale": envelope.get("timescale")
+        or (str(meta["timescale"]).upper() if meta.get("timescale") else None),
         "timeorigin": JD_TO_MJD,
         "table_description": table_description,
         "votable_description": votable_description,

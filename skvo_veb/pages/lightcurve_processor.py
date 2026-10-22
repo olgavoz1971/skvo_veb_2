@@ -2257,8 +2257,9 @@ def fill_processor_photcal_missing(
     changed = any(before[k] != after[k] for k in ("zp_flux", "zp_mag", "mag_sys"))
     alert = (
         status_alert(
-            "Filled missing zero points and/or magnitude system from "
-            "application defaults. Unit blanks were left unchanged. "
+            "Filled missing zero points and/or magnitude system with the "
+            "suggested values (Vega, magnitude 0, relative flux 1). Unit blanks "
+            "were left unchanged. "
             "Press Apply calibration to adopt into the working lightcurve.",
             "info",
         )

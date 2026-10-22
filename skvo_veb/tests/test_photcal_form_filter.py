@@ -42,3 +42,23 @@ def test_apply_photcal_form_writes_filter_name():
         existing_photcal={PHOTCAL_KEY_FILTER_NAME: "old"},
     )
     assert photcal[PHOTCAL_KEY_FILTER_NAME] == "TESS"
+
+
+def test_reconcile_does_not_invent_missing_zero_points():
+    """An incomplete photcal stays incomplete and the warning names the gap."""
+    from skvo_veb.utils.photcal_coherence import reconcile_photcal_dict
+
+    photcal, warnings = reconcile_photcal_dict({"zp_flux": 3.0}, flux_unit=None)
+    assert "zp_mag" not in photcal or photcal["zp_mag"] is None
+    assert photcal["zp_flux"] == 3.0
+    assert len(warnings) == 1
+    assert "zp_mag" in warnings[0]
+    assert "Nothing was assumed" in warnings[0]
+
+
+def test_fill_button_uses_the_suggested_values():
+    """The explicit fill action offers Vega, magnitude 0 and relative flux 1."""
+    out = fill_missing_photcal_form_values(
+        {"filter_name": "", "zp_flux": None, "zp_mag": None, "mag_sys": ""}
+    )
+    assert (out["zp_flux"], out["zp_mag"], out["mag_sys"]) == (1.0, 0.0, "Vega")
