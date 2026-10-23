@@ -4190,6 +4190,16 @@ not know as absent.
    XML code; update the skill (`volightcurve` is then part of the producing side; readers may still
    use plain astropy and the skill keeps saying so); a strict-read test over all providers stays
    in the suite for good.
+6. Optional, after the rest: can GAVO be dropped from `volightcurve` entirely? In `lc_discovery`
+   it is not used. In `volightcurve` it is used in one place: `_gavo_votable_metadata_tree`
+   parses the VOTable with `gavo.votable.votparse` (no data rows), and four walkers read
+   TIMESYS, COOSYS, the photcal GROUP and the FIELD/PARAM references from that tree. Rows and
+   writing already use astropy. pyOpenSSL is needed only because GAVO imports it at load. First
+   check: whether astropy's own VOTable tree (`time_systems`, `coordinate_systems`, `groups`,
+   `params`, field references) reproduces what the four walkers return on all recorded products,
+   including PARAMref and FIELDref, original attribute text, and files the parser would reject.
+   Discuss the result before any code. If it matches, GAVO and pyOpenSSL can leave
+   `volightcurve`; if not, they stay as the `read` extra.
 
 **Safety net.** The `lc_discovery` suite and the host suite (650 tests) stay green at the end of
 every phase. Phases 2 and later compare old and new output before the old writer is removed.
@@ -5034,3 +5044,50 @@ Round trip (read, then write with the instance `photdms`), developer verdicts:
 5. Bug fixed in `volightcurve`: `VOLightCurve.write_votable` did not pass `photdms` to the writer (the photcal groups came out empty). It now passes them unless the deprecated flat calibration arguments are given. Test: `test_write_votable_method_writes_the_calibration_of_the_instance`.
 
 Baseline fixtures refreshed (2026-10-23, evening) with originals from the Discovery page after the TESS and ZTF changes: `tess_spoc_sector17_orig.vot` (TIC 455790537, sector 17; units `count/s`, read back as `ct / s`) and `ztf_oid_1772216100034775_zr_orig.xml` (`limitmag` UCD without `phot.*`; one photcal group, no empty one). Both read strictly with no findings. Only the TESS zero point unit text changed in the baseline (`1 / s` to `ct / s`); the ZTF findings are unchanged. The old sector 16 and ZTF 1772216100025317 fixtures were removed.
+
+### Ticket 33, phase 2: pilot (2026-10-23)
+
+Decisions (developer): pilot is Pan-STARRS1 (TESS follows once the writer can write generic table PARAMs: tic, sector, author, exptime, mast_*); `volightcurve` is split first; comparison rule is "same declared values; attribute noise listed for approval".
+
+Done:
+- `volightcurve`: GAVO and pyOpenSSL moved from hard dependencies to the extra `read` (`pip install volightcurve[read]`; `dev` includes it). Writing needs only numpy and astropy. A missing GAVO stack gives an `ImportError` that names the extra (test `test_reading_without_the_gavo_stack_says_how_to_install_it`). The host app is not affected: its `requirements.txt` lists GAVO and pyOpenSSL itself.
+- `lc_discovery`: `volightcurve` (core, no GAVO) is a runtime dependency; the dev extra uses `volightcurve[read]` for the strict-read baseline.
+- `lc_discovery` PS1: `votable_from_detections` hands the core an astropy table, one `PhotDM` (AB, 3631 Jy, 0 mag, `PAN-STARRS/PS1.i`, wavelength as a Quantity in metres), the time system, the COOSYS and the TABLE items; `write_vo_lightcurve` writes the XML (TABLEDATA kept). The hand-written ElementTree code and its helpers were removed.
+
+Comparison with the old product (rows rebuilt from `tests/data/panstarrs1_dr2_issued.xml`): TIMESYS, FIELD name/datatype/UCD/unit, the 20 rows, every table PARAM and the photcal values are the same. Differences, for approval: VOTable version 1.3 became 1.4; the group and the FIELD refs are named `photcal_psf_flux` (was `photcal`); PARAMs carry `ID` and `ucd` attributes and DESCRIPTIONs; the numbers are written as `3631` and `0` (was `3631.0`, `0.0`); the effective wavelength is `7.503030000000001e-07` m (was `7.50303e-07`, from the Angstrom to metre conversion in astropy); the root has the astropy header comment. The baseline case still holds the old recorded product; it is refreshed when a new original is supplied.
+
+### Ticket 33, phase 3: ZTF through the core (2026-10-23)
+
+`votable_from_epochs` hands the core an astropy table (typed columns from the IRSA FIELD datatypes, units parsed as VOUnits, UCDs and descriptions from IRSA, `limitmag` without `phot.*`), one `PhotDM` for `mag` and `mag_err` (AB, 3631 Jy, 0 mag, wavelength as a Quantity in metres) and the time system; `write_vo_lightcurve` writes the XML (TABLEDATA). The hand-written ElementTree code and helpers were removed. Rules after the developer's correction (2026-10-23; I had added restrictions without asking, rule: ask before adding any restriction or changing a behaviour): (a) a unit text that is not plain VOUnits (unknown, deprecated or unparsable) is kept and written exactly as IRSA sent it, with a log warning, never refused; a valid one is written in its VOUnits form; (b) numeric, `char`, `unicodeChar` and `boolean` FIELD datatypes are handled; only the complex types and `bit` raise a `ValueError` naming the column (none occurs in a ZTF download; to be revisited if one does); (c) a frame without the IRSA FIELD metadata (no UCDs) is refused by the core with a clear message (developer agreed); (d) the group `name` stays `photcal` (an IVOA convention, never changed); only its `ID` is generated by the core (`photcal_mag`), accepted. The fetch tests of `lc_discovery` and of the host (`test_lc_providers_ztf.py`) now attach the IRSA FIELD metadata to their epoch frames, as a real download does.
+
+Comparison with the recorded original (`ztf_oid_1772216100034775_zr_orig.xml`, rows rebuilt): TIMESYS, groups and photcal values, FIELD names, datatypes, UCDs and units, table PARAMs (ra, dec), 20 rows: the same. Differences, for approval: VOTable 1.3 became 1.4; the group ID is `photcal_mag` (was `photcal`; the name stays `photcal`); the float columns are written with the shortest text of the declared 32-bit float (`20.79222` for `20.7922192`; no cell differs at the declared precision, checked on all 20 rows); the hexadecimal cells of `ccdid` and `qid` (`0x10`, `0x1`) are written as decimal (`16`, `1`); astropy wraps the FIELD DESCRIPTION text (`epoch-based` became `epoch- based` for `limitmag`); the astropy header comment; PARAMs with `ID`, `ucd` and DESCRIPTIONs. The ZTF baseline case still holds the old recorded product until a new original is supplied.
+
+### Ticket 33, phase 3: Gaia@AIP through the core (2026-10-23)
+
+Decisions (developer): the core writer gets a generic `table_params` argument (list of dicts: `name`, `value`, optional `datatype`, `arraysize`, `unit`, `ucd`, `utype`, `ref`, `description`; written as given, in order; a missing name or value, or a name already on the table, raises a `ValueError`; test in `volightcurve/tests/test_write_vo.py`); the writer applies the core rule `is_measurement_ucd`, so a column such as `transit_flux_over` (`stat.snr;phot.flux`) is not linked to any photcal group and no empty calibration is invented for it (the AIP UCD stays as it is).
+
+`votable_for_band` hands the core an astropy table (double columns in the archive order, NaN and blank tokens masked, `mag_error` still computed by `shared/gaia_epoch_mag_error`), one `PhotDM` for the magnitude and `mag_error` (Vega, 0 mag, the band zero point in Jy, wavelength in metres), the time system (TCB, BARYCENTER, 2455197.5) and the table PARAM `source_id` (long) through `table_params`. The hand-written ElementTree writer and its helpers were removed; the TAP download is still parsed with ElementTree.
+
+Comparison with the old writer (git HEAD) on the bundled epoch sample, bands G, BP and RP: TIMESYS, the photcal values, FIELD names, datatypes, UCDs and units, the table PARAMs and the rows are the same. Differences, for approval: VOTable 1.3 became 1.4; the group ID is `photcal_<first column>` (was `phot_def`; the name stays `photcal`); the group now lists `mag_error` among its FIELDrefs (the old group listed only the magnitude, although the `mag_error` FIELD already pointed at the group; the strict read already gave `mag_error` the calibration); numbers are written with the shortest round-trip text; PARAMs carry `ID`, `ucd` and DESCRIPTIONs; astropy header comment. The strict-read baseline of the AIP case did not change.
+
+### Ticket 33, phase 3: TESS through the core (2026-10-23)
+
+Finding: Astropy writes every FIELD and PARAM unit with its CDS formatter and has no switch for it (hard-coded in `astropy.io.votable.tree`), so `count/s` came out as `ct.s-1` and `s**-1` as `s-1`. Other providers were not hit because they only use `d`, `mag`, `Jy`, `m`. Decision (developer): the core writer writes every FIELD and PARAM unit as VOUnits text, and a unit passed as an unrecognised unit is written as given (`_force_vounits_on_wire`, `volightcurve/tests/test_vounits_on_wire.py`). The zero point unit text of a photcal group is kept as declared. A unit that VOUnits cannot express (for example `electron`) is left to Astropy as before; the strict unit check reports it on reading. Open point: should that case raise instead?
+
+Decisions (developer): a table with a time column but no photometry column can be written (the old refusal is now only for a missing time UCD; `volightcurve/tests/test_write_without_photometry.py`); text columns are written as `unicodeChar` with the fixed arraysize Astropy derives (was `char` `*`).
+
+TESS: `votable_from_lightcurve` now issues through `write_vo_lightcurve` (`providers/tess/fetch_metadata.py`): one `PhotDM` per photcal payload; `table_params` for `tic`, `sector`, `author`, `exptime`, the MAST pointer, `period` and `epoch` (UCD and TIMESYS ref kept); ra, dec, facility, instrument through the core arguments; datatypes kept (double, long, boolean, text); non-finite numbers are empty cells; rows without a finite time are not issued. A unit that Astropy or VOUnits does not know (for example `ppm`) is now written as the archive gave it (the old writer dropped it).
+
+Comparison with the old writer (git HEAD) on the recorded original TIC 455790537 sector 17 (1102 rows): TIMESYS, the photcal values of `pdcsap_flux` and `sap_flux` (including `count/s`), FIELD names, datatypes, UCDs and units, table PARAMs, table name and all rows are the same; the error columns stay in their flux group. Differences: the background group (`sap_bkg`, `sap_bkg_err`) is not written (accepted by the developer; both FIELDs keep their UCD and unit and carry no `ref`); the table description is line-wrapped by the core; the format noise of the other providers (group PARAM `ID`, `ucd`, astropy header comment, number text).
+
+Note (Ticket 33, TESS): the CDS unit spelling is a property of old Astropy only. Astropy 8.0 and later write VOUnits, but need Python 3.11 or newer; the production server has an older Python. The workaround `_force_vounits_on_wire` in `volightcurve.lightcurve` carries this in its docstring and should be removed once production can run Astropy 8.0 or later.
+
+### Ticket 33, phase 3: end (2026-10-23)
+
+Developer decisions: a unit that VOUnits cannot express (for example `electron`) must NOT raise in the core writer (it is left to Astropy as before). The AIP differences list is approved. The hand-built providers are done: PS1, ZTF, Gaia@AIP and TESS are issued through the core. ASAS-SN stays out (server down, no natural file). OGLE OCVS, Gaia DR3 VEB, Gaia DR3 ARI, UPJS TS and personal TS do not build a VOTable; they patch the archive's own product in place, and the decision is to leave them as they are (they keep everything the archive declared).
+
+### Ticket 33, baseline fixtures after the core move (2026-10-23)
+
+ZTF: the recorded original is now a product issued through the core (`ztf_oid_1772316100027697_zi_orig.xml`, OID 1772316100027697, band i, from `data/discovery_results/ztf_new.xml`; it replaces the pre-core `..._zr_orig.xml`). Strict-read findings are unchanged except the filter (`Palomar/ZTF.i`). AIP: the baseline case is built from the bundled sample by the current (core) code, so it needs no fixture; `aip_new.xml` is the same kind of product. Still open: Pan-STARRS1 (`panstarrs1_dr2_issued.xml` is the pre-core product; `data/discovery_results/panstarrs.xml` is also pre-core, no astropy header) and TESS (`tess_spoc_sector17_orig.vot` is pre-core). Both need a new original issued after the core change.
+
+Baseline fixtures, PS1 and TESS (2026-10-23, late): both replaced by originals issued through the core (`tess_spoc_sector17_orig.vot`, `panstarrs1_dr2_issued.xml`; each carries the astropy header). PS1 strict-read findings are unchanged. TESS: the only change is that `sap_bkg` and `sap_bkg_err` have no photcal entry (the accepted loss of the background group); the baseline was edited accordingly. All baseline cases except the five that patch the archive product now come from the core, and ASAS-SN still has no case.

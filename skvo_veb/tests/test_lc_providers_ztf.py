@@ -168,6 +168,23 @@ def test_fetch_lightcurve_builds_mag_native_volc(monkeypatch, provider):
             "limitmag": [20.5, 20.4],
         }
     )
+    epochs.attrs["irsa_fields"] = {
+        "hjd": {"datatype": "double", "ucd": "time.epoch", "unit": "d"},
+        "mag": {"datatype": "float", "ucd": "phot.mag;em.opt", "unit": "mag"},
+        "magerr": {"datatype": "float", "ucd": "stat.error;phot.mag;em.opt", "unit": "mag"},
+        "oid": {"datatype": "long", "ucd": "meta.id"},
+        "catflags": {"datatype": "int", "ucd": "meta.code"},
+        "chi": {"datatype": "float", "ucd": "stat.parameter"},
+        "sharp": {"datatype": "float", "ucd": "stat.parameter"},
+        "field": {"datatype": "int", "ucd": "meta.id;obs.field"},
+        "ccdid": {"datatype": "unsignedByte", "ucd": "meta.id;instr.det"},
+        "qid": {"datatype": "unsignedByte", "ucd": "meta.id"},
+        "limitmag": {
+            "datatype": "float",
+            "ucd": "phot.mag;em.opt;stat.max;instr.sensitivity;obs.exposure",
+            "unit": "mag",
+        },
+    }
     monkeypatch.setattr(
         "lc_discovery.providers.ztf.provider.query_objects_by_oid",
         lambda oid_arg: meta,
