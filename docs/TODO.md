@@ -4997,11 +4997,11 @@ All ten parse strictly. An earlier version of this table claimed that UPJS and p
 |---|---|---|---|
 | gaia_dr3_veb, as the server sends it | complete (TCB, BARYCENTER, 2455197.5) | `zp_mag` missing; ZP flux 3552.01 Jy vs a 1/s flux column | `enrich_votable` repairs it |
 | gaia_dr3_veb, after enrich | complete | complete (25.3385 mag, 1.0 1/s, Vega) | clean (kept as is) |
-| ztf (real) | complete (UTC, HELIOCENTER, 0.0) | complete (AB, 3631 Jy, 0 mag) | `limitmag` has a magnitude UCD, so the core takes it for photometry without calibration |
-| tess (real, after the fix) | complete (TDB, BARYCENTER, 2400000.5) | 20.44 mag, 1.0 s**-1, Vega, per flux column; `sap_bkg` has filter and system, no ZP (kept) | clean after the fix below |
+| ztf (real) | complete (UTC, HELIOCENTER, 0.0) | complete (AB, 3631 Jy, 0 mag) | clean (the `limitmag` finding is closed by the core rule below) |
+| tess (real original, "Download entire votable") | complete (TDB, BARYCENTER, 2400000.5) | 20.44 mag, 1.0 s**-1, Vega, per flux column; `sap_bkg` has filter and system, no ZP (kept) | clean after the fix below |
 | ogle_ocvs (real) | complete (UTC, HELIOCENTER, 2400000.5) | complete (Bessell I, 0 mag, 2415.65 Jy, Vega) | clean |
-| gaia_dr3_aip (sample) | complete (TCB, BARYCENTER, 2455197.5) | G, Vega, 0 mag at 3228.75 Jy on the magnitude | `transit_flux_over` taken for photometry, no calibration (kept) |
-| gaia_dr3_ari, after enrich | complete; refposition `barycenter` in lower case (kept) | mag 0 mag at 3296.2 Jy; flux 25.6874 mag at 1.0 s**-1 | units clean after the fix below; `flux_over_error` has no calibration (kept) |
+| gaia_dr3_aip (sample) | complete (TCB, BARYCENTER, 2455197.5) | G, Vega, 0 mag at 3228.75 Jy on the magnitude | clean (the `transit_flux_over` finding is closed by the core rule below) |
+| gaia_dr3_ari, after enrich | complete; refposition `barycenter` in lower case (kept) | mag 0 mag at 3296.2 Jy; flux 25.6874 mag at 1.0 s**-1 | clean after the fixes below (`flux_over_error` closed by the core rule) |
 | asassn | not checked | not checked | no natural product yet |
 | panstarrs1_dr2 (real) | complete; timescale `tai` in lower case | AB, 0 mag, 3631 Jy | clean |
 | upjs_ts, after enrich (real V product) | complete (TCB, BARYCENTER, 2400000.5) | Bessell V, 0 mag, 3630.22 Jy, Vega | clean |
@@ -5014,4 +5014,10 @@ Fixes made on the back of the baseline (decided by the developer):
 
 Open: a natural ASAS-SN product. ZTF, Pan-STARRS1, ASAS-SN and AIP stay as they are (developer decision), including their VOTable version.
 
-Note: the recorded TESS product shows the unit as `s-1` (it was re-serialised by astropy on download); strict read is clean.
+Note: the plugin issues `s**-1` (version 1.4); the single-curve Download button re-serialises through `volightcurve` and writes `s-1`, which strict read also accepts. The baseline TESS case is the original product (`tests/data/tess_spoc_sector16_orig.vot`, all six series, 8 units `s**-1`): clean, `sap_bkg` without a zero point (kept).
+
+Phase 1 decisions (developer, 2026-10-23):
+- Core: a column whose UCD carries `stat.max`, `stat.min`, `stat.snr` or a bare `stat` is not a photometry column (`is_measurement_ucd` in `volightcurve.lightcurve`; used by `get_mag_colnames`, `get_flux_colnames`, `column_main_role`). It no longer gets a "no calibration" finding or a suggestion. Closes ZTF `limitmag`, AIP `transit_flux_over`, ARI `flux_over_error`. Tests: `volightcurve/tests/test_non_measurement_columns.py`; the baseline was regenerated (only these three cases changed).
+- Gaia VEB raw: keep. The repair stays in `enrich_votable`; the raw finding stays recorded.
+- Lower-case `refposition` (ARI) and `timescale` (PS1): keep, no strict finding, no change.
+- Open: a natural ASAS-SN product.
