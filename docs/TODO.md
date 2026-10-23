@@ -4986,3 +4986,32 @@ removed when the sentences are written. Not implemented yet.
 - Relative times with no declared origin still fail fast on both pages, with one clear message that names the fix in the file: add the header row `# JD0=<value>` and upload again. No UI route, no guessed origin.
 - Kept: `pack_volc_to_json` validates the time column (same rule), `resolve_observation_timesys` raises without a `TimeSys`, the `**` power fix in `vo_unit_codec`.
 - Open if the user wants it later: an interpretation-layer rule that accepts values below 1e6 (for example reading them as JD minus 2400000) and says so in the description.
+
+### Ticket 33, phase 0 baseline, all ten providers (2026-10-23, updated after the unit fixes)
+
+Test: `lc_discovery/tests/test_provider_strict_read_baseline.py` (dev dependency `volightcurve` added to `lc_discovery`; no network). Each product is read with `read_lightcurve(strict=True)`; the findings are recorded in `BASELINE` and the test fails when they change. Recorded real products: ZTF and OGLE as Discovery issued them; Gaia VEB, UPJS and personal collections as the TAP service sends them (`data/orig/*.xml`), passed through `enrich_votable`; Gaia ARI and AIP from the bundled samples. TESS (TIC 455790537, sector 16) and Pan-STARRS1 (165213463504091232, i) are now real Discovery products. ASAS-SN has no case (no natural product; the service does not answer today).
+
+All ten parse strictly. An earlier version of this table claimed that UPJS and personal products leave the time system and the magnitude system undeclared. That came from my own synthetic XML and was wrong; the real service products declare them.
+
+| Provider | Time system | Calibration | Findings |
+|---|---|---|---|
+| gaia_dr3_veb, as the server sends it | complete (TCB, BARYCENTER, 2455197.5) | `zp_mag` missing; ZP flux 3552.01 Jy vs a 1/s flux column | `enrich_votable` repairs it |
+| gaia_dr3_veb, after enrich | complete | complete (25.3385 mag, 1.0 1/s, Vega) | clean (kept as is) |
+| ztf (real) | complete (UTC, HELIOCENTER, 0.0) | complete (AB, 3631 Jy, 0 mag) | `limitmag` has a magnitude UCD, so the core takes it for photometry without calibration |
+| tess (real, after the fix) | complete (TDB, BARYCENTER, 2400000.5) | 20.44 mag, 1.0 s**-1, Vega, per flux column; `sap_bkg` has filter and system, no ZP (kept) | clean after the fix below |
+| ogle_ocvs (real) | complete (UTC, HELIOCENTER, 2400000.5) | complete (Bessell I, 0 mag, 2415.65 Jy, Vega) | clean |
+| gaia_dr3_aip (sample) | complete (TCB, BARYCENTER, 2455197.5) | G, Vega, 0 mag at 3228.75 Jy on the magnitude | `transit_flux_over` taken for photometry, no calibration (kept) |
+| gaia_dr3_ari, after enrich | complete; refposition `barycenter` in lower case (kept) | mag 0 mag at 3296.2 Jy; flux 25.6874 mag at 1.0 s**-1 | units clean after the fix below; `flux_over_error` has no calibration (kept) |
+| asassn | not checked | not checked | no natural product yet |
+| panstarrs1_dr2 (real) | complete; timescale `tai` in lower case | AB, 0 mag, 3631 Jy | clean |
+| upjs_ts, after enrich (real V product) | complete (TCB, BARYCENTER, 2400000.5) | Bessell V, 0 mag, 3630.22 Jy, Vega | clean |
+| personal_ts, after enrich (real V product) | complete (UTC, HELIOCENTER, 2400000.5) | Bessell V, 0 mag, 3630.22 Jy, Vega | clean |
+
+Fixes made on the back of the baseline (decided by the developer):
+- TESS plugin: flux unit `electron s-1` (not valid VOUnits 1.1; VOUnits has no electron) is issued as `s**-1`, the Gaia VEB convention, on the columns and the zero point. The VOTABLE `version` of the TESS product is now `1.4`, because astropy reads VOUnits only from 1.4 on; at 1.3 even `s**-1` came back as an unrecognised unit and the conversion check said "not equivalent" for two identical texts. The other hand-built providers still write `1.3` (not touched).
+- Gaia ARI: `e-/s` is issued as `s**-1` and `Angstrom` as `0.1nm` (1 Angstrom is exactly 0.1 nm, so the number stays), in `enrich_votable`.
+- `volightcurve.check_units`: the effective wavelength unit is checked in its VOUnits wire form (`0.1nm`), not Astropy's display form (`0.1 nm`), which was a false "whitespace" finding.
+
+Open: a natural ASAS-SN product. ZTF, Pan-STARRS1, ASAS-SN and AIP stay as they are (developer decision), including their VOTable version.
+
+Note: the recorded TESS product shows the unit as `s-1` (it was re-serialised by astropy on download); strict read is clean.
