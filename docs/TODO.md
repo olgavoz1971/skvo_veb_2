@@ -5014,10 +5014,23 @@ Fixes made on the back of the baseline (decided by the developer):
 
 Open: a natural ASAS-SN product. ZTF, Pan-STARRS1, ASAS-SN and AIP stay as they are (developer decision), including their VOTable version.
 
-Note: the plugin issues `s**-1` (version 1.4); the single-curve Download button re-serialises through `volightcurve` and writes `s-1`, which strict read also accepts. The baseline TESS case is the original product (`tests/data/tess_spoc_sector16_orig.vot`, all six series, 8 units `s**-1`): clean, `sap_bkg` without a zero point (kept).
+Note: the plugin issues `s**-1` (version 1.4); the single-curve Download button re-serialises through `volightcurve` and writes `s-1`, which strict read also accepts. The baseline TESS case is the original product (`tests/data/tess_spoc_sector17_orig.vot`, all six series, 8 units `count/s`): clean, `sap_bkg` without a zero point (kept).
 
 Phase 1 decisions (developer, 2026-10-23):
 - Core: a column whose UCD carries `stat.max`, `stat.min`, `stat.snr` or a bare `stat` is not a photometry column (`is_measurement_ucd` in `volightcurve.lightcurve`; used by `get_mag_colnames`, `get_flux_colnames`, `column_main_role`). It no longer gets a "no calibration" finding or a suggestion. Closes ZTF `limitmag`, AIP `transit_flux_over`, ARI `flux_over_error`. Tests: `volightcurve/tests/test_non_measurement_columns.py`; the baseline was regenerated (only these three cases changed).
 - Gaia VEB raw: keep. The repair stays in `enrich_votable`; the raw finding stays recorded.
 - Lower-case `refposition` (ARI) and `timescale` (PS1): keep, no strict finding, no change.
 - Open: a natural ASAS-SN product.
+
+### Ticket 33, phase 1 follow-up: writer check and decisions (2026-10-23)
+
+Read-only check: the `volightcurve` writer needs no GAVO. `write_vo_lightcurve` builds the VOTable with `astropy.io.votable` only; GAVO is used only to read (`_gavo_votable_metadata_tree`). With every `gavo.*` and `OpenSSL` import blocked, four real products (TESS, ZTF, PS1, OGLE) were read, then written, with no GAVO module loaded. The remaining cost is the hard GAVO dependency in `volightcurve/pyproject.toml` (reading and writing would have to be split into extras there; not decided).
+
+Round trip (read, then write with the instance `photdms`), developer verdicts:
+1. PS1: same declared values (the writer adds `ID` and `ucd` on PARAMs). OK.
+2. TESS: `sap_bkg` and `sap_bkg_err` lose their group (filter, system) in the round trip. Accepted, no problem.
+3. TESS: the writer gave `s-1`, which is not valid VOUnits. Decision: electrons per second are issued as `count/s` on columns and zero point (`TESS_ELECTRON_S_ZERO_POINT_FLUX_UNIT`, plugin level). The strict read of such a product is clean and the conversion check passes. The TESS fixture in `lc_discovery/tests/data/tess_spoc_sector16_orig.vot` still carries `s**-1`; a new original is needed to refresh the baseline case.
+4. ZTF: no empty photcal group for `limitmag`. The plugin now issues its UCD without the `phot.*` words (`em.opt;stat.max;instr.sensitivity;obs.exposure`; `config.NON_PHOTOMETRY_COLUMNS`, `_issued_ucd`). The ZTF fixture still has the server UCD; a new original is needed to refresh the baseline case.
+5. Bug fixed in `volightcurve`: `VOLightCurve.write_votable` did not pass `photdms` to the writer (the photcal groups came out empty). It now passes them unless the deprecated flat calibration arguments are given. Test: `test_write_votable_method_writes_the_calibration_of_the_instance`.
+
+Baseline fixtures refreshed (2026-10-23, evening) with originals from the Discovery page after the TESS and ZTF changes: `tess_spoc_sector17_orig.vot` (TIC 455790537, sector 17; units `count/s`, read back as `ct / s`) and `ztf_oid_1772216100034775_zr_orig.xml` (`limitmag` UCD without `phot.*`; one photcal group, no empty one). Both read strictly with no findings. Only the TESS zero point unit text changed in the baseline (`1 / s` to `ct / s`); the ZTF findings are unchanged. The old sector 16 and ZTF 1772216100025317 fixtures were removed.
