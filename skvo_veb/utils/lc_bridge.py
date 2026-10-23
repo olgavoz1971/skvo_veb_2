@@ -27,6 +27,8 @@ from skvo_veb.utils.lc_config import (
     PHOTCAL_KEY_ZP_MAG,
     PHOTCAL_KEY_ZP_MAG_UNIT,
     VO_ENVELOPE_KEY_LIGHTCURVE_TITLE,
+    PROCESSING_NOTE_LABEL,
+    VO_ENVELOPE_KEY_INFOS,
     VO_ENVELOPE_KEY_PUBLICATION_ID,
     VO_ENVELOPE_KEY_TABLE_DESCRIPTION,
     VO_ENVELOPE_KEY_TABLE_NAME,
@@ -47,7 +49,6 @@ from volightcurve import (
     get_label_colnames,
     DEFAULT_LABEL_UCD,
     is_mag_column,
-    is_magnitude_phot_column,
     write_vo_lightcurve,
 )
 from volightcurve.io import (
@@ -276,104 +277,6 @@ def ingest_lightcurve_file(file_source, filename: str):
     return volc_to_curvedash(volc, filename)
 
 
-def tabular_table_to_curvedash(table: Table, filename: str):
-    """Builds a ``CurveDash`` from a plain Astropy table (CSV/ECSV/DAT upload).
-
-    Preserves exported column names and restores ECSV header metadata without PhotCal.
-    Rows are ordered by absolute Julian Date before ``CurveDash`` is built.
-
-    Args:
-        table (Table): Tabular data read by Astropy.
-        filename (str): Original filename (used for object naming).
-
-    Returns:
-        CurveDash: Parsed application lightcurve state.
-    """
-    from skvo_veb.utils.curve_dash import CurveDash
-
-    meta = table.meta or {}
-    time_col = None
-    for name in ("jd", "obs_time", "time", "mjd"):
-        if name in table.colnames:
-            time_col = name
-            break
-    if time_col is None:
-        raise ValueError("No time column found in the uploaded tabular file.")
-
-    jd_vals = np.asarray(table[time_col], dtype=float)
-    if time_col in ("obs_time", "mjd") and np.nanmax(jd_vals) < 1e6:
-        jd_vals = jd_vals + JD_TO_MJD
-
-    if "mag" in table.colnames:
-        phot_col, is_mag = "mag", True
-    elif "flux" in table.colnames:
-        phot_col, is_mag = "flux", False
-    elif "phot" in table.colnames:
-        phot_col = "phot"
-        is_mag = is_magnitude_phot_column(table, phot_col)
-    else:
-        raise ValueError("No photometry column found in the uploaded tabular file.")
-
-    err_col = None
-    err_candidates = (
-        ("mag_err", "flux_error", "phot_error", "flux_err")
-        if is_mag
-        else ("flux_err", "flux_error", "phot_error", "mag_err")
-    )
-    for candidate in err_candidates:
-        if candidate in table.colnames:
-            err_col = candidate
-            break
-    if err_col is not None:
-        err_vals = np.asarray(table[err_col], dtype=float)
-    else:
-        err_vals = np.zeros(len(jd_vals), dtype=float)
-
-    phot_vals = np.asarray(table[phot_col], dtype=float)
-    label_vals = np.asarray(table["label"]) if "label" in table.colnames else None
-    jd_vals, phot_vals, err_vals, label_vals = _order_series_by_absolute_jd(
-        jd_vals, phot_vals, err_vals, label_vals
-    )
-    target_name = meta.get("name") or Path(filename).stem
-    if str(target_name).startswith("TESS_"):
-        target_name = str(target_name)[5:]
-
-    common_kwargs = dict(
-        name=target_name,
-        lookup_name=target_name,
-        jd=jd_vals,
-        label=label_vals,
-        time_unit="d",
-        timescale="tdb",
-        photcal={},
-        period=meta.get("period"),
-        epoch=meta.get("epoch"),
-        period_unit="d",
-    )
-    if is_mag:
-        lcd = CurveDash(
-            **common_kwargs,
-            mag=phot_vals,
-            mag_err=err_vals,
-            mag_unit=str(table[phot_col].unit or "mag"),
-            active_domain=DOMAIN_MAG,
-        )
-    else:
-        lcd = CurveDash(
-            **common_kwargs,
-            flux=phot_vals,
-            flux_err=err_vals,
-            flux_unit=to_internal(table[phot_col].unit),
-            active_domain=DOMAIN_FLUX,
-        )
-
-    lcd.metadata["photcal"] = {}
-    _apply_tabular_meta_to_curvedash(lcd, meta)
-    lcd.title = build_curvedash_title(lcd)
-    lcd.metadata["title"] = lcd.title
-    return lcd
-
-
 # We need this to tame our float types zoo
 class LCEncoder(json.JSONEncoder):
     """Custom JSON encoder handling NumPy primitives, arrays, and Astropy objects.
@@ -449,6 +352,8 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     # Data Extraction
     # .value is used to strip Astropy units before JSON serialization
     time_col = time_cols[0]
+    # Fail fast on relative times without an origin; absolute times need no offset.
+    _absolute_jd_from_time_column(lc, time_col)
     t = lc[time_col].value
     v = lc[primary_col].value
 
@@ -463,8 +368,9 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
     table_meta = lc.table.meta or {}
     meta_block = {
         "active_domain": active_domain,
-        "jd0": lc.timesys.jd0,
+        "jd0": 0.0 if lc.timesys.jd0 is None else lc.timesys.jd0,
         "photcal": photcal_meta,
+        METADATA_KEY_READINESS: readiness_report(lc, primary_col),
     }
     if active_domain == "flux":
         meta_block["flux_unit"] = phot_unit
@@ -1319,7 +1225,8 @@ def _absolute_jd_from_time_column(volc: VOLightCurve, time_col: str) -> np.ndarr
         raise ValueError(
             f"Time column '{time_col}' holds relative values and the time origin is "
             f"{'not declared' if jd0_offset is None else f'{jd0_offset} (not absolute)'}. "
-            "Declare the origin (for example JD0) or confirm a suggested one."
+            "Add the row '# JD0=<value>' to the file header (the Julian Date of time zero) "
+            "and upload it again."
         )
     return jd_vals
 
@@ -1546,11 +1453,7 @@ def _resolve_photometry_error_column(volc: VOLightCurve, phot_col: str) -> str |
     Returns:
         str or None: Error column name, if present.
     """
-    is_mag = (
-        phot_col == "mag"
-        or (phot_col == "phot" and is_magnitude_phot_column(volc.table, phot_col))
-        or is_mag_column(volc.table, phot_col)
-    )
+    is_mag = is_mag_column(volc.table, phot_col)
     if is_mag:
         if "mag_err" in volc.table.colnames:
             return "mag_err"
@@ -1630,39 +1533,39 @@ def _photometry_source_meta(
 
 
 def photometry_source_description(meta: dict, original: str | None) -> str | None:
-    """Builds the export description that states which source column is kept.
+    """Builds the table description: the source text first, our processing note last.
 
-    The description of the source product often says that all columns are
-    issued, which is no longer true after one photometry column was chosen.
-    The statement about the kept column comes first and the original text is
-    quoted as the description of the source product.
+    The source description is kept exactly as the file declared it. After it comes
+    one sentence block, labelled as a processing note, that says which source column
+    is kept and which are not included (the source text may claim that all columns
+    are issued). A processing note left by an earlier export of the same product is
+    replaced, so notes do not pile up.
 
     Args:
         meta (dict): ``CurveDash.metadata``.
-        original (str, optional): Description carried over from the source
-            VOTable.
+        original (str, optional): Table description declared by the source product.
 
     Returns:
-        str or None: New description, or ``original`` when the metadata holds
-        no photometry-source record.
+        str or None: Source text followed by the processing note; only the note when
+        there is no source text; ``original`` unchanged when the metadata holds no
+        photometry-source record.
     """
     source = meta.get(METADATA_KEY_PHOTOMETRY_SOURCE)
     if not source:
         return original
     details = [part for part in (source.get("unit"), source.get("filter")) if part]
-    text = f"This file holds one photometry series: column '{source['column']}'"
+    note = f"{PROCESSING_NOTE_LABEL} this file holds one photometry series: column '{source['column']}'"
     if details:
-        text += f" ({', '.join(details)})"
-    text += " of the source product"
+        note += f" ({', '.join(details)})"
+    note += " of the source product"
     if source.get("error_column"):
-        text += f", with its uncertainty from column '{source['error_column']}'"
-    text += "."
+        note += f", with its uncertainty from column '{source['error_column']}'"
+    note += "."
     omitted = source.get("omitted_columns") or []
     if omitted:
-        text += f" Other columns of the source product are not included: {', '.join(omitted)}."
-    if original:
-        text += f" Description of the source product: {original}"
-    return text
+        note += f" Other columns of the source product are not included: {', '.join(omitted)}."
+    kept = (original or "").split(PROCESSING_NOTE_LABEL)[0].strip()
+    return f"{kept}\n\n{note}" if kept else note
 
 
 def volc_to_curvedash(
@@ -1737,11 +1640,7 @@ def volc_to_curvedash(
         phot_vals = phot_vals.value
 
     meta = volc.table.meta or {}
-    is_mag = (
-        phot_col == "mag"
-        or (phot_col == "phot" and is_magnitude_phot_column(volc.table, phot_col))
-        or is_mag_column(volc.table, phot_col)
-    )
+    is_mag = is_mag_column(volc.table, phot_col)
     photcal_meta = _extract_photcal_meta(volc, phot_col)
 
     if primary_col is None:
@@ -1997,6 +1896,8 @@ def curvedash_to_table(lcd) -> Table:
 
     assign_photometry_column_semantics(
         t_out,
+        phot_col="phot",
+        error_col="flux_error",
         force_magnitude=(lcd.active_domain == DOMAIN_MAG),
     )
     return t_out
@@ -2128,7 +2029,6 @@ def export_file_extension(table_format: str) -> str:
 _VOTABLE_EXPORT_BUILDERS = {
     "tess": ("skvo_veb.utils.mission_config.tess", "build_archive_votable_kwargs"),
     "cutout": ("skvo_veb.utils.mission_config.tess", "build_cutout_votable_kwargs"),
-    "asassn": ("skvo_veb.utils.mission_config.asassn", "build_votable_kwargs"),
 }
 
 
@@ -2168,9 +2068,11 @@ def _extract_vo_envelope_meta(volc: VOLightCurve, *, filename: str) -> dict:
 
     description = table_meta.get("description")
     if description and str(description).strip():
-        text = str(description).strip()
-        envelope[VO_ENVELOPE_KEY_TABLE_DESCRIPTION] = text
-        envelope[VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION] = text
+        envelope[VO_ENVELOPE_KEY_TABLE_DESCRIPTION] = str(description).strip()
+    if volc.votable_description:
+        envelope[VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION] = volc.votable_description
+    if volc.infos:
+        envelope[VO_ENVELOPE_KEY_INFOS] = [dict(entry) for entry in volc.infos]
 
     publication_id = table_meta.get("bibcode") or table_meta.get("publication_id")
     if publication_id and str(publication_id).strip():
@@ -2241,12 +2143,7 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
     votable_description = envelope.get(VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION)
     if votable_description is not None:
         votable_description = str(votable_description).strip() or None
-    if table_description is None:
-        table_description = votable_description
-    if votable_description is None:
-        votable_description = table_description
     table_description = photometry_source_description(meta, table_description)
-    votable_description = photometry_source_description(meta, votable_description)
 
     kwargs = {
         "table_name": str(table_name),
@@ -2257,6 +2154,7 @@ def build_votable_kwargs_from_metadata(lcd) -> dict:
         "timeorigin": JD_TO_MJD,
         "table_description": table_description,
         "votable_description": votable_description,
+        "infos": envelope.get(VO_ENVELOPE_KEY_INFOS) or None,
         "ra": meta.get("ra"),
         "dec": meta.get("dec"),
         "period": meta.get("period"),
@@ -2296,8 +2194,8 @@ def _votable_kwargs_for_profile(lcd, profile: str | None) -> dict:
 
     Args:
         lcd (CurveDash): Application lightcurve state container.
-        profile (str, optional): Legacy export profile name (``tess``, ``cutout``,
-            ``asassn``). When ``None``, kwargs are assembled from ingested metadata.
+        profile (str, optional): Legacy export profile name (``tess``, ``cutout``).
+            When ``None``, kwargs are assembled from ingested metadata.
 
     Returns:
         dict: Keyword arguments for ``write_vo_lightcurve``.
@@ -2360,8 +2258,9 @@ def _curvedash_to_export_volc(lcd) -> VOLightCurve:
     envelope = dict(meta.get(METADATA_KEY_VO_ENVELOPE) or {})
     if meta.get(METADATA_KEY_PHOTOMETRY_SOURCE):
         # The source description may claim that all columns are issued.
-        for key in (VO_ENVELOPE_KEY_TABLE_DESCRIPTION, VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION):
-            envelope[key] = photometry_source_description(meta, envelope.get(key))
+        envelope[VO_ENVELOPE_KEY_TABLE_DESCRIPTION] = photometry_source_description(
+            meta, envelope.get(VO_ENVELOPE_KEY_TABLE_DESCRIPTION)
+        )
     if envelope:
         tab.meta["vo_envelope"] = envelope
 
@@ -2410,8 +2309,7 @@ def _ensure_export_provenance(lcd, profile: str | None) -> None:
 
     Args:
         lcd (CurveDash): Lightcurve whose metadata may lack envelope/comments.
-        profile (str, optional): Deprecated export profile (``tess``, ``cutout``,
-            ``asassn``).
+        profile (str, optional): Deprecated export profile (``tess``, ``cutout``).
     """
     meta = lcd.metadata if isinstance(getattr(lcd, "metadata", None), dict) else {}
     has_envelope = bool(meta.get(METADATA_KEY_VO_ENVELOPE))
@@ -2429,12 +2327,6 @@ def _ensure_export_provenance(lcd, profile: str | None) -> None:
         )
 
         attach_tess_archive_export_provenance(lcd)
-    elif mission == "asassn" or profile == "asassn":
-        from skvo_veb.utils.mission_config.asassn import (
-            attach_asassn_export_provenance,
-        )
-
-        attach_asassn_export_provenance(lcd)
 
 
 def export_curvedash(lcd, table_format: str, profile: str | None = None) -> bytes:

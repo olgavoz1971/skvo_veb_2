@@ -52,6 +52,9 @@ def test_write_vo_dimensionless_zp_uses_empty_unit_attribute():
     t["phot"] = np.array([1.0, 1.1]) * u.dimensionless_unscaled
     t["flux_error"] = np.array([0.01, 0.02]) * u.dimensionless_unscaled
 
+    t["obs_time"].info.meta = {"ucd": "time.epoch"}
+    t["phot"].info.meta = {"ucd": "phot.mag"}
+    t["flux_error"].info.meta = {"ucd": "stat.error;phot.mag"}
     buf = io.BytesIO()
     write_vo_lightcurve(
         output_stream_or_path=buf,

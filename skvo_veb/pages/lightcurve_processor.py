@@ -30,6 +30,8 @@ from dash import (
 from dash.exceptions import PreventUpdate
 
 from skvo_veb.components.message import status_alert
+from skvo_veb.utils.lc_config import METADATA_KEY_READINESS
+from skvo_veb.utils.lc_readiness import readiness_message
 from skvo_veb.components.photcal_editor import photcal_editor_body, photcal_field_ids
 from skvo_veb.components.upload_status import (
     register_upload_busy_clientside,
@@ -1850,6 +1852,19 @@ def toggle_about(open_clicks, close_clicks, is_open):
 register_upload_busy_clientside("lc-processor-upload-lc")
 
 
+def _readiness_alert(lcd):
+    """Builds the post-upload alert listing what the file left undeclared.
+
+    Args:
+        lcd (CurveDash): Freshly ingested lightcurve.
+
+    Returns:
+        dash component or None: Info alert, or ``None`` when nothing is missing.
+    """
+    text = readiness_message((lcd.metadata or {}).get(METADATA_KEY_READINESS))
+    return status_alert(text, "info") if text else None
+
+
 @callback(
     Output("store-lc-processor-user-tab-id", "data"),
     Output("store-lc-processor-lc-revision", "data"),
@@ -1936,7 +1951,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             ui_payload,
             _upload_status(source_name, tone="ok"),
             None,
-            None,
+            _readiness_alert(lcd),
             export_stem,
             domain,
             lcd.period,
@@ -1980,7 +1995,7 @@ def upload_lightcurve(contents, filename, user_tab_id):
             no_update,
             no_update,
             no_update,
-            no_update,
+            None,  # a failed upload: whatever stands in Time origin is now the user's input
             no_update,
             no_update,
             no_update,

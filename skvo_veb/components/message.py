@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # dbc.Alert ``duration`` for info/success. Warning and danger stay until
 # dismiss, a newer message, or a deliberate clear. Tweak this one value only.
-STATUS_ALERT_DURATION_MS = 4000
+STATUS_ALERT_DURATION_MS = 50000
 _STATUS_ALERT_TIMED_COLORS = frozenset({"info", "success"})
 
 

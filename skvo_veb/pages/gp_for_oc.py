@@ -651,6 +651,13 @@ from skvo_veb.utils.lc_figure import (
     time_axis_xaxis_title,
 )
 from skvo_veb.components.message import status_alert
+from skvo_veb.components.photcal_editor import photcal_editor_body, photcal_field_ids
+from skvo_veb.utils.gp.photcal_form import (
+    apply_photcal_form_to_packet,
+    photcal_form_values_for_packet,
+)
+from skvo_veb.utils.lc_config import METADATA_KEY_READINESS
+from skvo_veb.utils.lc_readiness import readiness_message
 from skvo_veb.components.upload_status import (
     register_upload_busy_clientside,
     upload_detail_collapse,
@@ -662,7 +669,7 @@ from skvo_veb.components.upload_status import (
 )
 from skvo_veb.utils.photcal_coherence import (
     format_photcal_warning_message,
-    reconcile_photcal_dict,
+    fill_missing_photcal_form_values,
 )
 from skvo_veb.components.extrema_modeller_appearance import (
     CARD_COL_WIDTH,
@@ -1526,6 +1533,67 @@ def LegendItem(color, label, mode='line'):
 
 # ==================== Lightcurve GUI ==================
 
+GP_PHOTCAL_ID_PREFIX = "gp-photcal"
+_GP_PHOTCAL_IDS = photcal_field_ids(GP_PHOTCAL_ID_PREFIX)
+_GP_PHOTCAL_FIELDS = (
+    "filter_name",
+    "zp_flux",
+    "zp_flux_unit",
+    "zp_mag",
+    "mag_sys",
+    "flux_unit",
+)
+
+def _gp_photcal_section() -> html.Div:
+    """Builds the Calibration collapse, a copy of the Processor drawer section.
+
+    Same structure and CSS classes as ``_collapsible_drawer_section`` on the
+    Light curve Processor page: chevron toggle, bold title, ``?`` help, and a
+    closed-by-default collapse holding the shared calibration editor.
+
+    Returns:
+        dash.html.Div: Heading row plus ``dbc.Collapse`` body.
+    """
+    help_btn, help_pop = _gp_click_help(
+        "photcal",
+        "Calibration",
+        "Filter label and zero points used for magnitude↔flux conversion. "
+        "Filled from the uploaded lightcurve when present; missing fields "
+        "show suggested values. Fill missing defaults only completes empty "
+        "zero-point fields (never the filter or values from the file). "
+        "Apply calibration writes them into the loaded lightcurve and "
+        "recomputes the views.",
+    )
+    return html.Div(
+        [
+            html.Div(
+                [
+                    dbc.Button(
+                        html.I(id="gp-photcal-icon", className="bi bi-chevron-right"),
+                        id="gp-photcal-toggle",
+                        color="link",
+                        size="sm",
+                        className="lcp-drawer-collapse-btn",
+                    ),
+                    html.Label("Calibration", className="lcp-drawer-collapse-title mb-0"),
+                    html.Div(help_btn, className="lcp-field-help"),
+                ],
+                className="lcp-sidebar-heading-row",
+            ),
+            help_pop,
+            dbc.Collapse(
+                html.Div(
+                    photcal_editor_body(GP_PHOTCAL_ID_PREFIX),
+                    className="lcp-drawer-collapse-body",
+                ),
+                id="gp-photcal-collapse",
+                is_open=False,
+            ),
+        ],
+        className="lcp-sidebar-block lcp-drawer-collapse-section",
+    )
+
+
 sidebar_lc = html.Div([
     # 1. PHASE FOLDING CONTROLS
     html.Div(
@@ -1683,6 +1751,8 @@ sidebar_lc = html.Div([
     ),
     _prep_registry_help_pop,
     _prep_errorbars_help_pop,
+
+    _gp_photcal_section(),
 
     html.Hr(),
 
@@ -4167,6 +4237,114 @@ def commit_prep_linear_detrend(
     )
 
 
+# ------ Calibration ----
+
+clientside_callback(
+    """function(n, isOpen) {
+        if (!n) { return [window.dash_clientside.no_update, window.dash_clientside.no_update]; }
+        const opened = !isOpen;
+        return [opened, opened ? "bi bi-chevron-down" : "bi bi-chevron-right"];
+    }""",
+    Output("gp-photcal-collapse", "is_open"),
+    Output("gp-photcal-icon", "className"),
+    Input("gp-photcal-toggle", "n_clicks"),
+    State("gp-photcal-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+
+
+@callback(
+    *[Output(_GP_PHOTCAL_IDS[key], "value", allow_duplicate=True) for key in _GP_PHOTCAL_FIELDS],
+    Input("store-gp-lc-revision", "data"),
+    State("store-gp-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def show_gp_photcal_in_form(_revision, user_tab_id):
+    """Shows the packet calibration in the editor, gaps filled with suggestions.
+
+    Nothing is stored here; the user stores the values with Apply calibration.
+
+    Args:
+        _revision: Light-curve revision token (trigger only).
+        user_tab_id: Session cache key.
+
+    Returns:
+        tuple: Values for the six editor fields.
+    """
+    transport = _read_gp_transport_json(user_tab_id)
+    if not transport:
+        raise PreventUpdate
+    values = photcal_form_values_for_packet(transport)
+    return tuple(values[key] for key in _GP_PHOTCAL_FIELDS)
+
+
+@callback(
+    *[Output(_GP_PHOTCAL_IDS[key], "value", allow_duplicate=True) for key in _GP_PHOTCAL_FIELDS],
+    Input(_GP_PHOTCAL_IDS["fill_missing"], "n_clicks"),
+    *[State(_GP_PHOTCAL_IDS[key], "value") for key in _GP_PHOTCAL_FIELDS],
+    prevent_initial_call=True,
+)
+def fill_gp_photcal_form(n_clicks, *current):
+    """Fills empty editor fields with the suggested values (never overwrites).
+
+    Args:
+        n_clicks: Fill button clicks.
+        *current: Current values of the six editor fields.
+
+    Returns:
+        tuple: Values for the six editor fields.
+    """
+    if not n_clicks:
+        raise PreventUpdate
+    before = {
+        key: ("" if value is None and key in ("filter_name", "zp_flux_unit", "mag_sys", "flux_unit") else value)
+        for key, value in zip(_GP_PHOTCAL_FIELDS, current)
+    }
+    after = fill_missing_photcal_form_values(before)
+    return tuple(after[key] for key in _GP_PHOTCAL_FIELDS)
+
+
+@callback(
+    Output("store-gp-lc-revision", "data", allow_duplicate=True),
+    Output("gp-lc-photcal-alert", "children", allow_duplicate=True),
+    Input(_GP_PHOTCAL_IDS["apply"], "n_clicks"),
+    *[State(_GP_PHOTCAL_IDS[key], "value") for key in _GP_PHOTCAL_FIELDS],
+    State("store-gp-user-tab-id", "data"),
+    prevent_initial_call=True,
+)
+def apply_gp_photcal(n_clicks, *states):
+    """Writes the editor calibration into the cached transport packet.
+
+    Bumps the light-curve revision so every view is rebuilt from the new calibration.
+
+    Args:
+        n_clicks: Apply button clicks.
+        *states: Values of the six editor fields, then the session cache key.
+
+    Returns:
+        tuple: New revision token and a status alert.
+    """
+    *values, user_tab_id = states
+    transport = _read_gp_transport_json(user_tab_id)
+    if not n_clicks or not transport:
+        raise PreventUpdate
+    try:
+        updated, warnings = apply_photcal_form_to_packet(
+            transport, **dict(zip(_GP_PHOTCAL_FIELDS, values))
+        )
+        _write_gp_transport_json(user_tab_id, updated)
+    except Exception as exc:
+        logger.exception("GP calibration apply failed")
+        return no_update, status_alert(f"Could not apply the calibration: {exc}", "danger")
+    warning_text = format_photcal_warning_message(warnings)
+    alert = (
+        status_alert(warning_text, "warning")
+        if warning_text
+        else status_alert("Calibration applied.", "success")
+    )
+    return _bump_gp_lc_revision(), alert
+
+
 # ------ Lightcurve ----
 
 @callback(
@@ -4203,8 +4381,9 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
     Returns:
         tuple: Tab id, revision, LC filename, view mode, upload chip, folding
         fields, working-window reset, and accordion open set. Failures leave
-        the accordion unchanged. Photcal promote warnings go to the visible
-        ``gp-lc-photcal-alert`` slot (not the ``?`` failure collapse).
+        the accordion unchanged. The short "metadata is missing" notice goes to
+        the visible ``gp-lc-photcal-alert`` slot (not the ``?`` failure collapse);
+        the calibration itself is reviewed in the Calibration collapse.
     """
     logger.info("Uploading lightcurve: %s", filename)
     if contents is None:
@@ -4215,11 +4394,6 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
 
         lc_json_string = pack_uploaded_lightcurve(decoded, filename)
         packet = json.loads(lc_json_string)
-        photcal, photcal_warnings = reconcile_photcal_dict(
-            packet["meta"].get("photcal"),
-            flux_unit=packet["meta"].get("flux_unit"),
-        )
-        packet["meta"]["photcal"] = photcal
         lc_json_string = json.dumps(packet)
         tab_id = _write_gp_transport_json(user_tab_id, lc_json_string)
         revision = _bump_gp_lc_revision()
@@ -4229,10 +4403,8 @@ def upload_lc(contents, filename, accordion_active, user_tab_id):
         )
         source_name = filename or "uploaded"
         view_mode = active_domain if active_domain in ("mag", "flux") else "mag"
-        photcal_text = format_photcal_warning_message(photcal_warnings)
-        photcal_alert = (
-            status_alert(photcal_text, "warning") if photcal_text else None
-        )
+        readiness_text = readiness_message(packet["meta"].get(METADATA_KEY_READINESS))
+        photcal_alert = status_alert(readiness_text, "info") if readiness_text else None
 
         return (
             tab_id,

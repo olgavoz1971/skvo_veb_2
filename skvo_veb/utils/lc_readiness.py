@@ -58,3 +58,27 @@ def readiness_report(volc: VOLightCurve, phot_col: str | None = None) -> dict:
         READINESS_KEY_CONVERSION: conversion,
         READINESS_KEY_SUGGESTIONS: suggestions,
     }
+
+
+def readiness_message(report: dict | None) -> str | None:
+    """Turns a readiness report into one very short user-facing sentence.
+
+    The details stay in the report; the user sees only that something is missing and
+    where suggested values can be reviewed and applied.
+
+    Args:
+        report (dict, optional): Result of :func:`readiness_report`.
+
+    Returns:
+        str or None: The sentence, or ``None`` when nothing is missing.
+    """
+    if not report:
+        return None
+    missing = (
+        report.get(READINESS_KEY_TIME)
+        or report.get(READINESS_KEY_UNITS)
+        or report.get(READINESS_KEY_CONVERSION)
+    )
+    if not missing:
+        return None
+    return "Some metadata is missing. Open Calibration to review it and apply suggested values."

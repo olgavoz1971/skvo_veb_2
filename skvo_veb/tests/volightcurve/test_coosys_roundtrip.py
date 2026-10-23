@@ -84,6 +84,9 @@ def test_write_vo_lightcurve_emits_coosys_when_requested():
     table["obs_time"] = np.array([59000.1, 59000.2])
     table["phot"] = np.array([12.5, 12.6])
     table["flux_error"] = np.array([0.01, 0.02])
+    table["obs_time"].info.meta = {"ucd": "time.epoch"}
+    table["phot"].info.meta = {"ucd": "phot.mag"}
+    table["flux_error"].info.meta = {"ucd": "stat.error;phot.mag"}
 
     buf = io.BytesIO()
     write_vo_lightcurve(

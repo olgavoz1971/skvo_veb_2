@@ -47,3 +47,33 @@ def test_report_is_json_safe_and_attached_to_the_curvedash():
     stored = lcd.metadata[METADATA_KEY_READINESS]
     assert json.loads(json.dumps(stored)) == stored
     assert stored["conversion_problems"]
+
+
+def test_message_is_one_short_sentence_and_applies_nothing():
+    """The user sees a single short sentence; the details stay in the report."""
+    from skvo_veb.utils.lc_readiness import readiness_message
+
+    volc = _volc()
+    text = readiness_message(readiness_report(volc, "mag"))
+    assert text == "Some metadata is missing. Open Calibration to review it and apply suggested values."
+    assert "\n" not in text and len(text) < 100
+    assert volc.timesys.timescale is None
+
+
+def test_message_is_none_when_nothing_is_missing():
+    """A complete report gives no message."""
+    from skvo_veb.utils.lc_readiness import readiness_message
+
+    assert readiness_message(None) is None
+    assert readiness_message(
+        {"time_problems": [], "unit_findings": {}, "conversion_problems": [], "suggestions": {}}
+    ) is None
+
+
+def test_packed_transport_carries_the_report():
+    """The GP transport JSON carries the readiness report in its meta."""
+    from skvo_veb.utils.lc_bridge import pack_volc_to_json
+
+    volc = _volc()
+    packet = json.loads(pack_volc_to_json(volc))
+    assert packet["meta"][METADATA_KEY_READINESS]["conversion_problems"]

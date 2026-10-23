@@ -4929,3 +4929,60 @@ removed when the sentences are written. Not implemented yet.
 - `volc_to_curvedash` stores it in `lcd.metadata["readiness"]` (`METADATA_KEY_READINESS`), so it travels with the session curve and can be shown by any page.
 - Tests: `skvo_veb/tests/test_lc_readiness.py`; host suite 668 passed, 1 skipped.
 - Next (4b, UI): show the report on the GP upload and Processor pages, with "apply suggested" actions; and let the upload ask for a time origin instead of failing when `_absolute_jd_from_time_column` raises.
+
+### Ticket 34, description and INFO loss, step 1 in `volightcurve` (done)
+
+- Finding (OGLE LMC RRLYR 13820, Discovery export): the long text is the VOTABLE-level DESCRIPTION; the table has its own short one; the file also has `INFO` elements (19 `creator`, `legal`, `rights`, `publisher`, `contact`, `ivoid`, `reference_url`, `publication_id`, ...). The export kept only the short table text (wrapped in our note) and no INFO at all.
+- `VOLightCurve` now has `votable_description` and `infos` (all INFO elements of the VOTABLE root, the RESOURCE and the table, in file order, repeated names kept). `write_vo_lightcurve(..., infos=...)` writes them back. `_votable_kwargs_from_volc` no longer copies one string into both description slots: VOTABLE description = envelope or the declared one; table description = envelope or the table text and comments; INFOs = envelope `infos` or the declared ones.
+- ECSV, DAT and CSV carry no INFO and no VOTABLE description (decision: concise).
+- Fixture `tests/data/ogle_lmc_rrlyr_13820_full.vot`; 3 new tests (116 in `volightcurve`).
+- Removed the obsolete `mission_config/asassn.py`, its test and its profile hooks in `lc_bridge` (ASAS-SN lives only as an `lc_discovery` provider). Host suite 664 passed (4 ASAS-SN export tests gone).
+- Next: step 2 in `lc_bridge`: `_extract_vo_envelope_meta` stores `votable_description`, `table_description` and `infos` separately; the host note goes last, only in the table description; remove the duplicated composition in `build_votable_kwargs_from_metadata`.
+
+### Ticket 34, description and INFO loss, step 2 in `lc_bridge` (done)
+
+- `_extract_vo_envelope_meta` stores `votable_description`, `table_description` and `infos` separately (new `VO_ENVELOPE_KEY_INFOS`); nothing is copied from one slot to the other any more.
+- `photometry_source_description`: the source text first and unchanged, then one "Processing note:" block (kept column, error column, columns not included) last, in the table description only. A note from an earlier export is replaced, not stacked. The VOTABLE-level description is never touched. The duplicated composition in `build_votable_kwargs_from_metadata` now uses the same helper, and the old cross-copy between the two description slots is gone. `export_curvedash` (one path for Discovery, Processor and cutout) passes `infos` through to `write_vo_lightcurve`.
+- `volightcurve` text writers (dat, csv, ecsv) write only the "Interpreted from the file..." sentences from the description, not the source text (concise by decision).
+- Tests: `test_export_keeps_source_description.py` (OGLE fixture: long VOTABLE text, table text then note, 19 creators, legal, rights), updated `test_lc_photometry_choice.py`; `volightcurve` 117, host 668 (1 skipped), `lc_discovery` 216.
+
+### Ticket 32 phase 2, step 7: the core no longer guesses roles from column names (partly done)
+
+- `write_vo_lightcurve` takes roles from the UCDs only. It no longer gives `time.epoch` to a column named `obs_time`, `time`, `jd` or `mjd`, and no longer picks `phot`, `mag` or `flux` as photometry by name. A table with no `time.epoch` column or no `phot.mag`/`phot.flux` column raises `ValueError` ("does not guess roles ... use VOLightCurve.from_table or assign the UCDs first"). Products from the reader or `from_table` already carry UCDs, so every production path is unchanged.
+- `resolve_observation_timesys` no longer falls back to column names; it raises when no `time.epoch` column exists.
+- Removed the dead `is_observation_time_column` and `OBSERVATION_TIME_NAME_FALLBACKS`.
+- Tests: bare test tables get UCDs through `annotate_vo_roles` (`tests/fixtures_votable.py`); new test that a bare table is rejected. `volightcurve` 118, host 668 (1 skipped), `lc_discovery` 216.
+- Still open: `is_magnitude_phot_column` treats a bare `phot` column without unit or UCD as magnitude (used by interpretation, `assign_photometry_column_semantics` and three host call sites in `lc_bridge`); the host should ask instead of assuming.
+
+### Ticket 34 and 32: host prompts, the magnitude guess and `__all__` (done)
+
+- **Magnitude guess.** `is_magnitude_phot_column` (a bare `phot` with no unit and no UCD counts as magnitude) moved to `volightcurve.interpretation`. `assign_photometry_column_semantics` now needs `phot_col`, `error_col` and `force_magnitude`; nothing is guessed in the core. Removed the unused `resolve_votable_phot_field_labels`. In the host, `lc_bridge` decides the domain from the column UCD only (`is_mag_column`); the dead `tabular_table_to_curvedash` (it also guessed MJD from small values and filled absent errors with zeros) is deleted.
+- **Prompts (first version).** `lc_readiness.readiness_message` turns the report into text: undeclared time system, unit errors, the calibration gap that blocks mag/flux conversion, and a line saying suggested values exist and are applied only on the user's choice. The Processor upload shows it as an info alert; the GP upload shows it next to the photcal warnings (`pack_volc_to_json` now carries the report in `meta["readiness"]`). The Processor "Fill missing" button remains the only way suggested values get applied.
+- **Still open:** an input to give the time origin and retry when a relative time column has none (today the upload fails with the explicit message); readiness alert on the Discovery page; conversion of the GP page to apply suggestions.
+- **`__all__`.** `volightcurve.lightcurve` lists the core names only; `volightcurve.interpretation` lists its four public names; `volightcurve/__init__.py` imports the core names explicitly instead of `import *`. Package-level names are unchanged apart from leaked helpers (`np`, `u`, `Table`, `ascii`, `logging`, `logger`, `main`, `is_votable`, `rewrite_astropy_empty_unit_attributes`).
+- Tests: `volightcurve` 118, host 671 (1 skipped), `lc_discovery` 216.
+
+- Readiness message shortened (user feedback): one sentence, "Some metadata is missing. Open Calibration to review it and apply suggested values." No details in the alert; they stay in `metadata["readiness"]`.
+
+### Ticket 34: Calibration collapse on the GP page (done)
+
+- `skvo_veb/utils/gp/photcal_form.py`: `photcal_form_values_for_packet` (stored values with gaps filled by the suggested values, packet untouched) and `apply_photcal_form_to_packet` (writes `meta["photcal"]` and, for a flux packet, `meta["flux_unit"]`; drops the stale readiness report; returns the unit warnings).
+- GP page (`gp_for_oc.py`): "Calibration" collapse in the lightcurve sidebar using the shared `photcal_editor_body` (copy of the Processor pattern, no layout refactor). Callbacks: the form is filled from the packet on every revision (suggestions pre-filled), "Fill missing defaults" completes empty fields, "Apply calibration" rewrites the cached packet and bumps `store-gp-lc-revision` so every view rebuilds. The collapse toggle is a client-side callback.
+- Upload no longer calls `reconcile_photcal_dict` (nothing is stored or rewritten at upload); the unit checks run on Apply. The upload alert is the short readiness sentence only.
+- Tests: `test_gp_photcal_form.py` (prefill leaves the packet unchanged, apply stores values and keeps the data, GP conversion passes after apply). Dash dependency map builds; host suite green except the unrelated alert-duration test (`STATUS_ALERT_DURATION_MS`).
+
+### Ticket 34: time origin input and cleanups (done)
+
+- Removed `test_status_alert_duration_and_dismissable` (alert duration is a free UI setting).
+- "Time origin (JD)" field in the shared calibration editor (Processor and GP collapses; not on Discovery). It is read by the page upload callback and passed as `time_origin` to `ingest_lightcurve_file` / `pack_uploaded_lightcurve`. `apply_time_origin` uses it only when the file declares no origin; a declared origin always wins (logged). The field is not cleared between uploads.
+- `pack_volc_to_json` now fails fast on relative times without an origin (same rule and message as the Processor path); `meta["jd0"]` is `0.0` only when the times were validated as absolute.
+- The relative-time error says: enter the time origin under Calibration and upload again.
+- `volightcurve.time_reference.resolve_observation_timesys`: removed the `volc.timesys or TimeSys()` fallback; a missing object now raises.
+- Not done on purpose: readiness alert and calibration on Discovery; TESS/cutout envelope; `ID` on PARAMs (not required by VOTable, only needed when something references the PARAM).
+
+### Ticket 34: time origin UI removed (decision)
+
+- The "Time origin (JD)" field, its "shown" store, `typed_time_origin`, `apply_time_origin`, `time_origin_form_value` and the `time_origin` upload arguments are removed again: a field that carries state between uploads leaked the previous file's origin into the next one.
+- Relative times with no declared origin still fail fast on both pages, with one clear message that names the fix in the file: add the header row `# JD0=<value>` and upload again. No UI route, no guessed origin.
+- Kept: `pack_volc_to_json` validates the time column (same rule), `resolve_observation_timesys` raises without a `TimeSys`, the `**` power fix in `vo_unit_codec`.
+- Open if the user wants it later: an interpretation-layer rule that accepts values below 1e6 (for example reading them as JD minus 2400000) and says so in the description.

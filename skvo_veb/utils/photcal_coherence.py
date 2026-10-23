@@ -357,7 +357,7 @@ def photcal_form_values_from_storage(
 def fill_missing_photcal_form_values(current: dict[str, Any]) -> dict[str, Any]:
     """Fills empty editor fields from the suggested values; never overwrites.
 
-    Called only by an explicit user action. Populates only missing ``zp_flux``, ``zp_mag``, and ``mag_sys``. Leaves
+    Called only by an explicit user action. Populates only missing ``zp_flux``, ``zp_mag``, and ``mag_sys`` Leaves
     ``filter_name``, ``zp_flux_unit``, and ``flux_unit`` unchanged (blank
     means dimensionless for units, not “please invent Jy”).
 

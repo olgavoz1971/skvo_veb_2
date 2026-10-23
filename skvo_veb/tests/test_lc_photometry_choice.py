@@ -95,15 +95,30 @@ def test_select_options_label_has_unit_and_filter(volc):
     assert "TESS" in options[0]["label"]
 
 
-def test_export_description_names_the_chosen_source_column(volc):
-    """The exported description says which source column is kept and what is dropped."""
+def test_export_description_keeps_the_source_text_and_ends_with_the_note(volc):
+    """The source description comes first, unchanged; the processing note is last."""
     lcd = volc_to_curvedash(volc, "tess.vot", primary_col="sap_flux")
     kwargs = build_votable_kwargs_from_metadata(lcd)
-    for text in (kwargs["table_description"], kwargs["votable_description"]):
-        assert text.startswith("This file holds one photometry series: column 'sap_flux'")
-        assert "uncertainty from column 'sap_flux_err'" in text
-        assert "not included: pdcsap_flux, pdcsap_flux_err." in text
-        assert "All registered flux and background columns are issued." in text
+    text = kwargs["table_description"]
+    assert text.startswith("All registered flux and background columns")
+    note = text[text.index("Processing note:"):]
+    assert note.startswith("Processing note: this file holds one photometry series: column 'sap_flux'")
+    assert "uncertainty from column 'sap_flux_err'" in note
+    assert "not included: pdcsap_flux, pdcsap_flux_err." in note
+    assert note.rstrip().endswith("pdcsap_flux_err.")
+    assert "Processing note:" not in (kwargs.get("votable_description") or "")
+
+
+def test_a_second_export_replaces_the_processing_note():
+    """Notes do not pile up when an exported product is exported again."""
+    from skvo_veb.utils.lc_bridge import photometry_source_description
+    from skvo_veb.utils.lc_bridge import METADATA_KEY_PHOTOMETRY_SOURCE
+
+    meta = {METADATA_KEY_PHOTOMETRY_SOURCE: {"column": "mag", "unit": "mag", "omitted_columns": []}}
+    once = photometry_source_description(meta, "Source text.")
+    twice = photometry_source_description(meta, once)
+    assert twice == once
+    assert once.startswith("Source text.\n\nProcessing note:")
 
 
 def test_export_description_for_default_column(volc):
@@ -117,5 +132,5 @@ def test_exported_votable_description_names_the_chosen_source_column(volc):
     """The file written by the page's Download button carries the statement."""
     lcd = volc_to_curvedash(volc, "tess.vot", primary_col="sap_flux")
     payload = " ".join(export_curvedash(lcd, "votable").decode("utf-8", errors="replace").split())
-    assert "This file holds one photometry series: column 'sap_flux'" in payload
-    assert "Description of the source product: All registered flux" in payload
+    assert "Processing note: this file holds one photometry series: column 'sap_flux'" in payload
+    assert payload.index("All registered flux") < payload.index("Processing note:")

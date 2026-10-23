@@ -15,7 +15,6 @@ skvo_veb/
 │   └── …
 └── tests/              # all unit/integration tests
     ├── test_lc_*.py
-    ├── test_asassn_export.py
     └── volightcurve/   # host/bridge/mission tests (pure suite lives with sibling package)
 
 **Sibling library (editable install):** ``/home/voz/projects/UPJS/volightcurve``

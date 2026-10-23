@@ -164,6 +164,8 @@ VO_ENVELOPE_KEY_TABLE_DESCRIPTION = "table_description"
 VO_ENVELOPE_KEY_VOTABLE_DESCRIPTION = "votable_description"
 VO_ENVELOPE_KEY_PUBLICATION_ID = "publication_id"
 VO_ENVELOPE_KEY_TABLE_NAME = "table_name"
+VO_ENVELOPE_KEY_INFOS = "infos"
+PROCESSING_NOTE_LABEL = "Processing note:"
 
 # Supported user-facing lightcurve download formats (VOTable binary is the default).
 VOTABLE_FORMAT_BINARY = "votable_binary"

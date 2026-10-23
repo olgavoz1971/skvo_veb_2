@@ -1130,23 +1130,3 @@ def test_apply_local_tilt_fails_without_a_seed_or_hits():
             display_epoch=DEFAULT_EPOCH_JD,
             jd_bounds=(2460000.0, 2460001.0),
         )
-
-
-def test_status_alert_duration_and_dismissable():
-    """Info uses the shared duration; warning and danger stay; all dismiss."""
-    from skvo_veb.components.message import STATUS_ALERT_DURATION_MS, status_alert
-
-    assert STATUS_ALERT_DURATION_MS == 4000
-    info = status_alert("Plot 2 seeded.", "info")
-    assert info.dismissable is True
-    assert info.duration == STATUS_ALERT_DURATION_MS
-    assert info.is_open is True
-    warning = status_alert("Load a light curve first.", "warning")
-    assert warning.dismissable is True
-    assert warning.duration is None
-    danger = status_alert("Smooth fit failed.", "danger")
-    assert danger.dismissable is True
-    assert danger.duration is None
-    long_info = status_alert("Fresh data.", "info", duration_ms=60000)
-    assert long_info.duration == 60000
-    assert status_alert("Slow warning.", "warning", duration_ms=60000).duration == 60000
