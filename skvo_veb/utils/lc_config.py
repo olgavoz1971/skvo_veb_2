@@ -9,10 +9,6 @@ from __future__ import annotations
 
 import math
 
-from volightcurve.photcal_defaults import (
-    DEFAULT_ZP_FLUX as DEFAULT_ZP_FLUX_DIMENSIONLESS,
-    DEFAULT_ZP_MAG as DEFAULT_REFERENCE_MAG,
-)
 from volightcurve.time_reference import (
     JD_TO_MJD,
     TIME_OFFSET_ABSOLUTE_JD_THRESHOLD,
@@ -154,9 +150,6 @@ PHOTCAL_KEY_ZP_FLUX_UNIT = "zp_flux_unit"
 PHOTCAL_KEY_ZP_MAG = "zp_mag"
 PHOTCAL_KEY_ZP_MAG_UNIT = "zp_mag_unit"
 PHOTCAL_KEY_MAG_SYS = "mag_sys"
-
-# PhotCal numeric fallbacks: see ``volightcurve.photcal_defaults``
-# (``DEFAULT_REFERENCE_MAG`` / ``DEFAULT_ZP_FLUX_DIMENSIONLESS`` imported above).
 
 # Keys inside ``metadata['vo_envelope']`` (mission-blind round-trip).
 VO_ENVELOPE_KEY_LIGHTCURVE_TITLE = "lightcurve_title"

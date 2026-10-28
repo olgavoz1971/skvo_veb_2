@@ -136,7 +136,8 @@ def test_dat_transport_votable_export_without_description():
     transport = pack_volc_to_json(volc)
     lcd = curvedash_from_transport_json(transport, source_name="V_sorted.dat")
     blob = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
-    assert b"filterIdentifier" in blob
+    assert b"filterName" in blob
+    assert b"filterIdentifier" not in blob
 
 
 def test_curvedash_from_transport_json_flux_domain_exports():

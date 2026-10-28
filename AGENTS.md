@@ -85,15 +85,19 @@ my-dash-app/
   - When slicing, filtering, or cropping data stored in server-side caches, prefer transmitting only the small configuration boundaries (`xmin`, `xmax`) to the backend. It is generally more efficient to execute heavy computations or dataframe slicing directly on the server layer before updating visual charts.
 
 ## Dependencies and Mathematical Implementation Hierarchy
+When implementing physical formulas, statistical analysis, curve fitting, coordinate transformations, time handling or unit handling, you must follow this strict priority chain. **Never implement mathematical or astronomical algorithms from scratch.** Exhaust each level of the hierarchy before moving to the next:
 
-When implementing physical formulas, statistical analysis, curve fitting, or coordinate transformations, you must follow this strict priority chain. **Never implement mathematical or astronomical algorithms from scratch.** Exhaust each level of the hierarchy before moving to the next:
+0. **Level 0: Project packages and their agent guidance**
+   - A package that this project owns or depends on for the task (for example `volightcurve`, `lc_discovery`) comes first, through its **public API only**.
+   - Before using such a package, read its agent skill and rules (`.cursor/skills/<package>/SKILL.md`, its `AGENTS.md`, its README). They override your general habits for that package's domain: reading and writing light curves, time system, units, photometric calibration, column discovery.
+   - If the package has a public method for the job, use it. Do not re-implement it, wrap it in a workaround, or bypass it with a lower level (Astropy, SciPy, NumPy) because that feels more familiar.
+   - If the package has no method for the job, or its behaviour looks wrong, **stop and tell the developer**. Do not patch around it in the calling code. The fix belongs in the package.
 
 1. **Level 1: Astronomical Core Libraries**
-   - **VOTable Exception:** For VOTable reading, parsing, schema interpretation, and reporting, **GAVO utilities (`gavo.utils`, `gavo.votable`) are strictly preferred** over standard parsers.
+   - **VOTable Exception:** For VOTable with ligh curves VOLightcurve package is strictly preferred.
+   For others VOTable reading, parsing, schema interpretation, and reporting, **GAVO utilities (`gavo.utils`, `gavo.votable`) are strictly preferred** over standard parsers.
    
-   - **Astropy (`astropy.*`):** Must be used for all other core astronomical concepts: Time conversions, coordinate frames, cosmological calculations, modeling/fitting, and unit propagation.
-
-   - *Example:* Use `astropy.modeling` for lightcurve/O-C curve fitting; use `astropy.time` for time scales (JD/MJD).
+   - **Astropy (`astropy.*`):** Must be used for all other core astronomical concepts: Time conversions (except the defined-constant case above), coordinate frames, cosmological calculations, modeling/fitting, and unit propagation..
 
 2. **Level 2: SciPy (`scipy.*`)**
    - Use ONLY if the specific scientific feature or mathematical optimization is completely absent in Astropy.
@@ -187,3 +191,4 @@ Keep this structural pipeline in mind for every interactive feature you build:
 - **No Silent Fallbacks or Blind Failure Mitigation:** You are strictly forbidden from implementing *any* fallback mechanisms without explicit consultation with Developer
 - **Fail-Fast over Synthetic Defaults:** We are building scientific software. Under no circumstances should you invent default values, patch missing fields with dummy data, or silently bypass structural/type inconsistencies.
 - **Explicit Error Propagation:** If data is missing, corrupted, or structurally invalid, halt execution immediately and expose the explicit error message to the user/UI. Let the researcher handle data anomalies explicitly rather than masking them behind automated assumptions.
+- **Defined constants are not algorithms.** A change that is only a defined constant offset, with no change of scale, position or unit (for example `MJD = JD - JD_TO_MJD`), is plain arithmetic with the named constant exported by the package that owns it (`volightcurve.JD_TO_MJD`). Do not type the number by hand. Do not build an `astropy.time.Time` or any other object just to add a constant. Use Astropy when the time scale or position changes (UTC to TDB, barycentric or heliocentric corrections), or when a calendar string is needed.

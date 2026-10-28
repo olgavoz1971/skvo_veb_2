@@ -88,7 +88,7 @@ def test_veb_gaia_raw_files_replace_jy_flux_zero_point():
         photcal = volc.photdms["phot"].photcal
         assert volc.photdms["phot"].filter.filter_id == filter_id
         assert float(photcal.zp_flux.value) == 1.0
-        assert photcal._zp_flux_unit_text == "s**-1"
+        assert photcal.zero_point._zp_flux_unit_text == "s**-1"
         assert float(photcal.zp_mag.value) == zp_mag
         assert volc.photdms["flux_error"].photcal is photcal
         epoch = [

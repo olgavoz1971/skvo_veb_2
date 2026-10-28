@@ -5091,3 +5091,88 @@ Developer decisions: a unit that VOUnits cannot express (for example `electron`)
 ZTF: the recorded original is now a product issued through the core (`ztf_oid_1772316100027697_zi_orig.xml`, OID 1772316100027697, band i, from `data/discovery_results/ztf_new.xml`; it replaces the pre-core `..._zr_orig.xml`). Strict-read findings are unchanged except the filter (`Palomar/ZTF.i`). AIP: the baseline case is built from the bundled sample by the current (core) code, so it needs no fixture; `aip_new.xml` is the same kind of product. Still open: Pan-STARRS1 (`panstarrs1_dr2_issued.xml` is the pre-core product; `data/discovery_results/panstarrs.xml` is also pre-core, no astropy header) and TESS (`tess_spoc_sector17_orig.vot` is pre-core). Both need a new original issued after the core change.
 
 Baseline fixtures, PS1 and TESS (2026-10-23, late): both replaced by originals issued through the core (`tess_spoc_sector17_orig.vot`, `panstarrs1_dr2_issued.xml`; each carries the astropy header). PS1 strict-read findings are unchanged. TESS: the only change is that `sap_bkg` and `sap_bkg_err` have no photcal entry (the accepted loss of the background group); the baseline was edited accordingly. All baseline cases except the five that patch the archive product now come from the core, and ASAS-SN still has no case.
+
+### volightcurve: conversion with units that VOUnits does not support (2026-10-26)
+
+Defect (reported on `lc_discovery_TIC_455790537_SPOC_sector_16.vot`, `electron.s-1` on the FIELD and on the zero point): `PhotCal.flux_to_mag` raised `'electron / s' and 'electron / s' are not convertible`. Cause: Astropy's VOUnit parser creates a new, distinct irreducible unit for an unsupported name such as `electron` each time, so the FIELD unit and the zero-point unit are not equal; `is_equivalent` passes but `Quantity.to` refuses. Fix, in `volightcurve/photdm.py` only: `_quantity_in_unit` is used by all five Pogson conversions; when both units have the same Astropy text the values are taken as they are and given the zero-point unit (no factor assumed), otherwise Astropy converts and its refusal is raised as a `UnitsError` naming the role and both units. Unsupported units still only warn (Astropy's `UnitsWarning`). Tests: `volightcurve/tests/test_unsupported_unit_conversion.py` (same text converts, flux and error; `electron/min` against `electron/s` is refused). The sector 16 file now gives mag 10.615 to 11.168, as the consumer agent reported with its workaround. `photcal_check` is unchanged (it already treats these units as equivalent).
+
+### volightcurve: observation times, and skill updates (2026-10-26)
+
+`VOLightCurve.get_observation_times(column=None)` returns an `astropy.time.Time` (format jd, declared time scale, origin and values kept in two parts, so no precision is lost). It adds only the declared `TIMESYS` time origin; a value at or above `TIME_OFFSET_ABSOLUTE_JD_THRESHOLD` stays a full Julian Date; an undeclared time scale or origin (for an offset) raises. Reference position stays on `timesys.refposition`. Tests: `volightcurve/tests/test_observation_times.py`.
+
+Skills updated: `volightcurve` (new section "Time and units": no mission time shift, only `get_observation_times()`; units kept as declared, unsupported ones warn, never strip a unit; API table and anti-patterns), `lc-discovery` (read the skills of the packages `lc_discovery` depends on; time and unit rules; TESS is MJD), `lc-discovery-provider` (source-agnostic time, units kept, build with `write_vo_lightcurve`). `test_skills/.cursor/skills/volightcurve` is an older copy and was not touched.
+
+Skill `volightcurve`: added the JD, MJD hint (`JD_TO_MJD` constant, no `astropy.time.Time` for a pure offset; `Time` for scale or position changes). `AGENTS.md` wording is to be discussed.
+
+volightcurve: `VOLightCurve.get_observation_jd(column=None)` and `get_observation_mjd(column=None)` return float64 arrays built on `get_observation_times` (one code path). Docstrings of `VOLightCurve`, `get_time_colnames`, `TimeSys` and `time_problems`, the README table and the skill point to them. Tests in `test_observation_times.py`.
+
+volightcurve discoverability: README section "Start here: which call for which situation" (nine rows, including `get_observation_times`, `get_observation_jd`, `get_observation_mjd`, `time_problems`), the same table in the skill, and a "Start here" module docstring in `volightcurve/__init__.py`. Tiering of `__all__` and one story per writer are not done (to be decided; other repos import some of the advanced names).
+
+volightcurve `__all__` cleanup (2026-10-28): 24 names removed from the top-level namespace and `__all__`: nobody used `normalise_io_format`, `DEFAULT_TIME_EPOCH_UCD`, `LABEL_UCD_FRAGMENTS`, `print_col_ucd`, `CALIBRATION_KEYWORDS`, `WRITE_KEYWORD_ORDER`, `is_calibration_keyword`, `KEY_BAND`, `KEY_EPOCH`, `KEY_FILTER_NAME`, `KEY_MAG0`, `KEY_MAG_SYS`, `KEY_ZP_FLUX`, `KEY_ZP_FLUX_UNIT`, `KEY_ZP_MAG_UNIT`; only tests used `KEY_FILTER`, `KEY_JD0`, `KEY_PERIOD`, `KEY_ZP_MAG`, `canonical_keyword`, `parse_keyword_assignment`, `is_metadata_assignment_line`, `VO_DIMENSIONLESS_WIRE`, `to_wire`. All stay importable from `volightcurve.io_keywords`, `volightcurve.io`, `volightcurve.vo_unit_codec`; two package tests were changed to import from the submodule. Developer decisions for the next steps: add `get_epoch_jd` and `get_epoch_mjd` (as for the time column) so nobody imports `time_reference` functions; GAVO spike scripts must not shape the package; suggestions are host policy (advanced tier); tests follow the package, not the reverse. Open: epoch and period methods, advanced-tier decision for suggestions and the unit text helpers.
+
+volightcurve: `VOLightCurve.get_epoch_time()` (Astropy `Time` or `None`), `get_epoch_jd()` and `get_epoch_mjd()` (floats or `None`) for the folding epoch PARAM (`table.meta["epoch"]`), on the same rule as the time column (declared origin added; undeclared scale or origin raises; a value at or above the JD threshold stays a full JD; no declared epoch gives `None`, not an invented value). One helper `_time_from_offsets` serves both the column and the epoch. README, skill and package docstring updated; tests in `test_observation_times.py`. Period is a duration (no origin) and has no method. The `time_reference` module functions used by the host (`normalise_table_epoch_to_absolute_jd`) are unchanged; moving the host to the new methods is a separate step.
+
+Epoch and float time methods, follow-up (developer decisions, 2026-10-28): `get_observation_jd`, `get_observation_mjd`, `get_epoch_jd`, `get_epoch_mjd` need only the declared time origin, not the time scale (a missing scale is listed by `time_problems()`); the `Time` methods (`get_observation_times`, `get_epoch_time`) still require the scale. Internals: `_origin_of_offsets`, `_jd_from_offsets`, `_time_from_offsets`, `_time_column_and_system`, `_epoch_and_system`. Host: both uses of `normalise_table_epoch_to_absolute_jd` in `skvo_veb/utils/lc_bridge.py` (transport JSON and folding) now call `volc.get_epoch_jd()`; both read the same `volc.table.meta`, so the result is unchanged and the import was removed. `time_reference.normalise_table_epoch_to_absolute_jd` stays (host test and auxiliary scripts still use it); removing it from the module is a later cleanup.
+
+### Ticket 32, step 8 (volightcurve): `lightcurve.py` split by responsibility (done, uncommitted)
+
+`lightcurve.py` (2777 lines) is now `lightcurve.py` (`VOLightCurve` plus the time helpers, about 1000 lines) and four new modules, moved without behaviour change:
+- `model.py`: `PhotometryFilter`, `PhotCal`, `PhotDM`, `CooSys`, `TimeSys`.
+- `votable_reader.py`: declared-metadata extraction (all GAVO use is isolated here, which prepares phase 6).
+- `columns.py`: column discovery by UCD, column roles, label helpers.
+- `votable_writer.py`: `write_vo_lightcurve`, the VOUnits-on-wire workaround and the PhotCal group helpers.
+
+Old import paths (`volightcurve.lightcurve.<name>`) keep working through the module `__getattr__` for one release. Internal imports and `__init__` point to the new homes. Results: volightcurve 147 passed, host 675 passed; lc_discovery has 4 failing live cone-search tests (live data expectations, unrelated).
+
+Still open in Ticket 32: step 2 (one `interpret()` entry point; move the label guess `get_label_colnames`/`assign_label_column_ucd` fallback into `interpretation.py`), step 3 (calibration surface: PhotCal aliases, PhotometryFilter duplication), step 4 (remove `photcal_defaults.py`), step 5 (docs and skills split).
+
+### Ticket 32, step 9 (volightcurve): single interpretation entry point (done, uncommitted)
+
+`interpretation.interpret(volc, source="votable"|"table")` is now the only call the core makes to guessing code (from `_ingest_votable`, `_ingest` and `from_table`). It returns at once for a strict instance. The VOTable guesses (UCD promotion, label column, time origin from comments) moved into `interpretation._interpret_votable`. Tests: volightcurve 147, host 675 passed.
+
+Open for discussion: moving the label-column guess (`get_label_colnames` fallback by position, `assign_label_column_ucd`) into `interpretation.py` would change the public `columns` API (both are in `__all__`).
+
+### Ticket 32, step 10 (volightcurve): label-column guess moved to interpretation (done, uncommitted)
+
+- `columns.get_label_colnames` now returns only the declared label column (UCD `meta.code`/`meta.id`, per-row stamps skipped); empty when none is declared.
+- `interpretation.guess_label_colnames` (declared one, else leftmost non-science column) and `interpretation.assign_label_column_ucd` hold the guess. `assign_label_column_ucd` is still exported from the package root; the old `volightcurve.lightcurve` path works through `__getattr__` for one release.
+- Behaviour note: a strict read, or a table not passed through interpretation, no longer gets a positional label. Non-strict ingest assigns the UCD as before, so the host sees no change (675 host and 147 package tests pass).
+- Tests `test_label_falls_back_to_leftmost_non_science_column` and `test_per_row_date_is_not_the_label` now call `guess_label_colnames`. README and `column_discovery.md` updated.
+
+### Ticket 32, step 11 (volightcurve): calibration surface checked against PhotDM 1.1 and the TimeSeries Note (done, uncommitted)
+
+Compared with PhotDM 1.1 (https://www.ivoa.net/documents/PHOTDM/20221101/PhotDMv1-1.html) and `docs/TimeSeries.pdf`. Our nesting (PhotCal holds ZeroPoint, MagnitudeSystem, filter; Pogson/Asinh/Linear) follows PhotDM 1.1; the Note is its flat four-PARAM form (filterIdentifier, zeroPointFlux, magnitudeSystem, effectiveWavelength; no reference magnitude, Pogson implied). Decisions with the developer:
+- The filter is owned by `PhotCal.photometry_filter` (as `PhotCal.photometryFilter`). `PhotDM.filter` and its shortcuts forward to it. A filter given while no calibration exists is held and handed to the calibration assigned later. Two different filter objects (calibration and hub) raise `ValueError`.
+- `PhotCal` keeps both constructor paths (nested canonical; flat `zp_flux/zp_mag/mag_sys` as the shorthand for the Note's Pogson case).
+- The eight private compatibility aliases on `PhotCal` (`_zp_flux`, `_zp_mag`, `_zp_*_unit_text`, `_zp_*_unit_unparsed`) are removed. Code and tests use `photcal.zero_point.<attr>`. (Open: the unit text is read from `zero_point._zp_*_unit_text` outside the class; a public read property on `ZeroPoint` would be cleaner.)
+- The writer now emits the reference magnitude with the PhotDM 1.1 name `photDM:PhotCal.zeroPoint.referenceMagnitudeValue`. The reader accepts it and the old `...referenceMagnitude.value`. The five patching providers still write the old spelling (read as before). `lc_discovery/tests/issued.py` reads both.
+- Not changed, to decide later: the Note gives `zeroPointFlux` the UCD `phot.mag;arith.zp`; we write `phot.flux;arith.zp`.
+- New test file `tests/test_photdm_filter_owner.py`. Results: volightcurve 151, host 675, lc_discovery 224 (live cone-search tests deselected).
+
+### Ticket 32, step 12 (volightcurve): filter identifier versus name, standards conformance of issued files (partly done, uncommitted)
+
+PhotDM 1.1: `PhotometryFilter.identifier` is a code unique within a Filter Profile Service (`Facility/Subcategory.Band`, e.g. `TESS/TESS.Red`); `name` is a short human-readable label (filenames, titles, plots). Also in the model: `bandname`, `description`, `fpsidentifier` (not in our class).
+- Done: the photcal GROUP now carries `ucd="phot"` and `utype="PhotDM:PhotCal"` (Note: utype mandatory, ucd recommended). Group name stays `photcal` (Note says `PHOTCAL`; developer decision to keep).
+- Decided: keep `zeroPointFlux` UCD `phot.flux;arith.zp` (Note gives `phot.mag;arith.zp`); question for the Note's authors.
+- Open (discussion): interpretation puts a free `FILTER = V` into `identifier`; under the standard it is a name (or bandname). Not changed yet. Also open: docstrings and skills must state identifier versus name; whether `bandname`/`description`/`fpsidentifier` should be added to `PhotometryFilter`; no check that an identifier looks like `Facility/Subcategory.Band` (Note says SHOULD, so none added).
+- Principle to keep: VOTables we issue must conform to the standards (also future ones) and be understandable outside our packages.
+
+### Ticket 32, step 13 (volightcurve): filter identifier versus name in interpretation (done, uncommitted)
+
+Developer decisions: the core stores what is declared (identifier is the Filter Profile Service code, name is the short label). Interpretation only: a loose `FILTER` value containing `/` becomes `PhotometryFilter.filter_id`; a bare label becomes `name` and the identifier stays empty. No `bandname`/`description`/`fpsidentifier` fields (stay close to the Note). Docs: `PhotometryFilter` and property docstrings, skill table and anti-pattern, README section.
+- Host effect: a `.dat` with `FILTER=V` now exports `filterName` only (no `filterIdentifier`); three host tests updated (`test_dat_comment_metadata.py` x2, `test_gp_lc_export.py`). Check whether the TESS download profile or any UI needs an identifier for such uploads.
+- Interpretation sentence now reads "filter identifier X" or "filter name X".
+- Results: volightcurve 153, host 675, lc_discovery 224.
+
+### Ticket 32, step 14 (volightcurve): `photcal_defaults.py` removed (done, uncommitted)
+
+The module (1.0, 20.0, Vega) is deleted; the agreed suggested values live in `volightcurve.suggestions` (reference magnitude 0, with reasons) and are applied by nobody. The host import in `lc_config.py` (`DEFAULT_REFERENCE_MAG`, `DEFAULT_ZP_FLUX_DIMENSIONLESS`) was dead code and is removed; `test_photcal_fallback_is_not_a_gp_parameter` no longer asserts those constants. README and the `suggestions` docstring updated. Results: volightcurve 153, host 675, lc_discovery 224.
+Open in Ticket 32: step 5, docs and skills split into "declared" and "guessed".
+
+### Ticket 32, step 15 (volightcurve): docs and skills split into declared and guessed (done, uncommitted)
+
+- Skill `SKILL.md`: new section "Declared versus guessed" (core versus interpretation, `strict=True`, where guesses are recorded, suggestions are offered not applied, filter label versus identifier); stale lines fixed (missing magnitude system stays missing, `photcal_defaults` removed); anti-pattern added.
+- `README.md`: new section "Declared versus guessed"; pointer from the non-VOTable section; "magnitude system Vega" statement corrected.
+- `docs/io_contract.md` and the identical copy in the skill's `references/`: note on declared versus guessed at the top; section 6 item 3 corrected (a missing `JD0` stays missing; it was documented as defaulting to 0).
+- Not synced: `test_skills/.cursor/skills/volightcurve` (older copy).
+Ticket 32 is now complete except the optional items: removal of the one-release compatibility aliases (module `__getattr__` in `lightcurve.py`) after agreement, and the `__all__` advanced tier.

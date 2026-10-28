@@ -59,7 +59,11 @@ def test_dat_epoch_stored_absolute_jd_mjd_ui_offset():
 
 
 def test_dat_upload_tess_votable_export_includes_filter_identifier():
-    """Tabular ``.dat`` ingest must supply ``filter_identifier`` for TESS VOTable download."""
+    """A bare ``FILTER=VV`` in a ``.dat`` is a filter name, not a service identifier.
+
+    The identifier stays empty (it needs a ``Facility/Subcategory.Band`` code); the
+    name is written to the TESS-profile VOTable as ``filterName``.
+    """
     from skvo_veb.utils.lc_bridge import export_curvedash
     from skvo_veb.utils.lc_config import VOTABLE_FORMAT_BINARY
 
@@ -70,11 +74,13 @@ def test_dat_upload_tess_votable_export_includes_filter_identifier():
 58738.70 6004.79 3.09
 """
     lcd = ingest_lightcurve_file(io.BytesIO(dat), "user.dat")
-    assert lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_IDENTIFIER] == "VV"
+    assert not lcd.metadata["photcal"].get(PHOTCAL_KEY_FILTER_IDENTIFIER)
+    assert lcd.metadata["photcal"][PHOTCAL_KEY_FILTER_NAME] == "VV"
 
     payload = export_curvedash(lcd, VOTABLE_FORMAT_BINARY, profile="tess")
     assert b"VV" in payload
-    assert b"filterIdentifier" in payload
+    assert b"filterName" in payload
+    assert b"filterIdentifier" not in payload
 
 
 def test_dat_votable_export_without_table_description():
@@ -91,8 +97,8 @@ def test_dat_votable_export_without_table_description():
 """
     lcd = ingest_lightcurve_file(io.BytesIO(dat), "V_sorted.dat")
     payload = export_curvedash(lcd, VOTABLE_FORMAT_BINARY)
-    assert b"filterIdentifier" in payload
-    assert b"V" in payload
+    assert b"filterName" in payload
+    assert b"filterIdentifier" not in payload
 
 
 def test_votable_export_omits_missing_filter_identifier():

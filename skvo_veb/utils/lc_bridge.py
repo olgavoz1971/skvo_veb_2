@@ -59,10 +59,7 @@ from volightcurve.io import (
 from volightcurve.io_dat import read_dat_table
 from volightcurve.io_errors import LightcurveIOError
 from volightcurve.io_meta import narrative_file_comments
-from volightcurve.time_reference import (
-    export_absolute_jd_as_time_offset,
-    normalise_table_epoch_to_absolute_jd,
-)
+from volightcurve.time_reference import export_absolute_jd_as_time_offset
 from volightcurve.vo_unit_codec import to_display, to_internal
 
 logger = logging.getLogger(__name__)
@@ -386,9 +383,7 @@ def pack_volc_to_json(lc: VOLightCurve, primary_col=None, error_col=None):
         meta_block["period"] = float(table_meta["period"])
     if table_meta.get("epoch") is not None:
         try:
-            meta_block["epoch"] = float(
-                normalise_table_epoch_to_absolute_jd(lc, table_meta.get("epoch"))
-            )
+            meta_block["epoch"] = float(lc.get_epoch_jd())
         except (ValueError, TypeError) as exc:
             logger.warning("Could not normalise epoch for transport JSON: %s", exc)
 
@@ -1687,7 +1682,7 @@ def volc_to_curvedash(
     absolute_epoch = None
     if meta.get("epoch") is not None:
         try:
-            absolute_epoch = normalise_table_epoch_to_absolute_jd(volc, meta.get("epoch"))
+            absolute_epoch = volc.get_epoch_jd()
         except ValueError as exc:
             raise PipeException(str(exc)) from exc
 

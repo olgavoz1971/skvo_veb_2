@@ -27,12 +27,6 @@ def test_review_card_plot_height_is_one_number():
 def test_photcal_fallback_is_not_a_gp_parameter():
     """Incomplete-upload zero points live on the lightcurve, not in GP config."""
     from skvo_veb.utils import gp as gp_pkg
-    from skvo_veb.utils.lc_config import (
-        DEFAULT_REFERENCE_MAG,
-        DEFAULT_ZP_FLUX_DIMENSIONLESS,
-    )
 
-    assert DEFAULT_REFERENCE_MAG == 20.0
-    assert DEFAULT_ZP_FLUX_DIMENSIONLESS == 1.0
     assert not hasattr(gp_pkg, "DEFAULT_REFERENCE_MAG")
     assert not hasattr(gp_pkg, "GP_ZP_FLUX_DIMENSIONLESS")
