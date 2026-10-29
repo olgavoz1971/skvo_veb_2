@@ -1,0 +1,19 @@
+star: V477_Lyr
+VOTable period (start): 0.4717390 d; paper period: 0.47173
+median catalogue sigma: 29.06 mmag; out-of-eclipse noise floor: 27.35 mmag (inflated by orbital modulation in contact systems; compare rms in mmag)
+variant A: rms 213.92 mmag, chi2 510402, rchi2 30.1, free parameters 1
+variant B: rms 34.68 mmag, chi2 16602, rchi2 1.0, free parameters 7
+variant C: rms 34.12 mmag, chi2 16199, rchi2 1.0, free parameters 9
+variant D: rms 34.12 mmag, chi2 16199, rchi2 1.0, free parameters 10
+fitted P0 (D): 0.47173137 +- 0.00000239 d (VOTable 0.4717390, paper 0.47173)
+amplitudes (fit D) against the paper (band differs; AV Del paper values are evaluated at Lambda = -0.262):
+  A1: TESS +0.4197 +- 0.0030   paper +1.5570 +- 0.0140
+  A2: TESS +0.0529 +- 0.0013   paper +0.0780 +- 0.0050
+  H1: TESS +0.2014 +- 0.0004   paper +0.3210 +- 0.0020
+  H2: TESS -0.0238 +- 0.0004   paper -0.0350 +- 0.0020
+  H3: TESS -0.0004 +- 0.0004   paper -0.0050 +- 0.0020
+  A2/A1: TESS 0.126   paper 0.050
+shape parameters (fit D) against the paper:
+  D1: TESS +0.0217 +- 0.0004   paper +0.0219 +- 0.0005
+  G1: TESS +1.2794 +- 0.0614   paper +0.7900 +- 0.0400
+  C1: TESS -0.3365 +- 0.0157   paper -0.3420 +- 0.0200

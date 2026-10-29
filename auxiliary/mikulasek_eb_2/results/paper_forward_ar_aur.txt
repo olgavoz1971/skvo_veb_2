@@ -1,0 +1,13 @@
+star: AR_Aur
+VOTable period (start): 4.1346510 d; paper period: 4.13169
+median catalogue sigma: 0.16 mmag; out-of-eclipse noise floor: 0.45 mmag (inflated by orbital modulation in contact systems; compare rms in mmag)
+variant B: rms 1.90 mmag, chi2 2066903, rchi2 122.5, free parameters 6
+variant C: rms 1.73 mmag, chi2 1695264, rchi2 100.5, free parameters 8
+variant D: rms 1.69 mmag, chi2 1605230, rchi2 95.1, free parameters 9
+fitted P0 (D): 4.13464888 +- 0.00000477 d (VOTable 4.1346510, paper 4.13169)
+amplitudes not compared (no TESS-band amplitudes in the paper)
+  A2/A1: TESS 0.877   paper B 0.797, V 0.828 (band dependent)
+shape parameters (fit D) against the paper:
+  D1: TESS +0.0175 +- 0.0000   paper +0.0168 +- 0.0003
+  G1: TESS +0.6035 +- 0.0008   paper +0.6190 +- 0.0100
+  C1: TESS -0.2807 +- 0.0010   paper -0.2500 +- 0.0200

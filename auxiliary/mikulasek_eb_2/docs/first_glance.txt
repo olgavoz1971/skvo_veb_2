@@ -1,0 +1,46 @@
+I did not use VSX, a contact-binary classifier, or a Mikulášek fit for that sentence. It was a fold on the VOTable period, plus a few binned medians and one width measured at half depth.
+
+Tools (libraries)
+volightcurve read_lightcurve — time, mag, P and epoch from the file.
+astropy.time — JD → MJD (only so the same helpers as the fitter can be used).
+eb_tuning.initial_guess — fold, depths, FWHM.
+eb_tuning.out_of_eclipse_mask / noise_floor — a crude “away from minima” mask.
+NumPy — medians, percentiles, a coarse 80-bin fold I printed.
+No period search, no Fourier classifier, no SIMBAD.
+The later matplotlib figure only confirmed what that inspect print already said.
+
+“Two minima ~0.5 apart, similar depths”
+initial_guess (200 phase bins, median mag in each bin):
+
+Fold: φ = ((t − t_first) / P) mod 1 with P from the VOTable, not a new period.
+Primary = faintest bin (argmax of the binned curve, because magnitudes).
+Secondary = the bin half a cycle away (ip + nb/2).
+Depths: A1 = mag_primary − median(curve), same for A2.
+So “0.5 apart” is by construction of that helper (circular-orbit assumption), not an independent measurement of secondary phase. “Similar depths” was just A1/A2 ≈ 0.44/0.38 ≈ 1.17.
+
+“Wide eclipses (FWHM ~0.15 in phase)”
+Still initial_guess, not a physical radius:
+
+Level = median of the folded bins.
+Walk left/right from primary until the bin falls below level + A1/2 (half-depth).
+FWHM = (n + m − 1) / 200 → 0.145 cycles.
+That is a half-width-at-half-maximum of the binned primary, in units of the orbit. “Wide” is a comparison in my head to the skill’s detached scale (D ~ 0.01–0.03, FWHM a few percent of P) versus contact (eclipses eating a large fraction of the cycle). 0.15 in phase means the primary is already ~30% of the orbit at half depth, so the two minima almost meet; there is little room for a flat continuum. No eclipse-contact modelling in that step.
+
+“Curved maxima rather than a flat continuum”
+This was not a named curvature statistic. Two cheap looks:
+
+Printed 80-bin median fold. Away from phase 0 and 0.5 the magnitude kept changing (brightest near ±0.25, already fainter toward both eclipses). A detached curve would sit near a constant level between narrow dips. This one looks like a double wave.
+
+out_of_eclipse_mask: points farther than 1.5 × FWHM from both centres (phase distance to the nearer of 0 and 0.5). On those points, 5th–95th percentile of mag was ~30 mmag. That is not white noise; it is leftover orbital modulation (ellipsoidal / proximity). For a contact binary the mask is also imperfect, because “out of eclipse” is a thin slice.
+
+“Curved maxima” = the fold is round at quadrature and slopes into the eclipses, plus tens of mmag of extra scatter in the supposed continuum. I did not fit cos(4πθ) first and then declare ellipsoidal variation; H2 came later in the fit and agreed with that guess.
+
+“Maxima unequal by ~7 mmag”
+Not O’Connell’s S1. Two median magnitudes in windows of half-width 0.05 around phase +0.25 and −0.25 (relative to the data M0). Difference ≈ 7 mmag. That is a two-point comparison, not a sine-term fit.
+
+What this method cannot do
+It cannot prove the type (W UMa vs something else with a similar fold).
+FWHM is binned and half-depth, so it is coarse at 10 min cadence.
+Secondary must sit at 0.5 in this recipe; eccentricity would be missed unless you look at the fold another way.
+“Curved maxima” is visual + percentile range, not a curvature test or harmonic F-test.
+Shape analysis here = fold on catalogue P → binned medians → half-depth width → a look at quadrature and the ‘continuum’. The Mikulášek model was used after that, to fit, not to recognise.
