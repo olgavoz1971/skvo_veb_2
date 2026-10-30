@@ -1,14 +1,29 @@
 """eb_tuning.py -- helpers for tuning mikulasek_eb fits (starting values, multi-start,
 exact residuals, window scan, timing clean-up).  All times relative (t = BJD - T_ref),
 y in magnitudes, sigma in magnitudes."""
+import logging
+
 import numpy as np
 from mikulasek_eb import (EBModel, PROFILES, phase, fit_global, virtual_minima,
                           fit_ephemeris, _Nuisance)
 
+logger = logging.getLogger(__name__)
+
 def noise_floor(t, y, maxgap=None, mask=None):
-    """Robust white-noise sigma [mag] from consecutive-point differences.
-    mask: boolean array of usable points (use out_of_eclipse_mask: steep ingress/egress
-    otherwise inflates the estimate, by ~30% in my test)."""
+    """Robust white-noise sigma from consecutive-point differences.
+
+    Args:
+        t (ndarray): Times (days).
+        y (ndarray): Magnitudes (mag).
+        maxgap (float or None): Largest time step (days) counted as consecutive; default
+            1.5 times the median step.
+        mask (ndarray or None): Usable points. Use ``out_of_eclipse_mask``: steep
+            ingress/egress otherwise inflates the estimate (about 30 percent in a test, and
+            far more for contact systems).
+
+    Returns:
+        float: Noise sigma (mag).
+    """
     t, y = np.asarray(t, float), np.asarray(y, float)
     o = np.argsort(t); t, y = t[o], y[o]
     m = np.ones(len(t), bool) if mask is None else np.asarray(mask)[o]
@@ -18,17 +33,46 @@ def noise_floor(t, y, maxgap=None, mask=None):
     return float(1.4826*np.median(np.abs(d - np.median(d)))/np.sqrt(2))
 
 def out_of_eclipse_mask(t, ephem, fwhm, nfwhm=1.0):
-    """True where the point is farther than nfwhm*FWHM (phase) from both eclipse centres."""
+    """Flag points farther than ``nfwhm`` FWHM (in phase) from both eclipse centres.
+
+    Args:
+        t (ndarray): Times (days).
+        ephem (dict): Ephemeris (M0, P0 in days; optional Pdot).
+        fwhm (float): Eclipse FWHM (cycles).
+        nfwhm (float): Exclusion half-width in units of ``fwhm``.
+
+    Returns:
+        ndarray: Boolean mask, True out of eclipse.
+    """
     ph = phase(t, ephem["M0"], ephem["P0"], ephem.get("Pdot", 0.0))
     d = np.abs(ph - np.round(2*ph)/2)
     return d > nfwhm*fwhm
 
 def D_from_fwhm(fwhm, G):
-    """Profile 1 with C=0: FWHM = 2 D arccosh(1 - ln(1 - 2^(-1/G)))."""
+    """Width D for a given FWHM, profile 1 with C = 0: FWHM = 2 D arccosh(1 - ln(1 - 2^(-1/G))).
+
+    Args:
+        fwhm (float): Full width at half depth (cycles).
+        G (float): Kurtosis Gamma.
+
+    Returns:
+        float: D (cycles).
+    """
     return fwhm/(2*np.arccosh(1 - np.log(1 - 2**(-1/G))))
 
 def initial_guess(t, mag, P, nb=200):
-    """M0 (near mid-data), A1, A2, FWHM of primary [phase units] from the folded curve."""
+    """Starting values from the folded light curve.
+
+    Args:
+        t (ndarray): Times (days).
+        mag (ndarray): Magnitudes (mag).
+        P (float): Approximate period (days).
+        nb (int): Number of phase bins.
+
+    Returns:
+        dict: M0 (days, near mid-data), A1 and A2 (mag, relative to the median level) and
+        fwhm of the primary (cycles).
+    """
     t = np.asarray(t); t0 = t[0]; ph = ((t - t0)/P) % 1
     b = np.minimum((ph*nb).astype(int), nb-1)
     c = np.array([np.median(mag[b == i]) if np.any(b == i) else np.nan for i in range(nb)])
@@ -44,15 +88,35 @@ def initial_guess(t, mag, P, nb=200):
 def multistart_global(t, mag, sig, model, p0, free, e0, fwhm, starts=(0.5, 1, 2, 4, 8),
                       free_ephem=("M0", "P0"), seg=None, order=1):
     """Refit from several Gamma starts (D set consistently from the FWHM).
-    The default includes Gamma < 1 (0.5): three of the four stars in Mikulasek (2015) Table 1
-    have 0.62 <= Gamma <= 0.82.
-    Returns (best FitResult, table).  Rejects non-finite or D<=0 / G<=0 solutions."""
+
+    The default includes Gamma < 1 (0.5): three of the four stars in Mikulasek (2015)
+    Table 1 have 0.62 <= Gamma <= 0.82. Non-finite or D <= 0 / G <= 0 solutions are rejected.
+    A start whose fit raises is recorded in the table with the exception text, not hidden.
+
+    Args:
+        t (ndarray): Times (days).
+        mag (ndarray): Magnitudes (mag).
+        sig (ndarray): Magnitude errors (mag).
+        model (EBModel): Model to fit.
+        p0 (dict): Starting template parameters.
+        free (list of str): Template parameters to fit.
+        e0 (dict): Starting ephemeris.
+        fwhm (float): Eclipse FWHM (cycles) used to set D for each Gamma.
+        starts (tuple of float): Gamma starting values.
+        free_ephem (tuple of str): Ephemeris parameters to fit.
+        seg (ndarray or None): Baseline segment id per point.
+        order (int): Baseline polynomial degree.
+
+    Returns:
+        tuple: (best FitResult or None, table of (G0, chi2, D1, G1, status)).
+    """
     best, rows = None, []
     for G0 in starts:
         p = dict(p0, G1=G0, D1=D_from_fwhm(fwhm, G0))
         try:
             r = fit_global(t, mag, sig, model, p, free, e0, free_ephem, seg=seg, order=order)
         except Exception as ex:
+            logger.warning("multistart G0=%s failed: %s: %s", G0, type(ex).__name__, ex)
             rows.append((G0, np.nan, np.nan, np.nan, str(ex)[:40])); continue
         ok = np.isfinite(r.chi2) and r.p["D1"] > 0 and r.p["G1"] > 0
         rows.append((G0, r.chi2, r.p["D1"], r.p["G1"], "ok" if ok else "rejected"))
@@ -60,13 +124,36 @@ def multistart_global(t, mag, sig, model, p0, free, e0, fwhm, starts=(0.5, 1, 2,
     return best, rows
 
 def residuals(t, mag, sig, model, r, seg=None, order=1):
-    """Exact residuals [mag] after removing the per-segment polynomial baselines."""
+    """Exact residuals after removing the per-segment polynomial baselines.
+
+    Args:
+        t (ndarray): Times (days).
+        mag (ndarray): Magnitudes (mag).
+        sig (ndarray): Magnitude errors (mag).
+        model (EBModel): Model.
+        r (FitResult): Fit result.
+        seg (ndarray or None): Baseline segment id per point.
+        order (int): Baseline polynomial degree.
+
+    Returns:
+        tuple: (residuals in mag, phase in cycles).
+    """
     t, mag, sig = (np.asarray(a, float) for a in (t, mag, sig)); w = 1/sig
     th = phase(t, r.ephem["M0"], r.ephem["P0"], r.ephem.get("Pdot", 0.0))
     return _Nuisance(t, w, seg, order).project(w*(mag - model(th, r.p)))/w, th
 
 def binned_residuals(res, th, half=0.12, step=0.02):
-    """Mean residual [mmag] in phase bins around eclipse 1 and 2 -> dict of arrays."""
+    """Mean residual in phase bins around both eclipses.
+
+    Args:
+        res (ndarray): Residuals (mag).
+        th (ndarray): Phase (cycles).
+        half (float): Half-width of the binned range (cycles).
+        step (float): Bin width (cycles).
+
+    Returns:
+        dict: Arrays "primary" and "secondary" (mmag) and the bin "edges" (cycles).
+    """
     ph = th % 1; out = {}
     edges = np.arange(-half, half+1e-9, step)
     for name, c in (("primary", 0.0), ("secondary", 0.5)):
@@ -77,7 +164,17 @@ def binned_residuals(res, th, half=0.12, step=0.02):
     return out
 
 def clip_timings(vm, deg=1, nsig=4.0, max_iter=5):
-    """Boolean mask of timings kept after iterative clipping about a polynomial ephemeris."""
+    """Mask of timings kept after iterative clipping about a polynomial ephemeris.
+
+    Args:
+        vm (dict): Timings with E, T (days) and sigma (days).
+        deg (int): Ephemeris polynomial degree.
+        nsig (float): Clipping threshold in units of max(MAD scatter, formal sigma).
+        max_iter (int): Maximum iterations.
+
+    Returns:
+        ndarray: Boolean mask of kept events.
+    """
     keep = np.ones(len(vm["T"]), bool)
     for _ in range(max_iter):
         c, _, _ = fit_ephemeris(vm["T"][keep], vm["sigma"][keep], vm["E"][keep], deg)
@@ -90,10 +187,29 @@ def clip_timings(vm, deg=1, nsig=4.0, max_iter=5):
 
 def window_scan(t, mag, sig, model, r, windows=(0.25, 0.15, 0.10, 0.06), order=1, deg=1,
                 free=(), max_sigma_factor=5.0, wall_band=None, min_wall=3):
-    """Timings for several windows; prints N, median sigma, O-C rms (s), std(z).
-    Choose the window with small O-C rms AND std(z) ~ 1, not the smallest formal sigma.
-    If wall_band is given, every window is run twice: all events, and only events with both
-    walls covered ("walls"); a big difference means partial events are biased."""
+    """Timings for several windows; logs N, median sigma, O-C rms (s) and std(z).
+
+    Choose the window with small O-C rms and std(z) near 1, not the smallest formal sigma.
+    If ``wall_band`` is given every window is run twice: all events, and only events with both
+    walls covered ("walls"); a big difference means partial events are biased.
+
+    Args:
+        t (ndarray): Times (days).
+        mag (ndarray): Magnitudes (mag).
+        sig (ndarray): Magnitude errors (mag).
+        model (EBModel): Template model.
+        r (FitResult): Fit providing the template and ephemeris.
+        windows (tuple of float): Phase half-widths to try (cycles).
+        order (int): Per-event baseline degree.
+        deg (int): O-C ephemeris degree.
+        free (tuple of str): Shape scales fitted per event.
+        max_sigma_factor (float): Drop events whose sigma exceeds this times the median.
+        wall_band (dict or None): Wall coverage requirement, see ``virtual_minima``.
+        min_wall (int): Minimum points per wall.
+
+    Returns:
+        tuple: (dict (label, window) -> timings, table rows).
+    """
     variants = [("all", None)] + ([("walls", wall_band)] if wall_band is not None else [])
     rows, out = [], {}
     for lab, wb in variants:
@@ -107,14 +223,25 @@ def window_scan(t, mag, sig, model, r, windows=(0.25, 0.15, 0.10, 0.06), order=1
             _, res, _ = fit_ephemeris(v["T"], v["sigma"], v["E"], deg)
             rows.append((lab, w, len(v["T"]), 86400*np.median(v["sigma"]), 86400*res.std(), (res/v["sigma"]).std()))
             out[(lab, w)] = v
-    print("events  window  N   med.sigma[s]  O-C rms[s]  std(z)")
-    for lab, w, n, sg, rr, z in rows: print(f"{lab:6s} {w:6.2f} {n:3d} {sg:12.1f} {rr:11.1f} {z:7.2f}")
+    logger.info("events  window  N   med.sigma[s]  O-C rms[s]  std(z)")
+    for lab, w, n, sg, rr, z in rows:
+        logger.info("%-6s %6.2f %3d %12.1f %11.1f %7.2f", lab, w, n, sg, rr, z)
     return out, rows
 
 def wall_band(model, p, frac=(0.9, 0.1)):
-    """Phase band of the eclipse walls: |phase offset| between where the eclipse profile has
-    fallen to frac[0] and to frac[1] of its central value.  Returns {1: (lo, hi), 2: (lo, hi)}
-    for use as virtual_minima(..., wall_band=...)."""
+    """Phase band of the eclipse walls.
+
+    The band is |phase offset| between where the eclipse profile has fallen to ``frac[0]``
+    and to ``frac[1]`` of its central value.
+
+    Args:
+        model (EBModel): Model.
+        p (dict): Template parameters.
+        frac (tuple of float): Upper and lower fraction of the central value.
+
+    Returns:
+        dict: {1: (lo, hi), 2: (lo, hi)} in cycles, for ``virtual_minima(wall_band=...)``.
+    """
     out = {}
     g = np.linspace(0.0, 0.3, 6001)
     for k, c in ((1, 0.0), (2, 0.5)):
@@ -131,10 +258,28 @@ def wall_band(model, p, frac=(0.9, 0.1)):
 
 def refine_two_component(t, mag, sig, model, r, seg=None, order=1, eclipses=(1,),
                          frac=0.3, widths=(0.5, 1.5), gammas=(0.7, 6.0)):
-    """EXTENSION (not in the paper): add a second profile component to the chosen eclipses,
-    starting from single-component fit r.  Tries a small grid of starts (width factor x Gamma)
-    for the new component and returns (best FitResult or None, rows).  Judge the result by
-    rms/noise, error sizes and by timing stability (see SKILL.md), not by chi2 alone."""
+    """EXTENSION (not in the paper): add a second profile component to the chosen eclipses.
+
+    Starts from the single-component fit ``r`` and tries a small grid of starts (width factor
+    times Gamma) for the new component. Judge the result by rms/noise, error sizes and
+    timing stability, not by chi-square alone.
+
+    Args:
+        t (ndarray): Times (days).
+        mag (ndarray): Magnitudes (mag).
+        sig (ndarray): Magnitude errors (mag).
+        model (EBModel): Model.
+        r (FitResult): Single-component fit.
+        seg (ndarray or None): Baseline segment id per point.
+        order (int): Baseline polynomial degree.
+        eclipses (tuple of int): Eclipses (1, 2) receiving the second component.
+        frac (float): Starting fraction of the amplitude given to the new component.
+        widths (tuple of float): Starting width factors for D<k>b relative to D<k>.
+        gammas (tuple of float): Starting Gamma values for the new component.
+
+    Returns:
+        tuple: (best FitResult or None, table of (width factor, Gamma, chi2, rms in mmag, status)).
+    """
     free_base = [n for n in r.names if n in r.p]
     free_eph = [n for n in r.names if n not in r.p]
     rows, best = [], None
@@ -153,6 +298,8 @@ def refine_two_component(t, mag, sig, model, r, seg=None, order=1, eclipses=(1,)
             try:
                 rr = fit_global(t, mag, sig, model, p, free, r.ephem, free_eph, seg=seg, order=order)
             except Exception as ex:
+                logger.warning("two-component start (width %s, Gamma %s) failed: %s: %s",
+                               wf, G2, type(ex).__name__, ex)
                 rows.append((wf, G2, np.nan, np.nan, "error")); continue
             ok = (np.isfinite(rr.chi2) and all(rr.p[f"D{k}"] > 0 and rr.p[f"D{k}b"] > 0 and
                   rr.p[f"G{k}"] > 0 and rr.p[f"G{k}b"] > 0 for k in eclipses))
@@ -162,11 +309,23 @@ def refine_two_component(t, mag, sig, model, r, seg=None, order=1, eclipses=(1,)
 
 
 def oc_diagnostics(v, deg=1, verbose=True):
-    """What is behind the O-C scatter?  v = dict with E, T, sigma (e.g. one entry of window_scan).
-    Reports rms of primary/secondary residuals, the excess over the formal sigma, the secondary-minus-
-    primary offset (with s.e.), the correlation of each primary with the next secondary
-    (negative = anticorrelated, the classic starspot signature), and lag-1 autocorrelation along E.
-    sigma_extra [d] = extra white scatter to add in quadrature to the formal sigma."""
+    """Diagnose what is behind the O-C scatter.
+
+    Reports the rms of primary and secondary residuals, the excess over the formal sigma,
+    the secondary-minus-primary offset (with standard error), the correlation of each primary
+    with the next secondary (negative means anticorrelated, the classic starspot signature)
+    and the lag-1 autocorrelation along E.
+
+    Args:
+        v (dict): Timings with E, T (days) and sigma (days), for example one entry of
+            ``window_scan``.
+        deg (int): Ephemeris polynomial degree.
+        verbose (bool): Log a summary at INFO level.
+
+    Returns:
+        dict: Counts, rms values (days), offsets (days), ``sigma_extra`` (extra white scatter
+        to add in quadrature, days), ``pair_corr`` and ``lag1_autocorr``.
+    """
     E, T, s = (np.asarray(v[k], float) for k in ("E", "T", "sigma"))
     o = np.argsort(E); E, T, s = E[o], T[o], s[o]
     _, res, _ = fit_ephemeris(T, s, E, deg)
@@ -192,10 +351,10 @@ def oc_diagnostics(v, deg=1, verbose=True):
     out["lag1_autocorr"] = float(np.mean(ac)) if ac else float("nan")
     if verbose:
         f = lambda x: 86400*x
-        print(f"O-C rms [s]: primary {f(out['rms_primary']):.1f} (N={out['n_primary']}), secondary {f(out['rms_secondary']):.1f} (N={out['n_secondary']}); "
+        logger.info(f"O-C rms [s]: primary {f(out['rms_primary']):.1f} (N={out['n_primary']}), secondary {f(out['rms_secondary']):.1f} (N={out['n_secondary']}); "
               f"median formal sigma {f(out['median_sigma']):.1f}; extra white scatter {f(out['sigma_extra']):.1f}")
-        print(f"secondary - primary offset: {f(out['offset_sec_minus_prim']):+.1f} +- {f(out['offset_se']):.1f} s")
+        logger.info(f"secondary - primary offset: {f(out['offset_sec_minus_prim']):+.1f} +- {f(out['offset_se']):.1f} s")
         if "pair_corr" in out:
-            print(f"primary vs next-secondary O-C correlation r = {out['pair_corr']:+.2f} (N={out['n_pairs']}); "
+            logger.info(f"primary vs next-secondary O-C correlation r = {out['pair_corr']:+.2f} (N={out['n_pairs']}); "
                   f"rms of pair means {f(out['rms_pair_mean']):.1f} s vs single {f(out['rms_pair_single']):.1f} s;  lag-1 autocorr {out['lag1_autocorr']:+.2f}")
     return out

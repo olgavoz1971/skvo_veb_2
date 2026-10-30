@@ -11,11 +11,46 @@
       "cadence_min": 10.0,
       "votable_period_d": 0.2666852,
       "paper": {
-        "filter": "V", "n_points": 247, "free_parameters": 10, "period_d": 0.26669,
-        "D": [0.052, 0.003], "Gamma": [1.7, 0.4],
-        "a11": [0.331, 0.012], "a21": [0.289, 0.009],
-        "a31_cos2pi": [0.023, 0.005], "a41_cos4pi": [0.150, 0.005], "A6_sin2pi": [0.032, 0.002],
-        "C1": [0.10, 0.17], "C2": [-0.14, 0.09],
+        "filter": "V",
+        "n_points": 247,
+        "free_parameters": 10,
+        "period_d": 0.26669,
+        "D": [
+          0.052,
+          0.003
+        ],
+        "Gamma": [
+          1.7,
+          0.4
+        ],
+        "a11": [
+          0.331,
+          0.012
+        ],
+        "a21": [
+          0.289,
+          0.009
+        ],
+        "a31_cos2pi": [
+          0.023,
+          0.005
+        ],
+        "a41_cos4pi": [
+          0.15,
+          0.005
+        ],
+        "A6_sin2pi": [
+          0.032,
+          0.002
+        ],
+        "C1": [
+          0.1,
+          0.17
+        ],
+        "C2": [
+          -0.14,
+          0.09
+        ],
         "rho": 0.73,
         "text_type": "overcontact, spotted; secondary minimum is a transit"
       },
@@ -34,11 +69,43 @@
       "cadence_min": 2.0,
       "votable_period_d": 4.134651,
       "paper": {
-        "filter": "B/V (two columns)", "n_points": "686/687", "free_parameters": 9, "period_d": 4.13169,
-        "D": [0.0168, 0.0003], "Gamma": [0.619, 0.010],
-        "a11_B_V": [0.691, 0.681], "a21_B_V": [0.551, 0.564],
-        "a31": [-0.0022, 0.0005], "a32": [-0.022, 0.004], "a41": [0.0028, 0.0009],
-        "C": [-0.25, 0.02], "rho": 1.05,
+        "filter": "B/V (two columns)",
+        "n_points": "686/687",
+        "free_parameters": 9,
+        "period_d": 4.13169,
+        "D": [
+          0.0168,
+          0.0003
+        ],
+        "Gamma": [
+          0.619,
+          0.01
+        ],
+        "a11_B_V": [
+          0.691,
+          0.681
+        ],
+        "a21_B_V": [
+          0.551,
+          0.564
+        ],
+        "a31": [
+          -0.0022,
+          0.0005
+        ],
+        "a32": [
+          -0.022,
+          0.004
+        ],
+        "a41": [
+          0.0028,
+          0.0009
+        ],
+        "C": [
+          -0.25,
+          0.02
+        ],
+        "rho": 1.05,
         "text_type": "detached prototype",
         "warning": "Paper Table 1 period 4.13169 d is contradicted by the data: folding on it smears the eclipses (rms 8.6 mmag), the VOTable period 4.134651 d gives rms 1.7 mmag, and a free fit from the paper value converges to 4.134649(5) d. Probably a transcription typo for 4.13469 d. Paper has B and V only, TESS red needs extrapolation in Lambda. Tmag about 6, possible saturation."
       }
@@ -49,11 +116,47 @@
       "cadence_min": 3.3,
       "votable_period_d": 3.85343,
       "paper": {
-        "filter": "BVRI", "n_points": 545, "free_parameters": 13, "period_d": 3.8534,
-        "D": [0.0396, 0.0007], "Gamma": [0.82, 0.05],
-        "a11": [1.153, 0.011], "a12": [1.17, 0.04], "a21": [0.123, 0.003], "a22": [-0.188, 0.013],
-        "a41": [0.050, 0.002], "a42": [-0.044, 0.001],
-        "C": [-0.24, 0.07], "rho": 1.05,
+        "filter": "BVRI",
+        "n_points": 545,
+        "free_parameters": 13,
+        "period_d": 3.8534,
+        "D": [
+          0.0396,
+          0.0007
+        ],
+        "Gamma": [
+          0.82,
+          0.05
+        ],
+        "a11": [
+          1.153,
+          0.011
+        ],
+        "a12": [
+          1.17,
+          0.04
+        ],
+        "a21": [
+          0.123,
+          0.003
+        ],
+        "a22": [
+          -0.188,
+          0.013
+        ],
+        "a41": [
+          0.05,
+          0.002
+        ],
+        "a42": [
+          -0.044,
+          0.001
+        ],
+        "C": [
+          -0.24,
+          0.07
+        ],
+        "rho": 1.05,
         "text_type": "semidetached cool Algol; A3 = 0",
         "lambda_formula": "a_k(Lambda) = a_k1 + a_k2 * Lambda, evaluate at tess_lambda"
       }
@@ -64,11 +167,43 @@
       "cadence_min": 2.0,
       "votable_period_d": 0.471739,
       "paper": {
-        "filter": "V", "n_points": 294, "free_parameters": 8, "period_d": 0.47173,
-        "D": [0.0219, 0.0005], "Gamma": [0.79, 0.04],
-        "a11": [1.557, 0.014], "a21": [0.078, 0.005],
-        "a31_cos2pi": [0.321, 0.002], "a41_cos4pi": [-0.035, 0.002], "a51_cos6pi": [-0.005, 0.002],
-        "C": [-0.342, 0.020], "rho": 0.31,
+        "filter": "V",
+        "n_points": 294,
+        "free_parameters": 8,
+        "period_d": 0.47173,
+        "D": [
+          0.0219,
+          0.0005
+        ],
+        "Gamma": [
+          0.79,
+          0.04
+        ],
+        "a11": [
+          1.557,
+          0.014
+        ],
+        "a21": [
+          0.078,
+          0.005
+        ],
+        "a31_cos2pi": [
+          0.321,
+          0.002
+        ],
+        "a41_cos4pi": [
+          -0.035,
+          0.002
+        ],
+        "a51_cos6pi": [
+          -0.005,
+          0.002
+        ],
+        "C": [
+          -0.342,
+          0.02
+        ],
+        "rho": 0.31,
         "text_type": "detached; hot nebular nucleus plus solar-type star; strong reflection effect",
         "warning": "TESS depth is diluted (fold gives about 0.6 mag against 1.56 mag in the paper); noise about 29 mmag per point."
       }
@@ -80,7 +215,15 @@
       "paper": null,
       "regression_reference": {
         "script": "working_scripts/fit_tic455790537_spoc_s16.py",
-        "note": "two-component primary adopted, rms/noise about 1.45; extension, not paper"
+        "note": "two-component primary adopted, rms/noise about 1.45; extension, not paper",
+        "adopted_rms_mag": 0.0031297,
+        "rms_over_noise": 1.604,
+        "noise_floor_mag": 0.0019514,
+        "two_component_adopted": true,
+        "P0_d": 0.9350874866,
+        "M0_mjd": 58750.413803,
+        "A1": 0.12462,
+        "A2": 0.0929
       }
     }
   }

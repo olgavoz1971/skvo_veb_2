@@ -15,7 +15,7 @@ import numpy as np
 from astropy.time import Time
 
 from eb_tuning import clip_timings, wall_band
-from mikulasek_eb import fit_ephemeris, virtual_minima
+from mikulasek_eb import fit_ephemeris, predicted_time, virtual_minima
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +181,7 @@ def time_both_walls(
     *,
     require_contact_walls: bool = True,
     clip_outliers: bool = True,
+    rejected: list | None = None,
 ) -> dict:
     """Time eclipses; convert T to JD and number E from T0.
 
@@ -201,11 +202,16 @@ def time_both_walls(
         period (float): Period used to number E (VOTable PARAM, days).
         require_contact_walls (bool): If True, require sampled 90%-10% walls.
         clip_outliers (bool): If True, 5x-median sigma and 4-sigma O-C clip.
+        rejected (list | None): If given, receives one dict per eclipse of
+            type ``which`` that was not timed: ``E`` (from T0), ``T_pred_jd``
+            (predicted mid-eclipse, absolute JD), ``reason`` and ``detail``
+            (see ``virtual_minima``).
 
     Returns:
         dict: Timings with ``T`` as absolute JD and E from T0.
     """
     wb = wall_band(model, r.p) if require_contact_walls else None
+    engine_rejected: list = []
     vm = virtual_minima(
         t_mjd,
         mag,
@@ -217,7 +223,12 @@ def time_both_walls(
         order=TIMING_BASELINE_ORDER,
         free=(),
         wall_band=wb,
+        rejected=engine_rejected,
     )
+    if rejected is not None:
+        rejected.extend(
+            _annotate_rejections(engine_rejected, r.ephem, which, t0_jd, period)
+        )
     if not has_timings(vm):
         logger.warning("No events at window=%.2f (%s).", window, which)
         return empty_timings()
@@ -228,6 +239,39 @@ def time_both_walls(
     out = clean_timings(vm) if clip_outliers else vm
     if not has_timings(out):
         logger.warning("No %s events left at window=%.2f.", which, window)
+    return out
+
+
+def _annotate_rejections(
+    engine_rejected: list, ephem: dict, which: str, t0_jd: float, period: float
+) -> list:
+    """Convert engine rejections to T0-fold numbering and select one eclipse type.
+
+    Args:
+        engine_rejected (list): Dicts from ``virtual_minima`` (``E`` counted from
+            the fitted M0).
+        ephem (dict): Fitted ephemeris in MJD (M0, P0, optional Pdot).
+        which (str): ``all``, ``primary`` or ``secondary`` on the T0 fold.
+        t0_jd (float): Folding T0 as absolute JD.
+        period (float): Period used for T0 numbering (days).
+
+    Returns:
+        list: Dicts with ``E`` from T0, ``T_pred_jd``, ``reason`` and ``detail``.
+    """
+    out = []
+    for row in engine_rejected:
+        t_pred_jd = float(
+            mjd_to_jd(
+                predicted_time(row["E"], ephem["M0"], ephem["P0"], ephem.get("Pdot", 0.0))
+            )
+        )
+        e_t0 = float(eclipse_number_from_t0(t_pred_jd, t0_jd, period))
+        primary = bool(is_primary_on_t0_fold(e_t0))
+        if which == "primary" and not primary:
+            continue
+        if which == "secondary" and primary:
+            continue
+        out.append(dict(E=e_t0, T_pred_jd=t_pred_jd, reason=row["reason"], detail=row["detail"]))
     return out
 
 
@@ -300,6 +344,7 @@ def write_timing_ascii(
         "coverage: observations on both sides of mid-eclipse; "
         "90-10 percent contact wall_band not required"
     ),
+    rejected: list | None = None,
 ) -> None:
     """Write times of minima as two-column ASCII (JD, error in days).
 
@@ -315,6 +360,8 @@ def write_timing_ascii(
         extra_comments (list[str]): Extra metadata lines (without the hash).
         timescale (str, optional): TIMESYS timescale for the header.
         coverage_line (str): Header line describing the coverage cut.
+        rejected (list | None): Eclipses of this type that were not timed (from
+            ``time_both_walls``); written to the header with their reason.
     """
     if not has_timings(vm):
         logger.warning("skip %s: no timings to write", path)
@@ -342,6 +389,18 @@ def write_timing_ascii(
     ]
     for c in extra_comments:
         lines.append(f"# {c}")
+    if rejected is not None:
+        reasons = sorted({row["reason"] for row in rejected})
+        counts = ", ".join(
+            f"{reason}={sum(1 for row in rejected if row['reason'] == reason)}"
+            for reason in reasons
+        )
+        lines.append(f"# rejected_events: {len(rejected)}" + (f" ({counts})" if counts else ""))
+        for row in sorted(rejected, key=lambda x: x["E"]):
+            lines.append(
+                f"# rejected E={row['E']:+.1f} T_pred_jd={row['T_pred_jd']:.5f} "
+                f"{row['reason']} {row['detail']}"
+            )
     for i in order:
         lines.append(f"{jd[i]:.10f}{COL_SEP}{err[i]:.10f}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

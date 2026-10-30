@@ -1,7 +1,11 @@
 """TESS-style workflow on SYNTHETIC data (replace the block "fake input" by your own t, flux, ferr).
 Run from the folder containing mikulasek_eb.py."""
+import logging
 import numpy as np
 from mikulasek_eb import *
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 # ---- fake "TESS-like" input: 2 orbits, 2-min cadence, P = 1.2345 d ----
 rng = np.random.default_rng(5)
@@ -28,7 +32,7 @@ M0 += P*round((t.mean() - M0)/P)                     # put M0 near the middle of
 level = np.median(curve);  A1 = curve[ip] - level
 A2 = curve[(ip + nb//2) % nb] - level
 D = (np.sum(curve > level + A1/2)/nb) / 2.2          # FWHM ~ 2.2 D  (for Gamma ~ 1)
-print(f"start: M0={M0:.4f} A1={A1:.3f} A2={A2:.3f} D={D:.4f}")
+logger.info(f"start: M0={M0:.4f} A1={A1:.3f} A2={A2:.3f} D={D:.4f}")
 
 # ---- 3. staged global fit ----
 model = EBModel(profile=1, harmonics=(1, 2))
@@ -36,14 +40,14 @@ p0 = dict(A1=A1, A2=A2, D1=D, G1=1.0, C1=0.0, H1=0.0, H2=0.0)
 e0 = dict(M0=M0, P0=P, Pdot=0.0)
 r1 = fit_global(t, mag, sig, model, p0, ["A1","A2","D1","G1"], e0, ("M0","P0"), seg=seg, order=2)
 r2 = fit_global(t, mag, sig, model, r1.p, ["A1","A2","D1","G1","C1","H1","H2"], r1.ephem, ("M0","P0"), seg=seg, order=2)
-for n in r2.names: print(f"  {n:3s} = { {**r2.p, **r2.ephem}[n]:.6f} +- {r2.err[n]:.6f}")
-print(f"rms={r2.rms:.4f} mag  rchi2={r2.rchi2:.2f}")
+for n in r2.names: logger.info(f"  {n:3s} = { {**r2.p, **r2.ephem}[n]:.6f} +- {r2.err[n]:.6f}")
+logger.info(f"rms={r2.rms:.4f} mag  rchi2={r2.rchi2:.2f}")
 
 # ---- 4. timings and O-C ----
 vm = virtual_minima(t, mag, sig, model, r2.p, r2.ephem, window=0.25, order=1)
 c, res, rms = fit_ephemeris(vm["T"], vm["sigma"], vm["E"], deg=1)
-print(f"{len(vm['T'])} minima, median sigma = {86400*np.median(vm['sigma']):.1f} s, O-C rms = {86400*res.std():.1f} s")
+logger.info(f"{len(vm['T'])} minima, median sigma = {86400*np.median(vm['sigma']):.1f} s, O-C rms = {86400*res.std():.1f} s")
 z = res/vm["sigma"]
-print("std(z)=%.2f ; sigma range [s]: %.1f - %.1f"%(z.std(), 86400*vm["sigma"].min(), 86400*vm["sigma"].max()))
-o = np.argsort(-abs(z))[:5]; print("worst:", [(vm['E'][i], vm['n'][i], round(86400*res[i],1), round(86400*vm['sigma'][i],1)) for i in o])
-print("median |res| s:", 86400*np.median(abs(res)))
+logger.info("std(z)=%.2f ; sigma range [s]: %.1f - %.1f", z.std(), 86400*vm["sigma"].min(), 86400*vm["sigma"].max())
+o = np.argsort(-abs(z))[:5]; logger.info("worst: %s", [(vm['E'][i], vm['n'][i], round(86400*res[i],1), round(86400*vm['sigma'][i],1)) for i in o])
+logger.info("median |res| s: %.1f", 86400*np.median(abs(res)))

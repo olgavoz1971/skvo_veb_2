@@ -24,6 +24,7 @@
 # two_component_primary: rejected (shape checks)
 # coverage: observations on both sides of mid-eclipse (min_each_side=3); no 90-10 percent contact wall_band; no O-C clip
 # window_meaning: |phase-E| < 0.25
+# rejected_events: 0
 2459640.5156616708   0.0001471392
 2459640.7823343086   0.0001588729
 2459641.0489842524   0.0001513596

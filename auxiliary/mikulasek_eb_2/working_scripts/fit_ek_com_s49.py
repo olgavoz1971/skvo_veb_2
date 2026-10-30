@@ -174,9 +174,10 @@ def main() -> None:
         "(min_each_side=3); no 90-10 percent contact wall_band; no O-C clip"
     )
 
+    rejected_p: list = []
     vm_p = time_both_walls(
         t_mjd, mag_w, sig_w, model, adopted, HALF_ORBIT_WINDOW,
-        "primary", epoch_jd, period, **timing_kw,
+        "primary", epoch_jd, period, rejected=rejected_p, **timing_kw,
     )
     if has_timings(vm_p):
         logger.info(
@@ -194,12 +195,14 @@ def main() -> None:
             coverage_note,
             "window_meaning: |phase-E| < 0.25",
         ],
+        rejected=rejected_p,
         **ascii_kw,
     )
 
+    rejected_s: list = []
     vm_s = time_both_walls(
         t_mjd, mag_w, sig_w, model, adopted, HALF_ORBIT_WINDOW,
-        "secondary", epoch_jd, period, **timing_kw,
+        "secondary", epoch_jd, period, rejected=rejected_s, **timing_kw,
     )
     if has_timings(vm_s):
         logger.info(
@@ -217,6 +220,7 @@ def main() -> None:
             coverage_note,
             "window_meaning: |phase-E| < 0.25",
         ],
+        rejected=rejected_s,
         **ascii_kw,
     )
 
