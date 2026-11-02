@@ -124,9 +124,25 @@ def download_selected_pixel(pixel_args, search_result_di, size, fresh_from_mast=
 def process_lightcurve_computation(pixel_data_path, mask_list, sub_bkg,
                                   flatten, show_trend, flatten_window, 
                                   flatten_break_gap, flatten_order):
-    """
-    Process pixel data to extract time, flux, and error arrays.
-    All scientific computation is isolated here.
+    """Extract aperture photometry from a cached TESS cutout FITS file.
+
+    Cadences already excluded by Lightkurve's default TESS quality bitmask
+    (``quality_bitmask=17087``) are absent from the TPF. An extra
+    ``quality == 0`` cut is left commented out below so stray-light cadences
+    stay in the lightcurve, matching the pixel cube.
+
+    Args:
+        pixel_data_path (str): Absolute path to the cutout FITS file.
+        mask_list (list): 2D boolean aperture mask.
+        sub_bkg: When true, subtract scaled background from the aperture flux.
+        flatten: When true, apply Lightkurve Savitzky–Golay flattening.
+        show_trend: When flattening, return the trend instead of the residual.
+        flatten_window: Flattening window length.
+        flatten_break_gap: Flattening break tolerance.
+        flatten_order: Flattening polynomial order.
+
+    Returns:
+        tuple: ``(jd, flux, flux_err, flux_unit, flux_correction, sector, label)``.
     """
     pixel_data = lightkurve.targetpixelfile.TessTargetPixelFile(pixel_data_path)
 
@@ -140,9 +156,19 @@ def process_lightcurve_computation(pixel_data_path, mask_list, sub_bkg,
         raise PipeException('No valid aperture mask provided')
 
     lc = pixel_data.to_lightcurve(aperture_mask=mask)
-    quality_mask = lc['quality'] == 0  # mask by TESS quality
-    lc = lc[quality_mask]
-    
+    # Do not keep only QUALITY == 0. TessTargetPixelFile already applies
+    # Lightkurve's default TESS quality bitmask (17087), so the TPF cube,
+    # the frame slider, and this lightcurve share the same cadences.
+    # QUALITY == 0 is stricter: it also drops bit 12 (value 2048, Earth/Moon
+    # stray light), which opened a multi-day hole that was still present in
+    # the cutouts. Restore the two lines below to enforce QUALITY == 0 again.
+    # To drop the default bitmask as well (keep every FFI cadence in the FITS
+    # file), construct the TPF with quality_bitmask='none' here and in
+    # load_cutout_flux_cube, e.g.
+    # TessTargetPixelFile(path, quality_bitmask='none').
+    # quality_mask = lc['quality'] == 0  # mask by TESS quality
+    # lc = lc[quality_mask]
+
     jd = lc.time.value
     flux_unit = str(lc.flux.unit)
     flux_err = lc.flux_err
@@ -151,7 +177,7 @@ def process_lightcurve_computation(pixel_data_path, mask_list, sub_bkg,
     if sub_bkg:
         flux_correction.append('backgrounded')
         bkg = pixel_data.estimate_background(aperture_mask='background')
-        flux = lc.flux - bkg.flux[quality_mask] * mask.sum() * u.pix
+        flux = lc.flux - bkg.flux * mask.sum() * u.pix
     else:
         flux = lc.flux
 

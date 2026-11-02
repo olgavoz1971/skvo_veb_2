@@ -5176,3 +5176,75 @@ Open in Ticket 32: step 5, docs and skills split into "declared" and "guessed".
 - `docs/io_contract.md` and the identical copy in the skill's `references/`: note on declared versus guessed at the top; section 6 item 3 corrected (a missing `JD0` stays missing; it was documented as defaulting to 0).
 - Not synced: `test_skills/.cursor/skills/volightcurve` (older copy).
 Ticket 32 is now complete except the optional items: removal of the one-release compatibility aliases (module `__getattr__` in `lightcurve.py`) after agreement, and the `__all__` advanced tier.
+
+### volightcurve: a column without a unit is reported before conversion (done, uncommitted)
+
+Trigger: `lc_discovery_TIC_35119266_QLP_sector_97.vot` (QLP flux column without a unit, zero point written as dimensionless). The file loads; `add_mag_column_from_flux` raised `UnitsError ... must match` while `conversion_problems` and `check_units` were empty.
+- `inspect_conversion_photcal` has new flags `flux_column_has_no_unit` / `mag_column_has_no_unit` (passed through `ZeroPoint`-level `PhotCal.conversion_problems`, `PhotDM.conversion_problems`). `VOLightCurve.conversion_problems(col)` sets them when the column unit is `None`. Message: "The flux column has no unit while the zero-point flux unit is dimensionless. Nothing is assumed: declare the unit of the column ... before converting." `flux_unit=None` still means "skip the comparison" for bare PhotCal use.
+- `VOLightCurve.check_units()` reports `column:<name>` for a flux or magnitude column that has a calibration but no unit.
+- The conversion now raises `PhotCalError` with that reason instead of a late `UnitsError`.
+- Tests: `tests/test_column_without_unit.py`. Results: volightcurve 157, host 675, lc_discovery 224.
+- Open (decision pending): the issuing code (TESS provider) should write the dimensionless unit on QLP flux columns where it knows the product is dimensionless.
+
+### lc_discovery TESS: normalised (relative) flux issued dimensionless (done, uncommitted)
+
+Decision (developer, 2026-10-31): option A. Normalised fluxes (QLP, TARS, TGLC; registry `CALIBRATION_NORMALIZED_CATALOG`) keep zero point flux 1 (dimensionless) with `TESSMAG`/`GAIAMAG`; no `ct/s` or `e-/s`. UCD `phot.flux;arith.ratio` (checked by the developer).
+- Issued: flux, flux error and (QLP) background columns with no unit in the product are written with unit `1` (`_issue_unit_for`); a declared unit is kept. Flux and error carry `phot.flux;arith.ratio` / `stat.error;phot.flux;arith.ratio`. The table description gets one sentence per such column ("relative, dimensionless flux: flux 1 corresponds to magnitude X, a reference magnitude from the product header; magnitudes derived from it are relative to that anchor"). Documented in `lc_discovery/docs/providers/tess.md`.
+- New test `test_qlp_normalised_flux_is_written_dimensionless_and_converts` (issues, reads back, converts without declaring a unit; `conversion_problems` is empty). Results: lc_discovery 225, volightcurve 157, host 675.
+- Not done: the other providers (PS1, ZTF, AIP, ...) were not reviewed for the same unit-less flux with a dimensionless zero point; TASOC `FLUX_CORR` (ppm) is only covered when the product gives no unit. The existing file `lc_discovery_TIC_35119266_QLP_sector_97.vot` is fixed by the developer.
+
+### Ticket 35 (OPEN, 2026-10-31): Discovery Download rebuilds a second lightcurve; host invents units and UCDs
+
+**Severity:** failure of the agreed architecture. Only `volightcurve` may assign units and UCDs on a lightcurve. The host does both on export. Developer: "THIS IS VERY BAD". No code in this ticket until the design is agreed.
+
+**Trigger.** On `pages/lightcurve_discovery.py`, **Download** and **Download entire votable** emit different units (and more) for the same QLP lightcurve. Entire has the issued `unit="1"`; Download does not.
+
+#### Two products, not a subset
+
+| Button | What it returns |
+|--------|-----------------|
+| Download entire votable | Cached bytes of `lc_discovery.fetch` (`fetch_discovery_votable_bytes`). The issued `VOLightCurve`. Filename `*_orig.vot`. Docstring already says: not the plotted CurveDash. |
+| Download | Session `CurveDash` → `curvedash_to_tabular_table` → `assemble_volightcurve` → `write_lightcurve`. A **new** table from pandas + a metadata dict. |
+
+Discovery load already throws the original product away for the plot: `fetch` → `VOLightCurve` → `volc_to_curvedash` (one photometry series, numbers without Astropy units, UCDs not stored). The issued bytes live only in the VOTable cache. Download never sees them.
+
+This is a parallel lightcurve, not "the same file with fewer rows".
+
+#### Failure 1: dimensionless unit does not survive the host round trip
+
+Checked on 2026-10-31 (no code changed for this check):
+
+- VOUnits 1.1 token `1` on a FIELD, written by `write_vo_lightcurve`, is read by Astropy as `Unit(dimensionless)`. `u.Unit("1")` equals `dimensionless_unscaled`. `volightcurve.to_internal` of that is `None`; `to_wire(None)` is `"1"`. **That** path (stay inside volightcurve) round-trips.
+- `u.Unit("dimensionless")` **raises** (`ValueError`: not a valid unit). Astropy has no unit whose name is the English word "dimensionless".
+- Host ingest: `flux_unit = to_internal(column.unit)` → `None` for `1`. The wire token is discarded.
+- Host export: `lcd.phot_unit` is `to_display(None)` → the string `"dimensionless"`. Then `curvedash_to_tabular_table` does `u.Unit(phot_unit)`. That raises. The `except` logs and **writes the flux column with no unit**. The photcal zero point still goes through `assemble_volightcurve` / `to_wire` and can keep `unit="1"`. Same contradiction as the QLP file (column unknown, zero point dimensionless).
+
+Mandatory for any fix: a round-trip test that is not synthetic theatre. Issue a real normalised QLP (or the NSV file), ingest to CurveDash, Download, read the bytes with `VOLightCurve` and with `astropy.table.Table.read`. The FIELD unit and the PhotCal zero-point unit must still be the same token the writer would emit (`1`), and conversion must not raise. `u.Unit("dimensionless")` must never appear on this path.
+
+Do not treat `to_display` as a unit. Display English is not VOUnits and not Astropy.
+
+Open design question (do not decide in code here): is `1` still the right wire token, given that the host cannot hold it without a codec? The codec already exists (`to_internal` / `to_wire`). The host must use it, or must not flatten the unit at all.
+
+#### Failure 2: two tracks for UCDs; the host invents them on export
+
+- **Track A (correct):** the issued VOTable FIELD carries the UCD the provider set through volightcurve (`phot.flux;arith.ratio` for normalised QLP). The reader keeps it on the column.
+- **Track B (forbidden):** `volc_to_curvedash` does not store the column UCD. `curvedash_to_tabular_table` (and `curvedash_to_table`) then call `assign_photometry_column_semantics(..., force_magnitude=...)`, which **overwrites** the photometry UCD with a fixed pair: `phot.flux;em.opt` / `stat.error;phot.flux;em.opt` (or the mag pair). Normalised `arith.ratio` is destroyed. `em.opt` is invented even when the file never had it.
+
+`assign_photometry_column_semantics` lives in `volightcurve.columns`, but it is a **guess for a bare table that has no UCD**. Calling it on export of an already-issued lightcurve is the host inventing semantics. The host has no right to do that. Only volightcurve, and only when the product is being **interpreted** (loose files) or **issued** (provider), may set UCDs.
+
+The same applies to units: the host must not call `u.Unit` on a display string, must not pick `ct/s` or `e-/s`, and must not drop a declared unit.
+
+#### What else the rebuild changes (same root)
+
+Not only units. Absolute JD with `assemble_volightcurve(..., timeorigin=0.0)` versus the issued TIMESYS origin (TESS: `2400000.5` and offsets). One series versus all issued columns. Provider PARAMS (`tic`, `sector`, `author`) dropped. Description rewritten from the envelope plus a processing note. Rows filtered by `valid_photometry_row_mask`. Two caches can be different ages (plot CurveDash vs VOTable bytes).
+
+#### Required direction (discussion, then code)
+
+1. **One product.** A user download of a Discovery lightcurve (whole or a chosen photometry column / row mask) must be produced from a `VOLightCurve`, using volightcurve write methods only. CurveDash is the plot/session view. It is not a second author of VOTables.
+2. **Subset means subset.** If Download is "the plotted series", slice or mask the **same** `VOLightCurve` (keep TIMESYS, PhotCal, FIELD units, FIELD UCDs). Do not build a new table from pandas and guess.
+3. **No host assignment of units or UCDs** on lightcurves. Remove `assign_photometry_column_semantics` from the Discovery (and any other) export path of an already-calibrated product. If a UCD is missing, that is a problem to report, not a licence to invent `phot.flux;em.opt`.
+4. **Unit codec only.** Host storage of a unit is `to_internal` / `to_wire`, never `to_display`. Round-trip tests as above, on a natural QLP file.
+5. **Audit** the other pages that call `export_curvedash` (processor, GP, TESS archive, cutout). Same rebuild, same risk.
+
+**Do not** "fix the QLP unit string" in `lc_bridge` as a one-off. That would hide the architecture failure.
+
