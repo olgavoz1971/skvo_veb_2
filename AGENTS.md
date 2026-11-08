@@ -25,6 +25,11 @@ my-dash-app/
 # Deployment-specific targets (Maintain if present):
 └── plotly-cloud.toml          # Plotly Cloud: Managed CLI deployment config profile
 
+
+### Stop when stuck
+
+If repeated attempts fail or progress stalls, do not keep experimenting or applying speculative fixes. Stop, reassess, and report what you tried, what failed, and why the current approach may be wrong. Briefly suggest an alternative and ask for my approval before proceeding. Do not introduce workarounds or broaden the scope without approval.
+
 ### Core Dependency Rules:
 - **Do Not Alter Versions Blindly:** You are explicitly forbidden from rewriting or appending restrictive upper bounds (e.g., `dash<4`, `astropy<7`) to `requirements.txt` based on your internal training cuts.
 - **Default to Loose Pinning:** If asked to add a *new* dependency to `requirements.txt`, append only the package name or use loose lower bounds (e.g., `package>=version`). Never set hard upper caps unless a specific code incompatibility has been explicitly verified in the workspace.

@@ -5248,3 +5248,11 @@ Not only units. Absolute JD with `assemble_volightcurve(..., timeorigin=0.0)` ve
 
 **Do not** "fix the QLP unit string" in `lc_bridge` as a one-off. That would hide the architecture failure.
 
+
+### lc_discovery: Simbad mirrors (agent LC_shipper request, 2026-11-08; done, uncommitted)
+
+Report: the default mirror `simbad.cds.unistra.fr` did not answer for `NSV 807`; `simbad.harvard.edu` answered in under 2 s. Decision (developer): documentation plus a small explicit change in the agent script, not in the package.
+- `scripts/simbad_resolve.py`: new `--server` (set before any other access), `main(argv)` returns exit codes (0 answered, 3 `SimbadNotResolvedError`, 4 network failure; 124 from the caller's `timeout` is also a mirror failure); docstring explains mirror, wall-clock limit and the `timeout` setter. The query functions are unchanged; no automatic failover.
+- Skill `lc-discovery`: step 2 narrowed (no other resolver, mirror is separate), new section "Simbad mirrors", VSX only after a live "unknown" answer. README and `docs/mission_lightcurve_providers.md` (3.5) updated.
+- Tests: three new tests for `main` (mirror set first, exit codes 3 and 4). Checked live against Harvard: `NSV 807` gives `SV* BV  1649` (exit 0); an unknown name exits 3. lc_discovery suite: see below.
+- Not verified: that the synchronous `query_object` ignores `Simbad.timeout` (taken from the agent's report; the setter's TAP contact was read in astroquery 0.4.11).
