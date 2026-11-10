@@ -107,10 +107,10 @@ LC_DISCOVERY_PAGE_NAMESPACE = 'lc_discovery'
 DISPLAY_EPOCH_JD = DEFAULT_EPOCH_JD
 
 LC_DISCOVERY_CATALOG_DEFAULT_COL_DEF = {
-    'filter': False,
+    'filter': True,
     'floatingFilter': False,
     'sortable': True,
-    'suppressHeaderFilterButton': True,
+    'suppressHeaderFilterButton': False,
     'suppressHeaderMenuButton': True,
     'resizable': True,
     'wrapText': False,
