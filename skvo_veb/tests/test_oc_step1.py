@@ -282,6 +282,34 @@ def test_oc_figure_title_hover_and_top_axis_use_mjd():
     assert mjd_obs == pytest.approx(2458749.729 - jd0)
     dummy_on_x2 = [tr for tr in fig.data if getattr(tr, "xaxis", None) == "x2"]
     assert dummy_on_x2 == []
+    assert fig.layout.yaxis.title.text == "O-C (days)"
+    assert fig.layout.yaxis.autorange is True
+    assert fig.layout.yaxis.uirevision == "oc-y-days"
+
+
+def test_oc_figure_axis_seconds_scales_y_and_error():
+    """Seconds switch plots O-C and σ in seconds; the store stays in days."""
+    from skvo_veb.pages.gp_for_oc import _build_oc_figure, _oc_empty_figure
+    from skvo_veb.utils.oc.compute import SECONDS_PER_DAY
+
+    payload = compute_step1_oc(
+        [{"jd_ext": 2458749.729, "sigma_jd": 1.5e-4}],
+        t0_jd=2458749.0,
+        p0=1.0,
+        source="gp",
+    )
+    fig = _build_oc_figure(payload, axis_seconds=True)
+    assert fig.layout.yaxis.title.text == "O-C (seconds)"
+    assert fig.layout.yaxis.autorange is True
+    assert fig.layout.yaxis.uirevision == "oc-y-seconds"
+    assert fig.data[0].y[0] == pytest.approx(payload["OC"][0] * SECONDS_PER_DAY)
+    assert fig.data[0].error_y.array[0] == pytest.approx(1.5e-4 * SECONDS_PER_DAY)
+    hover = fig.data[0].hovertemplate
+    assert "%{y:.1f} s" in hover
+    assert fig.data[0].customdata[0][0] == pytest.approx(payload["OC"][0])
+    empty = _oc_empty_figure(axis_seconds=True)
+    assert empty.layout.yaxis.title.text == "O-C (seconds)"
+    assert empty.layout.yaxis.uirevision == "oc-y-seconds"
 
 
 def test_absolute_jd_to_display_mjd():
@@ -345,7 +373,12 @@ def test_append_merges_sorts_tags_and_skips_exact_duplicates():
     )
     assert (added, skipped) == (2, 1)
     assert [row["jd_ext"] for row in store["records"]] == [10.0, 20.0, 30.0, 30.0]
-    assert [row["source"] for row in store["records"]] == ["a.dat", "b.dat", "a.dat", "b.dat"]
+    assert [row["source"] for row in store["records"]] == [
+        "a.dat",
+        "b.dat",
+        "a.dat",
+        "b.dat",
+    ]
     assert store["filename"] == "merged"
     assert store["metadata_lines"] == [
         "# ---- source file: a.dat ----",
@@ -377,7 +410,11 @@ def test_append_rejects_legacy_list_store():
 
 def test_merged_store_names_export_merged_oc_and_summary():
     """Merged timings export as merged_oc and are summarised by count."""
-    from skvo_veb.utils.oc.tom_io import append_upload_store, new_upload_store, upload_summary_text
+    from skvo_veb.utils.oc.tom_io import (
+        append_upload_store,
+        new_upload_store,
+        upload_summary_text,
+    )
 
     store, _, _ = append_upload_store(
         new_upload_store("a.dat", _rows((1.0, 0.1)), []), "b.dat", _rows((2.0, 0.1)), []
@@ -401,18 +438,28 @@ def test_compute_carries_point_source_and_figure_colours_sources():
     colours = {trace.name: trace.marker.color for trace in fig.data}
     assert colours == {"a.dat": OC_SOURCE_COLOURS[0], "b.dat": OC_SOURCE_COLOURS[1]}
     assert all(trace.marker.size == 8 for trace in fig.data)
-    assert fig.layout.showlegend is False
+    assert fig.layout.showlegend is True
+    assert fig.layout.legend.orientation == "h"
+    assert fig.layout.legend.y < 0
+    legend_flags = [(trace.name, trace.showlegend) for trace in fig.data]
+    shown = [name for name, shown in legend_flags if shown]
+    assert shown == ["a.dat", "b.dat"]
 
 
-def test_single_source_figure_keeps_default_colour_and_no_legend():
-    """One source plots exactly as before: default colour, no legend."""
+def test_single_source_figure_keeps_default_colour_and_legend_below():
+    """One source keeps the default colour; the legend sits under the plot."""
     from skvo_veb.pages.gp_for_oc import _build_oc_figure
 
     records = [{"jd_ext": 2458749.0, "sigma_jd": 1e-4, "source": "a.dat"}]
-    fig = _build_oc_figure(compute_step1_oc(records, t0_jd=2458749.0, p0=1.0, source="upload"))
-    assert fig.layout.showlegend is False
+    fig = _build_oc_figure(
+        compute_step1_oc(records, t0_jd=2458749.0, p0=1.0, source="upload")
+    )
+    assert fig.layout.showlegend is True
+    assert fig.layout.legend.orientation == "h"
+    assert fig.layout.legend.y < 0
     assert all(trace.marker.color is None for trace in fig.data)
     assert [trace.name for trace in fig.data] == ["O-C"]
+    assert fig.data[0].showlegend is True
 
 
 def _upload_contents(text: str) -> str:
